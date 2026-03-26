@@ -1,0 +1,5 @@
+.env
+.claude
+__pycache__
+*.db
+obsidian_vault/*
