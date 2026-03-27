@@ -17,5 +17,4 @@ class MainWindow(QMainWindow):
         self._graph_view.set_graph_data(nodes, edges)
 
     def refresh(self) -> None:
-        """Reload graph data from the DB."""
         self._load_graph()

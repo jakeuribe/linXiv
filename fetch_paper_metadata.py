@@ -1,7 +1,7 @@
 import sys, os
 import arxiv
 from typing import Sequence, Generator, Iterable, Iterator
-from AI_tools import generate_and_save_obsidian_tags
+# from AI_tools import generate_and_save_obsidian_tags
 from db import init_db, save_papers
 
 # The ID of the paper you want to fetch

@@ -1,69 +1,107 @@
 import os
-import re
+from dataclasses import dataclass
+from typing import cast
 from google import genai
+from google.genai import types
+from pydantic import BaseModel
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
 
-def generate_and_save_obsidian_tags(text_content, file_path):
+_client: genai.Client | None = None
+
+
+def _get_client() -> genai.Client:
+    global _client
+    if _client is None:
+        api_key = os.getenv("GENAI_API_KEY_TAG_GEN")
+        if not api_key:
+            raise EnvironmentError("GENAI_API_KEY_TAG_GEN not set.")
+        _client = genai.Client(api_key=api_key)
+    return _client
+
+
+@dataclass
+class PaperContent:
     """
-    Generates Obsidian-formatted tags using the new Google Gen AI SDK
-    and appends them to a file.
+    Wraps available content for a paper.
+    Functions use the richest source available: pdf > full_text > abstract.
+    Populate full_text (TeX) or pdf (bytes) via downloads.py when needed.
     """
-    key_name = "GENAI_API_KEY_TAG_GEN"
-    api_key = os.getenv(key_name)
-    if not api_key:
-        print(f"Error: {key_name} not found.")
-        return []
+    abstract: str
+    full_text: str | None = None  # raw TeX source
+    pdf: bytes | None = None      # PDF bytes
 
-    # 1. Initialize Client (New Way)
-    # The new SDK uses a client instance rather than global configuration
-    client = genai.Client(api_key=api_key)
+    def to_parts(self) -> list[types.Part]:
+        if self.pdf is not None:
+            return [types.Part.from_bytes(data=self.pdf, mime_type="application/pdf")]
+        if self.full_text is not None:
+            return [types.Part.from_text(self.full_text)]
+        return [types.Part.from_text(self.abstract)]
 
-    prompt = f"""
-    Analyze the following text and generate 3-5 relevant metadata tags.
-    Format them strictly as Obsidian-style tags: start with a hash (#), no spaces.
-    Use underscores (_) or hyphens (-) for multi-word concepts.
-    Return ONLY the tags separated by spaces. Do not add numbering or explanations.
 
-    Text:
-    "{text_content}"
+def _generate(prompt: str, content: PaperContent, schema: type[BaseModel]) -> BaseModel:
+    parts = [types.Part.from_text(prompt)] + content.to_parts()
+    response = _get_client().models.generate_content(
+        model="gemini-2.0-flash",
+        contents=parts,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=schema,
+        ),
+    )
+    return cast(schema, response.parsed)
+
+
+# ── Response schemas ──────────────────────────────────────────────────────────
+
+class _TagResponse(BaseModel):
+    tags: list[str]
+
+class _SummaryResponse(BaseModel):
+    tldr: str
+    key_contributions: list[str]
+
+class _RelatedResponse(BaseModel):
+    related_ids: list[str]
+
+
+# ── Public API ────────────────────────────────────────────────────────────────
+
+def tag(content: PaperContent, file_path: str | None = None) -> list[str]:
+    """Generate 3-5 Obsidian tags. Optionally append to file_path."""
+    parsed = cast(_TagResponse, _generate(
+        "Generate 3-5 relevant Obsidian tags for this academic paper.",
+        content, _TagResponse,
+    ))
+    tags = [f"#{t.strip().lstrip('#').replace(' ', '_')}" for t in parsed.tags]
+    if file_path is not None:
+        with open(file_path, "a", encoding="utf-8") as f:
+            f.write("\n" + " ".join(tags))
+    return tags
+
+
+def summarize(content: PaperContent) -> _SummaryResponse:
+    """Return a one-sentence TLDR and 2-4 key contributions."""
+    return cast(_SummaryResponse, _generate(
+        "Summarize this academic paper into a one-sentence TLDR and 2-4 key contributions.",
+        content, _SummaryResponse,
+    ))
+
+
+def find_related(
+    content: PaperContent,
+    candidates: list[tuple[str, str]],   # [(paper_id, abstract), ...]
+    threshold: int = 5,
+) -> list[str]:
     """
-
-    try:
-        # 2. Generate Content (New Way)
-        # client.models.generate_content replaces model.generate_content
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",  # Or "gemini-1.5-flash"
-            contents=prompt
-        )
-        raw_tags = response.text.strip().split()
-    except Exception as e:
-        print(f"API Error: {e}")
-        return []
-
-    
-    valid_tags = []
-    format_pattern = re.compile(r"^#[a-zA-Z0-9_\-/]+$")
-    non_numeric_pattern = re.compile(r"[a-zA-Z_\-/]") 
-
-    for tag in raw_tags:
-        if not tag.startswith("#"):
-            tag = "#" + tag
-        
-        if format_pattern.match(tag) and non_numeric_pattern.search(tag):
-            valid_tags.append(tag)
-
-    # 4. Append to File
-    if valid_tags:
-        try:
-            with open(file_path, "a", encoding="utf-8") as f:
-                f.write("\n" + " ".join(valid_tags))
-            print(f"Success. Added: {valid_tags}")
-        except IOError as e:
-            print(f"File Error: {e}")
-    else:
-        print("No valid tags generated.")
-
-    return valid_tags, file_path
+    Return IDs of the most conceptually related papers from candidates.
+    Useful for adding semantic edges to the graph beyond shared category/author.
+    """
+    candidate_block = "\n\n".join(f"ID: {pid}\n{ab}" for pid, ab in candidates[:40])
+    parsed = cast(_RelatedResponse, _generate(
+        f"Which of the following papers are most conceptually related to this one? "
+        f"Return up to {threshold} paper IDs.\n\n{candidate_block}",
+        content, _RelatedResponse,
+    ))
+    return parsed.related_ids
