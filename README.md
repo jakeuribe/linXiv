@@ -4,37 +4,44 @@ A Python application for discovering, managing, and visualizing academic papers 
 
 ## Features
 
-- **Paper discovery** — Fetch paper metadata from arXiv by ID or keyword search
-- **Local storage** — SQLite database with versioning support
-- **PDF & source downloads** — Batch download PDFs and TeX source tarballs
+- **Paper search** — Search arXiv by keyword or fetch by ID; results saved to a local SQLite DB with version tracking
+- **Interactive graph** — Force-directed D3.js visualization of papers and authors; real-time force controls (gravity, repulsion, link strength)
+- **TeX rendering** — KaTeX renders LaTeX math in titles and abstracts inside the search UI
+- **PDF viewer** — Native Qt PDF viewer (`QPdfView`) with zoom and page navigation
+- **AI tools** — Google Gemini structured output for tag generation, paper summarization, and semantic similarity
 - **Obsidian integration** — Auto-generate markdown notes with YAML frontmatter for your vault
-- **AI tagging** — Use Google Gemini to generate Obsidian-formatted tags from abstracts
-- **Interactive graph** — Force-directed D3.js visualization of papers and co-authorship networks, rendered in a PyQt6 WebEngine window
+- **PDF & TeX downloads** — Batch download PDFs and TeX source tarballs
 
 ## Project Structure
 
 ```
 linXiv/
-├── main.py                    # Entry point — launches the GUI
-├── db.py                      # SQLite database management
-├── fetch_paper_metadata.py    # arXiv API fetching + Obsidian markdown generation
-├── downloads.py               # PDF and TeX source download utilities
-├── AI_tools.py                # Google Gemini tag generation
-├── basic_connect.py           # PostgreSQL connection test (legacy)
-├── print_markdown.py          # Markdown template rendering utility
+├── main.py                    # Launch graph viewer
+├── search.py                  # Launch search window
+├── pdf.py                     # Launch standalone PDF viewer
+├── db.py                      # SQLite DB: versioned paper storage, graph data queries
+├── fetch_paper_metadata.py    # arXiv API: fetch, search, save, generate Obsidian notes
+├── downloads.py               # PDF and TeX source download helpers
+├── AI_tools.py                # Gemini: tag(), summarize(), find_related(); PaperContent input type
 ├── formats/
 │   └── table_format.md        # YAML frontmatter template for Obsidian notes
 ├── gui/
-│   ├── app.py                 # PyQt6 application factory
-│   ├── main_window.py         # Main window
-│   ├── graph_view.py          # WebEngine wrapper for D3 visualization
+│   ├── app.py                 # QApplication setup
+│   ├── main_window.py         # Graph window
+│   ├── search_window.py       # Search UI: tri-pane layout with TeX rendering and PDF button
+│   ├── graph_view.py          # QWebEngineView wrapper for D3 graph
+│   ├── tex_view.py            # QWebEngineView wrapper for KaTeX TeX rendering
+│   ├── pdf_window.py          # QPdfView PDF viewer with toolbar
 │   └── web/
-│       ├── graph.html         # SVG container + force simulation controls
-│       ├── graph.js           # D3.js force-directed graph logic
-│       ├── graph.css          # Dark theme styling
-│       └── d3.v7.min.js       # Bundled D3 library
-└── obsidian_vault/
-    └── arXivVault/            # Generated markdown notes (gitignored)
+│       ├── graph.html/js/css  # D3 force-directed graph
+│       ├── d3.v7.min.js       # Bundled D3
+│       ├── tex_view.html      # KaTeX auto-render template
+│       ├── katex.min.js/css   # Bundled KaTeX
+│       ├── auto-render.min.js # KaTeX auto-render extension
+│       └── fonts/             # KaTeX WOFF2 fonts (offline)
+├── obsidian_vault/
+│   └── arXivVault/            # Generated markdown notes (gitignored)
+└── pdfs/                      # Downloaded PDFs (gitignored)
 ```
 
 ## Setup
@@ -42,12 +49,12 @@ linXiv/
 ### Prerequisites
 
 - Python 3.10+
-- PyQt6 with WebEngine support
+- PyQt6 with WebEngine and PDF support (`PyQt6-WebEngine`, `PyQt6` ≥ 6.4)
 
 ### Install dependencies
 
 ```bash
-pip install arxiv PyQt6 PyQt6-WebEngine google-generativeai python-dotenv
+pip install arxiv PyQt6 PyQt6-WebEngine google-genai pydantic python-dotenv
 ```
 
 ### Environment variables
@@ -61,30 +68,21 @@ GENAI_API_KEY_TAG_GEN=your_google_gemini_api_key
 ### Run
 
 ```bash
-python main.py
+python main.py    # Graph viewer
+python search.py  # Search window
+python pdf.py     # PDF viewer (opens file picker)
 ```
 
 ## Usage
 
-### Fetch a paper by arXiv ID
+### Search and save papers
 
 ```python
-from fetch_paper_metadata import fetch_paper_metadata
-from db import init_db, save_paper
+from fetch_paper_metadata import search_papers, fetch_paper_metadata
+from db import init_db
 
-conn = init_db()
-paper = fetch_paper_metadata("2204.12985")
-save_paper(conn, paper)
-```
-
-### Search papers by keyword
-
-```python
-from fetch_paper_metadata import search_papers
-from db import save_papers
-
-results = search_papers("transformer attention mechanism", max_results=10)
-save_papers(conn, results)
+init_db()
+papers = search_papers("lattice QCD", max_results=25)  # auto-saves to DB
 ```
 
 ### Generate Obsidian notes
@@ -92,31 +90,64 @@ save_papers(conn, results)
 ```python
 from fetch_paper_metadata import gen_md_files
 
-gen_md_files(papers, vault_path="obsidian_vault/arXivVault")
+gen_md_files(papers, additional_tags=["lattice_qcd"])
 ```
 
-### Generate AI tags for a note
+### AI tools
 
 ```python
-from AI_tools import generate_tags
+from AI_tools import tag, summarize, find_related, PaperContent
 
-generate_tags("obsidian_vault/arXivVault/2204.12985v1.md")
+content = PaperContent(abstract=paper.summary)
+
+tags = tag(content)                        # ["#quantum_computing", ...]
+tags = tag(content, file_path="tags.md")   # also appends to file
+
+s = summarize(content)
+print(s.tldr)
+print(s.key_contributions)
+
+# Semantic edges for the graph
+from db import list_papers
+candidates = [(r["paper_id"], r["summary"]) for r in list_papers()]
+related_ids = find_related(content, candidates)
 ```
 
 ### Download PDFs
 
 ```python
-from downloads import download_pdf_batch
+from downloads import download_pdf, download_pdf_batch, download_source_batch
 
-download_pdf_batch(papers, output_dir="pdfs/")
+download_pdf(paper, dirpath="pdfs/")
+download_pdf_batch(papers, dirpath="pdfs/")
+download_source_batch(papers, dirpath="source/")
+```
+
+### Database queries
+
+```python
+from db import get_paper, get_all_versions, list_papers, get_graph_data
+
+get_paper("2204.12985")           # latest version
+get_paper("2204.12985", version=2)
+get_all_versions("2204.12985")    # all stored versions
+nodes, edges = get_graph_data()   # for the graph viewer
 ```
 
 ## Graph Visualization
 
-The GUI displays papers (blue circles) and authors (orange diamonds) as a force-directed network. Nodes are connected when an author contributed to a paper. Use the control panel sliders to tune the simulation forces in real time.
+Papers (blue circles) and authors (gold diamonds) form a force-directed network. Edges connect each paper to its authors. The control panel has four real-time sliders:
+
+| Slider | Effect |
+|---|---|
+| Center force | Pulls/pushes nodes toward the center |
+| Repel force | Controls node-to-node repulsion |
+| Link force | Stiffness of paper–author edges |
+| Link distance | Target edge length |
 
 ## Notes
 
-- arXiv requests are rate-limited to one every 3 seconds per arXiv's usage policy.
-- The SQLite database (`papers.db`) and vault contents are gitignored.
-- PostgreSQL support in `basic_connect.py` is a legacy remnant and not used by the main application.
+- arXiv requests are rate-limited to one every 3 seconds per arXiv's API policy.
+- `papers.db`, `pdfs/`, `source/`, and vault contents are gitignored.
+- KaTeX, D3, and all fonts are bundled locally — the GUI works fully offline after first run.
+- `PaperContent` accepts `abstract`, `full_text` (TeX source), or `pdf` (bytes) — Gemini will use the richest available source.
