@@ -1,18 +1,51 @@
 import sys, os
+import time
 import arxiv
+from datetime import datetime
 from typing import Sequence, Generator, Iterable, Iterator
 # from AI_tools import generate_and_save_obsidian_tags
-from db import init_db, save_papers
+from db import init_db, save_paper, save_papers
 
 # The ID of the paper you want to fetch
 paper_id = "2204.12985"
 
-# Shared client — enforces arXiv's required 3-second delay between requests
-_client = arxiv.Client(num_retries=2, delay_seconds=3.0)
+# Shared client — 5 s gap gives margin over arXiv's 3 s minimum
+_client = arxiv.Client(num_retries=3, delay_seconds=7.0)
+
+_RATELIMIT_FILE = ".arxiv_ratelimit"
+_RATELIMIT_WAIT = 60.0  # seconds to wait after a 429
+
+
+def _check_ratelimit() -> None:
+    """If a 429 was recently recorded, sleep for the remaining cooldown."""
+    if not os.path.exists(_RATELIMIT_FILE):
+        return
+    with open(_RATELIMIT_FILE) as f:
+        last = datetime.fromisoformat(f.read().strip())
+    remaining = _RATELIMIT_WAIT - (datetime.now() - last).total_seconds()
+    if remaining > 0:
+        print(f"[arxiv] rate limited — waiting {remaining:.0f}s")
+        time.sleep(remaining)
+
+
+def _record_ratelimit() -> None:
+    with open(_RATELIMIT_FILE, "w") as f:
+        f.write(datetime.now().isoformat())
+
+
+def _arxiv_call(fn):
+    _check_ratelimit()
+    try:
+        return fn()
+    except Exception as e:
+        if "429" in str(e):
+            _record_ratelimit()
+            print("[arxiv] 429 received — recorded. Retry your search in 60s.")
+        raise
 
 def fetch_paper_metadata(paper_id:str, print_on: bool = False) -> arxiv.Result:
     search = arxiv.Search(id_list=[paper_id])
-    paper = next(_client.results(search))
+    paper = _arxiv_call(lambda: next(_client.results(search)))
     
     if print_on:
         # Display Metadata
@@ -27,9 +60,15 @@ def fetch_paper_metadata(paper_id:str, print_on: bool = False) -> arxiv.Result:
     
     return paper
 
-def search_papers(query: str, max_results: int = 10, print_on: bool = False) -> list[arxiv.Result]:
-    search = arxiv.Search(query=query, max_results=max_results)
-    papers = list(_client.results(search))
+def search_papers(
+    query: str,
+    max_results: int = 10,
+    sort_by: arxiv.SortCriterion = arxiv.SortCriterion.Relevance,
+    sort_order: arxiv.SortOrder = arxiv.SortOrder.Descending,
+    print_on: bool = False,
+) -> list[arxiv.Result]:
+    search = arxiv.Search(query=query, max_results=max_results, sort_by=sort_by, sort_order=sort_order)
+    papers = _arxiv_call(lambda: list(_client.results(search)))
 
     if print_on:
         for paper in papers:
@@ -39,7 +78,6 @@ def search_papers(query: str, max_results: int = 10, print_on: bool = False) -> 
             print(f"Category: {paper.primary_category}")
             print("-" * 30)
 
-    save_papers(papers)
     return papers
 
 def gen_md_files(papers: list[arxiv.Result], additional_tags:None|Sequence[str] = None) -> None:

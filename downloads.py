@@ -55,6 +55,29 @@ def download_pdf_batch(
     os.makedirs(dirpath, exist_ok=True)
     return [download_pdf(p, dirpath=dirpath, domain=domain) for p in papers]
 
+def cleanup_pdfs(
+    dirpath: str,
+    keep: set[str] | None = None,
+) -> list[str]:
+    """Delete all PDFs in dirpath that are not in keep. Returns list of deleted paths."""
+    if keep is None:
+        keep = set()
+    keep_abs = {os.path.abspath(p) for p in keep}
+    deleted: list[str] = []
+    for fname in os.listdir(dirpath):
+        if not fname.lower().endswith(".pdf"):
+            continue
+        full = os.path.join(dirpath, fname)
+        if os.path.abspath(full) not in keep_abs:
+            os.remove(full)
+            deleted.append(full)
+    return deleted
+
+
+def saved_pdfs_size(paths: set[str]) -> int:
+    """Return total byte size of existing files in paths."""
+    return sum(os.path.getsize(p) for p in paths if os.path.isfile(p))
+
 def download_source_batch(
     papers: list[arxiv.Result],
     dirpath: str = './',

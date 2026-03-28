@@ -53,7 +53,7 @@ def _generate(prompt: str, content: PaperContent, schema: type[BaseModel]) -> Ba
     return cast(schema, response.parsed)
 
 
-# ── Response schemas ──────────────────────────────────────────────────────────
+# Response schemas 
 
 class _TagResponse(BaseModel):
     tags: list[str]
@@ -66,7 +66,7 @@ class _RelatedResponse(BaseModel):
     related_ids: list[str]
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
+# Public API 
 
 def tag(content: PaperContent, file_path: str | None = None) -> list[str]:
     """Generate 3-5 Obsidian tags. Optionally append to file_path."""

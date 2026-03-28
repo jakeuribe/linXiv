@@ -1,15 +1,83 @@
 import sqlite3
 import json
 import re
+import datetime
 import arxiv
 from typing import Optional
 
 DB_PATH = "papers.db"
 
-def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+# --- adapters: Python → SQLite storage ---
+sqlite3.register_adapter(list,              lambda v: json.dumps(v))
+sqlite3.register_adapter(datetime.date,     lambda v: v.isoformat())
+sqlite3.register_adapter(datetime.datetime, lambda v: v.isoformat())
+
+# --- converters: SQLite storage → Python (triggered by declared column type) ---
+sqlite3.register_converter("LIST",      lambda v: json.loads(v))
+sqlite3.register_converter("DATE",      lambda v: datetime.date.fromisoformat(v.decode()))
+sqlite3.register_converter("TIMESTAMP", lambda v: datetime.datetime.fromisoformat(v.decode()))
+sqlite3.register_converter("BOOL",      lambda v: bool(int(v)))
+
+# Python type → SQLite type name used in DDL
+_PY_TO_SQL: dict[type, str] = {
+    int:               "INTEGER",
+    str:               "TEXT",
+    float:             "REAL",
+    bytes:             "BLOB",
+    bool:              "BOOL",
+    list:              "LIST",
+    datetime.date:     "DATE",
+    datetime.datetime: "TIMESTAMP",
+}
+
+
+def init_table(
+    table_name: str,
+    columns: list[tuple],
+    primary_key: list[str] | None = None,
+    db_path: str = DB_PATH,
+) -> None:
+    """Create a table if it doesn't exist.
+
+    Each column is a tuple: (name, python_type[, constraints])
+    where constraints is an optional SQL string appended after the type.
+
+    Examples
+    --------
+    init_table("users", [
+        ("id",    int,   "PRIMARY KEY AUTOINCREMENT"),
+        ("name",  str,   "NOT NULL"),
+        ("score", float),
+        ("tags",  list),
+    ])
+
+    init_table("paper_tags", [
+        ("paper_id", str, "NOT NULL"),
+        ("tag",      str, "NOT NULL"),
+    ], primary_key=["paper_id", "tag"])
+    """
+    col_defs: list[str] = []
+    for col in columns:
+        name  = col[0]
+        sql_t = _PY_TO_SQL.get(col[1], "TEXT")
+        extra = col[2] if len(col) > 2 else ""
+        col_defs.append(f"    {name} {sql_t} {extra}".rstrip())
+    if primary_key:
+        col_defs.append(f"    PRIMARY KEY ({', '.join(primary_key)})")
+    ddl = (
+        f"CREATE TABLE IF NOT EXISTS {table_name} (\n"
+        + ",\n".join(col_defs)
+        + "\n);"
+    )
+    with _connect(db_path) as conn:
+        conn.execute(ddl)
+
+
+def _connect(db_path: str = DB_PATH) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path, detect_types=sqlite3.PARSE_DECLTYPES)
     conn.row_factory = sqlite3.Row
     return conn
+
 
 def init_db() -> None:
     with _connect() as conn:
@@ -19,15 +87,17 @@ def init_db() -> None:
                 version     INTEGER NOT NULL,
                 title       TEXT    NOT NULL,
                 url         TEXT,
-                published   TEXT,
-                updated     TEXT,
+                published   DATE,
+                updated     DATE,
                 category    TEXT,
-                categories  TEXT,
+                categories  LIST,
                 doi         TEXT,
                 journal_ref TEXT,
                 comment     TEXT,
                 summary     TEXT,
-                authors     TEXT,
+                authors     LIST,
+                tags        LIST,
+                has_pdf     BOOL NOT NULL DEFAULT 0,
                 PRIMARY KEY (paper_id, version)
             );
 
@@ -37,58 +107,80 @@ def init_db() -> None:
                 SELECT MAX(version) FROM papers WHERE paper_id = p.paper_id
             );
         """)
-        # Migrate existing DBs that are missing the new columns
+        # Migrate existing DBs that are missing columns
         existing = {row[1] for row in conn.execute("PRAGMA table_info(papers)")}
         for col, typedef in [
-            ("updated",     "TEXT"),
-            ("categories",  "TEXT"),
+            ("updated",     "DATE"),
+            ("categories",  "LIST"),
             ("journal_ref", "TEXT"),
             ("comment",     "TEXT"),
+            ("tags",        "LIST"),
+            ("has_pdf",     "BOOL NOT NULL DEFAULT 0"),
         ]:
             if col not in existing:
                 conn.execute(f"ALTER TABLE papers ADD COLUMN {col} {typedef}")
 
+
 def _parse_entry_id(entry_id: str) -> tuple[str, int]:
     """Split 'http://arxiv.org/abs/2204.12985v4' into ('2204.12985', 4)."""
-    raw = entry_id.split('/')[-1]          # '2204.12985v4'
+    raw = entry_id.split('/')[-1]
     match = re.match(r'^(.+?)(?:v(\d+))?$', raw)
     paper_id = match.group(1)
     version = int(match.group(2)) if match.group(2) else 1
     return paper_id, version
 
-def _insert(conn: sqlite3.Connection, paper: arxiv.Result) -> tuple[str, int]:
+
+def _insert(conn: sqlite3.Connection, paper: arxiv.Result, tags: list[str] | None = None) -> tuple[str, int]:
     paper_id, version = _parse_entry_id(paper.entry_id)
     conn.execute("""
         INSERT OR REPLACE INTO papers
             (paper_id, version, title, url, published, updated,
-             category, categories, doi, journal_ref, comment, summary, authors)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             category, categories, doi, journal_ref, comment, summary, authors, tags)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         paper_id,
         version,
         paper.title,
         paper.pdf_url,
-        paper.published.strftime('%Y-%m-%d'),
-        paper.updated.strftime('%Y-%m-%d'),
+        paper.published.date(),
+        paper.updated.date(),
         paper.primary_category,
-        json.dumps(paper.categories),
+        paper.categories,
         paper.doi,
         paper.journal_ref,
         paper.comment,
         paper.summary,
-        json.dumps([a.name for a in paper.authors]),
+        [a.name for a in paper.authors],
+        tags,
     ))
     return paper_id, version
 
-def save_paper(paper: arxiv.Result) -> tuple[str, int]:
+
+def save_paper(paper: arxiv.Result, tags: list[str] | None = None) -> tuple[str, int]:
     """Insert or replace a single paper. Returns (paper_id, version)."""
     with _connect() as conn:
-        return _insert(conn, paper)
+        return _insert(conn, paper, tags)
 
-def save_papers(papers: list[arxiv.Result]) -> list[tuple[str, int]]:
+
+def save_papers(papers: list[arxiv.Result], tags: list[str] | None = None) -> list[tuple[str, int]]:
     """Batch insert/replace papers in a single transaction. Returns list of (paper_id, version)."""
     with _connect() as conn:
-        return [_insert(conn, paper) for paper in papers]
+        return [_insert(conn, paper, tags) for paper in papers]
+
+
+def set_has_pdf(paper_id: str, version: int, has: bool) -> None:
+    """Set the has_pdf flag for a specific paper version."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE papers SET has_pdf = ? WHERE paper_id = ? AND version = ?",
+            (has, paper_id, version)
+        )
+
+def delete_paper(paper_id: str) -> None:
+    """Delete all versions of a paper."""
+    with _connect() as conn:
+        conn.execute("DELETE FROM papers WHERE paper_id = ?", (paper_id,))
+
 
 def get_paper(paper_id: str, version: Optional[int] = None) -> Optional[sqlite3.Row]:
     """Fetch a specific version, or the latest if version is None."""
@@ -104,6 +196,7 @@ def get_paper(paper_id: str, version: Optional[int] = None) -> Optional[sqlite3.
                 (paper_id,)
             ).fetchone()
 
+
 def get_all_versions(paper_id: str) -> list[sqlite3.Row]:
     """Fetch all stored versions of a paper, ordered oldest to newest."""
     with _connect() as conn:
@@ -112,18 +205,14 @@ def get_all_versions(paper_id: str) -> list[sqlite3.Row]:
             (paper_id,)
         ).fetchall()
 
+
 def get_graph_data() -> tuple[list[dict], list[dict]]:
-    """
-    Returns (nodes, edges) ready to pass to the graph view.
-    Paper nodes and author nodes are typed separately.
-    Edges connect each paper to its authors via a json_each expansion.
-    """
+    """Returns (nodes, edges) ready to pass to the graph view."""
     with _connect() as conn:
         paper_nodes = [
             {"id": row["paper_id"], "label": row["title"], "type": "paper"}
             for row in conn.execute("SELECT paper_id, title FROM latest_papers")
         ]
-        # Deduplicated author nodes and paper→author edges in one pass
         author_rows = conn.execute("""
             SELECT p.paper_id, je.value AS author_name
             FROM latest_papers p, json_each(p.authors) je
@@ -141,6 +230,7 @@ def get_graph_data() -> tuple[list[dict], list[dict]]:
         edges.append({"source": row["paper_id"], "target": author_id})
 
     return paper_nodes + author_nodes, edges
+
 
 def list_papers(latest_only: bool = True) -> list[sqlite3.Row]:
     """List all stored papers (latest version per paper by default)."""
