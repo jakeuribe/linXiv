@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-_client: genai.Client | None = None
+_client: genai.Client = None
 
 
 def _get_client() -> genai.Client:
@@ -19,7 +19,6 @@ def _get_client() -> genai.Client:
             raise EnvironmentError("GENAI_API_KEY_TAG_GEN not set.")
         _client = genai.Client(api_key=api_key)
     return _client
-
 
 @dataclass
 class PaperContent:
