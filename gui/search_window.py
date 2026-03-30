@@ -529,6 +529,8 @@ class SearchWindow(QMainWindow):
         """Delete all unsaved PDFs. Always runs — no size condition for deletion."""
         import os
         self._pdf_window._doc.close()  # release Windows file lock before deleting
+        from PyQt6.QtWidgets import QApplication
+        QApplication.processEvents()   # flush handle release (required on Windows)
         dirpath = os.path.join(os.path.dirname(__file__), '..', 'pdfs')
         if not os.path.isdir(dirpath):
             return []
