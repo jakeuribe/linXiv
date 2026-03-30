@@ -30,18 +30,24 @@ $('relayout-btn').addEventListener('click', () => {
 });
 
 function getLayoutOptions() {
+    const repulsion  = parseFloat($('repulsion').value);
+    const edgeLength = parseFloat($('edgeLength').value);
+    const elasticity = parseFloat($('edgeElasticity').value);
     return {
-        name:              'fcose',
-        animate:           true,
-        animationDuration: 600,
-        randomize:         false,
-        gravity:           parseFloat($('gravity').value),
-        repulsionStrength: parseFloat($('repulsion').value),
-        idealEdgeLength:   parseFloat($('edgeLength').value),
-        edgeElasticity:    parseFloat($('edgeElasticity').value),
-        nodeSeparation:    75,
-        fit:               true,
-        padding:           40,
+        name:           'cose',
+        animate:        true,
+        refresh:        20,
+        fit:            true,
+        padding:        40,
+        randomize:      false,
+        gravity:        parseFloat($('gravity').value),
+        nodeRepulsion:  () => repulsion,
+        idealEdgeLength:() => edgeLength,
+        edgeElasticity: () => elasticity,
+        numIter:        1000,
+        coolingFactor:  0.99,
+        minTemp:        1.0,
+        nodeDimensionsIncludeLabels: true,
     };
 }
 
@@ -108,7 +114,6 @@ function cytoscapeStyle() {
                 'text-wrap':       'ellipsis',
                 'border-width':    1.5,
                 'border-color':    '#0f0f1a',
-                'cursor':          'pointer',
             },
         },
         {
@@ -127,7 +132,6 @@ function cytoscapeStyle() {
                 'text-margin-x':   7,
                 'text-max-width':  '140px',
                 'text-wrap':       'ellipsis',
-                'cursor':          'pointer',
             },
         },
         {
