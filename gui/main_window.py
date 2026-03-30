@@ -108,6 +108,7 @@ class MainWindow(QMainWindow):
         self._build_toolbar()
         self._build_central()
         self._load_all()
+        self._toggle_paper_list()
 
     # ── Construction ─────────────────────────────────────────────────────────
 
