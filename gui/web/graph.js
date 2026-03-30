@@ -330,6 +330,19 @@ function filterGraph(opts) {
             e.style({ 'opacity': (sv && tv) ? FULL_OPACITY : hiddenOp });
         });
     });
+
+    // Physics: when isolating, pin non-visible nodes so they don't interfere
+    if (simulation) {
+        _simNodeById.forEach((sn, id) => {
+            const visible = visiblePaperIds.has(id) || visibleAuthorIds.has(id);
+            if (isolate && !visible) {
+                if (sn.fx == null) { sn.fx = sn.x; sn.fy = sn.y; }
+            } else if (!isolate) {
+                sn.fx = null; sn.fy = null;
+            }
+        });
+        simulation.alpha(0.3).restart();
+    }
 }
 
 // ── Highlight single node (called from Python) ────────────────────────────────
