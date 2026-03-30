@@ -30,7 +30,8 @@ linXiv/
 │   ├── main_window.py         # Graph window
 │   ├── search_window.py       # Search UI: tri-pane layout with TeX rendering and PDF button
 │   ├── graph_view.py          # QWebEngineView wrapper for D3 graph
-│   ├── tex_view.py            # QWebEngineView wrapper for KaTeX TeX rendering
+│   ├── tex_view.py            # QWebEngineView wrapper for KaTeX TeX rendering for individual 
+                               # symbols, (in future may only allow Markdown native symbols)
 │   ├── pdf_window.py          # QPdfView PDF viewer with toolbar
 │   └── web/
 │       ├── graph.html/js/css  # D3 force-directed graph

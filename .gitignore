@@ -10,7 +10,7 @@ __pycache__/
 # arXiv rate-limit timestamp
 .arxiv_ratelimit
 
-# Downloaded files
+# Downloaded files, create directories manually if this errors
 pdfs/
 source/
 
