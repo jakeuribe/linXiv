@@ -28,3 +28,16 @@ class GraphView(QWebEngineView):
     def _push(self) -> None:
         data = json.dumps({"nodes": self._pending_nodes, "edges": self._pending_edges})
         self.page().runJavaScript(f"loadGraph({data})")
+
+    def run_js(self, code: str) -> None:
+        """Run arbitrary JavaScript in the graph page."""
+        if self._loaded:
+            self.page().runJavaScript(code)
+
+    def filter_graph(self, opts: dict) -> None:
+        """Call JS filterGraph with the given options dict."""
+        self.run_js(f"filterGraph({json.dumps(opts)})")
+
+    def highlight_node(self, node_id: str) -> None:
+        """Highlight a single node by id, dimming all others."""
+        self.run_js(f"highlightNode({json.dumps(node_id)})")

@@ -9,35 +9,10 @@ body {
     overflow: hidden;
 }
 
-svg#graph {
+#cy {
     width: 100vw;
     height: 100vh;
     display: block;
-}
-
-.links line {
-    stroke: #2a2a4a;
-    stroke-width: 1.5px;
-}
-
-.nodes circle {
-    stroke: #0f0f1a;
-    stroke-width: 1.5px;
-    cursor: pointer;
-    transition: stroke 0.15s;
-}
-
-.nodes circle:hover {
-    stroke: #ffffff;
-    stroke-width: 2px;
-}
-
-.labels text {
-    fill: #aaaacc;
-    font-family: 'Segoe UI', sans-serif;
-    font-size: 11px;
-    pointer-events: none;
-    user-select: none;
 }
 
 /* ── Controls panel ── */
@@ -109,6 +84,6 @@ svg#graph {
 .control-row .val {
     font-size: 11px;
     color: #7777aa;
-    width: 32px;
+    width: 36px;
     text-align: right;
 }

@@ -1,21 +1,13 @@
-const svg = d3.select('#graph')
-    .attr('width', window.innerWidth)
-    .attr('height', window.innerHeight);
+const PAPER_COLOR     = '#5b8dee';
+const AUTHOR_COLOR    = '#e8a838';
+const HIGHLIGHT_COLOR = '#ff6b6b';
+const DIM_OPACITY     = 0.08;
+const FULL_OPACITY    = 1.0;
 
-const container = svg.append('g');
+let cy = null;
+let _lastOpts = null;  // re-apply filter after layout reruns
 
-svg.call(
-    d3.zoom()
-        .scaleExtent([0.05, 10])
-        .on('zoom', (event) => container.attr('transform', event.transform))
-);
-
-let simulation = null;
-
-const PAPER_COLOR  = '#5b8dee';
-const AUTHOR_COLOR = '#e8a838';
-
-// ── Controls wiring ──
+// ── Controls wiring ──────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 
 $('controls-toggle').addEventListener('click', () => {
@@ -25,134 +17,270 @@ $('controls-toggle').addEventListener('click', () => {
     $('controls-toggle').textContent = collapsed ? '▼' : '▶';
 });
 
-function bindSlider(id, valId, fn) {
-    const slider = $(id);
-    const display = $(valId);
-    slider.addEventListener('input', () => {
-        display.textContent = parseFloat(slider.value);
-        fn(parseFloat(slider.value));
-    });
+function bindSlider(id, valId) {
+    $(id).addEventListener('input', () => { $(valId).textContent = $(id).value; });
+}
+bindSlider('gravity',         'gravityVal');
+bindSlider('repulsion',       'repulsionVal');
+bindSlider('edgeLength',      'edgeLengthVal');
+bindSlider('edgeElasticity',  'edgeElasticityVal');
+
+$('relayout-btn').addEventListener('click', () => {
+    if (cy) cy.layout(getLayoutOptions()).run();
+});
+
+function getLayoutOptions() {
+    return {
+        name:              'fcose',
+        animate:           true,
+        animationDuration: 600,
+        randomize:         false,
+        gravity:           parseFloat($('gravity').value),
+        repulsionStrength: parseFloat($('repulsion').value),
+        idealEdgeLength:   parseFloat($('edgeLength').value),
+        edgeElasticity:    parseFloat($('edgeElasticity').value),
+        nodeSeparation:    75,
+        fit:               true,
+        padding:           40,
+    };
 }
 
-bindSlider('centerForce',   'centerForceVal',   v => {
-    if (simulation) {
-        simulation.force('x', d3.forceX(window.innerWidth  / 2).strength(v));
-        simulation.force('y', d3.forceY(window.innerHeight / 2).strength(v));
-        simulation.alpha(0.3).restart();
-    }
-});
-bindSlider('repelForce',    'repelForceVal',    v => {
-    if (simulation) simulation.force('charge', d3.forceManyBody().strength(v)).alpha(0.3).restart();
-});
-bindSlider('linkForce',     'linkForceVal',     v => {
-    if (simulation) { simulation.force('link').strength(v); simulation.alpha(0.3).restart(); }
-});
-bindSlider('linkDistance',  'linkDistanceVal',  v => {
-    if (simulation) { simulation.force('link').distance(v); simulation.alpha(0.3).restart(); }
-});
+// ── Graph loading ─────────────────────────────────────────────────────────────
 
 function loadGraph(data) {
     const { nodes, edges } = data;
 
-    container.selectAll('*').remove();
-    if (simulation) simulation.stop();
+    if (cy) cy.destroy();
 
-    const w = window.innerWidth;
-    const h = window.innerHeight;
+    const elements = [
+        ...nodes.map(n => ({
+            group: 'nodes',
+            data: {
+                id:        n.id,
+                label:     n.label,
+                type:      n.type,
+                category:  n.category  || null,
+                tags:      n.tags      || [],
+                has_pdf:   n.has_pdf   || false,
+                published: n.published || null,
+            },
+        })),
+        ...edges.map(e => ({
+            group: 'edges',
+            data: { source: e.source, target: e.target },
+        })),
+    ];
 
-    const centerStrength = parseFloat($('centerForce').value);
+    cy = cytoscape({
+        container: document.getElementById('cy'),
+        elements,
+        style: cytoscapeStyle(),
+        layout: getLayoutOptions(),
+        userZoomingEnabled: true,
+        userPanningEnabled: true,
+        minZoom: 0.05,
+        maxZoom: 10,
+    });
 
-    simulation = d3.forceSimulation(nodes)
-        .force('link',      d3.forceLink(edges).id(d => d.id).distance(70))
-        .force('charge',    d3.forceManyBody().strength(-180))
-        .force('x',         d3.forceX(w / 2).strength(centerStrength))
-        .force('y',         d3.forceY(h / 2).strength(centerStrength))
-        .force('collision', d3.forceCollide(d => d.type === 'paper' ? 14 : 10));
-
-    const link = container.append('g')
-        .attr('class', 'links')
-        .selectAll('line')
-        .data(edges)
-        .join('line');
-
-    // Paper nodes — circles
-    const paperNodes = container.append('g')
-        .attr('class', 'nodes papers')
-        .selectAll('circle')
-        .data(nodes.filter(d => d.type === 'paper'))
-        .join('circle')
-        .attr('r', 10)
-        .attr('fill', PAPER_COLOR)
-        .call(dragBehavior(simulation));
-
-    paperNodes.append('title').text(d => d.label);
-
-    // Author nodes — diamonds (rotated rect via path)
-    const authorNodes = container.append('g')
-        .attr('class', 'nodes authors')
-        .selectAll('path')
-        .data(nodes.filter(d => d.type === 'author'))
-        .join('path')
-        .attr('d', d3.symbol().type(d3.symbolDiamond).size(120))
-        .attr('fill', AUTHOR_COLOR)
-        .call(dragBehavior(simulation));
-
-    authorNodes.append('title').text(d => d.label);
-
-    const label = container.append('g')
-        .attr('class', 'labels')
-        .selectAll('text')
-        .data(nodes)
-        .join('text')
-        .text(d => d.label.length > 35 ? d.label.slice(0, 35) + '…' : d.label)
-        .attr('font-size', d => d.type === 'paper' ? '11px' : '10px')
-        .attr('fill', d => d.type === 'paper' ? '#aaaacc' : '#c8a060');
-
-    simulation.on('tick', () => {
-        link
-            .attr('x1', d => d.source.x)
-            .attr('y1', d => d.source.y)
-            .attr('x2', d => d.target.x)
-            .attr('y2', d => d.target.y);
-
-        paperNodes
-            .attr('cx', d => d.x)
-            .attr('cy', d => d.y);
-
-        authorNodes
-            .attr('transform', d => `translate(${d.x},${d.y})`);
-
-        label
-            .attr('x', d => d.x + 12)
-            .attr('y', d => d.y + 4);
+    // Re-apply last filter after layout settles
+    cy.on('layoutstop', () => {
+        if (_lastOpts) filterGraph(_lastOpts);
     });
 }
 
-function dragBehavior(sim) {
-    return d3.drag()
-        .on('start', (event, d) => {
-            if (!event.active) sim.alphaTarget(0.3).restart();
-            d.fx = d.x;
-            d.fy = d.y;
-        })
-        .on('drag', (event, d) => {
-            d.fx = event.x;
-            d.fy = event.y;
-        })
-        .on('end', (event, d) => {
-            if (!event.active) sim.alphaTarget(0);
-            d.fx = null;
-            d.fy = null;
-        });
+function cytoscapeStyle() {
+    return [
+        {
+            selector: 'node[type = "paper"]',
+            style: {
+                'shape':           'ellipse',
+                'width':           20,
+                'height':          20,
+                'background-color': PAPER_COLOR,
+                'label':           'data(label)',
+                'font-size':       '11px',
+                'color':           '#aaaacc',
+                'font-family':     'Segoe UI, sans-serif',
+                'text-valign':     'center',
+                'text-halign':     'right',
+                'text-margin-x':   8,
+                'text-max-width':  '180px',
+                'text-wrap':       'ellipsis',
+                'border-width':    1.5,
+                'border-color':    '#0f0f1a',
+                'cursor':          'pointer',
+            },
+        },
+        {
+            selector: 'node[type = "author"]',
+            style: {
+                'shape':           'diamond',
+                'width':           14,
+                'height':          14,
+                'background-color': AUTHOR_COLOR,
+                'label':           'data(label)',
+                'font-size':       '10px',
+                'color':           '#c8a060',
+                'font-family':     'Segoe UI, sans-serif',
+                'text-valign':     'center',
+                'text-halign':     'right',
+                'text-margin-x':   7,
+                'text-max-width':  '140px',
+                'text-wrap':       'ellipsis',
+                'cursor':          'pointer',
+            },
+        },
+        {
+            selector: 'edge',
+            style: {
+                'width':       1.5,
+                'line-color':  '#2a2a4a',
+                'curve-style': 'haystack',
+            },
+        },
+        {
+            selector: 'node:selected',
+            style: {
+                'border-color': '#ffffff',
+                'border-width': 2.5,
+            },
+        },
+    ];
 }
 
-window.addEventListener('resize', () => {
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    svg.attr('width', w).attr('height', h);
-    if (simulation) {
-        simulation.force('x', d3.forceX(w / 2).strength(parseFloat($('centerForce').value)));
-        simulation.force('y', d3.forceY(h / 2).strength(parseFloat($('centerForce').value)));
-        simulation.restart();
+// ── Filter ────────────────────────────────────────────────────────────────────
+
+/**
+ * filterGraph(opts)
+ *
+ * opts: {
+ *   showAuthors:  bool,
+ *   showPapers:   bool,
+ *   category:     str|null,   // substring match on node category
+ *   tag:          str|null,   // substring match on any tag
+ *   hasPdf:       bool,
+ *   highlight:    str|null,   // substring match on label
+ *   authorFilter: str|null,   // substring match on connected author labels
+ *   dateFrom:     str|null,   // ISO date lower bound (inclusive)
+ *   dateTo:       str|null,   // ISO date upper bound (inclusive)
+ *   isolate:      bool,       // true → hidden nodes are opacity 0, not dimmed
+ * }
+ */
+function filterGraph(opts) {
+    if (!cy) return;
+    _lastOpts = opts;
+
+    const {
+        showAuthors  = true,
+        showPapers   = true,
+        category     = null,
+        tag          = null,
+        hasPdf       = false,
+        highlight    = null,
+        authorFilter = null,
+        dateFrom     = null,
+        dateTo       = null,
+        isolate      = false,
+    } = opts;
+
+    const hlLower   = highlight    ? highlight.toLowerCase()    : null;
+    const authLower = authorFilter ? authorFilter.toLowerCase() : null;
+    const hiddenOp  = isolate ? 0 : DIM_OPACITY;
+
+    // ── Visible paper IDs ──
+    const visiblePaperIds = new Set();
+    cy.nodes('[type = "paper"]').forEach(n => {
+        if (!showPapers) return;
+        const d = n.data();
+
+        if (category && !d.category?.toLowerCase().includes(category.toLowerCase())) return;
+        if (tag && !(Array.isArray(d.tags) && d.tags.some(t => t.toLowerCase().includes(tag.toLowerCase())))) return;
+        if (hasPdf && !d.has_pdf) return;
+        if (hlLower && !d.label.toLowerCase().includes(hlLower)) return;
+        if (dateFrom && d.published && d.published < dateFrom) return;
+        if (dateTo   && d.published && d.published > dateTo)   return;
+
+        if (authLower) {
+            const authorLabels = [];
+            n.connectedEdges().forEach(e => {
+                const other = e.source().id() === n.id() ? e.target() : e.source();
+                if (other.data('type') === 'author') {
+                    authorLabels.push(other.data('label').toLowerCase());
+                }
+            });
+            if (!authorLabels.some(a => a.includes(authLower))) return;
+        }
+
+        visiblePaperIds.add(n.id());
+    });
+
+    // ── Visible author IDs (connected to a visible paper) ──
+    const visibleAuthorIds = new Set();
+    if (showAuthors) {
+        cy.nodes('[type = "author"]').forEach(a => {
+            a.connectedEdges().forEach(e => {
+                const other = e.source().id() === a.id() ? e.target() : e.source();
+                if (visiblePaperIds.has(other.id())) visibleAuthorIds.add(a.id());
+            });
+        });
     }
-});
+
+    // ── Apply opacity ──
+    cy.nodes('[type = "paper"]').forEach(n => {
+        n.style({
+            'opacity':           visiblePaperIds.has(n.id()) ? FULL_OPACITY : hiddenOp,
+            'background-color':  PAPER_COLOR,
+        });
+    });
+    cy.nodes('[type = "author"]').forEach(n => {
+        n.style({ 'opacity': visibleAuthorIds.has(n.id()) ? FULL_OPACITY : hiddenOp });
+    });
+    cy.edges().forEach(e => {
+        const srcVis = visiblePaperIds.has(e.source().id()) || visibleAuthorIds.has(e.source().id());
+        const tgtVis = visiblePaperIds.has(e.target().id()) || visibleAuthorIds.has(e.target().id());
+        e.style({ 'opacity': (srcVis && tgtVis) ? FULL_OPACITY : hiddenOp });
+    });
+}
+
+// ── Highlight single node ─────────────────────────────────────────────────────
+
+/**
+ * highlightNode(nodeId) — spotlight one paper, dim everything else.
+ * Pass null to reset.
+ */
+function highlightNode(nodeId) {
+    if (!cy) return;
+
+    // Reset all to full
+    cy.nodes('[type = "paper"]').style({ 'opacity': FULL_OPACITY, 'background-color': PAPER_COLOR });
+    cy.nodes('[type = "author"]').style({ 'opacity': FULL_OPACITY });
+    cy.edges().style({ 'opacity': FULL_OPACITY });
+
+    if (nodeId === null) return;
+
+    const target = cy.getElementById(nodeId);
+    if (target.empty()) return;
+
+    // Collect IDs of directly connected authors
+    const connectedAuthorIds = new Set();
+    target.connectedEdges().forEach(e => {
+        const other = e.source().id() === nodeId ? e.target() : e.source();
+        if (other.data('type') === 'author') connectedAuthorIds.add(other.id());
+    });
+
+    cy.nodes('[type = "paper"]').forEach(n => {
+        n.style({
+            'opacity':          n.id() === nodeId ? FULL_OPACITY : DIM_OPACITY,
+            'background-color': n.id() === nodeId ? HIGHLIGHT_COLOR : PAPER_COLOR,
+        });
+    });
+    cy.nodes('[type = "author"]').forEach(n => {
+        n.style({ 'opacity': connectedAuthorIds.has(n.id()) ? FULL_OPACITY : DIM_OPACITY });
+    });
+    cy.edges().forEach(e => {
+        const connected = e.source().id() === nodeId || e.target().id() === nodeId;
+        e.style({ 'opacity': connected ? FULL_OPACITY : DIM_OPACITY });
+    });
+}
+
+window.addEventListener('resize', () => { if (cy) cy.resize(); });

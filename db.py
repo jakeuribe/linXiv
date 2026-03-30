@@ -210,8 +210,18 @@ def get_graph_data() -> tuple[list[dict], list[dict]]:
     """Returns (nodes, edges) ready to pass to the graph view."""
     with _connect() as conn:
         paper_nodes = [
-            {"id": row["paper_id"], "label": row["title"], "type": "paper"}
-            for row in conn.execute("SELECT paper_id, title FROM latest_papers")
+            {
+                "id":        row["paper_id"],
+                "label":     row["title"],
+                "type":      "paper",
+                "category":  row["category"],
+                "tags":      row["tags"] if row["tags"] is not None else [],
+                "has_pdf":   bool(row["has_pdf"]),
+                "published": row["published"].isoformat() if row["published"] else None,
+            }
+            for row in conn.execute(
+                "SELECT paper_id, title, category, tags, has_pdf, published FROM latest_papers"
+            )
         ]
         author_rows = conn.execute("""
             SELECT p.paper_id, je.value AS author_name
@@ -237,3 +247,24 @@ def list_papers(latest_only: bool = True) -> list[sqlite3.Row]:
     with _connect() as conn:
         table = "latest_papers" if latest_only else "papers"
         return conn.execute(f"SELECT * FROM {table} ORDER BY published DESC").fetchall()
+
+
+def get_categories() -> list[str]:
+    """Return a sorted list of all distinct primary categories in the DB."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT category FROM latest_papers WHERE category IS NOT NULL ORDER BY category"
+        ).fetchall()
+    return [row["category"] for row in rows]
+
+
+def get_tags() -> list[str]:
+    """Return a sorted list of all distinct tags across all papers."""
+    with _connect() as conn:
+        rows = conn.execute("""
+            SELECT DISTINCT je.value AS tag
+            FROM latest_papers p, json_each(p.tags) je
+            WHERE p.tags IS NOT NULL
+            ORDER BY je.value
+        """).fetchall()
+    return [row["tag"] for row in rows]

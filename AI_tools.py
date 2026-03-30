@@ -6,9 +6,9 @@ from google.genai import types
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-load_dotenv()
+_ = load_dotenv()
 
-_client: genai.Client = None
+_client: genai.Client
 
 
 def _get_client() -> genai.Client:
@@ -35,15 +35,15 @@ class PaperContent:
         if self.pdf is not None:
             return [types.Part.from_bytes(data=self.pdf, mime_type="application/pdf")]
         if self.full_text is not None:
-            return [types.Part.from_text(self.full_text)]
-        return [types.Part.from_text(self.abstract)]
+            return [types.Part.from_text(text = self.full_text)]
+        return [types.Part.from_text(text = self.abstract)]
 
 
 def _generate(prompt: str, content: PaperContent, schema: type[BaseModel]) -> BaseModel:
-    parts = [types.Part.from_text(prompt)] + content.to_parts()
+    parts = [types.Part.from_text(text = prompt)] + content.to_parts()
     response = _get_client().models.generate_content(
         model="gemini-2.0-flash",
-        contents=parts,
+        contents=parts, 
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
             response_schema=schema,
