@@ -65,6 +65,8 @@ class ProjectsPage(QWidget):
         outer.addStretch()
 
     def _on_add(self) -> None:
+        from projects import ensure_projects_db
+        ensure_projects_db()
         msg = QMessageBox(self)
         msg.setWindowTitle("Coming soon")
         msg.setText("Projects are not yet implemented.")
