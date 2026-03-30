@@ -1,8 +1,4 @@
-* {
-    margin: 0;
-    padding: 0;
-    box-sizing: border-box;
-}
+* { margin: 0; padding: 0; box-sizing: border-box; }
 
 body {
     background: #0f0f1a;
@@ -15,37 +11,42 @@ body {
     display: block;
     cursor: grab;
 }
+#cy canvas { cursor: grab; }
 
-#cy canvas {
-    cursor: grab;
-}
-
-/* ── Controls panel ── */
-#controls {
+/* ── Shared right-side column ── */
+#right-panels {
     position: fixed;
     top: 16px;
     right: 16px;
     width: 240px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    z-index: 10;
+}
+
+/* ── Individual panel ── */
+.panel {
     background: #1a1a2e;
     border: 1px solid #2e2e50;
     border-radius: 8px;
     font-family: 'Segoe UI', sans-serif;
     font-size: 13px;
     color: #ccccdd;
-    z-index: 10;
 }
 
-#controls-header {
+.panel-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 10px 14px;
+    padding: 9px 14px;
     border-bottom: 1px solid #2e2e50;
     font-weight: 600;
     letter-spacing: 0.02em;
+    cursor: default;
 }
 
-#controls-toggle {
+.panel-toggle {
     background: none;
     border: none;
     color: #aaaacc;
@@ -54,41 +55,81 @@ body {
     padding: 0;
 }
 
-#controls-body {
-    padding: 10px 14px 14px;
+.panel-body {
+    padding: 10px 14px 12px;
 }
 
-.control-section-title {
+/* ── Section title ── */
+.section-title {
     font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: #7777aa;
-    margin-bottom: 10px;
-    margin-top: 4px;
+    margin-top: 8px;
+    margin-bottom: 6px;
 }
+.panel-body > .section-title:first-child { margin-top: 0; }
 
+/* ── Slider rows (layout panel) ── */
 .control-row {
     display: grid;
     grid-template-columns: 1fr auto auto;
     align-items: center;
     gap: 8px;
-    margin-bottom: 10px;
+    margin-bottom: 8px;
+}
+.control-row label { font-size: 12px; color: #aaaacc; }
+.control-row input[type=range] { width: 70px; accent-color: #5b8dee; cursor: pointer; }
+.control-row .val { font-size: 11px; color: #7777aa; width: 36px; text-align: right; }
+
+/* ── Filter rows ── */
+.filter-row {
+    display: grid;
+    grid-template-columns: 52px 1fr;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+}
+.filter-row label { font-size: 12px; color: #aaaacc; }
+.filter-row input[type=text] {
+    background: #0f0f1a;
+    border: 1px solid #2e2e50;
+    border-radius: 4px;
+    color: #ccccdd;
+    font-size: 12px;
+    padding: 3px 6px;
+    width: 100%;
+}
+.filter-row input[type=text]:focus {
+    outline: none;
+    border-color: #5b8dee;
 }
 
-.control-row label {
+/* ── Checkbox rows ── */
+.check-row {
+    display: flex;
+    gap: 14px;
+    margin-bottom: 6px;
     font-size: 12px;
     color: #aaaacc;
 }
+.check-row label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
 
-.control-row input[type=range] {
-    width: 80px;
-    accent-color: #5b8dee;
+/* ── Buttons ── */
+.full-btn {
+    width: 100%;
+    margin-top: 8px;
+    padding: 5px;
+    background: #2a2a4a;
+    border: 1px solid #3e3e70;
+    border-radius: 4px;
+    color: #ccccdd;
+    font-size: 12px;
     cursor: pointer;
 }
-
-.control-row .val {
-    font-size: 11px;
-    color: #7777aa;
-    width: 36px;
-    text-align: right;
+.full-btn:hover { background: #3a3a5a; }
+.toggle-btn.active {
+    background: #5b8dee;
+    border-color: #5b8dee;
+    color: #fff;
 }

@@ -2,26 +2,15 @@ from __future__ import annotations
 
 import datetime
 
-from PyQt6.QtCore import Qt, QTimer, QStringListModel
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
-    QCheckBox,
-    QCompleter,
-    QDockWidget,
-    QGroupBox,
-    QHBoxLayout,
     QHeaderView,
-    QLabel,
-    QLineEdit,
     QMainWindow,
-    QMenu,
-    QPushButton,
-    QSizePolicy,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
     QToolBar,
-    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -48,149 +37,6 @@ def _fmt_tags(val) -> str:
     return str(val)
 
 
-# ── Collapsible section ───────────────────────────────────────────────────────
-
-class _CollapsibleSection(QWidget):
-    """A titled section with a toggle button that shows/hides its body."""
-
-    def __init__(self, title: str, collapsed: bool = False, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self._title = title
-        self._collapsed = collapsed
-
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 2, 0, 2)
-        outer.setSpacing(0)
-
-        self._toggle_btn = QPushButton()
-        self._toggle_btn.setFlat(True)
-        self._toggle_btn.setStyleSheet(
-            "QPushButton { text-align: left; font-weight: bold; padding: 4px 4px; }"
-            "QPushButton:hover { background: rgba(128,128,128,0.15); border-radius: 3px; }"
-        )
-        self._toggle_btn.clicked.connect(self._toggle)
-        outer.addWidget(self._toggle_btn)
-
-        self._body = QWidget()
-        self._body_layout = QVBoxLayout(self._body)
-        self._body_layout.setContentsMargins(10, 2, 0, 6)
-        self._body_layout.setSpacing(4)
-        outer.addWidget(self._body)
-
-        self._apply_state()
-
-    def _apply_state(self) -> None:
-        arrow = "▶" if self._collapsed else "▼"
-        self._toggle_btn.setText(f"{arrow}  {self._title}")
-        self._body.setVisible(not self._collapsed)
-
-    def _toggle(self) -> None:
-        self._collapsed = not self._collapsed
-        self._apply_state()
-
-    def add_widget(self, w: QWidget) -> QWidget:
-        self._body_layout.addWidget(w)
-        return w
-
-    def add_layout(self, layout) -> None:
-        self._body_layout.addLayout(layout)
-
-
-# ── Sidebar (filter controls) ─────────────────────────────────────────────────
-
-class FilterSidebar(QWidget):
-    """Left-hand filter panel.  Callers connect to the public widget attributes."""
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setMinimumWidth(200)
-
-        root = QVBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(4)
-
-        # ── Node visibility ──────────────────────────────────────────────────
-        vis_sec = _CollapsibleSection("Node visibility")
-        self.show_papers = QCheckBox("Show papers")
-        self.show_papers.setChecked(True)
-        self.show_authors = QCheckBox("Show authors")
-        self.show_authors.setChecked(True)
-        vis_sec.add_widget(self.show_papers)
-        vis_sec.add_widget(self.show_authors)
-        root.addWidget(vis_sec)
-
-        # ── Attribute filters ────────────────────────────────────────────────
-        attr_sec = _CollapsibleSection("Attribute filters")
-
-        attr_sec.add_widget(QLabel("Category:"))
-        self.category_edit = QLineEdit()
-        self.category_edit.setPlaceholderText("type to filter…")
-        self._cat_completer = QCompleter([], self)
-        self._cat_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-        self._cat_completer.setFilterMode(Qt.MatchFlag.MatchContains)
-        self.category_edit.setCompleter(self._cat_completer)
-        attr_sec.add_widget(self.category_edit)
-
-        attr_sec.add_widget(QLabel("Tag:"))
-        self.tag_edit = QLineEdit()
-        self.tag_edit.setPlaceholderText("type to filter…")
-        self._tag_completer = QCompleter([], self)
-        self._tag_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
-        self._tag_completer.setFilterMode(Qt.MatchFlag.MatchContains)
-        self.tag_edit.setCompleter(self._tag_completer)
-        attr_sec.add_widget(self.tag_edit)
-
-        self.has_pdf_check = QCheckBox("Has PDF only")
-        attr_sec.add_widget(self.has_pdf_check)
-        root.addWidget(attr_sec)
-
-        # ── Date range ───────────────────────────────────────────────────────
-        date_sec = _CollapsibleSection("Date range", collapsed=True)
-
-        from_row = QHBoxLayout()
-        from_row.addWidget(QLabel("From:"))
-        self.date_from_edit = QLineEdit()
-        self.date_from_edit.setPlaceholderText("YYYY-MM-DD")
-        from_row.addWidget(self.date_from_edit)
-        date_sec.add_layout(from_row)
-
-        to_row = QHBoxLayout()
-        to_row.addWidget(QLabel("To:  "))
-        self.date_to_edit = QLineEdit()
-        self.date_to_edit.setPlaceholderText("YYYY-MM-DD")
-        to_row.addWidget(self.date_to_edit)
-        date_sec.add_layout(to_row)
-        root.addWidget(date_sec)
-
-        # ── Highlight / search ───────────────────────────────────────────────
-        hl_sec = _CollapsibleSection("Highlight / search")
-
-        hl_sec.add_widget(QLabel("Title contains:"))
-        self.highlight_edit = QLineEdit()
-        self.highlight_edit.setPlaceholderText("e.g. transformer")
-        hl_sec.add_widget(self.highlight_edit)
-
-        hl_sec.add_widget(QLabel("Author contains:"))
-        self.author_edit = QLineEdit()
-        self.author_edit.setPlaceholderText("e.g. Hinton")
-        hl_sec.add_widget(self.author_edit)
-
-        self.isolate_btn = QPushButton("Show highlighted only")
-        self.isolate_btn.setCheckable(True)
-        self.isolate_btn.setStyleSheet(
-            "QPushButton { padding: 4px; }"
-            "QPushButton:checked { background-color: #5b8dee; color: white; border-radius: 3px; }"
-        )
-        hl_sec.add_widget(self.isolate_btn)
-        root.addWidget(hl_sec)
-
-        root.addStretch()
-
-    def populate_dropdowns(self, categories: list[str], tags: list[str]) -> None:
-        self._cat_completer.setModel(QStringListModel(categories, self))
-        self._tag_completer.setModel(QStringListModel(tags, self))
-
-
 # ── Paper list panel ──────────────────────────────────────────────────────────
 
 _COLUMNS = ["Title", "Category", "Published", "Tags", "PDF"]
@@ -198,7 +44,7 @@ _COL_WIDTHS = [320, 80, 90, 180, 40]
 
 
 class PaperListPanel(QWidget):
-    """Bottom/right panel showing saved papers as a table."""
+    """Bottom panel showing saved papers as a table."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -261,13 +107,6 @@ class MainWindow(QMainWindow):
 
         self._build_toolbar()
         self._build_central()
-
-        # Debounce timer for text inputs
-        self._filter_timer = QTimer(self)
-        self._filter_timer.setSingleShot(True)
-        self._filter_timer.setInterval(300)
-        self._filter_timer.timeout.connect(self._apply_js_filter)
-
         self._load_all()
 
     # ── Construction ─────────────────────────────────────────────────────────
@@ -282,72 +121,31 @@ class MainWindow(QMainWindow):
         refresh_action.triggered.connect(self.refresh)
         tb.addAction(refresh_action)
 
-        # Filters dropdown button
-        filter_btn = QToolButton()
-        filter_btn.setText("Filters \u25be")
-        filter_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        filter_menu = QMenu(filter_btn)
-
         clear_action = QAction("Clear filters", self)
-        clear_action.triggered.connect(self._clear_highlight)
-        filter_menu.addAction(clear_action)
+        clear_action.setToolTip("Reset all graph filters")
+        clear_action.triggered.connect(self._clear_filters)
+        tb.addAction(clear_action)
 
-        show_action = QAction("Show in sidebar", self)
-        show_action.triggered.connect(self._show_filter_sidebar)
-        filter_menu.addAction(show_action)
-
-        pop_action = QAction("Pop to graph", self)
-        pop_action.triggered.connect(self._pop_filter_to_graph)
-        filter_menu.addAction(pop_action)
-
-        filter_btn.setMenu(filter_menu)
-        tb.addWidget(filter_btn)
-
-        # Paper list toggle
         toggle_list_action = QAction("Toggle list", self)
         toggle_list_action.setToolTip("Show / hide the paper list panel")
         toggle_list_action.triggered.connect(self._toggle_paper_list)
         tb.addAction(toggle_list_action)
 
     def _build_central(self) -> None:
-        # Central widget: graph (top) + paper list (bottom)
-        right_split = QSplitter(Qt.Orientation.Vertical)
-        self._right_split = right_split
-        right_split.setChildrenCollapsible(False)
+        split = QSplitter(Qt.Orientation.Vertical)
+        self._split = split
+        split.setChildrenCollapsible(False)
 
         self._graph_view = GraphView()
-        right_split.addWidget(self._graph_view)
+        split.addWidget(self._graph_view)
 
         self._paper_list = PaperListPanel()
-        right_split.addWidget(self._paper_list)
+        split.addWidget(self._paper_list)
 
-        right_split.setStretchFactor(0, 3)
-        right_split.setStretchFactor(1, 1)
+        split.setStretchFactor(0, 3)
+        split.setStretchFactor(1, 1)
 
-        self.setCentralWidget(right_split)
-
-        # Filter sidebar as a dock widget (movable / floatable)
-        self._sidebar = FilterSidebar()
-        self._dock = QDockWidget("Filters", self)
-        self._dock.setWidget(self._sidebar)
-        self._dock.setFeatures(
-            QDockWidget.DockWidgetFeature.DockWidgetMovable
-            | QDockWidget.DockWidgetFeature.DockWidgetFloatable
-            | QDockWidget.DockWidgetFeature.DockWidgetClosable
-        )
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._dock)
-
-        # ── Wire signals ──────────────────────────────────────────────────
-        self._sidebar.show_papers.stateChanged.connect(self._on_structural_change)
-        self._sidebar.show_authors.stateChanged.connect(self._on_structural_change)
-        self._sidebar.category_edit.textChanged.connect(self._schedule_filter)
-        self._sidebar.tag_edit.textChanged.connect(self._schedule_filter)
-        self._sidebar.has_pdf_check.stateChanged.connect(self._apply_js_filter)
-        self._sidebar.highlight_edit.textChanged.connect(self._schedule_filter)
-        self._sidebar.author_edit.textChanged.connect(self._schedule_filter)
-        self._sidebar.date_from_edit.textChanged.connect(self._schedule_filter)
-        self._sidebar.date_to_edit.textChanged.connect(self._schedule_filter)
-        self._sidebar.isolate_btn.toggled.connect(self._apply_js_filter)
+        self.setCentralWidget(split)
 
         self._paper_list.table.currentCellChanged.connect(self._on_paper_selected)
 
@@ -369,105 +167,25 @@ class MainWindow(QMainWindow):
     def _load_dropdowns(self) -> None:
         categories = get_categories()
         tags = get_tags()
-        self._sidebar.populate_dropdowns(categories, tags)
+        self._graph_view.set_filter_options(categories, tags)
 
-    # ── Refresh ───────────────────────────────────────────────────────────────
+    # ── Toolbar actions ───────────────────────────────────────────────────────
 
     def refresh(self) -> None:
         self._load_all()
 
-    # ── Filter panel placement ────────────────────────────────────────────────
-
-    def _show_filter_sidebar(self) -> None:
-        """Dock the filter panel to the left sidebar."""
-        self._dock.setFloating(False)
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._dock)
-        self._dock.show()
-
-    def _pop_filter_to_graph(self) -> None:
-        """Float the filter panel as a window over the graph."""
-        self._dock.setFloating(True)
-        self._dock.show()
-
-    # ── Paper list toggle ─────────────────────────────────────────────────────
+    def _clear_filters(self) -> None:
+        self._graph_view.clear_filters()
+        self._graph_view.highlight_node(None)
 
     def _toggle_paper_list(self) -> None:
         if self._paper_list.isVisible():
-            self._list_sizes = self._right_split.sizes()
+            self._list_sizes = self._split.sizes()
             self._paper_list.hide()
         else:
             self._paper_list.show()
             if hasattr(self, '_list_sizes'):
-                self._right_split.setSizes(self._list_sizes)
-
-    # ── Filter logic ──────────────────────────────────────────────────────────
-
-    def _schedule_filter(self) -> None:
-        self._filter_timer.start()
-
-    def _on_structural_change(self) -> None:
-        """Show/hide authors/papers is structural — reload graph data filtered."""
-        show_authors = self._sidebar.show_authors.isChecked()
-        show_papers  = self._sidebar.show_papers.isChecked()
-
-        if not show_authors or not show_papers:
-            nodes, edges = get_graph_data()
-            if not show_authors:
-                author_ids = {n["id"] for n in nodes if n["type"] == "author"}
-                nodes = [n for n in nodes if n["type"] != "author"]
-                edges = [e for e in edges
-                         if e["source"] not in author_ids and e["target"] not in author_ids]
-            if not show_papers:
-                paper_ids = {n["id"] for n in nodes if n["type"] == "paper"}
-                nodes = [n for n in nodes if n["type"] != "paper"]
-                edges = [e for e in edges
-                         if e["source"] not in paper_ids and e["target"] not in paper_ids]
-            self._graph_view.set_graph_data(nodes, edges)
-        else:
-            self._load_graph()
-
-        QTimer.singleShot(200, self._apply_js_filter)
-
-    def _apply_js_filter(self) -> None:
-        """Push current filter state to JS filterGraph()."""
-        cat_text  = self._sidebar.category_edit.text().strip()
-        tag_text  = self._sidebar.tag_edit.text().strip()
-        hl_text   = self._sidebar.highlight_edit.text().strip()
-        auth_text = self._sidebar.author_edit.text().strip()
-        date_from = self._sidebar.date_from_edit.text().strip()
-        date_to   = self._sidebar.date_to_edit.text().strip()
-        isolate   = self._sidebar.isolate_btn.isChecked()
-
-        opts = {
-            "showAuthors":  self._sidebar.show_authors.isChecked(),
-            "showPapers":   self._sidebar.show_papers.isChecked(),
-            "category":     cat_text if cat_text else None,
-            "tag":          tag_text if tag_text else None,
-            "hasPdf":       self._sidebar.has_pdf_check.isChecked(),
-            "highlight":    hl_text if hl_text else None,
-            "authorFilter": auth_text if auth_text else None,
-            "dateFrom":     date_from if date_from else None,
-            "dateTo":       date_to if date_to else None,
-            "isolate":      isolate,
-        }
-        self._graph_view.filter_graph(opts)
-
-    def _clear_highlight(self) -> None:
-        """Clear all filters and reset node opacities."""
-        for w in (
-            self._sidebar.highlight_edit,
-            self._sidebar.author_edit,
-            self._sidebar.date_from_edit,
-            self._sidebar.date_to_edit,
-            self._sidebar.category_edit,
-            self._sidebar.tag_edit,
-        ):
-            w.clear()
-        self._sidebar.has_pdf_check.setChecked(False)
-        self._sidebar.show_papers.setChecked(True)
-        self._sidebar.show_authors.setChecked(True)
-        self._sidebar.isolate_btn.setChecked(False)
-        self._graph_view.highlight_node(None)
+                self._split.setSizes(self._list_sizes)
 
     # ── Paper list → graph interaction ────────────────────────────────────────
 

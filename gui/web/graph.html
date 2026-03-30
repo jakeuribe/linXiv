@@ -9,38 +9,97 @@
 <body>
     <div id="cy"></div>
 
-    <div id="controls">
-        <div id="controls-header">
-            <span>Layout</span>
-            <button id="controls-toggle">▼</button>
+    <!-- Both panels share the right-side column -->
+    <div id="right-panels">
+
+        <!-- Layout panel -->
+        <div class="panel" id="controls">
+            <div class="panel-header">
+                <span>Layout</span>
+                <button class="panel-toggle" data-target="controls-body">▼</button>
+            </div>
+            <div class="panel-body" id="controls-body">
+                <div class="section-title">Forces</div>
+                <div class="control-row">
+                    <label>Center force</label>
+                    <input type="range" id="centerForce" min="0" max="1" step="0.01" value="0.05" />
+                    <span class="val" id="centerForceVal">0.05</span>
+                </div>
+                <div class="control-row">
+                    <label>Repel force</label>
+                    <input type="range" id="repelForce" min="0" max="1000" step="10" value="180" />
+                    <span class="val" id="repelForceVal">180</span>
+                </div>
+                <div class="control-row">
+                    <label>Link distance</label>
+                    <input type="range" id="linkDistance" min="10" max="300" step="5" value="70" />
+                    <span class="val" id="linkDistanceVal">70</span>
+                </div>
+                <div class="control-row">
+                    <label>Link strength</label>
+                    <input type="range" id="linkStrength" min="0" max="1" step="0.01" value="0.3" />
+                    <span class="val" id="linkStrengthVal">0.3</span>
+                </div>
+                <div class="control-row">
+                    <button id="relayout-btn" class="full-btn">Randomize &amp; restart</button>
+                </div>
+            </div>
         </div>
-        <div id="controls-body">
-            <div class="control-section-title">Forces</div>
-            <div class="control-row">
-                <label>Center force</label>
-                <input type="range" id="centerForce" min="0" max="1" step="0.01" value="0.05" />
-                <span class="val" id="centerForceVal">0.05</span>
+
+        <!-- Filters panel -->
+        <div class="panel" id="filters">
+            <div class="panel-header">
+                <span>Filters</span>
+                <button class="panel-toggle" data-target="filters-body">▼</button>
             </div>
-            <div class="control-row">
-                <label>Repel force</label>
-                <input type="range" id="repelForce" min="0" max="1000" step="10" value="180" />
-                <span class="val" id="repelForceVal">180</span>
-            </div>
-            <div class="control-row">
-                <label>Link distance</label>
-                <input type="range" id="linkDistance" min="10" max="300" step="5" value="70" />
-                <span class="val" id="linkDistanceVal">70</span>
-            </div>
-            <div class="control-row">
-                <label>Link strength</label>
-                <input type="range" id="linkStrength" min="0" max="1" step="0.01" value="0.3" />
-                <span class="val" id="linkStrengthVal">0.3</span>
-            </div>
-            <div class="control-row">
-                <button id="relayout-btn" style="width:100%;padding:4px;">Randomize &amp; restart</button>
+            <div class="panel-body" id="filters-body">
+
+                <div class="section-title">Visibility</div>
+                <div class="check-row">
+                    <label><input type="checkbox" id="showPapers" checked> Papers</label>
+                    <label><input type="checkbox" id="showAuthors" checked> Authors</label>
+                </div>
+
+                <div class="section-title">Attributes</div>
+                <div class="filter-row">
+                    <label>Category</label>
+                    <input type="text" id="filterCategory" list="categoryList" placeholder="type to filter…">
+                    <datalist id="categoryList"></datalist>
+                </div>
+                <div class="filter-row">
+                    <label>Tag</label>
+                    <input type="text" id="filterTag" list="tagList" placeholder="type to filter…">
+                    <datalist id="tagList"></datalist>
+                </div>
+                <div class="check-row">
+                    <label><input type="checkbox" id="filterHasPdf"> Has PDF only</label>
+                </div>
+
+                <div class="section-title">Date range</div>
+                <div class="filter-row">
+                    <label>From</label>
+                    <input type="text" id="filterDateFrom" placeholder="YYYY-MM-DD">
+                </div>
+                <div class="filter-row">
+                    <label>To</label>
+                    <input type="text" id="filterDateTo" placeholder="YYYY-MM-DD">
+                </div>
+
+                <div class="section-title">Highlight</div>
+                <div class="filter-row">
+                    <label>Title</label>
+                    <input type="text" id="filterTitle" placeholder="e.g. transformer">
+                </div>
+                <div class="filter-row">
+                    <label>Author</label>
+                    <input type="text" id="filterAuthor" placeholder="e.g. Hinton">
+                </div>
+
+                <button id="isolate-btn" class="full-btn toggle-btn">Show highlighted only</button>
             </div>
         </div>
-    </div>
+
+    </div><!-- end #right-panels -->
 
     <script src="graph.js"></script>
 </body>

@@ -41,3 +41,11 @@ class GraphView(QWebEngineView):
     def highlight_node(self, node_id: str) -> None:
         """Highlight a single node by id, dimming all others."""
         self.run_js(f"highlightNode({json.dumps(node_id)})")
+
+    def set_filter_options(self, categories: list[str], tags: list[str]) -> None:
+        """Populate the in-graph filter datalists with available categories and tags."""
+        self.run_js(f"setFilterOptions({json.dumps(categories)}, {json.dumps(tags)})")
+
+    def clear_filters(self) -> None:
+        """Reset all in-graph filters to their default state."""
+        self.run_js("clearFilters()")

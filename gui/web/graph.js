@@ -4,20 +4,25 @@ const HIGHLIGHT_COLOR = '#ff6b6b';
 const DIM_OPACITY     = 0.08;
 const FULL_OPACITY    = 1.0;
 
-let cy         = null;
-let simulation = null;
-let _simNodeById = new Map();  // id → D3 sim node (for O(1) drag lookups)
-let _lastOpts  = null;         // re-apply filter after loadGraph
+let cy          = null;
+let simulation  = null;
+let _simNodeById = new Map();
+let _debounce   = null;
 
-// ── Controls wiring ──────────────────────────────────────────────────────────
-const $ = id => document.getElementById(id);
+// ── Panel collapse wiring ────────────────────────────────────────────────────
 
-$('controls-toggle').addEventListener('click', () => {
-    const body = $('controls-body');
-    const collapsed = body.style.display === 'none';
-    body.style.display = collapsed ? '' : 'none';
-    $('controls-toggle').textContent = collapsed ? '▼' : '▶';
+document.querySelectorAll('.panel-toggle').forEach(btn => {
+    btn.addEventListener('click', () => {
+        const body = document.getElementById(btn.dataset.target);
+        const collapsed = body.style.display === 'none';
+        body.style.display = collapsed ? '' : 'none';
+        btn.textContent = collapsed ? '▼' : '▶';
+    });
 });
+
+// ── Layout sliders ───────────────────────────────────────────────────────────
+
+const $ = id => document.getElementById(id);
 
 function bindSlider(id, valId, onInput) {
     $(id).addEventListener('input', () => {
@@ -49,11 +54,66 @@ $('relayout-btn').addEventListener('click', () => {
     _simNodeById.forEach(n => {
         n.x = (Math.random() - 0.5) * 800;
         n.y = (Math.random() - 0.5) * 800;
-        n.vx = 0; n.vy = 0;
-        n.fx = null; n.fy = null;
+        n.vx = 0; n.vy = 0; n.fx = null; n.fy = null;
     });
     simulation.alpha(1).restart();
 });
+
+// ── Filter wiring ────────────────────────────────────────────────────────────
+
+const _textFilterIds = ['filterCategory', 'filterTag', 'filterDateFrom', 'filterDateTo',
+                        'filterTitle', 'filterAuthor'];
+const _checkFilterIds = ['showPapers', 'showAuthors', 'filterHasPdf'];
+
+_textFilterIds.forEach(id => {
+    $(id).addEventListener('input', _scheduleFilter);
+});
+_checkFilterIds.forEach(id => {
+    $(id).addEventListener('change', _applyFilter);
+});
+
+$('isolate-btn').addEventListener('click', () => {
+    $('isolate-btn').classList.toggle('active');
+    _applyFilter();
+});
+
+function _scheduleFilter() {
+    clearTimeout(_debounce);
+    _debounce = setTimeout(_applyFilter, 280);
+}
+
+function _applyFilter() {
+    filterGraph({
+        showPapers:   $('showPapers').checked,
+        showAuthors:  $('showAuthors').checked,
+        category:     $('filterCategory').value.trim() || null,
+        tag:          $('filterTag').value.trim()      || null,
+        hasPdf:       $('filterHasPdf').checked,
+        dateFrom:     $('filterDateFrom').value.trim() || null,
+        dateTo:       $('filterDateTo').value.trim()   || null,
+        highlight:    $('filterTitle').value.trim()    || null,
+        authorFilter: $('filterAuthor').value.trim()   || null,
+        isolate:      $('isolate-btn').classList.contains('active'),
+    });
+}
+
+// ── Called from Python to populate datalists ─────────────────────────────────
+
+function setFilterOptions(categories, tags) {
+    const catList = $('categoryList');
+    const tagList = $('tagList');
+    catList.innerHTML = categories.map(c => `<option value="${c}">`).join('');
+    tagList.innerHTML = tags.map(t => `<option value="${t}">`).join('');
+}
+
+// ── Called from Python toolbar "Clear filters" ───────────────────────────────
+
+function clearFilters() {
+    _textFilterIds.forEach(id => { $(id).value = ''; });
+    _checkFilterIds.forEach(id => { $(id).checked = id !== 'filterHasPdf'; }); // papers+authors default on
+    $('isolate-btn').classList.remove('active');
+    _applyFilter();
+}
 
 // ── Graph loading ─────────────────────────────────────────────────────────────
 
@@ -63,18 +123,15 @@ function loadGraph(data) {
     if (simulation) { simulation.stop(); simulation = null; }
     if (cy) { cy.destroy(); cy = null; }
     _simNodeById = new Map();
-    _lastOpts = null;
 
-    // D3 sim nodes/links — random initial scatter
     const simNodes = nodes.map(n => ({
         id: n.id,
-        x: (Math.random() - 0.5) * 800,
-        y: (Math.random() - 0.5) * 800,
+        x:  (Math.random() - 0.5) * 800,
+        y:  (Math.random() - 0.5) * 800,
     }));
     const simLinks = edges.map(e => ({ source: e.source, target: e.target }));
     simNodes.forEach(n => _simNodeById.set(n.id, n));
 
-    // Cytoscape elements — positions set from simNodes, no layout engine
     const cyElements = [
         ...nodes.map(n => {
             const sn = _simNodeById.get(n.id);
@@ -102,7 +159,7 @@ function loadGraph(data) {
         container: document.getElementById('cy'),
         elements:  cyElements,
         style:     cytoscapeStyle(),
-        layout:    { name: 'preset' },  // D3 drives positions
+        layout:    { name: 'preset' },
         userZoomingEnabled: true,
         userPanningEnabled: true,
         minZoom: 0.05,
@@ -111,7 +168,6 @@ function loadGraph(data) {
 
     cy.fit(undefined, 40);
 
-    // ── Drag: keep D3 and Cytoscape in sync ───────────────────────────────
     cy.on('grab', 'node', e => {
         const sn = _simNodeById.get(e.target.id());
         if (sn) { sn.fx = sn.x; sn.fy = sn.y; }
@@ -128,16 +184,15 @@ function loadGraph(data) {
         if (simulation) simulation.alphaTarget(0);
     });
 
-    // ── D3 force simulation ───────────────────────────────────────────────
-    const centerStr = parseFloat($('centerForce').value);
+    const cs = parseFloat($('centerForce').value);
     simulation = d3.forceSimulation(simNodes)
         .force('link',      d3.forceLink(simLinks).id(d => d.id)
                               .distance(parseFloat($('linkDistance').value))
                               .strength(parseFloat($('linkStrength').value)))
         .force('charge',    d3.forceManyBody().strength(-parseFloat($('repelForce').value)))
-        .force('x',         d3.forceX(0).strength(centerStr))
-        .force('y',         d3.forceY(0).strength(centerStr))
-        .force('collision', d3.forceCollide(d => 14));
+        .force('x',         d3.forceX(0).strength(cs))
+        .force('y',         d3.forceY(0).strength(cs))
+        .force('collision', d3.forceCollide(14));
 
     simulation.on('tick', () => {
         cy.batch(() => {
@@ -147,8 +202,8 @@ function loadGraph(data) {
         });
     });
 
-    // Re-apply last filter if one was active
-    if (_lastOpts) filterGraph(_lastOpts);
+    // Re-apply current filter state after load
+    _applyFilter();
 }
 
 function cytoscapeStyle() {
@@ -201,10 +256,7 @@ function cytoscapeStyle() {
         },
         {
             selector: 'node:selected',
-            style: {
-                'border-color': '#ffffff',
-                'border-width': 2.5,
-            },
+            style: { 'border-color': '#ffffff', 'border-width': 2.5 },
         },
     ];
 }
@@ -213,7 +265,6 @@ function cytoscapeStyle() {
 
 function filterGraph(opts) {
     if (!cy) return;
-    _lastOpts = opts;
 
     const {
         showAuthors  = true,
@@ -265,11 +316,13 @@ function filterGraph(opts) {
 
     cy.batch(() => {
         cy.nodes('[type = "paper"]').forEach(n => {
-            n.style({ 'opacity': visiblePaperIds.has(n.id()) ? FULL_OPACITY : hiddenOp,
-                      'background-color': PAPER_COLOR });
+            n.style({
+                'opacity':          showPapers && visiblePaperIds.has(n.id()) ? FULL_OPACITY : (showPapers ? hiddenOp : 0),
+                'background-color': PAPER_COLOR,
+            });
         });
         cy.nodes('[type = "author"]').forEach(n => {
-            n.style({ 'opacity': visibleAuthorIds.has(n.id()) ? FULL_OPACITY : hiddenOp });
+            n.style({ 'opacity': showAuthors && visibleAuthorIds.has(n.id()) ? FULL_OPACITY : (showAuthors ? hiddenOp : 0) });
         });
         cy.edges().forEach(e => {
             const sv = visiblePaperIds.has(e.source().id()) || visibleAuthorIds.has(e.source().id());
@@ -279,7 +332,7 @@ function filterGraph(opts) {
     });
 }
 
-// ── Highlight single node ─────────────────────────────────────────────────────
+// ── Highlight single node (called from Python) ────────────────────────────────
 
 function highlightNode(nodeId) {
     if (!cy) return;
