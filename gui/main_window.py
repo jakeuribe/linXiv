@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import datetime
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QHeaderView,
@@ -108,8 +108,7 @@ class MainWindow(QMainWindow):
         self._build_toolbar()
         self._build_central()
         self._load_all()
-        self._toggle_paper_list()
-
+        QTimer.singleShot(100, self._toggle_paper_list)
     # ── Construction ─────────────────────────────────────────────────────────
 
     def _build_toolbar(self) -> None:
