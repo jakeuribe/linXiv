@@ -18,6 +18,9 @@ source/
 obsidian_vault/*
 !obsidian_vault/.gitkeep
 
+# Package reference docs (downloaded for offline use)
+_package_docs/
+
 # OS
 .DS_Store
 Thumbs.db
