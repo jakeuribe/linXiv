@@ -14,12 +14,14 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QPushButton,
     QSizePolicy,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
     QToolBar,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -280,20 +282,37 @@ class MainWindow(QMainWindow):
         refresh_action.triggered.connect(self.refresh)
         tb.addAction(refresh_action)
 
-        clear_hl_action = QAction("Clear filters", self)
-        clear_hl_action.setToolTip("Clear all filters and reset opacities")
-        clear_hl_action.triggered.connect(self._clear_highlight)
-        tb.addAction(clear_hl_action)
+        # Filters dropdown button
+        filter_btn = QToolButton()
+        filter_btn.setText("Filters \u25be")
+        filter_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        filter_menu = QMenu(filter_btn)
 
-        self._show_filters_action = QAction("Show filters", self)
-        self._show_filters_action.setToolTip("Show the filter panel")
-        self._show_filters_action.triggered.connect(self._show_dock)
-        self._show_filters_action.setVisible(False)
-        tb.addAction(self._show_filters_action)
+        clear_action = QAction("Clear filters", self)
+        clear_action.triggered.connect(self._clear_highlight)
+        filter_menu.addAction(clear_action)
+
+        show_action = QAction("Show in sidebar", self)
+        show_action.triggered.connect(self._show_filter_sidebar)
+        filter_menu.addAction(show_action)
+
+        pop_action = QAction("Pop to graph", self)
+        pop_action.triggered.connect(self._pop_filter_to_graph)
+        filter_menu.addAction(pop_action)
+
+        filter_btn.setMenu(filter_menu)
+        tb.addWidget(filter_btn)
+
+        # Paper list toggle
+        toggle_list_action = QAction("Toggle list", self)
+        toggle_list_action.setToolTip("Show / hide the paper list panel")
+        toggle_list_action.triggered.connect(self._toggle_paper_list)
+        tb.addAction(toggle_list_action)
 
     def _build_central(self) -> None:
         # Central widget: graph (top) + paper list (bottom)
         right_split = QSplitter(Qt.Orientation.Vertical)
+        self._right_split = right_split
         right_split.setChildrenCollapsible(False)
 
         self._graph_view = GraphView()
@@ -316,7 +335,6 @@ class MainWindow(QMainWindow):
             | QDockWidget.DockWidgetFeature.DockWidgetFloatable
             | QDockWidget.DockWidgetFeature.DockWidgetClosable
         )
-        self._dock.visibilityChanged.connect(self._on_dock_visibility)
         self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._dock)
 
         # ── Wire signals ──────────────────────────────────────────────────
@@ -358,13 +376,29 @@ class MainWindow(QMainWindow):
     def refresh(self) -> None:
         self._load_all()
 
-    # ── Dock visibility ───────────────────────────────────────────────────────
+    # ── Filter panel placement ────────────────────────────────────────────────
 
-    def _on_dock_visibility(self, visible: bool) -> None:
-        self._show_filters_action.setVisible(not visible)
-
-    def _show_dock(self) -> None:
+    def _show_filter_sidebar(self) -> None:
+        """Dock the filter panel to the left sidebar."""
+        self._dock.setFloating(False)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self._dock)
         self._dock.show()
+
+    def _pop_filter_to_graph(self) -> None:
+        """Float the filter panel as a window over the graph."""
+        self._dock.setFloating(True)
+        self._dock.show()
+
+    # ── Paper list toggle ─────────────────────────────────────────────────────
+
+    def _toggle_paper_list(self) -> None:
+        if self._paper_list.isVisible():
+            self._list_sizes = self._right_split.sizes()
+            self._paper_list.hide()
+        else:
+            self._paper_list.show()
+            if hasattr(self, '_list_sizes'):
+                self._right_split.setSizes(self._list_sizes)
 
     # ── Filter logic ──────────────────────────────────────────────────────────
 
