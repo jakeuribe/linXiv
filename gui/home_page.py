@@ -117,9 +117,12 @@ class HomePage(QWidget):
             date = p["published"].isoformat() if p["published"] else ""
             cat  = p["category"] or ""
             txt  = p["title"] or "(untitled)"
+            linked = p["pdf_path"] if "pdf_path" in p.keys() else None
+            if linked:
+                txt = f"[PDF] {txt}"
             meta = "  ·  ".join(filter(None, [cat, date]))
             item = QListWidgetItem(txt)
-            item.setToolTip(meta)
+            item.setToolTip(f"Linked: {linked}\n{meta}" if linked else meta)
             # Show metadata as a second line via the display role trick
             item.setData(Qt.ItemDataRole.UserRole, meta)
             self._recent_list.addItem(item)
