@@ -125,9 +125,17 @@ def init_db() -> None:
             ("has_pdf",     "BOOL NOT NULL DEFAULT 0"),
             ("source",      "TEXT DEFAULT 'arxiv'"),
             ("pdf_path",    "TEXT DEFAULT NULL"),
+            ("full_text",   "TEXT"),
+            ("downloaded_source", "BOOL DEFAULT 0"),
         ]:
             if col not in existing:
                 conn.execute(f"ALTER TABLE papers ADD COLUMN {col} {typedef}")
+
+        # FTS5 virtual table for full-text search of TeX source
+        conn.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS papers_fts
+            USING fts5(paper_id, full_text, content='', content_rowid='rowid')
+        """)
 
 
 def parse_entry_id(entry_id: str) -> tuple[str, int]:

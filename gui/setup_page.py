@@ -160,6 +160,184 @@ class SetupPage(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(scroll)
 
+    # ── Provider config ────────────────────────────────────────────────────
+
+    def _build_provider_config(self) -> QFrame:
+        frame = QFrame()
+        frame.setStyleSheet(f"""
+            QFrame {{
+                background: {_PANEL}; border: 1px solid {_BORDER}; border-radius: 8px;
+            }}
+            QLabel {{ border: none; background: transparent; }}
+        """)
+        col = QVBoxLayout(frame)
+        col.setContentsMargins(20, 16, 20, 16)
+        col.setSpacing(12)
+
+        # Provider dropdown
+        prov_row = QHBoxLayout()
+        prov_lbl = QLabel("Provider")
+        prov_lbl.setStyleSheet(f"font-size: 13px; color: {_MUTED}; font-weight: 600; min-width: 80px;")
+        self._provider_combo = QComboBox()
+        self._provider_combo.addItems(list(_PROVIDERS.keys()))
+        self._provider_combo.setStyleSheet(_COMBO_STYLE)
+        self._provider_combo.currentTextChanged.connect(self._on_provider_changed)
+        prov_row.addWidget(prov_lbl)
+        prov_row.addWidget(self._provider_combo, stretch=1)
+        col.addLayout(prov_row)
+
+        # API key input
+        key_row = QHBoxLayout()
+        key_lbl = QLabel("API Key")
+        key_lbl.setStyleSheet(f"font-size: 13px; color: {_MUTED}; font-weight: 600; min-width: 80px;")
+        self._key_input = QLineEdit()
+        self._key_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self._key_input.setPlaceholderText("Paste your API key here")
+        self._key_input.setStyleSheet(_INPUT_STYLE)
+        key_row.addWidget(key_lbl)
+        key_row.addWidget(self._key_input, stretch=1)
+        col.addLayout(key_row)
+
+        # Buttons row
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+
+        self._test_btn = QPushButton("Test connection")
+        self._test_btn.setStyleSheet(_BTN_MUTED_STYLE)
+        self._test_btn.clicked.connect(self._on_test)
+        btn_row.addWidget(self._test_btn)
+
+        self._save_btn = QPushButton("Save")
+        self._save_btn.setStyleSheet(_BTN_STYLE)
+        self._save_btn.clicked.connect(self._on_save_provider)
+        btn_row.addWidget(self._save_btn)
+
+        btn_row.addStretch()
+        col.addLayout(btn_row)
+
+        # Status label
+        self._provider_status = QLabel("")
+        self._provider_status.setWordWrap(True)
+        self._provider_status.setStyleSheet(f"font-size: 12px; color: {_MUTED};")
+        col.addWidget(self._provider_status)
+
+        # Load current state from .env
+        self._load_provider_from_env()
+
+        return frame
+
+    def _load_provider_from_env(self) -> None:
+        """Read .env to determine current provider and pre-fill API key."""
+        active = os.getenv("AI_PROVIDER", "Gemini")
+        idx = self._provider_combo.findText(active)
+        if idx >= 0:
+            self._provider_combo.setCurrentIndex(idx)
+
+        env_var = _PROVIDERS.get(self._provider_combo.currentText(), "")
+        current_key = os.getenv(env_var, "")
+        if current_key:
+            self._key_input.setText(current_key)
+            self._provider_status.setText(f"Key loaded from environment ({env_var})")
+            self._provider_status.setStyleSheet(f"font-size: 12px; color: {_GREEN};")
+
+    def _on_provider_changed(self, provider_name: str) -> None:
+        """Update key field when provider selection changes."""
+        env_var = _PROVIDERS.get(provider_name, "")
+        current_key = os.getenv(env_var, "")
+        self._key_input.setText(current_key)
+        self._provider_status.setText("")
+        self._provider_status.setStyleSheet(f"font-size: 12px; color: {_MUTED};")
+
+    def _on_test(self) -> None:
+        """Test connection with the selected provider and entered key."""
+        provider_name = self._provider_combo.currentText()
+        env_var = _PROVIDERS[provider_name]
+        key = self._key_input.text().strip()
+
+        if not key:
+            self._provider_status.setText("Please enter an API key first.")
+            self._provider_status.setStyleSheet(f"font-size: 12px; color: {_AMBER};")
+            return
+
+        self._provider_status.setText("Testing connection...")
+        self._provider_status.setStyleSheet(f"font-size: 12px; color: {_MUTED};")
+        self._test_btn.setEnabled(False)
+
+        # Set key in env temporarily for provider init
+        old_val = os.environ.get(env_var, "")
+        os.environ[env_var] = key
+
+        try:
+            from AI_tools import GeminiProvider, OpenAIProvider, set_provider
+            if provider_name == "Gemini":
+                provider = GeminiProvider()
+            else:
+                provider = OpenAIProvider()
+            # Try a minimal call to verify the key works
+            provider.tag("Test paper: Introduction to Machine Learning")
+            set_provider(provider)
+            self._provider_status.setText(f"{provider_name} connection successful.")
+            self._provider_status.setStyleSheet(f"font-size: 12px; color: {_GREEN};")
+        except Exception as exc:
+            self._provider_status.setText(f"Connection failed: {exc}")
+            self._provider_status.setStyleSheet(f"font-size: 12px; color: #e05c5c;")
+            os.environ[env_var] = old_val
+        finally:
+            self._test_btn.setEnabled(True)
+
+    def _on_save_provider(self) -> None:
+        """Save provider choice and API key to .env file."""
+        provider_name = self._provider_combo.currentText()
+        env_var = _PROVIDERS[provider_name]
+        key = self._key_input.text().strip()
+
+        if not key:
+            self._provider_status.setText("Please enter an API key to save.")
+            self._provider_status.setStyleSheet(f"font-size: 12px; color: {_AMBER};")
+            return
+
+        # Read existing .env, update or add the relevant lines
+        lines: list[str] = []
+        if os.path.isfile(_ENV_PATH):
+            with open(_ENV_PATH, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+
+        updated_key = False
+        updated_provider = False
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith(f"{env_var}="):
+                lines[i] = f"{env_var}={key}\n"
+                updated_key = True
+            elif stripped.startswith("AI_PROVIDER="):
+                lines[i] = f"AI_PROVIDER={provider_name}\n"
+                updated_provider = True
+
+        if not updated_key:
+            lines.append(f"{env_var}={key}\n")
+        if not updated_provider:
+            lines.append(f"AI_PROVIDER={provider_name}\n")
+
+        with open(_ENV_PATH, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+
+        # Update environment
+        os.environ[env_var] = key
+        os.environ["AI_PROVIDER"] = provider_name
+
+        # Wire up the provider
+        try:
+            from AI_tools import GeminiProvider, OpenAIProvider, set_provider
+            if provider_name == "Gemini":
+                set_provider(GeminiProvider())
+            else:
+                set_provider(OpenAIProvider())
+        except Exception:
+            pass  # Provider will be initialized on next use
+
+        self._provider_status.setText(f"Saved {provider_name} config to .env")
+        self._provider_status.setStyleSheet(f"font-size: 12px; color: {_GREEN};")
+
     # ── Widgets ───────────────────────────────────────────────────────────────
 
     def _status_banner(self) -> QFrame:
