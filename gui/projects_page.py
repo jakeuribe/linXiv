@@ -91,12 +91,12 @@ class NewProjectDialog(QDialog):
         self._desc.setStyleSheet(_INPUT_STYLE)
         lay.addWidget(self._desc)
 
-        # Tags
-        lay.addWidget(self._field_label("Tags  (comma-separated, optional)"))
-        self._tags = QLineEdit()
-        self._tags.setPlaceholderText("e.g. generative, vision")
-        self._tags.setStyleSheet(_INPUT_STYLE)
-        lay.addWidget(self._tags)
+        # Project tags
+        lay.addWidget(self._field_label("Project tags  (comma-separated, optional)"))
+        self._project_tags = QLineEdit()
+        self._project_tags.setPlaceholderText("e.g. generative, vision")
+        self._project_tags.setStyleSheet(_INPUT_STYLE)
+        lay.addWidget(self._project_tags)
 
         # Color
         lay.addWidget(self._field_label("Colour"))
@@ -165,15 +165,15 @@ class NewProjectDialog(QDialog):
             self._err.setText("Project name is required.")
             return
         desc = self._desc.toPlainText().strip()
-        raw_tags = self._tags.text().strip()
-        tags = [t.strip() for t in raw_tags.split(",") if t.strip()] if raw_tags else []
+        raw_project_tags = self._project_tags.text().strip()
+        project_tags = [t.strip() for t in raw_project_tags.split(",") if t.strip()] if raw_project_tags else []
 
         from projects import Project, ensure_projects_db
         from notes import ensure_notes_db
         ensure_projects_db()
         ensure_notes_db()
 
-        p = Project(name=name, description=desc, color=self._color, project_tags=tags)
+        p = Project(name=name, description=desc, color=self._color, project_tags=project_tags)
         p.save()
         self.accept()
 
