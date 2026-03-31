@@ -4,8 +4,9 @@ A Python application for discovering, managing, and visualizing academic papers 
 
 ## Features
 
-- **Paper search** — Search arXiv by keyword or fetch by ID; results saved to a local SQLite DB with version tracking
+- **Paper search** — Search arXiv by keyword, fetch by ID, or look up by DOI; results saved to a local SQLite DB with version tracking
 - **Interactive graph** — Force-directed D3.js visualization of papers and authors; real-time force controls (gravity, repulsion, link strength)
+- **Projects** — Organise papers into projects; add notes per paper scoped to a project; composable SQL query builder (`Q`) for filtering
 - **TeX rendering** — KaTeX renders LaTeX math in titles and abstracts inside the search UI
 - **PDF viewer** — Native Qt PDF viewer (`QPdfView`) with zoom and page navigation
 - **AI tools** — Google Gemini structured output for tag generation, paper summarization, and semantic similarity
@@ -16,22 +17,27 @@ A Python application for discovering, managing, and visualizing academic papers 
 
 ```
 linXiv/
-├── main.py                    # Launch graph viewer
-├── search.py                  # Launch search window
-├── pdf.py                     # Launch standalone PDF viewer
+├── main.py                    # Launch original graph viewer
+├── main_shell.py              # Launch full app shell (recommended)
 ├── db.py                      # SQLite DB: versioned paper storage, graph data queries
+├── projects.py                # Projects: data model, Status enum, Q query builder
+├── notes.py                   # Notes: per-paper annotations scoped to projects
 ├── fetch_paper_metadata.py    # arXiv API: fetch, search, save, generate Obsidian notes
 ├── downloads.py               # PDF and TeX source download helpers
 ├── AI_tools.py                # Gemini: tag(), summarize(), find_related(); PaperContent input type
 ├── formats/
 │   └── table_format.md        # YAML frontmatter template for Obsidian notes
 ├── gui/
-│   ├── app.py                 # QApplication setup
-│   ├── main_window.py         # Graph window
-│   ├── search_window.py       # Search UI: tri-pane layout with TeX rendering and PDF button
+│   ├── app_shell.py           # QApplication + AppShell wiring (run via main_shell.py)
+│   ├── shell.py               # AppShell: sidebar nav + QStackedWidget page container
+│   ├── home_page.py           # Home: stat cards, recent papers list
+│   ├── graph_page.py          # Graph page (embedded in shell)
+│   ├── projects_page.py       # Projects: list, detail view, add paper/note dialogs
+│   ├── doi_page.py            # Add by DOI: three-strategy resolution + save to library
+│   ├── setup_page.py          # Setup: API key instructions and status
+│   ├── search_window.py       # Floating search UI: tri-pane with TeX rendering and PDF button
 │   ├── graph_view.py          # QWebEngineView wrapper for D3 graph
-│   ├── tex_view.py            # QWebEngineView wrapper for KaTeX TeX rendering for individual 
-                               # symbols, (in future may only allow Markdown native symbols)
+│   ├── tex_view.py            # QWebEngineView wrapper for KaTeX rendering
 │   ├── pdf_window.py          # QPdfView PDF viewer with toolbar
 │   └── web/
 │       ├── graph.html/js/css  # D3 force-directed graph
@@ -69,12 +75,50 @@ GENAI_API_KEY_TAG_GEN=your_google_gemini_api_key
 ### Run
 
 ```bash
-python main.py    # Graph viewer
-python search.py  # Search window
-python pdf.py     # PDF viewer (opens file picker)
+python main_shell.py  # Full app shell (recommended)
+python main.py        # Original graph viewer only
 ```
 
 ## Usage
+
+### Projects
+
+```python
+from projects import Project, filter_projects, Q, Status
+
+# Create and save a project
+p = Project(name="Diffusion Models", color=0x5b8dee, project_tags=["generative"])
+p.save()
+
+# Add papers
+p.add_paper("2006.11239")
+p.add_papers(["2010.02502", "2112.10752"])
+
+# Query with composable predicates
+active = filter_projects(Q("status = ?", Status.ACTIVE))
+not_deleted = filter_projects(~Q("status = ?", Status.DELETED))
+blue_diffusion = filter_projects(
+    Q("status = ?", Status.ACTIVE)
+    & Q("color = ?", 0x5b8dee)
+    & Q("name LIKE ?", "%diffusion%")
+)
+```
+
+### Notes
+
+```python
+from notes import Note, get_notes, count_paper_notes, ensure_notes_db
+
+ensure_notes_db()
+
+# Add a project-scoped note on a paper
+note = Note(paper_id="2006.11239", project_id=p.id, title="Key insight", content="...")
+note.save()
+
+# Retrieve
+project_notes = get_notes("2006.11239", project_id=p.id)
+count = count_paper_notes("2006.11239", project_id=p.id)
+```
 
 ### Search and save papers
 
@@ -86,12 +130,14 @@ init_db()
 papers = search_papers("lattice QCD", max_results=25)  # auto-saves to DB
 ```
 
-### Generate Obsidian notes
+### Add by DOI
+
+Use the "Add by DOI" page in the app shell, or resolve programmatically:
 
 ```python
-from fetch_paper_metadata import gen_md_files
+from gui.doi_page import _resolve_doi
 
-gen_md_files(papers, additional_tags=["lattice_qcd"])
+result = _resolve_doi("10.48550/arXiv.1706.03762")
 ```
 
 ### AI tools
