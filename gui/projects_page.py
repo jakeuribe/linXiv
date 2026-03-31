@@ -428,10 +428,11 @@ class NotesDialog(QDialog):
         col.addLayout(top_row)
 
         if note.content:
-            content_lbl = QLabel(note.content)
-            content_lbl.setStyleSheet(f"font-size: 12px; color: {_MUTED};")
-            content_lbl.setWordWrap(True)
-            col.addWidget(content_lbl)
+            from gui.markdown_view import MarkdownView
+            md_view = MarkdownView()
+            md_view.set_content(note.content)
+            md_view.setFixedHeight(120)
+            col.addWidget(md_view)
 
         return card
 
