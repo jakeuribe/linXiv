@@ -377,7 +377,7 @@ class NotesDialog(QDialog):
     def _rebuild(self) -> None:
         while self._notes_layout.count() > 1:
             item = self._notes_layout.takeAt(0)
-            if item.widget():  # pyright: ignore[reportOptionalMemberAccess]
+            if item.widget():  # pyright: ignore[reportOptionalMemberAccess] — technically fixable but awkward with current setup
                 item.widget().deleteLater()  # pyright: ignore[reportOptionalMemberAccess]
 
         from notes import get_notes, ensure_notes_db
@@ -605,7 +605,7 @@ class ProjectDetailView(QWidget):
     def _rebuild_papers(self) -> None:
         while self._papers_layout.count() > 1:
             item = self._papers_layout.takeAt(0)
-            if item.widget():  # pyright: ignore[reportOptionalMemberAccess]
+            if item.widget():  # pyright: ignore[reportOptionalMemberAccess] — technically fixable but awkward with current setup
                 item.widget().deleteLater()  # pyright: ignore[reportOptionalMemberAccess]
 
         paper_ids = self._project.paper_ids if self._project else []
@@ -613,9 +613,10 @@ class ProjectDetailView(QWidget):
         self._papers_lbl.setText(f"Papers  ({count})")
 
         if paper_ids:
+            assert self._project is not None  # paper_ids is non-empty only when _project is set
             self._empty_papers_lbl.setVisible(False)
             for pid in paper_ids:
-                row_widget = _PaperRow(pid, self._project.id)  # pyright: ignore[reportOptionalMemberAccess]
+                row_widget = _PaperRow(pid, self._project.id)
                 self._papers_layout.insertWidget(self._papers_layout.count() - 1, row_widget)
         else:
             self._empty_papers_lbl.setVisible(True)
@@ -788,7 +789,7 @@ class ProjectsPage(QWidget):
     def _refresh(self) -> None:
         while self._list_layout.count() > 1:
             item = self._list_layout.takeAt(0)
-            if item.widget():  # pyright: ignore[reportOptionalMemberAccess]
+            if item.widget():  # pyright: ignore[reportOptionalMemberAccess] — technically fixable but awkward with current setup
                 item.widget().deleteLater()  # pyright: ignore[reportOptionalMemberAccess]
 
         try:

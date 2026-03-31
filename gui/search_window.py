@@ -99,13 +99,13 @@ class _ClauseRow(QWidget):
 class _ResultList(QListWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        w = self.viewport().width()  # pyright: ignore[reportOptionalMemberAccess]
+        w = self.viewport().width()  # pyright: ignore[reportOptionalMemberAccess] — technically fixable but awkward with current setup
         for i in range(self.count()):
             item = self.item(i)
             widget = self.itemWidget(item)
             if widget is not None:
                 widget.setFixedWidth(w)
-                item.setSizeHint(widget.sizeHint())  # pyright: ignore[reportOptionalMemberAccess]
+                item.setSizeHint(widget.sizeHint())  # pyright: ignore[reportOptionalMemberAccess] — technically fixable but awkward with current setup
 
 
 class _ResultRow(QWidget):
