@@ -208,13 +208,13 @@ def save_papers(papers: list[arxiv.Result], tags: list[str] | None = None) -> li
         return [_insert(conn, paper, tags) for paper in papers]
 
 
-def save_paper_metadata(meta: "PaperMetadata", tags: list[str] | None = None) -> tuple[str, int]:
+def save_paper_metadata(meta: PaperMetadata, tags: list[str] | None = None) -> tuple[str, int]:
     """Insert or replace a paper from any source via PaperMetadata. Returns (paper_id, version)."""
     with _connect() as conn:
         return _insert_metadata(conn, meta, tags)
 
 
-def save_papers_metadata(papers: list["PaperMetadata"], tags: list[str] | None = None) -> list[tuple[str, int]]:
+def save_papers_metadata(papers: list[PaperMetadata], tags: list[str] | None = None) -> list[tuple[str, int]]:
     """Batch insert/replace papers from any source. Returns list of (paper_id, version)."""
     with _connect() as conn:
         return [_insert_metadata(conn, meta, tags) for meta in papers]
