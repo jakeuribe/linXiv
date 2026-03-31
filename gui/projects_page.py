@@ -21,7 +21,7 @@ _BORDER = "#2e2e50"
 _ACCENT = "#5b8dee"
 _TEXT   = "#ccccdd"
 _MUTED  = "#7777aa"
-_GREEN  = "#4caf7d"
+# _GREEN  = "#4caf7d"
 
 _PRESET_COLORS = [
     "#5b8dee",  # blue (default)
@@ -128,12 +128,14 @@ class NewProjectDialog(QDialog):
         return lbl
 
     def _build_swatches(self) -> QHBoxLayout:
+        ROW_SPACING = 8
+        BTN_SIZE = 28
         row = QHBoxLayout()
-        row.setSpacing(8)
+        row.setSpacing(ROW_SPACING)
         self._swatch_btns: list[QPushButton] = []
         for color in _PRESET_COLORS:
             btn = QPushButton()
-            btn.setFixedSize(28, 28)
+            btn.setFixedSize(BTN_SIZE, BTN_SIZE)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setCheckable(True)
             btn.setChecked(color == self._color)
