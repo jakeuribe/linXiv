@@ -100,7 +100,7 @@ def gen_md_file(paper: arxiv.Result, additional_tags:None|Sequence[str] = None, 
 
     author_list = "\n".join([f'  - "[[{name}]]"' for name in authors])
     tag_list = "\n".join([f'- {tag}' for tag in tags])
-    with open("./formats/table_format.md", "r", encoding="utf-8") as f:
+    with open(Path(__file__).parent / "formats" / "table_format.md", "r", encoding="utf-8") as f:
         template = f.read()
         final_content = template.format(
             title=title,

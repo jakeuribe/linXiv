@@ -77,3 +77,10 @@ class GraphView(QWebEngineView):
     def clear_filters(self) -> None:
         """Reset all in-graph filters to their default state."""
         self.run_js("clearFilters()")
+
+    def _on_console_message(self, message: str) -> None:
+        """Parse JS console messages and emit signals for graph events."""
+        prefix = "GRAPHVIEW_PAPER_CLICKED:"
+        if message.startswith(prefix):
+            paper_id = message[len(prefix):]
+            self.node_clicked.emit(paper_id)
