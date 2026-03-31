@@ -48,15 +48,20 @@ def _fmt_tags(val) -> str:
 
 _COLUMNS = ["Title", "Category", "Published", "Tags", "PDF"]
 _COL_WIDTHS = [320, 80, 90, 180, 40]
+_PAGE_SIZE = 50
 
 
 class PaperListPanel(QWidget):
-    """Bottom panel showing saved papers as a table."""
+    """Bottom panel showing saved papers as a table with lazy-loading pagination."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._all_rows: list = []
+        self._loaded_count = 0
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
 
         self._table = QTableWidget(0, len(_COLUMNS))
         self._table.setHorizontalHeaderLabels(_COLUMNS)
@@ -73,6 +78,16 @@ class PaperListPanel(QWidget):
 
         layout.addWidget(self._table)
 
+        # Status bar
+        self._status_lbl = QLabel("")
+        self._status_lbl.setStyleSheet("color: #7777aa; font-size: 11px; padding: 2px 6px;")
+        layout.addWidget(self._status_lbl)
+
+        # Scroll detection for lazy loading
+        vbar = self._table.verticalScrollBar()
+        if vbar is not None:
+            vbar.valueChanged.connect(self._on_scroll)
+
     @property
     def table(self) -> QTableWidget:
         return self._table
@@ -84,24 +99,62 @@ class PaperListPanel(QWidget):
         return item.data(Qt.ItemDataRole.UserRole)
 
     def load_papers(self, rows) -> None:
+        """Store all rows and display the first page."""
+        self._all_rows = list(rows)
+        self._loaded_count = 0
         self._table.setSortingEnabled(False)
         self._table.setRowCount(0)
+        self._load_next_page()
+        self._table.setSortingEnabled(True)
 
-        for row in rows:
+    def _load_next_page(self) -> None:
+        """Append the next PAGE_SIZE rows to the table."""
+        total = len(self._all_rows)
+        end = min(self._loaded_count + _PAGE_SIZE, total)
+        if self._loaded_count >= total:
+            return
+
+        was_sorting = self._table.isSortingEnabled()
+        self._table.setSortingEnabled(False)
+
+        for row_data in self._all_rows[self._loaded_count:end]:
             r = self._table.rowCount()
             self._table.insertRow(r)
 
-            title_item = QTableWidgetItem(row["title"] or "")
-            title_item.setData(Qt.ItemDataRole.UserRole, row["paper_id"])
+            title_item = QTableWidgetItem(row_data["title"] or "")
+            title_item.setData(Qt.ItemDataRole.UserRole, row_data["paper_id"])
             self._table.setItem(r, 0, title_item)
-            self._table.setItem(r, 1, QTableWidgetItem(row["category"] or ""))
-            self._table.setItem(r, 2, QTableWidgetItem(_fmt_date(row["published"])))
-            self._table.setItem(r, 3, QTableWidgetItem(_fmt_tags(row["tags"])))
-            pdf_item = QTableWidgetItem("Y" if row["has_pdf"] else "")
+            self._table.setItem(r, 1, QTableWidgetItem(row_data["category"] or ""))
+            self._table.setItem(r, 2, QTableWidgetItem(_fmt_date(row_data["published"])))
+            self._table.setItem(r, 3, QTableWidgetItem(_fmt_tags(row_data["tags"])))
+            pdf_item = QTableWidgetItem("Y" if row_data["has_pdf"] else "")
             pdf_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self._table.setItem(r, 4, pdf_item)
 
-        self._table.setSortingEnabled(True)
+        self._loaded_count = end
+        self._table.setSortingEnabled(was_sorting)
+        self._update_status()
+
+    def _on_scroll(self, value: int) -> None:
+        """Load more rows when scrolled near the bottom."""
+        vbar = self._table.verticalScrollBar()
+        if vbar is None:
+            return
+        if self._loaded_count >= len(self._all_rows):
+            return
+        # Trigger when within 20% of bottom
+        if value >= vbar.maximum() * 0.8:
+            self._load_next_page()
+
+    def _update_status(self) -> None:
+        total = len(self._all_rows)
+        shown = self._loaded_count
+        if total == 0:
+            self._status_lbl.setText("")
+        elif shown >= total:
+            self._status_lbl.setText(f"Showing all {total} papers")
+        else:
+            self._status_lbl.setText(f"Showing {shown} of {total} papers (scroll for more)")
 
 
 # ── Graph page ────────────────────────────────────────────────────────────────
@@ -226,10 +279,19 @@ class GraphPage(QWidget):
 
     def _on_graph_node_clicked(self, paper_id: str) -> None:
         """Graph paper node clicked — select matching row in the paper list."""
+        # First search already-loaded rows
         for row in range(self._paper_list.table.rowCount()):
             if self._paper_list.paper_id_for_row(row) == paper_id:
                 self._paper_list.table.setCurrentCell(row, 0)
-                break
+                return
+        # Paper might be in a not-yet-loaded page — load remaining pages and retry
+        while self._paper_list._loaded_count < len(self._paper_list._all_rows):
+            prev_count = self._paper_list.table.rowCount()
+            self._paper_list._load_next_page()
+            for row in range(prev_count, self._paper_list.table.rowCount()):
+                if self._paper_list.paper_id_for_row(row) == paper_id:
+                    self._paper_list.table.setCurrentCell(row, 0)
+                    return
 
     # ── Selection & export ───────────────────────────────────────────────────
 

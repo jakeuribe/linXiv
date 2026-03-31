@@ -146,6 +146,62 @@ class TestSavePaper:
 
 
 # ---------------------------------------------------------------------------
+# save_paper_metadata (source-agnostic)
+# ---------------------------------------------------------------------------
+
+class TestSavePaperMetadata:
+    def _make_meta(self, **kwargs):
+        from sources.base import PaperMetadata
+        defaults = dict(
+            paper_id="W3123456789",
+            version=1,
+            title="OpenAlex Paper",
+            authors=["Jane Doe"],
+            published=datetime.date(2024, 6, 1),
+            summary="An abstract from OpenAlex.",
+            source="openalex",
+        )
+        defaults.update(kwargs)
+        return PaperMetadata(**defaults)
+
+    def test_save_and_get_by_id(self, tmp_db):
+        meta = self._make_meta()
+        db.save_paper_metadata(meta)
+        row = db.get_paper("W3123456789")
+        assert row is not None
+        assert row["title"] == "OpenAlex Paper"
+        assert row["source"] == "openalex"
+
+    def test_save_stores_source_field(self, tmp_db):
+        meta = self._make_meta(source="openalex")
+        db.save_paper_metadata(meta)
+        row = db.get_paper("W3123456789")
+        assert row is not None
+        assert row["source"] == "openalex"
+
+    def test_arxiv_save_defaults_source_to_arxiv(self, tmp_db):
+        result = _make_result("2204.12985v1")
+        db.save_paper(result)
+        row = db.get_paper("2204.12985")
+        assert row is not None
+        assert row["source"] == "arxiv"
+
+    def test_save_metadata_with_tags(self, tmp_db):
+        meta = self._make_meta()
+        db.save_paper_metadata(meta, tags=["physics", "ml"])
+        row = db.get_paper("W3123456789")
+        assert row is not None
+        assert "physics" in row["tags"]
+        assert "ml" in row["tags"]
+
+    def test_save_metadata_returns_id_and_version(self, tmp_db):
+        meta = self._make_meta(paper_id="W999", version=1)
+        paper_id, version = db.save_paper_metadata(meta)
+        assert paper_id == "W999"
+        assert version == 1
+
+
+# ---------------------------------------------------------------------------
 # list_papers
 # ---------------------------------------------------------------------------
 
