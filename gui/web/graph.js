@@ -184,6 +184,12 @@ function loadGraph(data) {
         if (simulation) simulation.alphaTarget(0);
     });
 
+    // Click paper node → notify Python to select in table
+    cy.on('tap', 'node[type = "paper"]', e => {
+        const paper_id = e.target.id();
+        console.log('GRAPHVIEW_PAPER_CLICKED:' + paper_id);
+    });
+
     const cs = parseFloat($('centerForce').value);
     simulation = d3.forceSimulation(simNodes)
         .force('link',      d3.forceLink(simLinks).id(d => d.id)
