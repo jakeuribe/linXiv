@@ -1,10 +1,22 @@
 import os
 import json
+from PyQt6.QtWebEngineCore import QWebEnginePage
 from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtCore import QUrl
+from PyQt6.QtCore import QUrl, pyqtSignal
+
+
+class _GraphPage(QWebEnginePage):
+    """Custom page that intercepts JS console messages for the graph bridge."""
+
+    console_message_received = pyqtSignal(str)
+
+    def javaScriptConsoleMessage(self, level, message, line, source):  # pyright: ignore[reportIncompatibleMethodOverride] — Qt override
+        self.console_message_received.emit(message)
 
 
 class GraphView(QWebEngineView):
+    node_clicked = pyqtSignal(str)  # emits paper_id when a paper node is clicked
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._loaded = False
@@ -12,6 +24,11 @@ class GraphView(QWebEngineView):
         self._pending_edges: list = []
         self._pending_categories: list = []
         self._pending_tags: list = []
+
+        self._page = _GraphPage(self)
+        self._page.console_message_received.connect(self._on_console_message)
+        self.setPage(self._page)
+
         self.loadFinished.connect(self._on_load_finished)
         html_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "web", "graph.html"))
         self.load(QUrl.fromLocalFile(html_path))
