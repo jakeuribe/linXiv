@@ -1,10 +1,16 @@
+from __future__ import annotations
+
 import sqlite3
 import json
 import re
 import datetime
 from pathlib import Path
+from typing import Optional, TYPE_CHECKING
+
 import arxiv
-from typing import Optional
+
+if TYPE_CHECKING:
+    from sources.base import PaperMetadata
 
 DB_PATH = str(Path(__file__).parent / "papers.db")
 
