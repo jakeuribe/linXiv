@@ -315,6 +315,141 @@ class AddNoteDialog(QDialog):
         self.accept()
 
 
+# ── Notes viewer dialog ───────────────────────────────────────────────────────
+
+class NotesDialog(QDialog):
+    """Shows all notes for a paper in a project, with add and delete actions."""
+
+    def __init__(self, paper_id: str, project_id: int, paper_title: str,
+                 parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._paper_id   = paper_id
+        self._project_id = project_id
+        self.setWindowTitle("Notes")
+        self.setFixedSize(560, 520)
+        self.setStyleSheet(f"background: {_PANEL}; color: {_TEXT};")
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(24, 20, 24, 20)
+        lay.setSpacing(12)
+
+        header_row = QHBoxLayout()
+        title_lbl = QLabel("Notes")
+        title_lbl.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {_ACCENT};")
+        paper_lbl = QLabel(paper_title)
+        paper_lbl.setStyleSheet(f"font-size: 11px; color: {_MUTED};")
+        paper_lbl.setWordWrap(True)
+        header_col = QVBoxLayout()
+        header_col.setSpacing(2)
+        header_col.addWidget(title_lbl)
+        header_col.addWidget(paper_lbl)
+        header_row.addLayout(header_col, stretch=1)
+
+        add_btn = QPushButton("＋  Add Note")
+        add_btn.setStyleSheet(_BTN_STYLE)
+        add_btn.setFixedHeight(34)
+        add_btn.clicked.connect(self._on_add)
+        header_row.addWidget(add_btn, alignment=Qt.AlignmentFlag.AlignBottom)
+        lay.addLayout(header_row)
+
+        # Scrollable notes list
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("background: transparent;")
+
+        self._notes_widget = QWidget()
+        self._notes_widget.setStyleSheet("background: transparent;")
+        self._notes_layout = QVBoxLayout(self._notes_widget)
+        self._notes_layout.setContentsMargins(0, 0, 0, 0)
+        self._notes_layout.setSpacing(10)
+        self._notes_layout.addStretch()
+        scroll.setWidget(self._notes_widget)
+        lay.addWidget(scroll)
+
+        self._empty_lbl = QLabel("No notes yet.")
+        self._empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_lbl.setStyleSheet(f"font-size: 13px; color: {_MUTED};")
+        lay.addWidget(self._empty_lbl)
+
+        close_btn = QPushButton("Close")
+        close_btn.setStyleSheet(_BTN_MUTED_STYLE)
+        close_btn.clicked.connect(self.accept)
+        lay.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignRight)
+
+        self._rebuild()
+
+    def _rebuild(self) -> None:
+        while self._notes_layout.count() > 1:
+            item = self._notes_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        from notes import get_notes, ensure_notes_db
+        ensure_notes_db()
+        notes = get_notes(self._paper_id, project_id=self._project_id)
+
+        if notes:
+            self._empty_lbl.setVisible(False)
+            for note in notes:
+                self._notes_layout.insertWidget(
+                    self._notes_layout.count() - 1,
+                    self._make_note_card(note),
+                )
+        else:
+            self._empty_lbl.setVisible(True)
+
+    def _make_note_card(self, note) -> QFrame:
+        card = QFrame()
+        card.setStyleSheet(f"""
+            QFrame {{ background: {_BG}; border: 1px solid {_BORDER}; border-radius: 6px; }}
+            QLabel {{ border: none; background: transparent; }}
+        """)
+        col = QVBoxLayout(card)
+        col.setContentsMargins(14, 10, 14, 10)
+        col.setSpacing(4)
+
+        top_row = QHBoxLayout()
+        note_title = note.title or "Untitled"
+        title_lbl = QLabel(note_title)
+        title_lbl.setStyleSheet(f"font-size: 13px; font-weight: 600; color: {_TEXT};")
+        top_row.addWidget(title_lbl, stretch=1)
+
+        if note.created_at:
+            date_lbl = QLabel(note.created_at.strftime("%Y-%m-%d"))
+            date_lbl.setStyleSheet(f"font-size: 11px; color: {_MUTED};")
+            top_row.addWidget(date_lbl)
+
+        del_btn = QPushButton("Delete")
+        del_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; border: none;
+                color: #e05c5c; font-size: 11px; padding: 0 4px;
+            }}
+            QPushButton:hover {{ color: #ff7070; }}
+        """)
+        del_btn.clicked.connect(lambda _, n=note: self._delete_note(n))
+        top_row.addWidget(del_btn)
+        col.addLayout(top_row)
+
+        if note.content:
+            content_lbl = QLabel(note.content)
+            content_lbl.setStyleSheet(f"font-size: 12px; color: {_MUTED};")
+            content_lbl.setWordWrap(True)
+            col.addWidget(content_lbl)
+
+        return card
+
+    def _delete_note(self, note) -> None:
+        note.delete()
+        self._rebuild()
+
+    def _on_add(self) -> None:
+        dlg = AddNoteDialog(self._paper_id, self._project_id, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._rebuild()
+
+
 # ── Paper row (inside detail view) ────────────────────────────────────────────
 
 class _PaperRow(QFrame):
@@ -340,7 +475,7 @@ class _PaperRow(QFrame):
         self._note_btn = QPushButton(self._note_label())
         self._note_btn.setStyleSheet(_BTN_SMALL_STYLE)
         self._note_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._note_btn.clicked.connect(self._on_add_note)
+        self._note_btn.clicked.connect(self._on_open_notes)
         row.addWidget(self._note_btn)
 
     def _fetch_title(self) -> str:
@@ -362,10 +497,10 @@ class _PaperRow(QFrame):
         n = self._note_count()
         return f"📝 {n} {'note' if n == 1 else 'notes'}"
 
-    def _on_add_note(self) -> None:
-        dlg = AddNoteDialog(self._paper_id, self._project_id, self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            self._note_btn.setText(self._note_label())
+    def _on_open_notes(self) -> None:
+        dlg = NotesDialog(self._paper_id, self._project_id, self._fetch_title(), self)
+        dlg.exec()
+        self._note_btn.setText(self._note_label())
 
 
 # ── Project detail view ───────────────────────────────────────────────────────
