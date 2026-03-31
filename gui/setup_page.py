@@ -104,6 +104,11 @@ class SetupPage(QWidget):
         # ── Status banner ─────────────────────────────────────────────────────
         add(self._status_banner(), 32)
 
+        # ── AI provider config ───────────────────────────────────────────────
+        add(_h("AI Provider", 20, _ACCENT), 12)
+        add(_p("Choose your AI provider and enter the API key.", _MUTED, 13), 12)
+        add(self._build_provider_config(), 32)
+
         # ── Step 1 ────────────────────────────────────────────────────────────
         add(_h("1 · Get a Google Gemini API key", 17, _TEXT), 10)
         add(_p(
