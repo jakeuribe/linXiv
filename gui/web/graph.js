@@ -80,6 +80,11 @@ $('isolate-btn').addEventListener('click', () => {
     _applyFilter();
 });
 
+// ── Selection panel buttons ─────────────────────────────────────────────────
+
+$('select-all-btn').addEventListener('click', () => selectAllPapers());
+$('clear-selection-btn').addEventListener('click', () => clearSelection());
+
 function _scheduleFilter() {
     clearTimeout(_debounce);
     _debounce = setTimeout(_applyFilter, 280);
