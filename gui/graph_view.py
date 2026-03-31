@@ -16,6 +16,7 @@ class _GraphPage(QWebEnginePage):
 
 class GraphView(QWebEngineView):
     node_clicked = pyqtSignal(str)  # emits paper_id when a paper node is clicked
+    selection_changed = pyqtSignal(int)  # emits count of selected nodes
 
     def __init__(self, parent=None):
         super().__init__(parent)
