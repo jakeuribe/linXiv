@@ -24,6 +24,46 @@ _CODE   = "#0a0a14"
 
 _ENV_PATH = os.path.join(os.path.dirname(__file__), "..", ".env")
 
+_PROVIDERS = {
+    "Gemini": "GENAI_API_KEY_TAG_GEN",
+    "OpenAI": "OPENAI_API_KEY",
+}
+
+_INPUT_STYLE = f"""
+    QLineEdit {{
+        background: #0f0f1a; border: 1px solid {_BORDER}; border-radius: 6px;
+        color: {_TEXT}; font-size: 13px; padding: 8px 10px;
+    }}
+    QLineEdit:focus {{ border-color: {_ACCENT}; }}
+"""
+_COMBO_STYLE = f"""
+    QComboBox {{
+        background: #0f0f1a; border: 1px solid {_BORDER}; border-radius: 6px;
+        color: {_TEXT}; font-size: 13px; padding: 6px 10px;
+    }}
+    QComboBox:focus {{ border-color: {_ACCENT}; }}
+    QComboBox::drop-down {{ border: none; }}
+    QComboBox QAbstractItemView {{
+        background: {_PANEL}; color: {_TEXT}; selection-background-color: {_ACCENT};
+    }}
+"""
+_BTN_STYLE = f"""
+    QPushButton {{
+        background: {_ACCENT}; border: none; border-radius: 6px;
+        color: #fff; font-size: 13px; font-weight: 600; padding: 8px 20px;
+    }}
+    QPushButton:hover   {{ background: #7aa3f5; }}
+    QPushButton:pressed {{ background: #4a7add; }}
+    QPushButton:disabled {{ background: #2a2a4a; color: {_MUTED}; }}
+"""
+_BTN_MUTED_STYLE = f"""
+    QPushButton {{
+        background: transparent; border: 1px solid {_BORDER}; border-radius: 6px;
+        color: {_MUTED}; font-size: 13px; padding: 8px 20px;
+    }}
+    QPushButton:hover {{ border-color: {_TEXT}; color: {_TEXT}; }}
+"""
+
 
 def _env_present() -> bool:
     return os.path.isfile(_ENV_PATH)
