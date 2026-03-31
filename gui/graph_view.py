@@ -79,9 +79,27 @@ class GraphView(QWebEngineView):
         """Reset all in-graph filters to their default state."""
         self.run_js("clearFilters()")
 
+    def select_all_papers(self) -> None:
+        """Select all currently visible paper nodes."""
+        self.run_js("selectAllPapers()")
+
+    def clear_selection(self) -> None:
+        """Deselect all paper nodes."""
+        self.run_js("clearSelection()")
+
+    def get_selected_paper_data(self, callback) -> None:
+        """Retrieve data for selected papers from JS. Calls callback(dict) with result."""
+        if self._loaded:
+            self.page().runJavaScript(  # pyright: ignore[reportOptionalMemberAccess]
+                "getSelectedPaperData()",
+                lambda result: callback(json.loads(result) if isinstance(result, str) else {"papers": [], "edges": []}),
+            )
+
     def _on_console_message(self, message: str) -> None:
         """Parse JS console messages and emit signals for graph events."""
-        prefix = "GRAPHVIEW_PAPER_CLICKED:"
-        if message.startswith(prefix):
-            paper_id = message[len(prefix):]
+        if message.startswith("GRAPHVIEW_PAPER_CLICKED:"):
+            paper_id = message[len("GRAPHVIEW_PAPER_CLICKED:"):]
             self.node_clicked.emit(paper_id)
+        elif message.startswith("GRAPHVIEW_SELECTION_COUNT:"):
+            count = int(message[len("GRAPHVIEW_SELECTION_COUNT:"):])
+            self.selection_changed.emit(count)
