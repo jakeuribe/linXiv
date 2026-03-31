@@ -237,3 +237,78 @@ class TestListPapers:
         db.save_paper(_make_result("2204.12985v2", title="Paper v2"))
         rows = db.list_papers(latest_only=False)
         assert len(rows) == 2
+
+
+# ---------------------------------------------------------------------------
+# set_full_text / search_full_text (FTS)
+# ---------------------------------------------------------------------------
+
+class TestFullTextSearch:
+    def test_set_full_text_stores_text(self, tmp_db):
+        db.save_paper(_make_result("2204.12985v1"))
+        db.set_full_text("2204.12985", 1, "This paper studies transformers.")
+        row = db.get_paper("2204.12985")
+        assert row is not None
+        assert row["full_text"] == "This paper studies transformers."
+        assert row["downloaded_source"] == True
+
+    def test_set_full_text_marks_downloaded_source(self, tmp_db):
+        db.save_paper(_make_result("2204.12985v1"))
+        row_before = db.get_paper("2204.12985")
+        assert not row_before["downloaded_source"]
+        db.set_full_text("2204.12985", 1, "Some TeX content.")
+        row_after = db.get_paper("2204.12985")
+        assert row_after["downloaded_source"]
+
+
+# ---------------------------------------------------------------------------
+# extract_source (TeX extraction)
+# ---------------------------------------------------------------------------
+
+class TestExtractSource:
+    def test_extract_from_tar(self, tmp_path):
+        import tarfile
+        from downloads import extract_source
+
+        # Create a fake .tex file
+        tex_content = r"""
+\documentclass{article}
+\usepackage{amsmath}
+% This is a comment
+\begin{document}
+Hello world of transformers.
+\end{document}
+"""
+        tex_file = tmp_path / "main.tex"
+        tex_file.write_text(tex_content)
+
+        # Create a .tar.gz
+        tar_path = str(tmp_path / "source.tar.gz")
+        with tarfile.open(tar_path, "w:gz") as tar:
+            tar.add(str(tex_file), arcname="main.tex")
+
+        result = extract_source(tar_path)
+        assert "Hello world of transformers" in result
+        # Comments should be stripped
+        assert "This is a comment" not in result
+
+    def test_extract_empty_tar(self, tmp_path):
+        import tarfile
+        from downloads import extract_source
+
+        # Create an empty .tar.gz (no .tex files)
+        tar_path = str(tmp_path / "empty.tar.gz")
+        with tarfile.open(tar_path, "w:gz") as tar:
+            pass
+
+        result = extract_source(tar_path)
+        assert result == ""
+
+    def test_extract_invalid_tar(self, tmp_path):
+        from downloads import extract_source
+
+        bad_path = str(tmp_path / "bad.tar.gz")
+        (tmp_path / "bad.tar.gz").write_text("not a tarball")
+
+        result = extract_source(bad_path)
+        assert result == ""
