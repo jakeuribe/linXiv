@@ -1,0 +1,183 @@
+"""Tests for db.py — pure functions and DB round-trips."""
+import datetime
+import sys
+import os
+
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import arxiv
+import db
+
+
+# ---------------------------------------------------------------------------
+# parse_entry_id — pure function, no DB needed
+# ---------------------------------------------------------------------------
+
+class TestParseEntryId:
+    def test_full_url_with_version(self):
+        paper_id, version = db.parse_entry_id("http://arxiv.org/abs/2204.12985v4")
+        assert paper_id == "2204.12985"
+        assert version == 4
+
+    def test_https_url_with_version(self):
+        paper_id, version = db.parse_entry_id("https://arxiv.org/abs/2301.00001v1")
+        assert paper_id == "2301.00001"
+        assert version == 1
+
+    def test_bare_id_with_version(self):
+        paper_id, version = db.parse_entry_id("2204.12985v2")
+        assert paper_id == "2204.12985"
+        assert version == 2
+
+    def test_bare_id_no_version_defaults_to_1(self):
+        paper_id, version = db.parse_entry_id("2204.12985")
+        assert paper_id == "2204.12985"
+        assert version == 1
+
+    def test_old_style_url_takes_last_segment(self):
+        # parse_entry_id uses split('/')[-1], so for URLs like
+        # "http://arxiv.org/abs/hep-th/9901001v1" the category prefix is
+        # dropped and only the numeric part is kept.
+        paper_id, version = db.parse_entry_id("http://arxiv.org/abs/hep-th/9901001v1")
+        assert paper_id == "9901001"
+        assert version == 1
+
+    def test_old_style_url_higher_version(self):
+        paper_id, version = db.parse_entry_id("http://arxiv.org/abs/math/0501234v3")
+        assert paper_id == "0501234"
+        assert version == 3
+
+    def test_old_style_bare_takes_last_segment(self):
+        # Bare old-style ID — split('/') picks "9901001", no version → default 1
+        paper_id, version = db.parse_entry_id("hep-th/9901001")
+        assert paper_id == "9901001"
+        assert version == 1
+
+
+# ---------------------------------------------------------------------------
+# Helper: build a minimal arxiv.Result for testing
+# ---------------------------------------------------------------------------
+
+def _make_result(
+    arxiv_id: str = "2204.12985v1",
+    title: str = "Test Paper Title",
+    summary: str = "An abstract.",
+    authors: list[str] | None = None,
+    primary_category: str = "cs.LG",
+    categories: list[str] | None = None,
+) -> arxiv.Result:
+    """Build a minimal arxiv.Result for use in tests."""
+    now = datetime.datetime(2024, 1, 15, 12, 0, 0, tzinfo=datetime.timezone.utc)
+    result = arxiv.Result(
+        entry_id=f"http://arxiv.org/abs/{arxiv_id}",
+        title=title,
+        summary=summary,
+        authors=[arxiv.Result.Author(name) for name in (authors or ["Alice Smith"])],
+        published=now,
+        updated=now,
+        primary_category=primary_category,
+        categories=categories or [primary_category],
+        doi=None,
+        comment=None,
+        journal_ref=None,
+        links=[],
+    )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# save_paper / get_paper round-trip
+# ---------------------------------------------------------------------------
+
+class TestSavePaper:
+    def test_save_and_get_by_id(self, tmp_db):
+        result = _make_result("2204.12985v1", title="Attention Is All You Need")
+        db.save_paper(result)
+        row = db.get_paper("2204.12985")
+        assert row is not None
+        assert row["paper_id"] == "2204.12985"
+        assert row["title"] == "Attention Is All You Need"
+        assert row["version"] == 1
+
+    def test_save_and_get_specific_version(self, tmp_db):
+        result = _make_result("2204.12985v3", title="Paper v3")
+        db.save_paper(result)
+        row = db.get_paper("2204.12985", version=3)
+        assert row is not None
+        assert row["version"] == 3
+
+    def test_save_stores_authors(self, tmp_db):
+        result = _make_result(
+            "2301.00001v1",
+            authors=["Alice Smith", "Bob Jones"],
+        )
+        db.save_paper(result)
+        row = db.get_paper("2301.00001")
+        assert row is not None
+        assert "Alice Smith" in row["authors"]
+        assert "Bob Jones" in row["authors"]
+
+    def test_save_stores_category(self, tmp_db):
+        result = _make_result("2301.00002v1", primary_category="math.CO")
+        db.save_paper(result)
+        row = db.get_paper("2301.00002")
+        assert row is not None
+        assert row["category"] == "math.CO"
+
+    def test_save_returns_paper_id_and_version(self, tmp_db):
+        result = _make_result("2204.12985v2")
+        paper_id, version = db.save_paper(result)
+        assert paper_id == "2204.12985"
+        assert version == 2
+
+    def test_get_paper_missing_returns_none(self, tmp_db):
+        row = db.get_paper("0000.00000")
+        assert row is None
+
+    def test_save_with_tags(self, tmp_db):
+        result = _make_result("2204.12985v1")
+        db.save_paper(result, tags=["ml", "transformers"])
+        row = db.get_paper("2204.12985")
+        assert row is not None
+        assert "ml" in row["tags"]
+        assert "transformers" in row["tags"]
+
+
+# ---------------------------------------------------------------------------
+# list_papers
+# ---------------------------------------------------------------------------
+
+class TestListPapers:
+    def test_empty_db_returns_empty_list(self, tmp_db):
+        rows = db.list_papers()
+        assert rows == []
+
+    def test_saved_paper_appears_in_list(self, tmp_db):
+        result = _make_result("2204.12985v1", title="Listed Paper")
+        db.save_paper(result)
+        rows = db.list_papers()
+        assert len(rows) == 1
+        assert rows[0]["title"] == "Listed Paper"
+
+    def test_multiple_papers_all_listed(self, tmp_db):
+        db.save_paper(_make_result("2204.12985v1", title="Paper A"))
+        db.save_paper(_make_result("2301.00001v1", title="Paper B"))
+        rows = db.list_papers()
+        titles = {row["title"] for row in rows}
+        assert "Paper A" in titles
+        assert "Paper B" in titles
+
+    def test_latest_only_returns_one_per_paper(self, tmp_db):
+        db.save_paper(_make_result("2204.12985v1", title="Paper v1"))
+        db.save_paper(_make_result("2204.12985v2", title="Paper v2"))
+        rows = db.list_papers(latest_only=True)
+        assert len(rows) == 1
+        assert rows[0]["version"] == 2
+
+    def test_not_latest_only_returns_all_versions(self, tmp_db):
+        db.save_paper(_make_result("2204.12985v1", title="Paper v1"))
+        db.save_paper(_make_result("2204.12985v2", title="Paper v2"))
+        rows = db.list_papers(latest_only=False)
+        assert len(rows) == 2
