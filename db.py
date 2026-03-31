@@ -124,6 +124,7 @@ def init_db() -> None:
             ("tags",        "LIST"),
             ("has_pdf",     "BOOL NOT NULL DEFAULT 0"),
             ("source",      "TEXT DEFAULT 'arxiv'"),
+            ("pdf_path",    "TEXT DEFAULT NULL"),
         ]:
             if col not in existing:
                 conn.execute(f"ALTER TABLE papers ADD COLUMN {col} {typedef}")
