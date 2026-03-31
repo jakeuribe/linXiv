@@ -7,14 +7,12 @@ import json
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
-    QAbstractScrollArea,
     QFileDialog,
     QHeaderView,
     QHBoxLayout,
     QLabel,
     QMenu,
     QPushButton,
-    QScrollBar,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
