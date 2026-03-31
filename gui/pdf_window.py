@@ -1,3 +1,5 @@
+import os
+
 from PyQt6.QtWidgets import QMainWindow, QToolBar, QLabel, QPushButton, QWidget
 from PyQt6.QtPdfWidgets import QPdfView
 from PyQt6.QtPdf import QPdfDocument
@@ -17,6 +19,7 @@ class PdfWindow(QMainWindow):
         self.setCentralWidget(self._view)
 
         self._build_toolbar()
+        self._external_label = QLabel("")
 
     def _build_toolbar(self) -> None:
         bar = QToolBar()
@@ -47,11 +50,28 @@ class PdfWindow(QMainWindow):
 
         self._view.pageNavigator().currentPageChanged.connect(self._update_page_label)  # pyright: ignore[reportOptionalMemberAccess]
 
-    def load_pdf(self, path: str) -> None:
+    @staticmethod
+    def resolve_pdf_path(paper_id: str, version: int, fallback_dir: str) -> str | None:
+        """Return the best PDF path for a paper: pdf_path from DB, then fallback."""
+        from db import get_paper
+        row = get_paper(paper_id, version)
+        if row:
+            db_path = row["pdf_path"]
+            if db_path and os.path.isfile(db_path):
+                return db_path
+        # Fallback to standard location
+        std = os.path.join(fallback_dir, f"{paper_id}v{version}.pdf")
+        if os.path.isfile(std):
+            return std
+        return None
+
+    def load_pdf(self, path: str, is_external: bool = False) -> None:
         self._doc.close()
         self._doc.load(path)
         self._update_page_label(0)
-        self.setWindowTitle(f"PDF — {path.split('/')[-1]}")
+        name = path.split('/')[-1]
+        prefix = "[Linked] " if is_external else ""
+        self.setWindowTitle(f"PDF — {prefix}{name}")
         self.show()
         self.raise_()
         self.activateWindow()

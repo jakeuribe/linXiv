@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QPushButton, QListWidget, QListWidgetItem,
     QLabel, QSplitter, QCheckBox, QComboBox, QSpinBox,
-    QFrame
+    QFrame, QFileDialog
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 import arxiv

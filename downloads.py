@@ -126,7 +126,7 @@ def extract_source(tarpath: str) -> str:
                     if m.isfile() and m.name.endswith(".tex")
                     and not m.name.startswith(("/", ".."))
                 ]
-                tar.extractall(tmpdir, members=members)
+                tar.extractall(tmpdir, members=members, filter="data")
 
             for m in sorted(members, key=lambda m: m.name.count("/")):
                 filepath = Path(tmpdir) / m.name
