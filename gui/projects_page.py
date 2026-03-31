@@ -15,21 +15,22 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from projects import color_to_hex
+
 _BG     = "#0f0f1a"
 _PANEL  = "#1a1a2e"
 _BORDER = "#2e2e50"
 _ACCENT = "#5b8dee"
 _TEXT   = "#ccccdd"
 _MUTED  = "#7777aa"
-# _GREEN  = "#4caf7d"
 
-_PRESET_COLORS = [
-    "#5b8dee",  # blue (default)
-    "#9b59b6",  # purple
-    "#4caf7d",  # green
-    "#e67e22",  # orange
-    "#e05c5c",  # red
-    "#1abc9c",  # teal
+_PRESET_COLORS: list[int] = [
+    0x5b8dee,  # blue (default)
+    0x9b59b6,  # purple
+    0x4caf7d,  # green
+    0xe67e22,  # orange
+    0xe05c5c,  # red
+    0x1abc9c,  # teal
 ]
 
 _BTN_STYLE = f"""
@@ -65,7 +66,7 @@ class NewProjectDialog(QDialog):
         self.setWindowTitle("New Project")
         self.setFixedWidth(440)
         self.setStyleSheet(f"background: {_PANEL}; color: {_TEXT};")
-        self._color = _PRESET_COLORS[0]
+        self._color: int = _PRESET_COLORS[0]
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(28, 24, 28, 24)
@@ -103,9 +104,9 @@ class NewProjectDialog(QDialog):
 
         lay.addSpacing(4)
 
-        # Buttons
+        # Error + buttons
         self._err = QLabel("")
-        self._err.setStyleSheet(f"font-size: 12px; color: #e05c5c;")
+        self._err.setStyleSheet("font-size: 12px; color: #e05c5c;")
         lay.addWidget(self._err)
 
         btn_row = QHBoxLayout()
@@ -128,14 +129,12 @@ class NewProjectDialog(QDialog):
         return lbl
 
     def _build_swatches(self) -> QHBoxLayout:
-        ROW_SPACING = 8
-        BTN_SIZE = 28
         row = QHBoxLayout()
-        row.setSpacing(ROW_SPACING)
+        row.setSpacing(8)
         self._swatch_btns: list[QPushButton] = []
         for color in _PRESET_COLORS:
             btn = QPushButton()
-            btn.setFixedSize(BTN_SIZE, BTN_SIZE)
+            btn.setFixedSize(28, 28)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setCheckable(True)
             btn.setChecked(color == self._color)
@@ -146,14 +145,15 @@ class NewProjectDialog(QDialog):
         row.addStretch()
         return row
 
-    def _swatch_css(self, color: str, checked: bool) -> str:
-        border = "#ffffff" if checked else color
+    def _swatch_css(self, color: int, checked: bool) -> str:
+        hex_color = color_to_hex(color)
+        border = "#ffffff" if checked else hex_color
         return (
-            f"QPushButton {{ background: {color}; border-radius: 14px;"
+            f"QPushButton {{ background: {hex_color}; border-radius: 14px;"
             f" border: 2px solid {border}; }}"
         )
 
-    def _select_color(self, color: str) -> None:
+    def _select_color(self, color: int) -> None:
         self._color = color
         for btn, c in zip(self._swatch_btns, _PRESET_COLORS):
             btn.setChecked(c == color)
@@ -173,7 +173,7 @@ class NewProjectDialog(QDialog):
         ensure_projects_db()
         ensure_notes_db()
 
-        p = Project(name=name, description=desc, color=self._color, tags=tags)
+        p = Project(name=name, description=desc, color=self._color, project_tags=tags)
         p.save()
         self.accept()
 
@@ -198,8 +198,8 @@ class ProjectCard(QFrame):
         # Coloured left stripe
         stripe = QWidget()
         stripe.setFixedWidth(6)
-        color = project.color or _ACCENT
-        stripe.setStyleSheet(f"background: {color}; border-radius: 10px 0 0 10px;")
+        hex_color = color_to_hex(project.color) if project.color is not None else _ACCENT
+        stripe.setStyleSheet(f"background: {hex_color}; border-radius: 10px 0 0 10px;")
         outer.addWidget(stripe)
 
         inner = QVBoxLayout()
@@ -232,14 +232,13 @@ class ProjectCard(QFrame):
             lbl.setStyleSheet(f"font-size: 11px; color: {_MUTED};")
             stats_row.addWidget(lbl)
 
-        if project.tags:
-            tags_lbl = QLabel("  ".join(f"#{t}" for t in project.tags))
+        if project.project_tags:
+            tags_lbl = QLabel("  ".join(f"#{t}" for t in project.project_tags))
             tags_lbl.setStyleSheet(f"font-size: 11px; color: {_ACCENT};")
             stats_row.addWidget(tags_lbl)
 
         stats_row.addStretch()
         inner.addLayout(stats_row)
-
         outer.addLayout(inner)
 
     def _note_count(self, project) -> int:
@@ -266,6 +265,7 @@ class ProjectsPage(QWidget):
         # Header row
         header = QHBoxLayout()
         col = QVBoxLayout()
+        col.setSpacing(4)
         title = QLabel("Projects")
         title.setStyleSheet(
             f"font-size: 34px; font-weight: bold; color: {_ACCENT}; background: transparent;"
@@ -274,7 +274,6 @@ class ProjectsPage(QWidget):
         subtitle.setStyleSheet(f"font-size: 13px; color: {_MUTED}; background: transparent;")
         col.addWidget(title)
         col.addWidget(subtitle)
-        col.setSpacing(4)
 
         add_btn = QPushButton("＋  New Project")
         add_btn.setFixedSize(160, 40)
@@ -292,7 +291,7 @@ class ProjectsPage(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setStyleSheet(f"background: transparent;")
+        scroll.setStyleSheet("background: transparent;")
 
         self._list_widget = QWidget()
         self._list_widget.setStyleSheet("background: transparent;")
@@ -304,7 +303,7 @@ class ProjectsPage(QWidget):
         scroll.setWidget(self._list_widget)
         outer.addWidget(scroll)
 
-        # Empty state label (shown when no projects)
+        # Empty state (shown when no projects exist)
         self._empty_lbl = QLabel("No projects yet — create one to get started.")
         self._empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._empty_lbl.setStyleSheet(
@@ -316,7 +315,6 @@ class ProjectsPage(QWidget):
         self._refresh()
 
     def _refresh(self) -> None:
-        # Remove all existing cards (everything except the trailing stretch)
         while self._list_layout.count() > 1:
             item = self._list_layout.takeAt(0)
             if item.widget():
