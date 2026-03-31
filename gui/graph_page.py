@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import csv
 import datetime
+import io
+import json
 
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
+    QFileDialog,
     QHeaderView,
     QHBoxLayout,
+    QLabel,
+    QMenu,
     QPushButton,
     QSplitter,
     QTableWidget,
@@ -135,6 +141,17 @@ class GraphPage(QWidget):
         bar.addWidget(toggle_btn)
 
         bar.addStretch()
+
+        self._selection_lbl = QLabel("0 selected")
+        self._selection_lbl.setStyleSheet("color: #7777aa; font-size: 12px;")
+        bar.addWidget(self._selection_lbl)
+
+        self._export_btn = QPushButton("Export selected")
+        self._export_btn.setToolTip("Export selected papers to file")
+        self._export_btn.setEnabled(False)
+        self._export_btn.clicked.connect(self._show_export_menu)
+        bar.addWidget(self._export_btn)
+
         layout.addLayout(bar)
 
     def _build_split(self, layout: QVBoxLayout) -> None:
@@ -155,6 +172,7 @@ class GraphPage(QWidget):
 
         self._paper_list.table.currentCellChanged.connect(self._on_paper_selected)
         self._graph_view.node_clicked.connect(self._on_graph_node_clicked)
+        self._graph_view.selection_changed.connect(self._on_selection_changed)
 
     # ── Data loading ──────────────────────────────────────────────────────────
 
