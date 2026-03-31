@@ -490,6 +490,12 @@ class SearchWindow(QMainWindow):
             return
         # Capture key now — _current_paper_key may change before download completes
         key = self._current_paper_key
+        # Check for linked external PDF first
+        if key:
+            db_row = get_paper(key[0], key[1])
+            if db_row and db_row["pdf_path"] and os.path.isfile(db_row["pdf_path"]):
+                self._pdf_window.load_pdf(db_row["pdf_path"], is_external=True)
+                return
         self._pdf_btn.setEnabled(False)
         self._pdf_btn.setText("Downloading…")
         self._pdf_worker = _PdfWorker(self._results[row])
