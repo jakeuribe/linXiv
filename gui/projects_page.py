@@ -321,9 +321,10 @@ class ProjectsPage(QWidget):
                 item.widget().deleteLater()
 
         try:
-            from projects import list_projects, ensure_projects_db
+            from projects import filter_projects, ensure_projects_db
+            from projects import Q, Status
             ensure_projects_db()
-            projects = list_projects()
+            projects = filter_projects(Q("status = ?", Status.ACTIVE))
         except Exception:
             projects = []
 
