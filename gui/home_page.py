@@ -100,8 +100,8 @@ class HomePage(QWidget):
         # Rebuild stat cards
         while self._stats_row.count():
             item = self._stats_row.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            if item.widget():  # pyright: ignore[reportOptionalMemberAccess]
+                item.widget().deleteLater()  # pyright: ignore[reportOptionalMemberAccess]
 
         for value, label in (
             (str(total),    "Papers saved"),

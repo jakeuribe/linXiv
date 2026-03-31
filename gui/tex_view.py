@@ -12,7 +12,7 @@ class TexView(QWebEngineView):
         super().__init__(parent)
         self._loaded = False
         self._pending = ""
-        self.page().setBackgroundColor(QColor("transparent"))
+        self.page().setBackgroundColor(QColor("transparent"))  # pyright: ignore[reportOptionalMemberAccess]
         self.loadFinished.connect(self._on_load_finished)
         html_path = os.path.abspath(
             os.path.join(os.path.dirname(__file__), "web", "tex_view.html")
@@ -30,4 +30,4 @@ class TexView(QWebEngineView):
             self._push()
 
     def _push(self) -> None:
-        self.page().runJavaScript(f"setContent({json.dumps(self._pending)})")
+        self.page().runJavaScript(f"setContent({json.dumps(self._pending)})")  # pyright: ignore[reportOptionalMemberAccess]

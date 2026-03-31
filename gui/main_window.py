@@ -56,13 +56,13 @@ class PaperListPanel(QWidget):
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.setAlternatingRowColors(True)
-        self._table.verticalHeader().setVisible(False)
+        self._table.verticalHeader().setVisible(False)  # pyright: ignore[reportOptionalMemberAccess]
         self._table.setSortingEnabled(True)
 
         hdr = self._table.horizontalHeader()
         for i, w in enumerate(_COL_WIDTHS):
             self._table.setColumnWidth(i, w)
-        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        hdr.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)  # pyright: ignore[reportOptionalMemberAccess]
 
         layout.addWidget(self._table)
 

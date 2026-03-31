@@ -377,8 +377,8 @@ class NotesDialog(QDialog):
     def _rebuild(self) -> None:
         while self._notes_layout.count() > 1:
             item = self._notes_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            if item.widget():  # pyright: ignore[reportOptionalMemberAccess]
+                item.widget().deleteLater()  # pyright: ignore[reportOptionalMemberAccess]
 
         from notes import get_notes, ensure_notes_db
         ensure_notes_db()
@@ -605,8 +605,8 @@ class ProjectDetailView(QWidget):
     def _rebuild_papers(self) -> None:
         while self._papers_layout.count() > 1:
             item = self._papers_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            if item.widget():  # pyright: ignore[reportOptionalMemberAccess]
+                item.widget().deleteLater()  # pyright: ignore[reportOptionalMemberAccess]
 
         paper_ids = self._project.paper_ids if self._project else []
         count = len(paper_ids)
@@ -615,7 +615,7 @@ class ProjectDetailView(QWidget):
         if paper_ids:
             self._empty_papers_lbl.setVisible(False)
             for pid in paper_ids:
-                row_widget = _PaperRow(pid, self._project.id)
+                row_widget = _PaperRow(pid, self._project.id)  # pyright: ignore[reportOptionalMemberAccess]
                 self._papers_layout.insertWidget(self._papers_layout.count() - 1, row_widget)
         else:
             self._empty_papers_lbl.setVisible(True)
@@ -788,8 +788,8 @@ class ProjectsPage(QWidget):
     def _refresh(self) -> None:
         while self._list_layout.count() > 1:
             item = self._list_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+            if item.widget():  # pyright: ignore[reportOptionalMemberAccess]
+                item.widget().deleteLater()  # pyright: ignore[reportOptionalMemberAccess]
 
         try:
             from projects import filter_projects, ensure_projects_db, Q, Status

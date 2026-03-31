@@ -45,7 +45,7 @@ class PdfWindow(QMainWindow):
         bar.addWidget(spacer)
         bar.addWidget(self._page_label)
 
-        self._view.pageNavigator().currentPageChanged.connect(self._update_page_label)
+        self._view.pageNavigator().currentPageChanged.connect(self._update_page_label)  # pyright: ignore[reportOptionalMemberAccess]
 
     def load_pdf(self, path: str) -> None:
         self._doc.close()
