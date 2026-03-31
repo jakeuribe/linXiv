@@ -79,6 +79,31 @@ python main_shell.py  # Full app shell (recommended)
 python main.py        # Original graph viewer only
 ```
 
+## App Shell
+
+The shell (`gui/shell.py`) is a `QMainWindow` with a fixed 120px sidebar and a `QStackedWidget` that fills the remaining space. Pages and launchers are registered at startup in `gui/app_shell.py`:
+
+```
+AppShell
+├── Sidebar (fixed, dark)
+│   ├── Home        → HomePage      (stat cards, recent papers)
+│   ├── Graph       → GraphPage     (D3 force graph + paper list)
+│   ├── Projects    → ProjectsPage  (project list + detail view)
+│   ├── Add by DOI  → DoiPage       (DOI resolution + save)
+│   ├── Setup       → SetupPage     (API key instructions)
+│   └── Search      → SearchWindow  (floating, not embedded)
+└── QStackedWidget (page content)
+```
+
+New pages and launchers can be added in one line:
+
+```python
+shell.add_page("Stats", StatsWidget())        # embedded, switchable
+shell.add_launcher("Settings", open_settings) # opens a floating window
+```
+
+`add_page` returns the stack index. `add_launcher` buttons are not checkable and do not affect the stack.
+
 ## Usage
 
 ### Projects
