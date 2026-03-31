@@ -468,6 +468,13 @@ class SearchWindow(QMainWindow):
         )
         self._sidebar_abstract.set_content(paper.summary)
         self._pdf_btn.setEnabled(True)
+        self._link_pdf_btn.setEnabled(True)
+        # Show linked indicator if paper has an external pdf_path
+        db_row = get_paper(key[0], key[1])
+        if db_row and db_row["pdf_path"]:
+            self._linked_indicator.setText("Linked")
+        else:
+            self._linked_indicator.setText("")
         # Auto-check if already saved in session OR PDF exists on disk from a prior session
         already_saved = key in self._saved_papers or os.path.isfile(self._pdf_path_for_key(key))
         if already_saved:
@@ -572,6 +579,8 @@ class SearchWindow(QMainWindow):
         self._save_pdf_btn.blockSignals(True)
         self._save_pdf_btn.setChecked(False)
         self._save_pdf_btn.blockSignals(False)
+        self._link_pdf_btn.setEnabled(False)
+        self._linked_indicator.setText("")
         self._current_paper_key = None
 
     def _set_busy(self, busy: bool) -> None:
