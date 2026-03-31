@@ -268,13 +268,14 @@ class SetupPage(QWidget):
         os.environ[env_var] = key
 
         try:
-            from AI_tools import GeminiProvider, OpenAIProvider, set_provider
+            from AI_tools import GeminiProvider, OpenAIProvider, PaperContent, set_provider
             if provider_name == "Gemini":
                 provider = GeminiProvider()
             else:
                 provider = OpenAIProvider()
             # Try a minimal call to verify the key works
-            provider.tag("Test paper: Introduction to Machine Learning")
+            test_content = PaperContent(abstract="Test paper: Introduction to Machine Learning")
+            provider.tag(test_content)
             set_provider(provider)
             self._provider_status.setText(f"{provider_name} connection successful.")
             self._provider_status.setStyleSheet(f"font-size: 12px; color: {_GREEN};")

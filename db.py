@@ -334,3 +334,30 @@ def get_tags() -> list[str]:
             ORDER BY je.value
         """).fetchall()
     return [row["tag"] for row in rows]
+
+
+def set_full_text(paper_id: str, version: int, full_text: str) -> None:
+    """Store extracted TeX full text and update the FTS index."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE papers SET full_text = ?, downloaded_source = 1 "
+            "WHERE paper_id = ? AND version = ?",
+            (full_text, paper_id, version),
+        )
+        # Update FTS index — delete old entry then insert new one
+        conn.execute(
+            "INSERT OR REPLACE INTO papers_fts(paper_id, full_text) VALUES (?, ?)",
+            (paper_id, full_text),
+        )
+
+
+def search_full_text(query: str, limit: int = 20) -> list[sqlite3.Row]:
+    """Full-text search over TeX source content. Returns matching papers."""
+    with _connect() as conn:
+        return conn.execute("""
+            SELECT p.* FROM papers p
+            JOIN papers_fts fts ON p.paper_id = fts.paper_id
+            WHERE papers_fts MATCH ?
+            ORDER BY rank
+            LIMIT ?
+        """, (query, limit)).fetchall()
