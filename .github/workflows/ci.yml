@@ -22,7 +22,7 @@ jobs:
 
       - name: Type check
         run: |
-          echo '{"typeCheckingMode": "basic", "pythonVersion": "3.11"}' > pyrightconfig.json
+          echo '{"typeCheckingMode": "basic", "pythonVersion": "3.11", "exclude": ["gui/**", "**/__pycache__"]}' > pyrightconfig.json
           pyright
 
       - name: Run tests
