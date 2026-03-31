@@ -187,10 +187,14 @@ function loadGraph(data) {
         if (simulation) simulation.alphaTarget(0);
     });
 
-    // Click paper node → notify Python to select in table
+    // Click paper node → navigate or toggle selection (Ctrl+click)
     cy.on('tap', 'node[type = "paper"]', e => {
         const paper_id = e.target.id();
-        console.log('GRAPHVIEW_PAPER_CLICKED:' + paper_id);
+        if (e.originalEvent.ctrlKey || e.originalEvent.metaKey) {
+            _toggleSelection(paper_id);
+        } else {
+            console.log('GRAPHVIEW_PAPER_CLICKED:' + paper_id);
+        }
     });
 
     const cs = parseFloat($('centerForce').value);
@@ -391,6 +395,91 @@ function highlightNode(nodeId) {
             e.style({ 'opacity': connected ? FULL_OPACITY : DIM_OPACITY });
         });
     });
+}
+
+// ── Selection (Ctrl+click to toggle, called from Python for bulk ops) ────────
+
+function _toggleSelection(paperId) {
+    if (_selectedIds.has(paperId)) {
+        _selectedIds.delete(paperId);
+    } else {
+        _selectedIds.add(paperId);
+    }
+    _applySelectionStyle();
+    _notifySelectionChanged();
+}
+
+function _applySelectionStyle() {
+    if (!cy) return;
+    cy.batch(() => {
+        cy.nodes('[type = "paper"]').forEach(n => {
+            if (_selectedIds.has(n.id())) {
+                n.style({ 'border-color': SELECTED_BORDER, 'border-width': 3, 'border-style': 'double' });
+            } else {
+                n.style({ 'border-color': '#0f0f1a', 'border-width': 1.5, 'border-style': 'solid' });
+            }
+        });
+    });
+}
+
+function _notifySelectionChanged() {
+    console.log('GRAPHVIEW_SELECTION_COUNT:' + _selectedIds.size);
+}
+
+function selectAllPapers() {
+    if (!cy) return;
+    cy.nodes('[type = "paper"]').forEach(n => {
+        if (parseFloat(n.style('opacity')) > DIM_OPACITY) {
+            _selectedIds.add(n.id());
+        }
+    });
+    _applySelectionStyle();
+    _notifySelectionChanged();
+}
+
+function clearSelection() {
+    _selectedIds.clear();
+    _applySelectionStyle();
+    _notifySelectionChanged();
+}
+
+function getSelectedPaperData() {
+    if (!cy) return JSON.stringify({ papers: [], edges: [] });
+    const papers = [];
+    const edgeSet = [];
+    cy.nodes('[type = "paper"]').forEach(n => {
+        if (!_selectedIds.has(n.id())) return;
+        const d = n.data();
+        const authors = [];
+        n.connectedEdges().forEach(e => {
+            const other = e.source().id() === n.id() ? e.target() : e.source();
+            if (other.data('type') === 'author') authors.push(other.data('label'));
+        });
+        papers.push({
+            paper_id:  d.id,
+            title:     d.label,
+            category:  d.category || '',
+            tags:      d.tags || [],
+            has_pdf:   d.has_pdf || false,
+            published: d.published || '',
+            authors:   authors,
+        });
+    });
+    // Edges between selected papers
+    cy.edges().forEach(e => {
+        const sid = e.source().id(), tid = e.target().id();
+        if (_selectedIds.has(sid) && _selectedIds.has(tid)) {
+            edgeSet.push({ source: sid, target: tid });
+        }
+        // Also include edges from selected papers to their authors
+        if (_selectedIds.has(sid) && e.target().data('type') === 'author') {
+            edgeSet.push({ source: sid, target: tid });
+        }
+        if (_selectedIds.has(tid) && e.source().data('type') === 'author') {
+            edgeSet.push({ source: sid, target: tid });
+        }
+    });
+    return JSON.stringify({ papers: papers, edges: edgeSet });
 }
 
 window.addEventListener('resize', () => { if (cy) cy.resize(); });

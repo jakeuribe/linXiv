@@ -99,6 +99,21 @@
             </div>
         </div>
 
+        <!-- Selection panel -->
+        <div class="panel" id="selection-panel">
+            <div class="panel-header">
+                <span>Selection <span id="selectionCount" style="color:#7777aa; font-weight:400;">(0)</span></span>
+                <button class="panel-toggle" data-target="selection-body">▼</button>
+            </div>
+            <div class="panel-body" id="selection-body">
+                <div class="check-row" style="margin-bottom:8px;">
+                    <span style="font-size:12px; color:#aaaacc;">Ctrl+click nodes to select</span>
+                </div>
+                <button id="select-all-btn" class="full-btn" style="margin-top:0;">Select all visible</button>
+                <button id="clear-selection-btn" class="full-btn">Clear selection</button>
+            </div>
+        </div>
+
     </div><!-- end #right-panels -->
 
     <script src="graph.js"></script>
