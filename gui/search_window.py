@@ -536,6 +536,39 @@ class SearchWindow(QMainWindow):
             self._saved_papers.discard(self._current_paper_key)
             print(f"[save] unmarked {self._current_paper_key} | saved set: {self._saved_papers}")
 
+    def _on_link_pdf(self) -> None:
+        if self._current_paper_key is None:
+            return
+        paper_id, version = self._current_paper_key
+        # Check if the paper is saved in the DB first
+        row = get_paper(paper_id, version)
+        if row is None:
+            self._status.setText("Save the paper first before linking a PDF.")
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Link PDF to paper", "", "PDF Files (*.pdf)"
+        )
+        if not path:
+            return
+        self._set_pdf_path(paper_id, version, path)
+        self._linked_indicator.setText("Linked")
+        self._status.setText(f"Linked PDF: {os.path.basename(path)}")
+
+    @staticmethod
+    def _set_pdf_path(paper_id: str, version: int, path: str) -> None:
+        """Write pdf_path for a paper directly (no backend function available yet)."""
+        import sqlite3
+        from db import DB_PATH
+        conn = sqlite3.connect(DB_PATH)
+        try:
+            conn.execute(
+                "UPDATE papers SET pdf_path = ? WHERE paper_id = ? AND version = ?",
+                (path, paper_id, version),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
     def _pdf_path_for_key(self, key: tuple[str, int]) -> str:
         """Reconstruct the expected PDF path from a (paper_id, version) key."""
         paper_id, version = key
