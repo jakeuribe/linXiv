@@ -1,15 +1,18 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QStackedWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -49,6 +52,13 @@ _BTN_MUTED_STYLE = f"""
     }}
     QPushButton:hover {{ border-color: {_TEXT}; color: {_TEXT}; }}
 """
+_BTN_SMALL_STYLE = f"""
+    QPushButton {{
+        background: transparent; border: 1px solid {_BORDER}; border-radius: 4px;
+        color: {_MUTED}; font-size: 11px; padding: 3px 10px;
+    }}
+    QPushButton:hover {{ border-color: {_ACCENT}; color: {_ACCENT}; }}
+"""
 _INPUT_STYLE = f"""
     QLineEdit, QTextEdit {{
         background: {_BG}; border: 1px solid {_BORDER}; border-radius: 6px;
@@ -76,14 +86,12 @@ class NewProjectDialog(QDialog):
         title.setStyleSheet(f"font-size: 20px; font-weight: bold; color: {_ACCENT};")
         lay.addWidget(title)
 
-        # Name
         lay.addWidget(self._field_label("Name"))
         self._name = QLineEdit()
         self._name.setPlaceholderText("e.g. Diffusion Models")
         self._name.setStyleSheet(_INPUT_STYLE)
         lay.addWidget(self._name)
 
-        # Description
         lay.addWidget(self._field_label("Description  (optional)"))
         self._desc = QTextEdit()
         self._desc.setPlaceholderText("What is this project about?")
@@ -91,20 +99,16 @@ class NewProjectDialog(QDialog):
         self._desc.setStyleSheet(_INPUT_STYLE)
         lay.addWidget(self._desc)
 
-        # Project tags
         lay.addWidget(self._field_label("Project tags  (comma-separated, optional)"))
         self._project_tags = QLineEdit()
         self._project_tags.setPlaceholderText("e.g. generative, vision")
         self._project_tags.setStyleSheet(_INPUT_STYLE)
         lay.addWidget(self._project_tags)
 
-        # Color
         lay.addWidget(self._field_label("Colour"))
         lay.addLayout(self._build_swatches())
-
         lay.addSpacing(4)
 
-        # Error + buttons
         self._err = QLabel("")
         self._err.setStyleSheet("font-size: 12px; color: #e05c5c;")
         lay.addWidget(self._err)
@@ -113,11 +117,9 @@ class NewProjectDialog(QDialog):
         cancel = QPushButton("Cancel")
         cancel.setStyleSheet(_BTN_MUTED_STYLE)
         cancel.clicked.connect(self.reject)
-
         self._create_btn = QPushButton("Create")
         self._create_btn.setStyleSheet(_BTN_STYLE)
         self._create_btn.clicked.connect(self._on_create)
-
         btn_row.addWidget(cancel)
         btn_row.addStretch()
         btn_row.addWidget(self._create_btn)
@@ -165,8 +167,8 @@ class NewProjectDialog(QDialog):
             self._err.setText("Project name is required.")
             return
         desc = self._desc.toPlainText().strip()
-        raw_project_tags = self._project_tags.text().strip()
-        project_tags = [t.strip() for t in raw_project_tags.split(",") if t.strip()] if raw_project_tags else []
+        raw = self._project_tags.text().strip()
+        project_tags = [t.strip() for t in raw.split(",") if t.strip()] if raw else []
 
         from projects import Project, ensure_projects_db
         from notes import ensure_notes_db
@@ -178,11 +180,333 @@ class NewProjectDialog(QDialog):
         self.accept()
 
 
+# ── Add-paper dialog ──────────────────────────────────────────────────────────
+
+class AddPaperDialog(QDialog):
+    def __init__(self, project, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._project = project
+        self.setWindowTitle("Add Paper to Project")
+        self.setFixedSize(560, 440)
+        self.setStyleSheet(f"background: {_PANEL}; color: {_TEXT};")
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(24, 20, 24, 20)
+        lay.setSpacing(12)
+
+        title = QLabel("Add Paper")
+        title.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {_ACCENT};")
+        lay.addWidget(title)
+
+        self._filter = QLineEdit()
+        self._filter.setPlaceholderText("Filter by title or arXiv ID…")
+        self._filter.setStyleSheet(_INPUT_STYLE)
+        self._filter.textChanged.connect(self._apply_filter)
+        lay.addWidget(self._filter)
+
+        self._list = QListWidget()
+        self._list.setStyleSheet(f"""
+            QListWidget {{
+                background: {_BG}; border: 1px solid {_BORDER}; border-radius: 6px;
+                color: {_TEXT}; font-size: 12px;
+            }}
+            QListWidget::item:selected {{ background: {_ACCENT}; color: #fff; }}
+            QListWidget::item:hover    {{ background: #2a2a4a; }}
+        """)
+        self._list.itemDoubleClicked.connect(self._on_add)
+        lay.addWidget(self._list)
+
+        btn_row = QHBoxLayout()
+        cancel = QPushButton("Cancel")
+        cancel.setStyleSheet(_BTN_MUTED_STYLE)
+        cancel.clicked.connect(self.reject)
+        self._add_btn = QPushButton("Add to Project")
+        self._add_btn.setStyleSheet(_BTN_STYLE)
+        self._add_btn.clicked.connect(self._on_add)
+        btn_row.addWidget(cancel)
+        btn_row.addStretch()
+        btn_row.addWidget(self._add_btn)
+        lay.addLayout(btn_row)
+
+        self._load_papers()
+
+    def _load_papers(self) -> None:
+        from db import list_papers
+        self._all_papers = list_papers()
+        already = set(self._project.paper_ids)
+        self._papers = [r for r in self._all_papers if r["paper_id"] not in already]
+        self._populate(self._papers)
+
+    def _populate(self, papers) -> None:
+        self._list.clear()
+        for row in papers:
+            item = QListWidgetItem(f"{row['title']}  [{row['paper_id']}]")
+            item.setData(Qt.ItemDataRole.UserRole, row["paper_id"])
+            self._list.addItem(item)
+
+    def _apply_filter(self, text: str) -> None:
+        q = text.lower()
+        filtered = [
+            r for r in self._papers
+            if q in r["title"].lower() or q in r["paper_id"].lower()
+        ] if q else self._papers
+        self._populate(filtered)
+
+    def _on_add(self) -> None:
+        item = self._list.currentItem()
+        if item is None:
+            return
+        paper_id = item.data(Qt.ItemDataRole.UserRole)
+        self._project.add_paper(paper_id)
+        self.accept()
+
+
+# ── Add-note dialog ───────────────────────────────────────────────────────────
+
+class AddNoteDialog(QDialog):
+    def __init__(self, paper_id: str, project_id: int, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._paper_id  = paper_id
+        self._project_id = project_id
+        self.setWindowTitle("Add Note")
+        self.setFixedSize(480, 320)
+        self.setStyleSheet(f"background: {_PANEL}; color: {_TEXT};")
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(24, 20, 24, 20)
+        lay.setSpacing(12)
+
+        title = QLabel("Add Note")
+        title.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {_ACCENT};")
+        lay.addWidget(title)
+
+        self._note_title = QLineEdit()
+        self._note_title.setPlaceholderText("Title  (optional)")
+        self._note_title.setStyleSheet(_INPUT_STYLE)
+        lay.addWidget(self._note_title)
+
+        self._content = QTextEdit()
+        self._content.setPlaceholderText("Note content…")
+        self._content.setStyleSheet(_INPUT_STYLE)
+        lay.addWidget(self._content)
+
+        btn_row = QHBoxLayout()
+        cancel = QPushButton("Cancel")
+        cancel.setStyleSheet(_BTN_MUTED_STYLE)
+        cancel.clicked.connect(self.reject)
+        save_btn = QPushButton("Save Note")
+        save_btn.setStyleSheet(_BTN_STYLE)
+        save_btn.clicked.connect(self._on_save)
+        btn_row.addWidget(cancel)
+        btn_row.addStretch()
+        btn_row.addWidget(save_btn)
+        lay.addLayout(btn_row)
+
+    def _on_save(self) -> None:
+        from notes import Note, ensure_notes_db
+        ensure_notes_db()
+        note = Note(
+            paper_id   = self._paper_id,
+            project_id = self._project_id,
+            title      = self._note_title.text().strip(),
+            content    = self._content.toPlainText().strip(),
+        )
+        note.save()
+        self.accept()
+
+
+# ── Paper row (inside detail view) ────────────────────────────────────────────
+
+class _PaperRow(QFrame):
+    def __init__(self, paper_id: str, project_id: int, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._paper_id   = paper_id
+        self._project_id = project_id
+        self.setStyleSheet(f"""
+            QFrame {{ background: {_BG}; border: 1px solid {_BORDER}; border-radius: 6px; }}
+            QLabel {{ border: none; background: transparent; }}
+        """)
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(12, 8, 12, 8)
+        row.setSpacing(12)
+
+        title_str = self._fetch_title()
+        title_lbl = QLabel(title_str)
+        title_lbl.setStyleSheet(f"font-size: 13px; color: {_TEXT};")
+        title_lbl.setWordWrap(True)
+        row.addWidget(title_lbl, stretch=1)
+
+        self._note_btn = QPushButton(self._note_label())
+        self._note_btn.setStyleSheet(_BTN_SMALL_STYLE)
+        self._note_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._note_btn.clicked.connect(self._on_add_note)
+        row.addWidget(self._note_btn)
+
+    def _fetch_title(self) -> str:
+        try:
+            from db import get_paper
+            row = get_paper(self._paper_id)
+            return row["title"] if row else self._paper_id
+        except Exception:
+            return self._paper_id
+
+    def _note_count(self) -> int:
+        try:
+            from notes import count_paper_notes
+            return count_paper_notes(self._paper_id, self._project_id)
+        except Exception:
+            return 0
+
+    def _note_label(self) -> str:
+        n = self._note_count()
+        return f"📝 {n} {'note' if n == 1 else 'notes'}"
+
+    def _on_add_note(self) -> None:
+        dlg = AddNoteDialog(self._paper_id, self._project_id, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._note_btn.setText(self._note_label())
+
+
+# ── Project detail view ───────────────────────────────────────────────────────
+
+class ProjectDetailView(QWidget):
+    back_requested = pyqtSignal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setStyleSheet(f"background: {_BG}; color: {_TEXT};")
+        self._project = None
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(48, 32, 48, 32)
+        outer.setSpacing(0)
+
+        # Header
+        header = QHBoxLayout()
+        header.setSpacing(16)
+
+        back_btn = QPushButton("← Back")
+        back_btn.setStyleSheet(_BTN_MUTED_STYLE)
+        back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        back_btn.setFixedWidth(90)
+        back_btn.clicked.connect(self.back_requested)
+        header.addWidget(back_btn)
+
+        self._color_stripe = QWidget()
+        self._color_stripe.setFixedSize(6, 36)
+        self._color_stripe.setStyleSheet(f"background: {_ACCENT}; border-radius: 3px;")
+        header.addWidget(self._color_stripe)
+
+        self._title_lbl = QLabel()
+        self._title_lbl.setStyleSheet(
+            f"font-size: 28px; font-weight: bold; color: {_TEXT}; background: transparent;"
+        )
+        header.addWidget(self._title_lbl, stretch=1)
+
+        outer.addLayout(header)
+        outer.addSpacing(16)
+
+        # Meta (description + tags)
+        self._desc_lbl = QLabel()
+        self._desc_lbl.setWordWrap(True)
+        self._desc_lbl.setStyleSheet(f"font-size: 13px; color: {_MUTED}; background: transparent;")
+        outer.addWidget(self._desc_lbl)
+
+        self._tags_lbl = QLabel()
+        self._tags_lbl.setStyleSheet(f"font-size: 12px; color: {_ACCENT}; background: transparent;")
+        outer.addWidget(self._tags_lbl)
+        outer.addSpacing(20)
+
+        # Papers section header
+        papers_header = QHBoxLayout()
+        self._papers_lbl = QLabel("Papers")
+        self._papers_lbl.setStyleSheet(
+            f"font-size: 16px; font-weight: 600; color: {_TEXT}; background: transparent;"
+        )
+        self._add_paper_btn = QPushButton("＋  Add Paper")
+        self._add_paper_btn.setStyleSheet(_BTN_STYLE)
+        self._add_paper_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._add_paper_btn.setFixedHeight(34)
+        self._add_paper_btn.clicked.connect(self._on_add_paper)
+        papers_header.addWidget(self._papers_lbl)
+        papers_header.addStretch()
+        papers_header.addWidget(self._add_paper_btn)
+        outer.addLayout(papers_header)
+        outer.addSpacing(10)
+
+        # Scrollable papers list
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("background: transparent;")
+
+        self._papers_widget = QWidget()
+        self._papers_widget.setStyleSheet("background: transparent;")
+        self._papers_layout = QVBoxLayout(self._papers_widget)
+        self._papers_layout.setContentsMargins(0, 0, 0, 0)
+        self._papers_layout.setSpacing(8)
+        self._papers_layout.addStretch()
+
+        scroll.setWidget(self._papers_widget)
+        outer.addWidget(scroll)
+
+        self._empty_papers_lbl = QLabel("No papers yet — add one to get started.")
+        self._empty_papers_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_papers_lbl.setStyleSheet(
+            f"font-size: 13px; color: {_MUTED}; background: transparent;"
+        )
+        outer.addWidget(self._empty_papers_lbl)
+        outer.addStretch()
+
+    def load(self, project) -> None:
+        self._project = project
+
+        hex_color = color_to_hex(project.color) if project.color is not None else _ACCENT
+        self._color_stripe.setStyleSheet(f"background: {hex_color}; border-radius: 3px;")
+        self._title_lbl.setText(project.name)
+        self._desc_lbl.setText(project.description)
+        self._desc_lbl.setVisible(bool(project.description))
+        self._tags_lbl.setText("  ".join(f"#{t}" for t in project.project_tags))
+        self._tags_lbl.setVisible(bool(project.project_tags))
+
+        self._rebuild_papers()
+
+    def _rebuild_papers(self) -> None:
+        while self._papers_layout.count() > 1:
+            item = self._papers_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        paper_ids = self._project.paper_ids if self._project else []
+        count = len(paper_ids)
+        self._papers_lbl.setText(f"Papers  ({count})")
+
+        if paper_ids:
+            self._empty_papers_lbl.setVisible(False)
+            for pid in paper_ids:
+                row_widget = _PaperRow(pid, self._project.id)
+                self._papers_layout.insertWidget(self._papers_layout.count() - 1, row_widget)
+        else:
+            self._empty_papers_lbl.setVisible(True)
+
+    def _on_add_paper(self) -> None:
+        if self._project is None:
+            return
+        dlg = AddPaperDialog(self._project, self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._rebuild_papers()
+
+
 # ── Project card ──────────────────────────────────────────────────────────────
 
 class ProjectCard(QFrame):
+    clicked = pyqtSignal(object)   # emits the Project
+
     def __init__(self, project, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._project = project
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setStyleSheet(f"""
             QFrame {{
                 background: {_PANEL}; border: 1px solid {_BORDER}; border-radius: 10px;
@@ -195,7 +519,6 @@ class ProjectCard(QFrame):
         outer.setContentsMargins(0, 0, 16, 0)
         outer.setSpacing(0)
 
-        # Coloured left stripe
         stripe = QWidget()
         stripe.setFixedWidth(6)
         hex_color = color_to_hex(project.color) if project.color is not None else _ACCENT
@@ -216,7 +539,6 @@ class ProjectCard(QFrame):
             desc_lbl.setWordWrap(True)
             inner.addWidget(desc_lbl)
 
-        # Stats row
         stats_row = QHBoxLayout()
         stats_row.setSpacing(12)
         stats_row.setContentsMargins(0, 4, 0, 0)
@@ -250,6 +572,10 @@ class ProjectCard(QFrame):
         except Exception:
             return 0
 
+    def mousePressEvent(self, event) -> None:
+        self.clicked.emit(self._project)
+        super().mousePressEvent(event)
+
 
 # ── Projects page ─────────────────────────────────────────────────────────────
 
@@ -259,10 +585,27 @@ class ProjectsPage(QWidget):
         self.setStyleSheet(f"background: {_BG}; color: {_TEXT};")
 
         outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        self._inner = QStackedWidget()
+        self._inner.addWidget(self._build_list_page())   # index 0
+
+        self._detail_view = ProjectDetailView()
+        self._detail_view.back_requested.connect(self._on_back)
+        self._inner.addWidget(self._detail_view)          # index 1
+
+        outer.addWidget(self._inner)
+        self._refresh()
+
+    # ── List page ─────────────────────────────────────────────────────────────
+
+    def _build_list_page(self) -> QWidget:
+        page = QWidget()
+        page.setStyleSheet(f"background: {_BG};")
+        outer = QVBoxLayout(page)
         outer.setContentsMargins(48, 40, 48, 40)
         outer.setSpacing(0)
 
-        # Header row
         header = QHBoxLayout()
         col = QVBoxLayout()
         col.setSpacing(4)
@@ -287,7 +630,6 @@ class ProjectsPage(QWidget):
         outer.addLayout(header)
         outer.addSpacing(28)
 
-        # Scroll area for project cards
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -303,7 +645,6 @@ class ProjectsPage(QWidget):
         scroll.setWidget(self._list_widget)
         outer.addWidget(scroll)
 
-        # Empty state (shown when no projects exist)
         self._empty_lbl = QLabel("No projects yet — create one to get started.")
         self._empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._empty_lbl.setStyleSheet(
@@ -312,7 +653,7 @@ class ProjectsPage(QWidget):
         outer.addWidget(self._empty_lbl)
         outer.addStretch()
 
-        self._refresh()
+        return page
 
     def _refresh(self) -> None:
         while self._list_layout.count() > 1:
@@ -321,8 +662,7 @@ class ProjectsPage(QWidget):
                 item.widget().deleteLater()
 
         try:
-            from projects import filter_projects, ensure_projects_db
-            from projects import Q, Status
+            from projects import filter_projects, ensure_projects_db, Q, Status
             ensure_projects_db()
             projects = filter_projects(Q("status = ?", Status.ACTIVE))
         except Exception:
@@ -332,9 +672,20 @@ class ProjectsPage(QWidget):
             self._empty_lbl.setVisible(False)
             for p in projects:
                 card = ProjectCard(p)
+                card.clicked.connect(self._open_project)
                 self._list_layout.insertWidget(self._list_layout.count() - 1, card)
         else:
             self._empty_lbl.setVisible(True)
+
+    # ── Navigation ────────────────────────────────────────────────────────────
+
+    def _open_project(self, project) -> None:
+        self._detail_view.load(project)
+        self._inner.setCurrentIndex(1)
+
+    def _on_back(self) -> None:
+        self._inner.setCurrentIndex(0)
+        self._refresh()
 
     def _on_add(self) -> None:
         dlg = NewProjectDialog(self)
