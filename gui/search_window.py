@@ -324,6 +324,16 @@ class SearchWindow(QMainWindow):
         self._save_pdf_btn.toggled.connect(self._on_save_pdf_toggled)
         pdf_row.addWidget(self._save_pdf_btn)
 
+        self._link_pdf_btn = QPushButton("Link PDF")
+        self._link_pdf_btn.setToolTip("Link an external PDF file to this paper")
+        self._link_pdf_btn.setEnabled(False)
+        self._link_pdf_btn.clicked.connect(self._on_link_pdf)
+        pdf_row.addWidget(self._link_pdf_btn)
+
+        self._linked_indicator = QLabel("")
+        self._linked_indicator.setStyleSheet("color: #4caf7d; font-size: 11px;")
+        pdf_row.addWidget(self._linked_indicator)
+
         meta_layout.addWidget(self._sidebar_title)
         meta_layout.addWidget(self._sidebar_meta)
         meta_layout.addLayout(tag_row)
