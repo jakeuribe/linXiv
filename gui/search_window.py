@@ -415,7 +415,7 @@ class SearchWindow(QMainWindow):
         self._results = results
         for paper in results:
             row_widget = _ResultRow(paper.title)
-            paper_id, _ = _parse_entry_id(paper.entry_id)
+            paper_id, _ = parse_entry_id(paper.entry_id)
             row_widget.set_checked(get_paper(paper_id) is not None)
             row_widget._checkbox.stateChanged.connect(
                 lambda state, rw=row_widget, p=paper: self._on_checkbox_changed(rw, p, state)
@@ -439,7 +439,7 @@ class SearchWindow(QMainWindow):
             tags = self._parse_tags()
             save_paper(paper, tags=tags if tags else None)
         else:
-            paper_id, _ = _parse_entry_id(paper.entry_id)
+            paper_id, _ = parse_entry_id(paper.entry_id)
             delete_paper(paper_id)
 
     def _on_select(self, row: int) -> None:
@@ -447,7 +447,7 @@ class SearchWindow(QMainWindow):
             self._clear_sidebar()
             return
         paper = self._results[row]
-        key = _parse_entry_id(paper.entry_id)
+        key = parse_entry_id(paper.entry_id)
         self._current_paper_key = key
         authors = ", ".join(a.name for a in paper.authors[:5])
         if len(paper.authors) > 5:

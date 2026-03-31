@@ -126,6 +126,7 @@ def parse_entry_id(entry_id: str) -> tuple[str, int]:
     """Split 'http://arxiv.org/abs/2204.12985v4' into ('2204.12985', 4)."""
     raw = entry_id.split('/')[-1]
     match = re.match(r'^(.+?)(?:v(\d+))?$', raw)
+    assert match is not None
     paper_id = match.group(1)
     version = int(match.group(2)) if match.group(2) else 1
     return paper_id, version

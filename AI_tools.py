@@ -48,7 +48,7 @@ def _generate(prompt: str, content: PaperContent, schema: type[BaseModel]) -> Ba
             response_schema=schema,
         ),
     )
-    return cast(schema, response.parsed)
+    return cast(BaseModel, response.parsed)
 
 
 # Response schemas 

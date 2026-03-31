@@ -79,9 +79,9 @@ def _make_result(
         updated=now,
         primary_category=primary_category,
         categories=categories or [primary_category],
-        doi=None,
-        comment=None,
-        journal_ref=None,
+        doi="",
+        comment="",
+        journal_ref="",
         links=[],
     )
     return result
