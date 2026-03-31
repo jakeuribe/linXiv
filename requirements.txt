@@ -1,0 +1,6 @@
+arxiv
+PyQt6
+PyQt6-WebEngine
+google-genai
+pydantic
+python-dotenv

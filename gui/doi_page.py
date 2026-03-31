@@ -17,15 +17,12 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from db import get_paper, save_paper, _parse_entry_id
+from db import get_paper, save_paper, parse_entry_id
 from fetch_paper_metadata import fetch_paper_metadata, search_papers
 
-_BG     = "#0f0f1a"
-_PANEL  = "#1a1a2e"
-_BORDER = "#2e2e50"
-_ACCENT = "#5b8dee"
-_TEXT   = "#ccccdd"
-_MUTED  = "#7777aa"
+from gui.theme import BG as _BG, PANEL as _PANEL, BORDER as _BORDER
+from gui.theme import ACCENT as _ACCENT, TEXT as _TEXT, MUTED as _MUTED
+
 _GREEN  = "#4caf7d"
 _RED    = "#e05c5c"
 
@@ -285,7 +282,7 @@ class DoiPage(QWidget):
         abstract = result.summary or ""
         self._res_abstract.setText(abstract[:400] + ("…" if len(abstract) > 400 else ""))
 
-        pid, _ = _parse_entry_id(result.entry_id)
+        pid, _ = parse_entry_id(result.entry_id)
         already = get_paper(pid) is not None
         self._arxiv_lbl.setText(f"arXiv:{pid}")
         if already:

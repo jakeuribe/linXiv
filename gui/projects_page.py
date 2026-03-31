@@ -19,13 +19,8 @@ from PyQt6.QtWidgets import (
 )
 
 from projects import color_to_hex
-
-_BG     = "#0f0f1a"
-_PANEL  = "#1a1a2e"
-_BORDER = "#2e2e50"
-_ACCENT = "#5b8dee"
-_TEXT   = "#ccccdd"
-_MUTED  = "#7777aa"
+from gui.theme import BG as _BG, PANEL as _PANEL, BORDER as _BORDER
+from gui.theme import ACCENT as _ACCENT, TEXT as _TEXT, MUTED as _MUTED
 
 _PRESET_COLORS: list[int] = [
     0x5b8dee,  # blue (default)

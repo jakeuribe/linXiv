@@ -1,3 +1,6 @@
+import os
+from pathlib import Path
+
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QPushButton, QListWidget, QListWidgetItem,
@@ -7,7 +10,9 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 import arxiv
 from fetch_paper_metadata import search_papers
-from db import save_paper, delete_paper, get_paper, set_has_pdf, _parse_entry_id
+from db import save_paper, delete_paper, get_paper, set_has_pdf, parse_entry_id
+
+_PDF_DIR = Path(__file__).parent.parent / "pdfs"
 from downloads import download_pdf, cleanup_pdfs as _cleanup_pdfs, saved_pdfs_size
 from .tex_view import TexView
 from .pdf_window import PdfWindow
@@ -155,10 +160,8 @@ class _PdfWorker(QThread):
         self.paper = paper
 
     def run(self) -> None:
-        import os
-        dirpath = os.path.join(os.path.dirname(__file__), '..', 'pdfs')
-        os.makedirs(dirpath, exist_ok=True)
-        path = download_pdf(self.paper, dirpath=dirpath)
+        _PDF_DIR.mkdir(parents=True, exist_ok=True)
+        path = download_pdf(self.paper, dirpath=str(_PDF_DIR))
         self.done.emit(path)
 
 
@@ -456,7 +459,6 @@ class SearchWindow(QMainWindow):
         self._sidebar_abstract.set_content(paper.summary)
         self._pdf_btn.setEnabled(True)
         # Auto-check if already saved in session OR PDF exists on disk from a prior session
-        import os
         already_saved = key in self._saved_papers or os.path.isfile(self._pdf_path_for_key(key))
         if already_saved:
             self._saved_papers.add(key)
@@ -478,7 +480,6 @@ class SearchWindow(QMainWindow):
         self._pdf_worker.start()
 
     def _on_pdf_ready(self, path: str, key: tuple[str, int] | None = None) -> None:
-        import os
         self._pdf_btn.setEnabled(True)
         self._pdf_btn.setText("View PDF")
         if key:
@@ -520,25 +521,21 @@ class SearchWindow(QMainWindow):
 
     def _pdf_path_for_key(self, key: tuple[str, int]) -> str:
         """Reconstruct the expected PDF path from a (paper_id, version) key."""
-        import os
         paper_id, version = key
-        dirpath = os.path.join(os.path.dirname(__file__), '..', 'pdfs')
-        return os.path.join(dirpath, f"{paper_id}v{version}.pdf")
+        return str(_PDF_DIR / f"{paper_id}v{version}.pdf")
 
     def cleanup_pdfs(self) -> list[str]:
         """Delete all unsaved PDFs. Always runs — no size condition for deletion."""
-        import os
         self._pdf_window._doc.close()  # release Windows file lock before deleting
         from PyQt6.QtWidgets import QApplication
         QApplication.processEvents()   # flush handle release (required on Windows)
-        dirpath = os.path.join(os.path.dirname(__file__), '..', 'pdfs')
-        if not os.path.isdir(dirpath):
+        if not _PDF_DIR.is_dir():
             return []
         keep = {
             self._paper_pdf_paths.get(key) or self._pdf_path_for_key(key)
             for key in self._saved_papers
         }
-        deleted = _cleanup_pdfs(dirpath, keep=keep)
+        deleted = _cleanup_pdfs(str(_PDF_DIR), keep=keep)
 
         # Update has_pdf flag in DB
         for key in self._saved_papers:
@@ -546,7 +543,7 @@ class SearchWindow(QMainWindow):
             set_has_pdf(key[0], key[1], os.path.isfile(path))
         for path in deleted:
             fname = os.path.splitext(os.path.basename(path))[0]  # e.g. '2204.12985v4'
-            key = _parse_entry_id(fname)
+            key = parse_entry_id(fname)
             set_has_pdf(key[0], key[1], False)
 
         print(f"[cleanup] kept: {self._saved_papers} | deleted {len(deleted)} file(s): {deleted}")

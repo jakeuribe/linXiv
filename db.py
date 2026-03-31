@@ -2,10 +2,11 @@ import sqlite3
 import json
 import re
 import datetime
+from pathlib import Path
 import arxiv
 from typing import Optional
 
-DB_PATH = "papers.db"
+DB_PATH = str(Path(__file__).parent / "papers.db")
 
 # --- adapters: Python → SQLite storage ---
 sqlite3.register_adapter(list,              lambda v: json.dumps(v))
@@ -121,7 +122,7 @@ def init_db() -> None:
                 conn.execute(f"ALTER TABLE papers ADD COLUMN {col} {typedef}")
 
 
-def _parse_entry_id(entry_id: str) -> tuple[str, int]:
+def parse_entry_id(entry_id: str) -> tuple[str, int]:
     """Split 'http://arxiv.org/abs/2204.12985v4' into ('2204.12985', 4)."""
     raw = entry_id.split('/')[-1]
     match = re.match(r'^(.+?)(?:v(\d+))?$', raw)
@@ -131,7 +132,7 @@ def _parse_entry_id(entry_id: str) -> tuple[str, int]:
 
 
 def _insert(conn: sqlite3.Connection, paper: arxiv.Result, tags: list[str] | None = None) -> tuple[str, int]:
-    paper_id, version = _parse_entry_id(paper.entry_id)
+    paper_id, version = parse_entry_id(paper.entry_id)
     conn.execute("""
         INSERT OR REPLACE INTO papers
             (paper_id, version, title, url, published, updated,

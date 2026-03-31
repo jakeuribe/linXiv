@@ -11,12 +11,9 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-_BG     = "#0f0f1a"
-_PANEL  = "#1a1a2e"
-_BORDER = "#2e2e50"
-_ACCENT = "#5b8dee"
-_TEXT   = "#ccccdd"
-_MUTED  = "#7777aa"
+from gui.theme import BG as _BG, PANEL as _PANEL, BORDER as _BORDER
+from gui.theme import ACCENT as _ACCENT, TEXT as _TEXT, MUTED as _MUTED
+
 _GREEN  = "#4caf7d"
 _AMBER  = "#e8a838"
 _CODE   = "#0a0a14"

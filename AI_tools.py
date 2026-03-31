@@ -7,8 +7,7 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 
 _ = load_dotenv()
-
-_client: genai.Client
+_client: genai.Client | None = None
 
 
 def _get_client() -> genai.Client:
@@ -64,9 +63,7 @@ class _SummaryResponse(BaseModel):
 class _RelatedResponse(BaseModel):
     related_ids: list[str]
 
-
 # Public API 
-
 def tag(content: PaperContent, file_path: str | None = None) -> list[str]:
     """Generate 3-5 Obsidian tags. Optionally append to file_path."""
     parsed = cast(_TagResponse, _generate(
@@ -79,14 +76,12 @@ def tag(content: PaperContent, file_path: str | None = None) -> list[str]:
             f.write("\n" + " ".join(tags))
     return tags
 
-
 def summarize(content: PaperContent) -> _SummaryResponse:
     """Return a one-sentence TLDR and 2-4 key contributions."""
     return cast(_SummaryResponse, _generate(
         "Summarize this academic paper into a one-sentence TLDR and 2-4 key contributions.",
         content, _SummaryResponse,
     ))
-
 
 def find_related(
     content: PaperContent,

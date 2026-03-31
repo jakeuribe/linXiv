@@ -1,18 +1,16 @@
-import sys, os
+import os
 import time
 import arxiv
 from datetime import datetime
+from pathlib import Path
 from typing import Sequence, Generator, Iterable, Iterator
-# from AI_tools import generate_and_save_obsidian_tags
 from db import init_db, save_paper, save_papers
-
-# The ID of the paper you want to fetch
-paper_id = "2204.12985"
 
 # Shared client — 5 s gap gives margin over arXiv's 3 s minimum
 _client = arxiv.Client(num_retries=3, delay_seconds=7.0)
 
-_RATELIMIT_FILE = ".arxiv_ratelimit"
+_RATELIMIT_FILE = str(Path(__file__).parent / ".arxiv_ratelimit")
+_VAULT_DIR      = Path(__file__).parent / "obsidian_vault" / "arXivVault"
 _RATELIMIT_WAIT = 60.0  # seconds to wait after a 429
 
 
@@ -88,8 +86,8 @@ def gen_md_files(papers: list[arxiv.Result], additional_tags:None|Sequence[str] 
 def gen_md_file(paper: arxiv.Result, additional_tags:None|Sequence[str] = None, print_on: bool = False):
     # Access the argument using args.filename
     title:str = paper.title
-    id:str = paper.entry_id.split('/')[-1]
-    url:str = f"https://arxiv.org/abs/{id}"
+    paper_id:str = paper.entry_id.split('/')[-1]
+    url:str = f"https://arxiv.org/abs/{paper_id}"
     authors:list[str] = [author.name for author in paper.authors]
     tags:list[str] = ["clippings", "research", "clipping"]
 
@@ -98,7 +96,7 @@ def gen_md_file(paper: arxiv.Result, additional_tags:None|Sequence[str] = None, 
             tags.append(s)
 
     date = paper.published.strftime('%Y-%m-%d')
-    filename = f"obsidian_vault\\arxivVault\\{id}.md"
+    filename = _VAULT_DIR / f"{paper_id}.md"
 
     author_list = "\n".join([f'  - "[[{name}]]"' for name in authors])
     tag_list = "\n".join([f'- {tag}' for tag in tags])
@@ -116,15 +114,4 @@ def gen_md_file(paper: arxiv.Result, additional_tags:None|Sequence[str] = None, 
     with open(filename, "w", encoding="utf-8") as f:
         f.write(final_content)
 
-if __name__ == "__main__":
-    init_db()
-    paper = fetch_paper_metadata(paper_id)
-    
-    # generated_tags, file_path = generate_and_save_obsidian_tags(text_content=paper.summary, file_path="paper_tags.md")
-
-    gen_md_file(paper)
-
-    search:str = "QEC"
-    papers = search_papers(search, max_results=5)
-    print(save_papers(papers=papers))
-    gen_md_files(papers, additional_tags=[search])
+# Dev scaffold removed — use the app shell or call functions directly from a REPL.
