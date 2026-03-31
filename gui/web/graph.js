@@ -4,10 +4,13 @@ const HIGHLIGHT_COLOR = '#ff6b6b';
 const DIM_OPACITY     = 0.08;
 const FULL_OPACITY    = 1.0;
 
+const SELECTED_BORDER = '#00e676';
+
 let cy          = null;
 let simulation  = null;
 let _simNodeById = new Map();
 let _debounce   = null;
+let _selectedIds = new Set();
 
 // ── Panel collapse wiring ────────────────────────────────────────────────────
 

@@ -133,6 +133,67 @@ class GeminiProvider(AIProvider):
 
 
 # ---------------------------------------------------------------------------
+# OpenAIProvider
+# ---------------------------------------------------------------------------
+
+class OpenAIProvider(AIProvider):
+    """AI provider backed by OpenAI (GPT-4o, etc.)."""
+
+    def __init__(self, model: str = "gpt-4o-mini") -> None:
+        self._client = None  # lazy init
+        self._model = model
+
+    def _get_client(self):
+        if self._client is None:
+            from openai import OpenAI  # type: ignore[reportMissingImports]
+            api_key = os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                raise EnvironmentError("OPENAI_API_KEY not set.")
+            self._client = OpenAI(api_key=api_key)
+        return self._client
+
+    def _generate(self, prompt: str, content: PaperContent, schema: type[BaseModel]) -> BaseModel:
+        text = content.best_text()
+        response = self._get_client().responses.parse(
+            model=self._model,
+            instructions=prompt,
+            input=[{"role": "user", "content": text}],
+            text_format=schema,
+        )
+        return response.output_parsed  # type: ignore[return-value]
+
+    def tag(self, content: PaperContent) -> list[str]:
+        parsed = cast(_TagResponse, self._generate(
+            "Generate 3-5 relevant Obsidian tags for this academic paper. "
+            "Return as JSON with a 'tags' array of strings.",
+            content, _TagResponse,
+        ))
+        return [f"#{t.strip().lstrip('#').replace(' ', '_')}" for t in parsed.tags]
+
+    def summarize(self, content: PaperContent) -> SummaryResult:
+        return cast(SummaryResult, self._generate(
+            "Summarize this academic paper into a one-sentence TLDR and 2-4 key contributions. "
+            "Return as JSON with 'tldr' (string) and 'key_contributions' (array of strings).",
+            content, SummaryResult,
+        ))
+
+    def find_related(
+        self,
+        content: PaperContent,
+        candidates: list[tuple[str, str]],
+        threshold: int = 5,
+    ) -> list[str]:
+        candidate_block = "\n\n".join(
+            f"ID: {pid}\n{ab}" for pid, ab in candidates[:40])
+        parsed = cast(_RelatedResponse, self._generate(
+            f"Which of the following papers are most conceptually related to this one? "
+            f"Return up to {threshold} paper IDs as JSON with a 'related_ids' array.\n\n{candidate_block}",
+            content, _RelatedResponse,
+        ))
+        return parsed.related_ids
+
+
+# ---------------------------------------------------------------------------
 # Module-level active provider + public API
 # ---------------------------------------------------------------------------
 

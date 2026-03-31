@@ -2,5 +2,6 @@ arxiv
 PyQt6
 PyQt6-WebEngine
 google-genai
+openai
 pydantic
 python-dotenv
