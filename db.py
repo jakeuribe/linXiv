@@ -294,11 +294,16 @@ def get_graph_data() -> tuple[list[dict], list[dict]]:
     return paper_nodes + author_nodes, edges
 
 
-def list_papers(latest_only: bool = True) -> list[sqlite3.Row]:
+def list_papers(latest_only: bool = True, limit: int | None = None, offset: int = 0) -> list[sqlite3.Row]:
     """List all stored papers (latest version per paper by default)."""
     with _connect() as conn:
         table = "latest_papers" if latest_only else "papers"
-        return conn.execute(f"SELECT * FROM {table} ORDER BY published DESC").fetchall()
+        sql = f"SELECT * FROM {table} ORDER BY published DESC"
+        params: list[int] = []
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            params = [limit, offset]
+        return conn.execute(sql, params).fetchall()
 
 
 def get_categories() -> list[str]:
