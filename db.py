@@ -166,9 +166,8 @@ def _insert(conn: sqlite3.Connection, paper: arxiv.Result, tags: list[str] | Non
     return paper_id, version
 
 
-def _insert_metadata(conn: sqlite3.Connection, meta: "PaperMetadata", tags: list[str] | None = None) -> tuple[str, int]:
+def _insert_metadata(conn: sqlite3.Connection, meta: PaperMetadata, tags: list[str] | None = None) -> tuple[str, int]:
     """Insert a source-agnostic PaperMetadata into the papers table."""
-    from sources.base import PaperMetadata as _PM  # noqa: F811 — deferred to avoid circular import
     merged_tags = meta.tags
     if tags:
         merged_tags = list(set((merged_tags or []) + tags))
