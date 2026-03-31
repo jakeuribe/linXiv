@@ -2,6 +2,7 @@ arxiv
 PyQt6
 PyQt6-WebEngine
 google-genai
+httpx
 markdown
 openai
 pydantic

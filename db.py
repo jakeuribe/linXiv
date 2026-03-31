@@ -138,8 +138,8 @@ def _insert(conn: sqlite3.Connection, paper: arxiv.Result, tags: list[str] | Non
     conn.execute("""
         INSERT OR REPLACE INTO papers
             (paper_id, version, title, url, published, updated,
-             category, categories, doi, journal_ref, comment, summary, authors, tags)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             category, categories, doi, journal_ref, comment, summary, authors, tags, source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         paper_id,
         version,
@@ -155,20 +155,64 @@ def _insert(conn: sqlite3.Connection, paper: arxiv.Result, tags: list[str] | Non
         paper.summary,
         [a.name for a in paper.authors],
         tags,
+        "arxiv",
     ))
     return paper_id, version
 
 
+def _insert_metadata(conn: sqlite3.Connection, meta: "PaperMetadata", tags: list[str] | None = None) -> tuple[str, int]:
+    """Insert a source-agnostic PaperMetadata into the papers table."""
+    from sources.base import PaperMetadata as _PM  # noqa: F811 — deferred to avoid circular import
+    merged_tags = meta.tags
+    if tags:
+        merged_tags = list(set((merged_tags or []) + tags))
+    conn.execute("""
+        INSERT OR REPLACE INTO papers
+            (paper_id, version, title, url, published, updated,
+             category, categories, doi, journal_ref, comment, summary, authors, tags, source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        meta.paper_id,
+        meta.version,
+        meta.title,
+        meta.url,
+        meta.published,
+        meta.updated,
+        meta.category,
+        meta.categories,
+        meta.doi,
+        meta.journal_ref,
+        meta.comment,
+        meta.summary,
+        meta.authors,
+        merged_tags,
+        meta.source,
+    ))
+    return meta.paper_id, meta.version
+
+
 def save_paper(paper: arxiv.Result, tags: list[str] | None = None) -> tuple[str, int]:
-    """Insert or replace a single paper. Returns (paper_id, version)."""
+    """Insert or replace a single arxiv paper. Returns (paper_id, version)."""
     with _connect() as conn:
         return _insert(conn, paper, tags)
 
 
 def save_papers(papers: list[arxiv.Result], tags: list[str] | None = None) -> list[tuple[str, int]]:
-    """Batch insert/replace papers in a single transaction. Returns list of (paper_id, version)."""
+    """Batch insert/replace arxiv papers in a single transaction. Returns list of (paper_id, version)."""
     with _connect() as conn:
         return [_insert(conn, paper, tags) for paper in papers]
+
+
+def save_paper_metadata(meta: "PaperMetadata", tags: list[str] | None = None) -> tuple[str, int]:
+    """Insert or replace a paper from any source via PaperMetadata. Returns (paper_id, version)."""
+    with _connect() as conn:
+        return _insert_metadata(conn, meta, tags)
+
+
+def save_papers_metadata(papers: list["PaperMetadata"], tags: list[str] | None = None) -> list[tuple[str, int]]:
+    """Batch insert/replace papers from any source. Returns list of (paper_id, version)."""
+    with _connect() as conn:
+        return [_insert_metadata(conn, meta, tags) for meta in papers]
 
 
 def set_has_pdf(paper_id: str, version: int, has: bool) -> None:
