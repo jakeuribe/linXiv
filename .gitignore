@@ -21,7 +21,9 @@ obsidian_vault/*
 # Package reference docs (downloaded for offline use)
 _package_docs/
 
-# OS
+# OS/Temp_files
 .DS_Store
 Thumbs.db
+features.md
+*T.md
 pyrightconfig.json
