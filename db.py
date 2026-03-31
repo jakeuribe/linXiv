@@ -237,6 +237,12 @@ def set_has_pdf(paper_id: str, version: int, has: bool) -> None:
             (has, paper_id, version)
         )
 
+def set_pdf_path(paper_id: str, path: str) -> None:
+    """Set the pdf_path for a paper (all versions)."""
+    with _connect() as conn:
+        conn.execute("UPDATE papers SET pdf_path = ? WHERE paper_id = ?", (path, paper_id))
+
+
 def delete_paper(paper_id: str) -> None:
     """Delete all versions of a paper."""
     with _connect() as conn:

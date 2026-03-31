@@ -10,7 +10,12 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 import arxiv
 from fetch_paper_metadata import search_papers
-from db import save_paper, delete_paper, get_paper, set_has_pdf, parse_entry_id
+from db import (
+    save_paper, save_paper_metadata, delete_paper,
+    get_paper, set_has_pdf, parse_entry_id,
+)
+from sources import ArxivSource, OpenAlexSource
+from sources.base import PaperMetadata
 
 _PDF_DIR = Path(__file__).parent.parent / "pdfs"
 from downloads import download_pdf, cleanup_pdfs as _cleanup_pdfs, saved_pdfs_size
@@ -149,6 +154,25 @@ class _SearchWorker(QThread):
             sort_by=self.sort_by,
             sort_order=self.sort_order,
         )
+        self.done.emit(results)
+
+
+class _SourceSearchWorker(QThread):
+    """Search worker for any PaperSource (arXiv or OpenAlex)."""
+    done = pyqtSignal(list)
+
+    def __init__(self, source_name: str, query: str, max_results: int):
+        super().__init__()
+        self._source_name = source_name
+        self.query = query
+        self.max_results = max_results
+
+    def run(self) -> None:
+        if self._source_name == "openalex":
+            source = OpenAlexSource()
+        else:
+            source = ArxivSource()
+        results = source.search(self.query, max_results=self.max_results)
         self.done.emit(results)
 
 
