@@ -3,7 +3,7 @@ import datetime
 import sys
 import os
 
-import pytest
+# import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -162,7 +162,7 @@ class TestSavePaperMetadata:
             source="openalex",
         )
         defaults.update(kwargs)
-        return PaperMetadata(**defaults)
+        return PaperMetadata(**defaults)  # pyright: ignore[reportArgumentType]
 
     def test_save_and_get_by_id(self, tmp_db):
         meta = self._make_meta()
@@ -255,11 +255,13 @@ class TestFullTextSearch:
     def test_set_full_text_marks_downloaded_source(self, tmp_db):
         db.save_paper(_make_result("2204.12985v1"))
         row_before = db.get_paper("2204.12985")
+        assert row_before is not None
         assert not row_before["downloaded_source"]
+
         db.set_full_text("2204.12985", 1, "Some TeX content.")
         row_after = db.get_paper("2204.12985")
-        assert row_after["downloaded_source"]
-
+        assert row_after is not None
+        assert row_after["downloaded_source"]  # set_full_text should mark this True
 
 # ---------------------------------------------------------------------------
 # extract_source (TeX extraction)
