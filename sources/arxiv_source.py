@@ -1,0 +1,62 @@
+"""ArXiv paper source — wraps the arxiv Python client."""
+
+from __future__ import annotations
+
+import re
+import arxiv
+from sources.base import PaperMetadata, PaperSource
+
+
+def _parse_arxiv_id(entry_id: str) -> tuple[str, int]:
+    """Split 'http://arxiv.org/abs/2204.12985v4' into ('2204.12985', 4)."""
+    raw = entry_id.split("/")[-1]
+    match = re.match(r"^(.+?)(?:v(\d+))?$", raw)
+    assert match is not None
+    paper_id = match.group(1)
+    version = int(match.group(2)) if match.group(2) else 1
+    return paper_id, version
+
+
+def _result_to_metadata(result: arxiv.Result) -> PaperMetadata:
+    """Convert an arxiv.Result to a PaperMetadata."""
+    paper_id, version = _parse_arxiv_id(result.entry_id)
+    return PaperMetadata(
+        paper_id=paper_id,
+        version=version,
+        title=result.title,
+        authors=[a.name for a in result.authors],
+        published=result.published.date(),
+        updated=result.updated.date() if result.updated else None,
+        summary=result.summary,
+        category=result.primary_category,
+        categories=result.categories,
+        doi=result.doi,
+        journal_ref=result.journal_ref,
+        comment=result.comment,
+        url=result.pdf_url,
+        source="arxiv",
+    )
+
+
+class ArxivSource:
+    """Paper source backed by the arXiv API."""
+
+    source_name: str = "arxiv"
+
+    def __init__(self) -> None:
+        self._client = arxiv.Client(num_retries=3, delay_seconds=7.0)
+
+    def search(self, query: str, max_results: int = 10) -> list[PaperMetadata]:
+        search = arxiv.Search(
+            query=query,
+            max_results=max_results,
+            sort_by=arxiv.SortCriterion.Relevance,
+            sort_order=arxiv.SortOrder.Descending,
+        )
+        results = list(self._client.results(search))
+        return [_result_to_metadata(r) for r in results]
+
+    def fetch_by_id(self, paper_id: str) -> PaperMetadata:
+        search = arxiv.Search(id_list=[paper_id])
+        result = next(self._client.results(search))
+        return _result_to_metadata(result)

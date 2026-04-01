@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body {
+            background: transparent;
+            color: #ccccdd;
+            font-family: 'Segoe UI', sans-serif;
+            font-size: 13px;
+            line-height: 1.6;
+            padding: 8px 10px;
+            overflow-wrap: break-word;
+        }
+        h1, h2, h3 {
+            margin-top: 10px;
+            margin-bottom: 6px;
+            color: #5b8dee;
+            font-weight: 600;
+        }
+        h1 { font-size: 18px; }
+        h2 { font-size: 16px; }
+        h3 { font-size: 14px; }
+        p { margin: 6px 0; }
+        code {
+            background: #1a1a2e;
+            padding: 2px 5px;
+            border-radius: 3px;
+            font-family: 'Cascadia Code', 'Courier New', monospace;
+            font-size: 12px;
+        }
+        pre {
+            background: #1a1a2e;
+            padding: 10px;
+            border-radius: 6px;
+            overflow-x: auto;
+            line-height: 1.4;
+            border: 1px solid #2e2e50;
+            margin: 8px 0;
+        }
+        pre code {
+            background: none;
+            padding: 0;
+        }
+        a { color: #5b8dee; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        blockquote {
+            border-left: 3px solid #5b8dee;
+            margin: 8px 0;
+            padding-left: 12px;
+            color: #7777aa;
+            font-style: italic;
+        }
+        ul, ol { margin: 6px 0; padding-left: 20px; }
+        li { margin: 3px 0; }
+        strong { color: #e0e0ee; }
+        em { color: #aaaacc; }
+        hr {
+            border: none;
+            border-top: 1px solid #2e2e50;
+            margin: 12px 0;
+        }
+    </style>
+</head>
+<body>
+    <div id="content"></div>
+    <script>
+        function setContent(html) {
+            document.getElementById('content').innerHTML = html;
+        }
+    </script>
+</body>
+</html>
