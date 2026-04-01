@@ -12,7 +12,8 @@ import arxiv
 from fetch_paper_metadata import search_papers
 from db import (
     save_paper, save_paper_metadata, delete_paper,
-    get_paper, set_has_pdf, parse_entry_id,
+    get_paper, set_has_pdf, set_pdf_path, parse_entry_id,
+    search_full_text,
 )
 from sources import ArxivSource, OpenAlexSource
 from sources.base import PaperMetadata
@@ -114,11 +115,21 @@ class _ResultList(QListWidget):
 
 
 class _ResultRow(QWidget):
-    def __init__(self, title: str, parent=None):
+    def __init__(self, title: str, source: str = "", parent=None):
         super().__init__(parent)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 2, 4, 2)
         layout.setSpacing(8)
+
+        if source and source != "arxiv":
+            badge = QLabel(source)
+            badge.setFixedWidth(70)
+            badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            badge.setStyleSheet(
+                "background: #2a4a3a; color: #4caf7d; border-radius: 3px;"
+                " font-size: 10px; padding: 1px 4px;"
+            )
+            layout.addWidget(badge, alignment=Qt.AlignmentFlag.AlignTop)
 
         self._label = QLabel(title)
         self._label.setWordWrap(True)
@@ -189,12 +200,22 @@ class _PdfWorker(QThread):
         self.done.emit(path)
 
 
+_SOURCE_OPTIONS = [
+    ("arXiv", "arxiv"),
+    ("OpenAlex", "openalex"),
+    ("Local source", "local"),
+]
+
+
 class SearchWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("arXiv Search")
+        self.setWindowTitle("Paper Search")
         self.resize(1000, 600)
         self._results: list[arxiv.Result] = []
+        self._meta_results: list[PaperMetadata] = []  # unified results from any source
+        self._local_results: list[dict] = []  # results from local FTS
+        self._active_source: str = "arxiv"
         self._row_widgets: list[_ResultRow] = []
         self._clauses: list[_ClauseRow] = []
         self._pdf_window = PdfWindow()
@@ -213,6 +234,12 @@ class SearchWindow(QMainWindow):
 
         # Search bar row
         search_row = QHBoxLayout()
+        self._source_combo = QComboBox()
+        for label, _ in _SOURCE_OPTIONS:
+            self._source_combo.addItem(label)
+        self._source_combo.setFixedWidth(100)
+        self._source_combo.currentIndexChanged.connect(self._on_source_changed)
+        search_row.addWidget(self._source_combo)
         self._search_box = QLineEdit()
         self._search_box.setPlaceholderText("Search arXiv…")
         self._search_box.returnPressed.connect(self._on_search)
@@ -427,23 +454,53 @@ class SearchWindow(QMainWindow):
         self._adv_panel.setVisible(visible)
         self._adv_btn.setText("Advanced ▴" if visible else "Advanced ▾")
 
+    # --- source selection ---
+
+    def _on_source_changed(self, index: int) -> None:
+        self._active_source = _SOURCE_OPTIONS[index][1]
+        is_arxiv = self._active_source == "arxiv"
+        # Advanced query builder and sort options are arXiv-specific
+        self._adv_btn.setVisible(is_arxiv)
+        if not is_arxiv:
+            self._adv_panel.setVisible(False)
+        placeholders = {
+            "arxiv": "Search arXiv…",
+            "openalex": "Search OpenAlex…",
+            "local": "Search downloaded TeX sources…",
+        }
+        self._search_box.setPlaceholderText(
+            placeholders.get(self._active_source, "Search…")
+        )
+
     # --- search ---
 
     def _on_search(self) -> None:
         query = self._search_box.text().strip()
         if not query:
             return
-        sort_by     = _SORT_BY_OPTIONS[self._sort_combo.currentIndex()][1]
-        sort_order  = _SORT_ORDER_OPTIONS[self._order_combo.currentIndex()][1]
         max_results = self._max_spin.value()
         self._set_busy(True)
         self._list.clear()
         self._row_widgets = []
         self._results = []
+        self._meta_results = []
+        self._local_results = []
         self._clear_sidebar()
-        self._worker = _SearchWorker(query, max_results, sort_by, sort_order)
-        self._worker.done.connect(self._on_done)
-        self._worker.start()
+        if self._active_source == "local":
+            self._on_local_search(query, max_results)
+            return
+        if self._active_source == "arxiv":
+            sort_by     = _SORT_BY_OPTIONS[self._sort_combo.currentIndex()][1]
+            sort_order  = _SORT_ORDER_OPTIONS[self._order_combo.currentIndex()][1]
+            self._worker = _SearchWorker(query, max_results, sort_by, sort_order)
+            self._worker.done.connect(self._on_done)
+            self._worker.start()
+        else:
+            self._source_worker = _SourceSearchWorker(
+                self._active_source, query, max_results
+            )
+            self._source_worker.done.connect(self._on_source_done)
+            self._source_worker.start()
 
     def _on_done(self, results: list) -> None:
         self._results = results
@@ -462,6 +519,53 @@ class SearchWindow(QMainWindow):
         self._set_busy(False)
         self._status.setText(f"{len(results)} results")
 
+    def _on_source_done(self, results: list) -> None:
+        self._meta_results = results
+        for paper in results:
+            row_widget = _ResultRow(paper.title, source=paper.source)
+            row_widget.set_checked(get_paper(paper.paper_id) is not None)
+            row_widget._checkbox.stateChanged.connect(
+                lambda state, rw=row_widget, p=paper: self._on_meta_checkbox_changed(rw, p, state)
+            )
+            self._row_widgets.append(row_widget)
+            item = QListWidgetItem()
+            item.setSizeHint(row_widget.sizeHint())
+            self._list.addItem(item)
+            self._list.setItemWidget(item, row_widget)
+        self._set_busy(False)
+        self._status.setText(f"{len(results)} results from {self._active_source}")
+
+    def _on_local_search(self, query: str, limit: int) -> None:
+        try:
+            rows = search_full_text(query, limit=limit)
+        except Exception as exc:
+            self._set_busy(False)
+            self._status.setText(f"FTS error: {exc}")
+            return
+        self._local_results = [dict(r) for r in rows]
+        for paper in self._local_results:
+            title = paper.get("title") or "(untitled)"
+            row_widget = _ResultRow(title, source="local")
+            # Already saved in DB — pre-check and disable
+            row_widget.set_checked(True)
+            row_widget._checkbox.setEnabled(False)
+            self._row_widgets.append(row_widget)
+            item = QListWidgetItem()
+            item.setSizeHint(row_widget.sizeHint())
+            self._list.addItem(item)
+            self._list.setItemWidget(item, row_widget)
+        self._set_busy(False)
+        self._status.setText(f"{len(self._local_results)} results from local source")
+
+    def _on_meta_checkbox_changed(
+        self, row_widget: _ResultRow, paper: PaperMetadata, state: int
+    ) -> None:
+        if state == Qt.CheckState.Checked.value:
+            tags = self._parse_tags()
+            save_paper_metadata(paper, tags=tags if tags else None)
+        else:
+            delete_paper(paper.paper_id)
+
     def _parse_tags(self) -> list[str]:
         raw = self._tag_input.text().strip()
         if not raw:
@@ -477,22 +581,75 @@ class SearchWindow(QMainWindow):
             delete_paper(paper_id)
 
     def _on_select(self, row: int) -> None:
-        if row < 0 or row >= len(self._results):
+        # Determine which result list is active
+        if self._local_results:
+            if row < 0 or row >= len(self._local_results):
+                self._clear_sidebar()
+                return
+            paper_dict = self._local_results[row]
+            key = (paper_dict["paper_id"], paper_dict["version"])
+            self._current_paper_key = key
+            authors_raw = paper_dict.get("authors") or []
+            if isinstance(authors_raw, str):
+                authors_raw = [authors_raw]
+            authors = ", ".join(authors_raw[:5])
+            if len(authors_raw) > 5:
+                authors += f" +{len(authors_raw) - 5} more"
+            cat = paper_dict.get("category") or ""
+            pub = paper_dict.get("published")
+            pub_str = pub.isoformat() if pub else ""
+            self._sidebar_title.set_content(paper_dict.get("title") or "")
+            self._sidebar_meta.set_content(
+                f"[local]  {authors}  ·  {pub_str}  ·  {cat}"
+            )
+            self._sidebar_abstract.set_content(paper_dict.get("summary") or "")
+            has_pdf = paper_dict.get("has_pdf", False)
+            self._pdf_btn.setEnabled(bool(has_pdf))
+            self._save_pdf_btn.setEnabled(False)
+            self._link_pdf_btn.setEnabled(True)
+        elif self._meta_results:
+            if row < 0 or row >= len(self._meta_results):
+                self._clear_sidebar()
+                return
+            paper = self._meta_results[row]
+            key = (paper.paper_id, paper.version)
+            self._current_paper_key = key
+            authors = ", ".join(paper.authors[:5])
+            if len(paper.authors) > 5:
+                authors += f" +{len(paper.authors) - 5} more"
+            cat = paper.category or ""
+            source_tag = f"[{paper.source}]  " if paper.source != "arxiv" else ""
+            self._sidebar_title.set_content(paper.title)
+            self._sidebar_meta.set_content(
+                f"{source_tag}{authors}  ·  {paper.published.isoformat()}  ·  {cat}"
+            )
+            self._sidebar_abstract.set_content(paper.summary)
+            # PDF download only available for arXiv results
+            self._pdf_btn.setEnabled(paper.source == "arxiv")
+            self._save_pdf_btn.setEnabled(paper.source == "arxiv")
+            self._link_pdf_btn.setEnabled(True)
+        elif self._results:
+            if row < 0 or row >= len(self._results):
+                self._clear_sidebar()
+                return
+            paper_arxiv = self._results[row]
+            key = parse_entry_id(paper_arxiv.entry_id)
+            self._current_paper_key = key
+            authors = ", ".join(a.name for a in paper_arxiv.authors[:5])
+            if len(paper_arxiv.authors) > 5:
+                authors += f" +{len(paper_arxiv.authors) - 5} more"
+            self._sidebar_title.set_content(paper_arxiv.title)
+            self._sidebar_meta.set_content(
+                f"{authors}  ·  {paper_arxiv.published.strftime('%Y-%m-%d')}  ·  {paper_arxiv.primary_category}"
+            )
+            self._sidebar_abstract.set_content(paper_arxiv.summary)
+            self._pdf_btn.setEnabled(True)
+            self._save_pdf_btn.setEnabled(True)
+            self._link_pdf_btn.setEnabled(True)
+        else:
             self._clear_sidebar()
             return
-        paper = self._results[row]
-        key = parse_entry_id(paper.entry_id)
-        self._current_paper_key = key
-        authors = ", ".join(a.name for a in paper.authors[:5])
-        if len(paper.authors) > 5:
-            authors += f" +{len(paper.authors) - 5} more"
-        self._sidebar_title.set_content(paper.title)
-        self._sidebar_meta.set_content(
-            f"{authors}  ·  {paper.published.strftime('%Y-%m-%d')}  ·  {paper.primary_category}"
-        )
-        self._sidebar_abstract.set_content(paper.summary)
-        self._pdf_btn.setEnabled(True)
-        self._link_pdf_btn.setEnabled(True)
+
         # Show linked indicator if paper has an external pdf_path
         db_row = get_paper(key[0], key[1])
         if db_row and db_row["pdf_path"]:
@@ -503,15 +660,12 @@ class SearchWindow(QMainWindow):
         already_saved = key in self._saved_papers or os.path.isfile(self._pdf_path_for_key(key))
         if already_saved:
             self._saved_papers.add(key)
-        self._save_pdf_btn.setEnabled(True)
         self._save_pdf_btn.blockSignals(True)
         self._save_pdf_btn.setChecked(already_saved)
         self._save_pdf_btn.blockSignals(False)
 
     def _on_view_pdf(self) -> None:
         row = self._list.currentRow()
-        if row < 0 or row >= len(self._results):
-            return
         # Capture key now — _current_paper_key may change before download completes
         key = self._current_paper_key
         # Check for linked external PDF first
@@ -520,6 +674,9 @@ class SearchWindow(QMainWindow):
             if db_row and db_row["pdf_path"] and os.path.isfile(db_row["pdf_path"]):
                 self._pdf_window.load_pdf(db_row["pdf_path"], is_external=True)
                 return
+        # Only arXiv results support direct PDF download
+        if row < 0 or row >= len(self._results):
+            return
         self._pdf_btn.setEnabled(False)
         self._pdf_btn.setText("Downloading…")
         self._pdf_worker = _PdfWorker(self._results[row])
@@ -580,24 +737,9 @@ class SearchWindow(QMainWindow):
         )
         if not path:
             return
-        self._set_pdf_path(paper_id, version, path)
+        set_pdf_path(paper_id, path)
         self._linked_indicator.setText("Linked")
         self._status.setText(f"Linked PDF: {os.path.basename(path)}")
-
-    @staticmethod
-    def _set_pdf_path(paper_id: str, version: int, path: str) -> None:
-        """Write pdf_path for a paper directly (no backend function available yet)."""
-        import sqlite3
-        from db import DB_PATH
-        conn = sqlite3.connect(DB_PATH)
-        try:
-            conn.execute(
-                "UPDATE papers SET pdf_path = ? WHERE paper_id = ? AND version = ?",
-                (path, paper_id, version),
-            )
-            conn.commit()
-        finally:
-            conn.close()
 
     def _pdf_path_for_key(self, key: tuple[str, int]) -> str:
         """Reconstruct the expected PDF path from a (paper_id, version) key."""

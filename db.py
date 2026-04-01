@@ -180,7 +180,8 @@ def _insert_metadata(conn: sqlite3.Connection, meta: PaperMetadata, tags: list[s
     merged_tags = meta.tags
     if tags:
         merged_tags = list(set((merged_tags or []) + tags))
-    conn.execute("""
+    conn.execute(
+    """
         INSERT OR REPLACE INTO papers
             (paper_id, version, title, url, published, updated,
              category, categories, doi, journal_ref, comment, summary, authors, tags, source)
