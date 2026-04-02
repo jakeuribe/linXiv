@@ -30,6 +30,13 @@ class MarkdownView(QWebEngineView):
         )
         self.load(QUrl.fromLocalFile(html_path))
 
+    def set_title(self, text: str) -> None:
+        """Set the note title — rendered with KaTeX math support."""
+        import html as _html
+        self._pending_title = _html.escape(text or "")
+        if self._loaded:
+            self._push_title()
+
     def set_content(self, text: str) -> None:
         """Convert Markdown text to HTML and display."""
         self._pending = _render(text or "")
@@ -39,7 +46,12 @@ class MarkdownView(QWebEngineView):
     def _on_load_finished(self, ok: bool) -> None:
         if ok:
             self._loaded = True
+            self._push_title()
             self._push()
+
+    def _push_title(self) -> None:
+        title = getattr(self, "_pending_title", "")
+        self.page().runJavaScript(f"setTitle({json.dumps(title)})")  # pyright: ignore[reportOptionalMemberAccess]
 
     def _push(self) -> None:
         self.page().runJavaScript(f"setContent({json.dumps(self._pending)})")  # pyright: ignore[reportOptionalMemberAccess]

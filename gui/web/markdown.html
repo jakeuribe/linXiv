@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="utf-8" />
+    <link rel="stylesheet" href="katex.min.css" />
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         html, body {
@@ -54,6 +55,12 @@
         }
         ul, ol { margin: 6px 0; padding-left: 20px; }
         li { margin: 3px 0; }
+        #title {
+            font-size: 13px;
+            font-weight: 600;
+            color: #e0e0ee;
+            margin-bottom: 6px;
+        }
         strong { color: #e0e0ee; }
         em { color: #aaaacc; }
         hr {
@@ -64,10 +71,29 @@
     </style>
 </head>
 <body>
+    <div id="title"></div>
     <div id="content"></div>
+    <script src="katex.min.js"></script>
+    <script src="auto-render.min.js"></script>
     <script>
+        const _katexOpts = {
+            delimiters: [
+                { left: '$$', right: '$$', display: true },
+                { left: '$',  right: '$',  display: false },
+                { left: '\\(', right: '\\)', display: false },
+                { left: '\\[', right: '\\]', display: true },
+            ],
+            throwOnError: false,
+        };
+        function setTitle(html) {
+            const el = document.getElementById('title');
+            el.innerHTML = html;
+            renderMathInElement(el, _katexOpts);
+        }
         function setContent(html) {
-            document.getElementById('content').innerHTML = html;
+            const el = document.getElementById('content');
+            el.innerHTML = html;
+            renderMathInElement(el, _katexOpts);
         }
     </script>
 </body>

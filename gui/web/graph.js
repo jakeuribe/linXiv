@@ -1,16 +1,20 @@
 const PAPER_COLOR     = '#5b8dee';
 const AUTHOR_COLOR    = '#e8a838';
 const HIGHLIGHT_COLOR = '#ff6b6b';
-const DIM_OPACITY     = 0.08;
+const DIM_OPACITY     = 0.08;   // filter dim (isolate / non-matching)
+const SEL_DIM_OPACITY = 0.28;   // softer dim for non-selected nodes
 const FULL_OPACITY    = 1.0;
-
-const SELECTED_BORDER = '#00e676';
 
 let cy          = null;
 let simulation  = null;
 let _simNodeById = new Map();
 let _debounce   = null;
 let _selectedIds = new Set();
+
+// Filter state (needed so selection style can layer on top)
+let _visiblePaperIds  = null;   // null = no filter active
+let _visibleAuthorIds = null;
+let _filterIsolate    = false;
 
 // ── Panel collapse wiring ────────────────────────────────────────────────────
 
@@ -118,7 +122,7 @@ function setFilterOptions(categories, tags) {
 
 function clearFilters() {
     _textFilterIds.forEach(id => { $(id).value = ''; });
-    _checkFilterIds.forEach(id => { $(id).checked = id !== 'filterHasPdf'; }); // papers+authors default on
+    _checkFilterIds.forEach(id => { $(id).checked = id !== 'filterHasPdf'; });
     $('isolate-btn').classList.remove('active');
     _applyFilter();
 }
@@ -131,6 +135,9 @@ function loadGraph(data) {
     if (simulation) { simulation.stop(); simulation = null; }
     if (cy) { cy.destroy(); cy = null; }
     _simNodeById = new Map();
+    _visiblePaperIds  = null;
+    _visibleAuthorIds = null;
+    _filterIsolate    = false;
 
     const simNodes = nodes.map(n => ({
         id: n.id,
@@ -192,13 +199,26 @@ function loadGraph(data) {
         if (simulation) simulation.alphaTarget(0);
     });
 
-    // Click paper node → navigate or toggle selection (Ctrl+click)
+    // Click paper node:
+    //   Regular click  → set selection to this node alone + navigate
+    //   Ctrl/Cmd click → toggle additive (no navigation)
     cy.on('tap', 'node[type = "paper"]', e => {
         const paper_id = e.target.id();
         if (e.originalEvent.ctrlKey || e.originalEvent.metaKey) {
             _toggleSelection(paper_id);
         } else {
+            _selectedIds.clear();
+            _selectedIds.add(paper_id);
+            _applyAllStyles();
+            _notifySelectionChanged();
             console.log('GRAPHVIEW_PAPER_CLICKED:' + paper_id);
+        }
+    });
+
+    // Tap background → clear selection (unless Ctrl/Cmd held)
+    cy.on('tap', e => {
+        if (e.target === cy && !e.originalEvent.ctrlKey && !e.originalEvent.metaKey) {
+            clearSelection();
         }
     });
 
@@ -220,7 +240,6 @@ function loadGraph(data) {
         });
     });
 
-    // Re-apply current filter state after load
     _applyFilter();
 }
 
@@ -272,10 +291,6 @@ function cytoscapeStyle() {
                 'curve-style': 'haystack',
             },
         },
-        {
-            selector: 'node:selected',
-            style: { 'border-color': '#ffffff', 'border-width': 2.5 },
-        },
     ];
 }
 
@@ -299,7 +314,6 @@ function filterGraph(opts) {
 
     const hlLower   = highlight    ? highlight.toLowerCase()    : null;
     const authLower = authorFilter ? authorFilter.toLowerCase() : null;
-    const hiddenOp  = isolate ? 0 : DIM_OPACITY;
 
     const visiblePaperIds = new Set();
     cy.nodes('[type = "paper"]').forEach(n => {
@@ -332,24 +346,13 @@ function filterGraph(opts) {
         });
     }
 
-    cy.batch(() => {
-        cy.nodes('[type = "paper"]').forEach(n => {
-            n.style({
-                'opacity':          showPapers && visiblePaperIds.has(n.id()) ? FULL_OPACITY : (showPapers ? hiddenOp : 0),
-                'background-color': PAPER_COLOR,
-            });
-        });
-        cy.nodes('[type = "author"]').forEach(n => {
-            n.style({ 'opacity': showAuthors && visibleAuthorIds.has(n.id()) ? FULL_OPACITY : (showAuthors ? hiddenOp : 0) });
-        });
-        cy.edges().forEach(e => {
-            const sv = visiblePaperIds.has(e.source().id()) || visibleAuthorIds.has(e.source().id());
-            const tv = visiblePaperIds.has(e.target().id()) || visibleAuthorIds.has(e.target().id());
-            e.style({ 'opacity': (sv && tv) ? FULL_OPACITY : hiddenOp });
-        });
-    });
+    _visiblePaperIds  = visiblePaperIds;
+    _visibleAuthorIds = visibleAuthorIds;
+    _filterIsolate    = isolate;
 
-    // Physics: when isolating, pin non-visible nodes so they don't interfere
+    _applyAllStyles();
+
+    // Physics: pin non-visible nodes when isolating
     if (simulation) {
         _simNodeById.forEach((sn, id) => {
             const visible = visiblePaperIds.has(id) || visibleAuthorIds.has(id);
@@ -363,46 +366,96 @@ function filterGraph(opts) {
     }
 }
 
-// ── Highlight single node (called from Python) ────────────────────────────────
+// ── Unified visual state ──────────────────────────────────────────────────────
+// Applies both filter visibility and selection highlight in one pass.
 
-function highlightNode(nodeId) {
+function _applyAllStyles() {
     if (!cy) return;
 
-    cy.batch(() => {
-        cy.nodes('[type = "paper"]').style({ 'opacity': FULL_OPACITY, 'background-color': PAPER_COLOR });
-        cy.nodes('[type = "author"]').style({ 'opacity': FULL_OPACITY });
-        cy.edges().style({ 'opacity': FULL_OPACITY });
-    });
+    const anySelected   = _selectedIds.size > 0;
+    const filterActive  = _visiblePaperIds !== null;
+    const filterHideOp  = _filterIsolate ? 0 : DIM_OPACITY;
 
-    if (nodeId === null) return;
-
-    const target = cy.getElementById(nodeId);
-    if (target.empty()) return;
-
-    const connectedAuthorIds = new Set();
-    target.connectedEdges().forEach(e => {
-        const other = e.source().id() === nodeId ? e.target() : e.source();
-        if (other.data('type') === 'author') connectedAuthorIds.add(other.id());
-    });
+    // Author ids connected to any selected paper
+    const selAuthorIds = new Set();
+    if (anySelected) {
+        _selectedIds.forEach(pid => {
+            const n = cy.getElementById(pid);
+            n.connectedEdges().forEach(e => {
+                const other = e.source().id() === pid ? e.target() : e.source();
+                if (other.data('type') === 'author') selAuthorIds.add(other.id());
+            });
+        });
+    }
 
     cy.batch(() => {
         cy.nodes('[type = "paper"]').forEach(n => {
-            n.style({
-                'opacity':          n.id() === nodeId ? FULL_OPACITY : DIM_OPACITY,
-                'background-color': n.id() === nodeId ? HIGHLIGHT_COLOR : PAPER_COLOR,
-            });
+            const nid = n.id();
+            const filterVisible = !filterActive || (_visiblePaperIds && _visiblePaperIds.has(nid));
+
+            if (!filterVisible) {
+                // Filtered out — show at filter dim (or hidden if isolate)
+                n.style({ 'opacity': filterHideOp, 'background-color': PAPER_COLOR });
+            } else if (anySelected && _selectedIds.has(nid)) {
+                // Selected → highlight color, full opacity
+                n.style({ 'opacity': FULL_OPACITY, 'background-color': HIGHLIGHT_COLOR });
+            } else if (anySelected) {
+                // Visible but not selected → soft dim
+                n.style({ 'opacity': SEL_DIM_OPACITY, 'background-color': PAPER_COLOR });
+            } else {
+                // No selection, filter visible → full
+                n.style({ 'opacity': FULL_OPACITY, 'background-color': PAPER_COLOR });
+            }
         });
+
         cy.nodes('[type = "author"]').forEach(n => {
-            n.style({ 'opacity': connectedAuthorIds.has(n.id()) ? FULL_OPACITY : DIM_OPACITY });
+            const nid = n.id();
+            const filterVisible = !filterActive || (_visibleAuthorIds && _visibleAuthorIds.has(nid));
+
+            if (!filterVisible) {
+                n.style({ 'opacity': filterHideOp });
+            } else if (anySelected && selAuthorIds.has(nid)) {
+                n.style({ 'opacity': FULL_OPACITY });
+            } else if (anySelected) {
+                n.style({ 'opacity': SEL_DIM_OPACITY });
+            } else {
+                n.style({ 'opacity': FULL_OPACITY });
+            }
         });
+
         cy.edges().forEach(e => {
-            const connected = e.source().id() === nodeId || e.target().id() === nodeId;
-            e.style({ 'opacity': connected ? FULL_OPACITY : DIM_OPACITY });
+            const sid = e.source().id(), tid = e.target().id();
+            const srcFilterVis = !filterActive
+                || (_visiblePaperIds && _visiblePaperIds.has(sid))
+                || (_visibleAuthorIds && _visibleAuthorIds.has(sid));
+            const tgtFilterVis = !filterActive
+                || (_visiblePaperIds && _visiblePaperIds.has(tid))
+                || (_visibleAuthorIds && _visibleAuthorIds.has(tid));
+
+            if (!srcFilterVis || !tgtFilterVis) {
+                e.style({ 'opacity': filterHideOp });
+            } else if (anySelected) {
+                const srcSel = _selectedIds.has(sid) || selAuthorIds.has(sid);
+                const tgtSel = _selectedIds.has(tid) || selAuthorIds.has(tid);
+                e.style({ 'opacity': (srcSel || tgtSel) ? FULL_OPACITY : SEL_DIM_OPACITY });
+            } else {
+                e.style({ 'opacity': FULL_OPACITY });
+            }
         });
     });
 }
 
-// ── Selection (Ctrl+click to toggle, called from Python for bulk ops) ────────
+// ── Highlight (called from Python when a table row is selected) ───────────────
+// Sets the selection to just this one node (or clears if null).
+
+function highlightNode(nodeId) {
+    _selectedIds.clear();
+    if (nodeId !== null) _selectedIds.add(nodeId);
+    _applyAllStyles();
+    _notifySelectionChanged();
+}
+
+// ── Selection (click to set, Ctrl+click to toggle, Python bulk ops) ──────────
 
 function _toggleSelection(paperId) {
     if (_selectedIds.has(paperId)) {
@@ -410,21 +463,8 @@ function _toggleSelection(paperId) {
     } else {
         _selectedIds.add(paperId);
     }
-    _applySelectionStyle();
+    _applyAllStyles();
     _notifySelectionChanged();
-}
-
-function _applySelectionStyle() {
-    if (!cy) return;
-    cy.batch(() => {
-        cy.nodes('[type = "paper"]').forEach(n => {
-            if (_selectedIds.has(n.id())) {
-                n.style({ 'border-color': SELECTED_BORDER, 'border-width': 3, 'border-style': 'double' });
-            } else {
-                n.style({ 'border-color': '#0f0f1a', 'border-width': 1.5, 'border-style': 'solid' });
-            }
-        });
-    });
 }
 
 function _notifySelectionChanged() {
@@ -438,13 +478,13 @@ function selectAllPapers() {
             _selectedIds.add(n.id());
         }
     });
-    _applySelectionStyle();
+    _applyAllStyles();
     _notifySelectionChanged();
 }
 
 function clearSelection() {
     _selectedIds.clear();
-    _applySelectionStyle();
+    _applyAllStyles();
     _notifySelectionChanged();
 }
 
@@ -470,13 +510,11 @@ function getSelectedPaperData() {
             authors:   authors,
         });
     });
-    // Edges between selected papers
     cy.edges().forEach(e => {
         const sid = e.source().id(), tid = e.target().id();
         if (_selectedIds.has(sid) && _selectedIds.has(tid)) {
             edgeSet.push({ source: sid, target: tid });
         }
-        // Also include edges from selected papers to their authors
         if (_selectedIds.has(sid) && e.target().data('type') === 'author') {
             edgeSet.push({ source: sid, target: tid });
         }

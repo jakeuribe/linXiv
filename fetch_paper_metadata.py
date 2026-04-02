@@ -6,8 +6,10 @@ from pathlib import Path
 from typing import Sequence, Generator, Iterable, Iterator
 from db import init_db, save_paper, save_papers
 
-# Shared client — 5 s gap gives margin over arXiv's 3 s minimum
-_client = arxiv.Client(num_retries=3, delay_seconds=7.0)
+# Shared client — delay_seconds gives margin over arXiv's 3 s minimum.
+# num_retries=1 so a single transient failure gets one retry; we don't want
+# aggressive retrying when the DOI page may make several consecutive searches.
+_client = arxiv.Client(num_retries=1, delay_seconds=7.0)
 
 _RATELIMIT_FILE = str(Path(__file__).parent / ".arxiv_ratelimit")
 _VAULT_DIR      = Path(__file__).parent / "obsidian_vault" / "arXivVault"

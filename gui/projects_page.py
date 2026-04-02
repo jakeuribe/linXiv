@@ -405,15 +405,13 @@ class NotesDialog(QDialog):
         col.setSpacing(4)
 
         top_row = QHBoxLayout()
-        note_title = note.title or "Untitled"
-        title_lbl = QLabel(note_title)
-        title_lbl.setStyleSheet(f"font-size: 13px; font-weight: 600; color: {_TEXT};")
-        top_row.addWidget(title_lbl, stretch=1)
 
         if note.created_at:
             date_lbl = QLabel(note.created_at.strftime("%Y-%m-%d"))
             date_lbl.setStyleSheet(f"font-size: 11px; color: {_MUTED};")
             top_row.addWidget(date_lbl)
+
+        top_row.addStretch()
 
         del_btn = QPushButton("Delete")
         del_btn.setStyleSheet(f"""
@@ -427,12 +425,12 @@ class NotesDialog(QDialog):
         top_row.addWidget(del_btn)
         col.addLayout(top_row)
 
-        if note.content:
-            from gui.markdown_view import MarkdownView
-            md_view = MarkdownView()
-            md_view.set_content(note.content)
-            md_view.setFixedHeight(120)
-            col.addWidget(md_view)
+        from gui.markdown_view import MarkdownView
+        md_view = MarkdownView()
+        md_view.set_title(note.title or "Untitled")
+        md_view.set_content(note.content or "")
+        md_view.setFixedHeight(140)
+        col.addWidget(md_view)
 
         return card
 
@@ -535,6 +533,31 @@ class ProjectDetailView(QWidget):
         )
         header.addWidget(self._title_lbl, stretch=1)
 
+        self._archive_btn = QPushButton("Archive")
+        self._archive_btn.setStyleSheet(_BTN_MUTED_STYLE)
+        self._archive_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._archive_btn.setFixedHeight(32)
+        self._archive_btn.clicked.connect(self._on_archive)
+        header.addWidget(self._archive_btn)
+
+        self._delete_btn = QPushButton("Delete")
+        self._delete_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                border: 1px solid #e05c5c;
+                border-radius: 6px;
+                color: #e05c5c;
+                font-size: 12px;
+                padding: 4px 14px;
+            }}
+            QPushButton:hover {{ background: #2a1a1a; }}
+        """)
+        self._delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._delete_btn.setFixedHeight(32)
+        self._delete_btn.clicked.connect(self._on_delete)
+        self._delete_confirming = False
+        header.addWidget(self._delete_btn)
+
         outer.addLayout(header)
         outer.addSpacing(16)
 
@@ -592,6 +615,8 @@ class ProjectDetailView(QWidget):
 
     def load(self, project) -> None:
         self._project = project
+        self._delete_confirming = False
+        self._delete_btn.setText("Delete")
 
         hex_color = color_to_hex(project.color) if project.color is not None else _ACCENT
         self._color_stripe.setStyleSheet(f"background: {hex_color}; border-radius: 3px;")
@@ -628,6 +653,33 @@ class ProjectDetailView(QWidget):
         dlg = AddPaperDialog(self._project, self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._rebuild_papers()
+
+    def _on_archive(self) -> None:
+        if self._project is None:
+            return
+        from PyQt6.QtWidgets import QMessageBox
+        reply = QMessageBox.question(
+            self,
+            "Archive Project",
+            f"Archive \"{self._project.name}\"?\nIt can be restored later.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._project.archive()
+            self.back_requested.emit()
+
+    def _on_delete(self) -> None:
+        if self._project is None:
+            return
+        if not self._delete_confirming:
+            self._delete_confirming = True
+            self._delete_btn.setText("⚠ Confirm delete?")
+        else:
+            self._delete_confirming = False
+            self._delete_btn.setText("Delete")
+            self._project.delete()
+            self.back_requested.emit()
 
 
 # ── Project card ──────────────────────────────────────────────────────────────

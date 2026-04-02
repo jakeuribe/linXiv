@@ -18,11 +18,16 @@ body {
     position: fixed;
     top: 16px;
     right: 16px;
+    bottom: 16px;
     width: 240px;
     display: flex;
     flex-direction: column;
     gap: 8px;
     z-index: 10;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-width: thin;
+    scrollbar-color: #2e2e50 transparent;
 }
 
 /* ── Individual panel ── */
