@@ -58,5 +58,8 @@ class ArxivSource:
 
     def fetch_by_id(self, paper_id: str) -> PaperMetadata:
         search = arxiv.Search(id_list=[paper_id])
-        result = next(self._client.results(search))
+        try:
+            result = next(self._client.results(search))
+        except StopIteration:
+            raise ValueError(f"Paper '{paper_id}' not found on arXiv.")
         return _result_to_metadata(result)

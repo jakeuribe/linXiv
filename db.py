@@ -134,8 +134,15 @@ def init_db() -> None:
         # FTS5 virtual table for full-text search of TeX source
         conn.execute("""
             CREATE VIRTUAL TABLE IF NOT EXISTS papers_fts
-            USING fts5(paper_id, full_text, content='', content_rowid='rowid')
+            USING fts5(paper_id, full_text)
         """)
+        # Migrate databases that had the broken external-content declaration
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='papers_fts'"
+        ).fetchone()
+        if row and row[0] and "content=''" in row[0]:
+            conn.execute("DROP TABLE IF EXISTS papers_fts")
+            conn.execute("CREATE VIRTUAL TABLE papers_fts USING fts5(paper_id, full_text)")
 
 
 def parse_entry_id(entry_id: str) -> tuple[str, int]:
@@ -364,7 +371,7 @@ def search_full_text(query: str, limit: int = 20) -> list[sqlite3.Row]:
         return conn.execute("""
             SELECT p.* FROM papers p
             JOIN papers_fts fts ON p.paper_id = fts.paper_id
-            WHERE papers_fts MATCH ?
+            WHERE fts MATCH ?
             ORDER BY rank
             LIMIT ?
         """, (query, limit)).fetchall()

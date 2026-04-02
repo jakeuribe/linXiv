@@ -12,20 +12,20 @@ from sources.arxiv_source import ArxivSource
 from sources.openalex_source import OpenAlexSource
 from sources.base import PaperMetadata, PaperSource
 
+_SOURCES: dict[str, type[PaperSource]] = {
+    "arxiv":    ArxivSource,
+    "openalex": OpenAlexSource,
+}
 
 def _source_for(name: str) -> PaperSource:
-    if name == "openalex":
-        return OpenAlexSource()
-    return ArxivSource()
+    cls = _SOURCES.get(name)
+    if cls is None:
+        raise ValueError(f"Unknown source {name!r}. Available: {list(_SOURCES)}")
+    return cls()
 
 
 def _meta_to_dict(m: PaperMetadata) -> dict[str, Any]:
-    d = m.model_dump()
-    d["published"] = str(d["published"])
-    if d.get("updated"):
-        d["updated"] = str(d["updated"])
-    return d
-
+    return m.model_dump(mode="json")
 
 def _row_to_dict(row) -> dict[str, Any]:
     return {k: row[k] for k in row.keys()}
@@ -35,8 +35,7 @@ def _output(data: Any) -> None:
     json.dump(data, sys.stdout, indent=2, default=str)
     sys.stdout.write("\n")
 
-
-# ── Commands 
+# Commands 
 
 def cmd_search(args: argparse.Namespace) -> None:
     source = _source_for(args.source)
@@ -46,7 +45,11 @@ def cmd_search(args: argparse.Namespace) -> None:
 
 def cmd_fetch(args: argparse.Namespace) -> None:
     source = _source_for(args.source)
-    meta = source.fetch_by_id(args.paper_id)
+    try:
+        meta = source.fetch_by_id(args.paper_id)
+    except Exception as e:
+        print(json.dumps({"error": str(e)}), file=sys.stderr)
+        sys.exit(1)
     db.save_paper_metadata(meta)
     _output(_meta_to_dict(meta))
 
@@ -59,6 +62,8 @@ def cmd_list(args: argparse.Namespace) -> None:
     _output(papers)
 
 
+
+
 def cmd_tag(args: argparse.Namespace) -> None:
     from AI_tools import PaperContent, tag
 
@@ -66,7 +71,9 @@ def cmd_tag(args: argparse.Namespace) -> None:
     if row is None:
         print(json.dumps({"error": f"Paper {args.paper_id} not found in DB"}), file=sys.stderr)
         sys.exit(1)
-    content = PaperContent(abstract=row["summary"] or "")
+    summary = row["summary"] or ""
+    full_text = row["full_text"] if "full_text" in row.keys() else None
+    content = PaperContent(abstract=summary, full_text=full_text)
     tags = tag(content)
     _output({"paper_id": args.paper_id, "tags": tags})
 
@@ -114,17 +121,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="arxiv_cli", description="linXiv headless CLI")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    _source_choices = list(_SOURCES)
+
     # search
     p_search = sub.add_parser("search", help="Search for papers")
     p_search.add_argument("query", help="Search query string")
-    p_search.add_argument("--source", choices=["arxiv", "openalex"], default="arxiv")
+    p_search.add_argument("--source", choices=_source_choices, default="arxiv")
     p_search.add_argument("--max", type=int, default=10, help="Max results")
     p_search.set_defaults(func=cmd_search)
 
     # fetch
     p_fetch = sub.add_parser("fetch", help="Fetch and save a paper by ID")
     p_fetch.add_argument("paper_id", help="Paper ID (e.g. 2204.12985 or W3123456789)")
-    p_fetch.add_argument("--source", choices=["arxiv", "openalex"], default="arxiv")
+    p_fetch.add_argument("--source", choices=_source_choices, default="arxiv")
     p_fetch.set_defaults(func=cmd_fetch)
 
     # list

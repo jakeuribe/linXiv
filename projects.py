@@ -111,7 +111,7 @@ def color_from_hex(hex_str: str) -> int:
     return int(hex_str.lstrip("#"), 16)
 
 
-# ── Data model ────────────────────────────────────────────────────────────────
+# ── Data model 
 
 @dataclass
 class Project:
@@ -126,7 +126,7 @@ class Project:
     updated_at:   Optional[datetime.datetime] = None
     archived_at:  Optional[datetime.datetime] = None
 
-    # ── Construction ──────────────────────────────────────────────────────────
+    # ── Construction 
 
     @classmethod
     def from_row(cls, row) -> Project:
@@ -144,7 +144,7 @@ class Project:
             archived_at  = row["archived_at"],
         )
 
-    # ── Persistence ───────────────────────────────────────────────────────────
+    # ── Persistence 
 
     def save(self) -> None:
         """Insert (if new) or update (if existing) the project row."""

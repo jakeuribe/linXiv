@@ -154,13 +154,15 @@ class OpenAIProvider(AIProvider):
 
     def _generate(self, prompt: str, content: PaperContent, schema: type[BaseModel]) -> BaseModel:
         text = content.best_text()
-        response = self._get_client().responses.parse(
+        response = self._get_client().beta.chat.completions.parse(
             model=self._model,
-            instructions=prompt,
-            input=[{"role": "user", "content": text}],
-            text_format=schema,
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": text},
+            ],
+            response_format=schema,
         )
-        return response.output_parsed  # type: ignore[return-value]
+        return response.choices[0].message.parsed  # type: ignore[return-value]
 
     def tag(self, content: PaperContent) -> list[str]:
         parsed = cast(_TagResponse, self._generate(

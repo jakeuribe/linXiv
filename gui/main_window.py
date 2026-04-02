@@ -148,6 +148,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(split)
 
         self._paper_list.table.currentCellChanged.connect(self._on_paper_selected)
+        self._graph_view.node_clicked.connect(self._on_graph_node_clicked)
 
     # ── Data loading ──────────────────────────────────────────────────────────
 
@@ -196,3 +197,11 @@ class MainWindow(QMainWindow):
         paper_id = self._paper_list.paper_id_for_row(current_row)
         if paper_id:
             self._graph_view.highlight_node(paper_id)
+
+    def _on_graph_node_clicked(self, paper_id: str) -> None:
+        """Select the matching row in the paper list when a graph node is clicked."""
+        table = self._paper_list.table
+        for row in range(table.rowCount()):
+            if self._paper_list.paper_id_for_row(row) == paper_id:
+                table.setCurrentCell(row, 0)
+                break

@@ -12,7 +12,10 @@ _USER_AGENT = "linXiv/1.0 (mailto:contact@example.com)"
 
 def _work_to_metadata(work: dict) -> PaperMetadata:
     """Convert an OpenAlex Work object to PaperMetadata."""
-    openalex_id = work.get("id", "").rsplit("/", 1)[-1]  # e.g. "W3123456789"
+    raw_id = work.get("id", "")
+    openalex_id = raw_id.rsplit("/", 1)[-1] if raw_id else ""
+    if not openalex_id:
+        raise ValueError(f"OpenAlex work has no valid ID: {work!r}")
 
     # Authors
     authorships = work.get("authorships", [])
@@ -24,9 +27,10 @@ def _work_to_metadata(work: dict) -> PaperMetadata:
 
     # Published date
     pub_str = work.get("publication_date", "")
-    published = (
-        datetime.date.fromisoformat(pub_str) if pub_str else datetime.date.today()
-    )
+    try:
+        published = datetime.date.fromisoformat(pub_str) if pub_str else datetime.date.today()
+    except ValueError:
+        published = datetime.date.today()
 
     # Category — use the primary topic's subfield if available
     primary_topic = work.get("primary_topic") or {}
@@ -79,29 +83,34 @@ class OpenAlexSource:
         )
 
     def search(self, query: str, max_results: int = 10) -> list[PaperMetadata]:
-        response = self._http.get(
-            "/works",
-            params={
-                "search": query,
-                "per_page": max_results,
-                "select": "id,title,authorships,publication_date,doi,"
-                          "primary_topic,abstract_inverted_index",
-            },
-        )
-        response.raise_for_status()
+        try:
+            response = self._http.get(
+                "/works",
+                params={
+                    "search": query,
+                    "per_page": max_results,
+                    "select": "id,title,authorships,publication_date,doi,"
+                              "primary_topic,abstract_inverted_index",
+                },
+            )
+            response.raise_for_status()
+        except Exception as e:
+            raise ValueError(f"OpenAlex search failed: {e}") from e
         results = response.json().get("results", [])
         return [_work_to_metadata(w) for w in results]
 
     def fetch_by_id(self, paper_id: str) -> PaperMetadata:
         # Accept both bare IDs ("W3123456789") and full URLs
-        if not paper_id.startswith("http"):
-            paper_id = f"{_BASE_URL}/works/{paper_id}"
-        response = self._http.get(
-            paper_id,
-            params={
-                "select": "id,title,authorships,publication_date,doi,"
-                          "primary_topic,abstract_inverted_index",
-            },
-        )
-        response.raise_for_status()
+        url = paper_id if paper_id.startswith("http") else f"{_BASE_URL}/works/{paper_id}"
+        try:
+            response = self._http.get(
+                url,
+                params={
+                    "select": "id,title,authorships,publication_date,doi,"
+                              "primary_topic,abstract_inverted_index",
+                },
+            )
+            response.raise_for_status()
+        except Exception as e:
+            raise ValueError(f"OpenAlex fetch failed for '{paper_id}': {e}") from e
         return _work_to_metadata(response.json())
