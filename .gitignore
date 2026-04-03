@@ -1,6 +1,7 @@
 # Environment
 .env
 .claude
+.vscode
 __pycache__/
 *.py[cod]
 
