@@ -9,9 +9,11 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSplitter,
     QStackedWidget,
     QTextEdit,
     QVBoxLayout,
@@ -21,6 +23,14 @@ from PyQt6.QtWidgets import (
 from projects import color_to_hex
 from gui.theme import BG as _BG, PANEL as _PANEL, BORDER as _BORDER
 from gui.theme import ACCENT as _ACCENT, TEXT as _TEXT, MUTED as _MUTED
+from gui.theme import (
+    FONT_TITLE, FONT_HEADING, FONT_SUBHEADING, FONT_BODY, FONT_SECONDARY, FONT_TERTIARY,
+    SPACE_XL, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XS,
+    RADIUS_LG, RADIUS_MD, RADIUS_SM,
+    BTN_H_LG, BTN_H_MD,
+    PAGE_MARGIN_H, CARD_PAD_H, CARD_PAD_V, DIALOG_PAD,
+    NOTE_HEIGHT,
+)
 
 _PRESET_COLORS: list[int] = [
     0x5b8dee,  # blue (default)
@@ -33,8 +43,8 @@ _PRESET_COLORS: list[int] = [
 
 _BTN_STYLE = f"""
     QPushButton {{
-        background: {_ACCENT}; border: none; border-radius: 6px;
-        color: #fff; font-size: 13px; font-weight: 600; padding: 8px 20px;
+        background: {_ACCENT}; border: none; border-radius: {RADIUS_MD}px;
+        color: #fff; font-size: {FONT_BODY}px; font-weight: 600; padding: {SPACE_SM}px 20px;
     }}
     QPushButton:hover   {{ background: #7aa3f5; }}
     QPushButton:pressed {{ background: #4a7add; }}
@@ -42,22 +52,22 @@ _BTN_STYLE = f"""
 """
 _BTN_MUTED_STYLE = f"""
     QPushButton {{
-        background: transparent; border: 1px solid {_BORDER}; border-radius: 6px;
-        color: {_MUTED}; font-size: 13px; padding: 8px 20px;
+        background: transparent; border: 1px solid {_BORDER}; border-radius: {RADIUS_MD}px;
+        color: {_MUTED}; font-size: {FONT_BODY}px; padding: {SPACE_SM}px 20px;
     }}
     QPushButton:hover {{ border-color: {_TEXT}; color: {_TEXT}; }}
 """
 _BTN_SMALL_STYLE = f"""
     QPushButton {{
-        background: transparent; border: 1px solid {_BORDER}; border-radius: 4px;
-        color: {_MUTED}; font-size: 11px; padding: 3px 10px;
+        background: transparent; border: 1px solid {_BORDER}; border-radius: {RADIUS_SM}px;
+        color: {_MUTED}; font-size: {FONT_TERTIARY}px; padding: 3px 10px;
     }}
     QPushButton:hover {{ border-color: {_ACCENT}; color: {_ACCENT}; }}
 """
 _INPUT_STYLE = f"""
     QLineEdit, QTextEdit {{
-        background: {_BG}; border: 1px solid {_BORDER}; border-radius: 6px;
-        color: {_TEXT}; font-size: 13px; padding: 8px 10px;
+        background: {_BG}; border: 1px solid {_BORDER}; border-radius: {RADIUS_MD}px;
+        color: {_TEXT}; font-size: {FONT_BODY}px; padding: {SPACE_SM}px 10px;
     }}
     QLineEdit:focus, QTextEdit:focus {{ border-color: {_ACCENT}; }}
 """
@@ -102,10 +112,10 @@ class NewProjectDialog(QDialog):
 
         lay.addWidget(self._field_label("Colour"))
         lay.addLayout(self._build_swatches())
-        lay.addSpacing(4)
+        lay.addSpacing(SPACE_XS)
 
         self._err = QLabel("")
-        self._err.setStyleSheet("font-size: 12px; color: #e05c5c;")
+        self._err.setStyleSheet(f"font-size: {FONT_SECONDARY}px; color: #e05c5c;")
         lay.addWidget(self._err)
 
         btn_row = QHBoxLayout()
@@ -122,12 +132,12 @@ class NewProjectDialog(QDialog):
 
     def _field_label(self, text: str) -> QLabel:
         lbl = QLabel(text)
-        lbl.setStyleSheet(f"font-size: 12px; color: {_MUTED}; font-weight: 600;")
+        lbl.setStyleSheet(f"font-size: {FONT_SECONDARY}px; color: {_MUTED}; font-weight: 600;")
         return lbl
 
     def _build_swatches(self) -> QHBoxLayout:
         row = QHBoxLayout()
-        row.setSpacing(8)
+        row.setSpacing(SPACE_SM)
         self._swatch_btns: list[QPushButton] = []
         for color in _PRESET_COLORS:
             btn = QPushButton()
@@ -186,11 +196,11 @@ class AddPaperDialog(QDialog):
         self.setStyleSheet(f"background: {_PANEL}; color: {_TEXT};")
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(24, 20, 24, 20)
-        lay.setSpacing(12)
+        lay.setContentsMargins(24, DIALOG_PAD, 24, DIALOG_PAD)
+        lay.setSpacing(SPACE_MD)
 
         title = QLabel("Add Paper")
-        title.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {_ACCENT};")
+        title.setStyleSheet(f"font-size: {FONT_HEADING}px; font-weight: bold; color: {_ACCENT};")
         lay.addWidget(title)
 
         self._filter = QLineEdit()
@@ -202,8 +212,8 @@ class AddPaperDialog(QDialog):
         self._list = QListWidget()
         self._list.setStyleSheet(f"""
             QListWidget {{
-                background: {_BG}; border: 1px solid {_BORDER}; border-radius: 6px;
-                color: {_TEXT}; font-size: 12px;
+                background: {_BG}; border: 1px solid {_BORDER}; border-radius: {RADIUS_MD}px;
+                color: {_TEXT}; font-size: {FONT_SECONDARY}px;
             }}
             QListWidget::item:selected {{ background: {_ACCENT}; color: #fff; }}
             QListWidget::item:hover    {{ background: #2a2a4a; }}
@@ -256,34 +266,95 @@ class AddPaperDialog(QDialog):
         self.accept()
 
 
-# ── Add-note dialog ───────────────────────────────────────────────────────────
+# ── Clickable card base ───────────────────────────────────────────────────────
 
-class AddNoteDialog(QDialog):
-    def __init__(self, paper_id: str, project_id: int, parent: QWidget | None = None) -> None:
+class _ClickableCard(QFrame):
+    """QFrame that fires a callback on left-click (child widgets may still consume clicks)."""
+
+    def __init__(self, on_click, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._paper_id  = paper_id
-        self._project_id = project_id
-        self.setWindowTitle("Add Note")
-        self.setFixedSize(480, 320)
+        self._on_click = on_click
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._on_click()
+        super().mousePressEvent(event)
+
+
+# ── Note editor dialog (add + edit, with live Markdown/KaTeX preview) ─────────
+
+class NoteEditorDialog(QDialog):
+    """Split-pane note editor with live Markdown + KaTeX preview.
+
+    Add mode:  NoteEditorDialog(paper_id=..., project_id=..., parent=...)
+    Edit mode: NoteEditorDialog(note=..., parent=...)
+    """
+
+    def __init__(
+        self,
+        *,
+        note=None,
+        paper_id: str | None = None,
+        project_id: int | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._note       = note
+        self._paper_id   = note.paper_id   if note else paper_id
+        self._project_id = note.project_id if note else project_id
+
+        mode = "Edit Note" if note else "Add Note"
+        self.setWindowTitle(mode)
+        self.setMinimumSize(920, 540)
         self.setStyleSheet(f"background: {_PANEL}; color: {_TEXT};")
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(24, 20, 24, 20)
-        lay.setSpacing(12)
+        lay.setContentsMargins(DIALOG_PAD, DIALOG_PAD, DIALOG_PAD, DIALOG_PAD)
+        lay.setSpacing(SPACE_MD)
 
-        title = QLabel("Add Note")
-        title.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {_ACCENT};")
-        lay.addWidget(title)
+        heading = QLabel(mode)
+        heading.setStyleSheet(f"font-size: {FONT_HEADING}px; font-weight: bold; color: {_ACCENT};")
+        lay.addWidget(heading)
 
         self._note_title = QLineEdit()
         self._note_title.setPlaceholderText("Title  (optional)")
         self._note_title.setStyleSheet(_INPUT_STYLE)
+        if note:
+            self._note_title.setText(note.title or "")
         lay.addWidget(self._note_title)
 
-        self._content = QTextEdit()
-        self._content.setPlaceholderText("Note content…")
-        self._content.setStyleSheet(_INPUT_STYLE)
-        lay.addWidget(self._content)
+        # Split pane: raw editor | rendered preview
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setStyleSheet("QSplitter::handle { background: #2e2e50; width: 2px; }")
+
+        self._editor = QPlainTextEdit()
+        self._editor.setPlaceholderText("Markdown + $\\LaTeX$ supported…")
+        self._editor.setStyleSheet(f"""
+            QPlainTextEdit {{
+                background: {_BG}; border: 1px solid {_BORDER}; border-radius: {RADIUS_MD}px;
+                color: {_TEXT}; font-size: {FONT_BODY}px; padding: {SPACE_SM}px 10px;
+                font-family: 'Cascadia Code', 'Courier New', monospace;
+            }}
+            QPlainTextEdit:focus {{ border-color: {_ACCENT}; }}
+        """)
+        if note:
+            self._editor.setPlainText(note.content or "")
+        splitter.addWidget(self._editor)
+
+        from gui.markdown_view import MarkdownView
+        self._preview = MarkdownView()
+        self._preview.set_title(self._note_title.text())
+        self._preview.set_content(self._editor.toPlainText())
+        splitter.addWidget(self._preview)
+        splitter.setSizes([460, 460])
+
+        lay.addWidget(splitter, stretch=1)
+
+        self._note_title.textChanged.connect(lambda t: self._preview.set_title(t))
+        self._editor.textChanged.connect(
+            lambda: self._preview.set_content(self._editor.toPlainText())
+        )
 
         btn_row = QHBoxLayout()
         cancel = QPushButton("Cancel")
@@ -300,14 +371,19 @@ class AddNoteDialog(QDialog):
     def _on_save(self) -> None:
         from notes import Note, ensure_notes_db
         ensure_notes_db()
-        note = Note(
-            paper_id   = self._paper_id,
-            project_id = self._project_id,
-            title      = self._note_title.text().strip(),
-            content    = self._content.toPlainText().strip(),
-        )
-        note.save()
+        if self._note is not None:
+            self._note.title   = self._note_title.text().strip()
+            self._note.content = self._editor.toPlainText().strip()
+            self._note.save()
+        else:
+            Note(
+                paper_id   = self._paper_id,
+                project_id = self._project_id,
+                title      = self._note_title.text().strip(),
+                content    = self._editor.toPlainText().strip(),
+            ).save()
         self.accept()
+
 
 
 # ── Notes viewer dialog ───────────────────────────────────────────────────────
@@ -325,14 +401,14 @@ class NotesDialog(QDialog):
         self.setStyleSheet(f"background: {_PANEL}; color: {_TEXT};")
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(24, 20, 24, 20)
-        lay.setSpacing(12)
+        lay.setContentsMargins(24, DIALOG_PAD, 24, DIALOG_PAD)
+        lay.setSpacing(SPACE_MD)
 
         header_row = QHBoxLayout()
         title_lbl = QLabel("Notes")
-        title_lbl.setStyleSheet(f"font-size: 18px; font-weight: bold; color: {_ACCENT};")
+        title_lbl.setStyleSheet(f"font-size: {FONT_HEADING}px; font-weight: bold; color: {_ACCENT};")
         paper_lbl = QLabel(paper_title)
-        paper_lbl.setStyleSheet(f"font-size: 11px; color: {_MUTED};")
+        paper_lbl.setStyleSheet(f"font-size: {FONT_TERTIARY}px; color: {_MUTED};")
         paper_lbl.setWordWrap(True)
         header_col = QVBoxLayout()
         header_col.setSpacing(2)
@@ -342,7 +418,7 @@ class NotesDialog(QDialog):
 
         add_btn = QPushButton("＋  Add Note")
         add_btn.setStyleSheet(_BTN_STYLE)
-        add_btn.setFixedHeight(34)
+        add_btn.setFixedHeight(BTN_H_LG)
         add_btn.clicked.connect(self._on_add)
         header_row.addWidget(add_btn, alignment=Qt.AlignmentFlag.AlignBottom)
         lay.addLayout(header_row)
@@ -364,7 +440,7 @@ class NotesDialog(QDialog):
 
         self._empty_lbl = QLabel("No notes yet.")
         self._empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._empty_lbl.setStyleSheet(f"font-size: 13px; color: {_MUTED};")
+        self._empty_lbl.setStyleSheet(f"font-size: {FONT_BODY}px; color: {_MUTED};")
         lay.addWidget(self._empty_lbl)
 
         close_btn = QPushButton("Close")
@@ -395,32 +471,33 @@ class NotesDialog(QDialog):
             self._empty_lbl.setVisible(True)
 
     def _make_note_card(self, note) -> QFrame:
-        card = QFrame()
+        card = _ClickableCard(lambda n=note: self._edit_note(n))
         card.setStyleSheet(f"""
-            QFrame {{ background: {_BG}; border: 1px solid {_BORDER}; border-radius: 6px; }}
+            QFrame {{ background: {_BG}; border: 1px solid {_BORDER}; border-radius: {RADIUS_MD}px; }}
+            QFrame:hover {{ border-color: {_ACCENT}; }}
             QLabel {{ border: none; background: transparent; }}
         """)
         col = QVBoxLayout(card)
         col.setContentsMargins(14, 10, 14, 10)
-        col.setSpacing(4)
+        col.setSpacing(SPACE_XS)
 
         top_row = QHBoxLayout()
 
         if note.created_at:
             date_lbl = QLabel(note.created_at.strftime("%Y-%m-%d"))
-            date_lbl.setStyleSheet(f"font-size: 11px; color: {_MUTED};")
+            date_lbl.setStyleSheet(f"font-size: {FONT_TERTIARY}px; color: {_MUTED};")
             top_row.addWidget(date_lbl)
 
         top_row.addStretch()
 
-        del_btn = QPushButton("Delete")
-        del_btn.setStyleSheet(f"""
+        _ghost = f"""
             QPushButton {{
                 background: transparent; border: none;
-                color: #e05c5c; font-size: 11px; padding: 0 4px;
+                font-size: {FONT_TERTIARY}px; padding: 0 {SPACE_XS}px;
             }}
-            QPushButton:hover {{ color: #ff7070; }}
-        """)
+        """
+        del_btn = QPushButton("Delete")
+        del_btn.setStyleSheet(_ghost + "QPushButton { color: #e05c5c; } QPushButton:hover { color: #ff7070; }")
         del_btn.clicked.connect(lambda _, n=note: self._delete_note(n))
         top_row.addWidget(del_btn)
         col.addLayout(top_row)
@@ -429,17 +506,22 @@ class NotesDialog(QDialog):
         md_view = MarkdownView()
         md_view.set_title(note.title or "Untitled")
         md_view.set_content(note.content or "")
-        md_view.setFixedHeight(140)
+        md_view.setFixedHeight(NOTE_HEIGHT)
         col.addWidget(md_view)
 
         return card
+
+    def _edit_note(self, note) -> None:
+        dlg = NoteEditorDialog(note=note, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._rebuild()
 
     def _delete_note(self, note) -> None:
         note.delete()
         self._rebuild()
 
     def _on_add(self) -> None:
-        dlg = AddNoteDialog(self._paper_id, self._project_id, self)
+        dlg = NoteEditorDialog(paper_id=self._paper_id, project_id=self._project_id, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._rebuild()
 
@@ -452,17 +534,17 @@ class _PaperRow(QFrame):
         self._paper_id   = paper_id
         self._project_id = project_id
         self.setStyleSheet(f"""
-            QFrame {{ background: {_BG}; border: 1px solid {_BORDER}; border-radius: 6px; }}
+            QFrame {{ background: {_BG}; border: 1px solid {_BORDER}; border-radius: {RADIUS_MD}px; }}
             QLabel {{ border: none; background: transparent; }}
         """)
 
         row = QHBoxLayout(self)
-        row.setContentsMargins(12, 8, 12, 8)
-        row.setSpacing(12)
+        row.setContentsMargins(12, SPACE_SM, 12, SPACE_SM)
+        row.setSpacing(SPACE_MD)
 
         title_str = self._fetch_title()
         title_lbl = QLabel(title_str)
-        title_lbl.setStyleSheet(f"font-size: 13px; color: {_TEXT};")
+        title_lbl.setStyleSheet(f"font-size: {FONT_BODY}px; color: {_TEXT};")
         title_lbl.setWordWrap(True)
         row.addWidget(title_lbl, stretch=1)
 
@@ -508,7 +590,7 @@ class ProjectDetailView(QWidget):
         self._project = None
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(48, 32, 48, 32)
+        outer.setContentsMargins(PAGE_MARGIN_H, 32, PAGE_MARGIN_H, 32)
         outer.setSpacing(0)
 
         # Header
@@ -536,7 +618,7 @@ class ProjectDetailView(QWidget):
         self._archive_btn = QPushButton("Archive")
         self._archive_btn.setStyleSheet(_BTN_MUTED_STYLE)
         self._archive_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._archive_btn.setFixedHeight(32)
+        self._archive_btn.setFixedHeight(BTN_H_MD)
         self._archive_btn.clicked.connect(self._on_archive)
         header.addWidget(self._archive_btn)
 
@@ -545,15 +627,15 @@ class ProjectDetailView(QWidget):
             QPushButton {{
                 background: transparent;
                 border: 1px solid #e05c5c;
-                border-radius: 6px;
+                border-radius: {RADIUS_MD}px;
                 color: #e05c5c;
-                font-size: 12px;
+                font-size: {FONT_SECONDARY}px;
                 padding: 4px 14px;
             }}
             QPushButton:hover {{ background: #2a1a1a; }}
         """)
         self._delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._delete_btn.setFixedHeight(32)
+        self._delete_btn.setFixedHeight(BTN_H_MD)
         self._delete_btn.clicked.connect(self._on_delete)
         self._delete_confirming = False
         header.addWidget(self._delete_btn)
@@ -564,13 +646,13 @@ class ProjectDetailView(QWidget):
         # Meta (description + tags)
         self._desc_lbl = QLabel()
         self._desc_lbl.setWordWrap(True)
-        self._desc_lbl.setStyleSheet(f"font-size: 13px; color: {_MUTED}; background: transparent;")
+        self._desc_lbl.setStyleSheet(f"font-size: {FONT_BODY}px; color: {_MUTED}; background: transparent;")
         outer.addWidget(self._desc_lbl)
 
         self._tags_lbl = QLabel()
-        self._tags_lbl.setStyleSheet(f"font-size: 12px; color: {_ACCENT}; background: transparent;")
+        self._tags_lbl.setStyleSheet(f"font-size: {FONT_SECONDARY}px; color: {_ACCENT}; background: transparent;")
         outer.addWidget(self._tags_lbl)
-        outer.addSpacing(20)
+        outer.addSpacing(SPACE_LG)
 
         # Papers section header
         papers_header = QHBoxLayout()
@@ -581,7 +663,7 @@ class ProjectDetailView(QWidget):
         self._add_paper_btn = QPushButton("＋  Add Paper")
         self._add_paper_btn.setStyleSheet(_BTN_STYLE)
         self._add_paper_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._add_paper_btn.setFixedHeight(34)
+        self._add_paper_btn.setFixedHeight(BTN_H_LG)
         self._add_paper_btn.clicked.connect(self._on_add_paper)
         papers_header.addWidget(self._papers_lbl)
         papers_header.addStretch()
@@ -599,7 +681,7 @@ class ProjectDetailView(QWidget):
         self._papers_widget.setStyleSheet("background: transparent;")
         self._papers_layout = QVBoxLayout(self._papers_widget)
         self._papers_layout.setContentsMargins(0, 0, 0, 0)
-        self._papers_layout.setSpacing(8)
+        self._papers_layout.setSpacing(SPACE_SM)
         self._papers_layout.addStretch()
 
         scroll.setWidget(self._papers_widget)
@@ -608,7 +690,7 @@ class ProjectDetailView(QWidget):
         self._empty_papers_lbl = QLabel("No papers yet — add one to get started.")
         self._empty_papers_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._empty_papers_lbl.setStyleSheet(
-            f"font-size: 13px; color: {_MUTED}; background: transparent;"
+            f"font-size: {FONT_BODY}px; color: {_MUTED}; background: transparent;"
         )
         outer.addWidget(self._empty_papers_lbl)
         outer.addStretch()
@@ -693,7 +775,7 @@ class ProjectCard(QFrame):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setStyleSheet(f"""
             QFrame {{
-                background: {_PANEL}; border: 1px solid {_BORDER}; border-radius: 10px;
+                background: {_PANEL}; border: 1px solid {_BORDER}; border-radius: {RADIUS_LG}px;
             }}
             QLabel {{ border: none; background: transparent; }}
         """)
@@ -710,22 +792,22 @@ class ProjectCard(QFrame):
         outer.addWidget(stripe)
 
         inner = QVBoxLayout()
-        inner.setContentsMargins(16, 12, 0, 12)
-        inner.setSpacing(4)
+        inner.setContentsMargins(CARD_PAD_H, CARD_PAD_V, 0, CARD_PAD_V)
+        inner.setSpacing(SPACE_XS)
 
         name_lbl = QLabel(project.name)
-        name_lbl.setStyleSheet(f"font-size: 15px; font-weight: 600; color: {_TEXT};")
+        name_lbl.setStyleSheet(f"font-size: {FONT_SUBHEADING}px; font-weight: 600; color: {_TEXT};")
         inner.addWidget(name_lbl)
 
         if project.description:
             desc_lbl = QLabel(project.description)
-            desc_lbl.setStyleSheet(f"font-size: 12px; color: {_MUTED};")
+            desc_lbl.setStyleSheet(f"font-size: {FONT_SECONDARY}px; color: {_MUTED};")
             desc_lbl.setWordWrap(True)
             inner.addWidget(desc_lbl)
 
         stats_row = QHBoxLayout()
-        stats_row.setSpacing(12)
-        stats_row.setContentsMargins(0, 4, 0, 0)
+        stats_row.setSpacing(SPACE_MD)
+        stats_row.setContentsMargins(0, SPACE_XS, 0, 0)
 
         paper_count = project.paper_count
         note_count = self._note_count(project)
@@ -735,12 +817,12 @@ class ProjectCard(QFrame):
             ("📝", note_count,  "note"  if note_count  == 1 else "notes"),
         ]:
             lbl = QLabel(f"{icon} {value} {label}")
-            lbl.setStyleSheet(f"font-size: 11px; color: {_MUTED};")
+            lbl.setStyleSheet(f"font-size: {FONT_TERTIARY}px; color: {_MUTED};")
             stats_row.addWidget(lbl)
 
         if project.project_tags:
             tags_lbl = QLabel("  ".join(f"#{t}" for t in project.project_tags))
-            tags_lbl.setStyleSheet(f"font-size: 11px; color: {_ACCENT};")
+            tags_lbl.setStyleSheet(f"font-size: {FONT_TERTIARY}px; color: {_ACCENT};")
             stats_row.addWidget(tags_lbl)
 
         stats_row.addStretch()
@@ -787,18 +869,18 @@ class ProjectsPage(QWidget):
         page = QWidget()
         page.setStyleSheet(f"background: {_BG};")
         outer = QVBoxLayout(page)
-        outer.setContentsMargins(48, 40, 48, 40)
+        outer.setContentsMargins(PAGE_MARGIN_H, 40, PAGE_MARGIN_H, 40)
         outer.setSpacing(0)
 
         header = QHBoxLayout()
         col = QVBoxLayout()
-        col.setSpacing(4)
+        col.setSpacing(SPACE_XS)
         title = QLabel("Projects")
         title.setStyleSheet(
-            f"font-size: 34px; font-weight: bold; color: {_ACCENT}; background: transparent;"
+            f"font-size: {FONT_TITLE}px; font-weight: bold; color: {_ACCENT}; background: transparent;"
         )
         subtitle = QLabel("Organise papers into focused reading projects")
-        subtitle.setStyleSheet(f"font-size: 13px; color: {_MUTED}; background: transparent;")
+        subtitle.setStyleSheet(f"font-size: {FONT_BODY}px; color: {_MUTED}; background: transparent;")
         col.addWidget(title)
         col.addWidget(subtitle)
 
@@ -812,7 +894,7 @@ class ProjectsPage(QWidget):
         header.addStretch()
         header.addWidget(add_btn, alignment=Qt.AlignmentFlag.AlignBottom)
         outer.addLayout(header)
-        outer.addSpacing(28)
+        outer.addSpacing(SPACE_XL)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -823,7 +905,7 @@ class ProjectsPage(QWidget):
         self._list_widget.setStyleSheet("background: transparent;")
         self._list_layout = QVBoxLayout(self._list_widget)
         self._list_layout.setContentsMargins(0, 0, 0, 0)
-        self._list_layout.setSpacing(12)
+        self._list_layout.setSpacing(SPACE_MD)
         self._list_layout.addStretch()
 
         scroll.setWidget(self._list_widget)
@@ -863,9 +945,13 @@ class ProjectsPage(QWidget):
 
     # ── Navigation ────────────────────────────────────────────────────────────
 
-    def _open_project(self, project) -> None:
+    def open_project(self, project) -> None:
+        """Navigate directly to a project's detail view (callable from other pages)."""
         self._detail_view.load(project)
         self._inner.setCurrentIndex(1)
+
+    def _open_project(self, project) -> None:
+        self.open_project(project)
 
     def _on_back(self) -> None:
         self._inner.setCurrentIndex(0)

@@ -1,20 +1,33 @@
 const PAPER_COLOR     = '#5b8dee';
 const AUTHOR_COLOR    = '#e8a838';
+const TAG_COLOR       = '#4caf7d';
 const HIGHLIGHT_COLOR = '#ff6b6b';
 const DIM_OPACITY     = 0.08;   // filter dim (isolate / non-matching)
 const SEL_DIM_OPACITY = 0.28;   // softer dim for non-selected nodes
 const FULL_OPACITY    = 1.0;
 
-let cy          = null;
-let simulation  = null;
-let _simNodeById = new Map();
-let _debounce   = null;
-let _selectedIds = new Set();
+let cy           = null;
+let simulation   = null;
+let _simNodeById  = new Map();
+let _allEdgeDefs  = [];   // [{source: id, target: id}] — original, never mutated by D3
+let _debounce    = null;
+let _selectedIds  = new Set();
 
 // Filter state (needed so selection style can layer on top)
 let _visiblePaperIds  = null;   // null = no filter active
 let _visibleAuthorIds = null;
+let _visibleTagIds    = null;
 let _filterIsolate    = false;
+
+// Tag logic builder state: [{op: 'AND'|'OR', tag: string}]
+let _tagRows = [];
+
+// Chip toggle state
+let _activeProjectIds = new Set();
+let _activeProjTagIds = new Set();
+let _projectMap       = new Map();  // id → {name, color, tags[]}
+
+const $ = id => document.getElementById(id);
 
 // ── Panel collapse wiring ────────────────────────────────────────────────────
 
@@ -27,9 +40,84 @@ document.querySelectorAll('.panel-toggle').forEach(btn => {
     });
 });
 
-// ── Layout sliders ───────────────────────────────────────────────────────────
+// ── Tag filter logic builder ─────────────────────────────────────────────────
 
-const $ = id => document.getElementById(id);
+function _renderTagRows() {
+    const container = $('tag-filter-rows');
+    container.innerHTML = '';
+    $('tag-filter-empty').style.display = _tagRows.length === 0 ? '' : 'none';
+
+    _tagRows.forEach((row, i) => {
+        const div = document.createElement('div');
+        div.className = 'tag-filter-row';
+
+        if (i > 0) {
+            const op = document.createElement('button');
+            op.className = 'tag-op-toggle' + (row.op === 'OR' ? ' or' : '');
+            op.textContent = row.op;
+            op.title = 'Click to toggle AND / OR';
+            op.addEventListener('click', () => {
+                _tagRows[i].op = _tagRows[i].op === 'AND' ? 'OR' : 'AND';
+                op.textContent = _tagRows[i].op;
+                op.className = 'tag-op-toggle' + (_tagRows[i].op === 'OR' ? ' or' : '');
+                _applyFilter();
+            });
+            div.appendChild(op);
+        } else {
+            // Spacer so labels line up with rows that have an op button
+            const sp = document.createElement('span');
+            sp.style.cssText = 'min-width:34px; flex-shrink:0;';
+            div.appendChild(sp);
+        }
+
+        const lbl = document.createElement('span');
+        lbl.className = 'tag-filter-label';
+        lbl.textContent = row.tag;
+        div.appendChild(lbl);
+
+        const rm = document.createElement('button');
+        rm.className = 'tag-filter-remove';
+        rm.textContent = '×';
+        rm.title = 'Remove';
+        rm.addEventListener('click', () => {
+            _tagRows.splice(i, 1);
+            _renderTagRows();
+            _applyFilter();
+        });
+        div.appendChild(rm);
+
+        container.appendChild(div);
+    });
+}
+
+function _addTag() {
+    const input = $('tagFilterInput');
+    const tag = input.value.trim();
+    if (!tag) return;
+    if (_tagRows.some(r => r.tag === tag)) { input.value = ''; return; }
+    _tagRows.push({ op: 'AND', tag });
+    input.value = '';
+    _renderTagRows();
+    _applyFilter();
+}
+
+function _evalTagFilter(paperTags) {
+    if (_tagRows.length === 0) return true;
+    const tags = Array.isArray(paperTags) ? paperTags : [];
+    let result = tags.includes(_tagRows[0].tag);
+    for (let i = 1; i < _tagRows.length; i++) {
+        const has = tags.includes(_tagRows[i].tag);
+        result = _tagRows[i].op === 'AND' ? (result && has) : (result || has);
+    }
+    return result;
+}
+
+$('addTagBtn').addEventListener('click', _addTag);
+$('tagFilterInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); _addTag(); }
+});
+
+// ── Layout sliders ───────────────────────────────────────────────────────────
 
 function bindSlider(id, valId, onInput) {
     $(id).addEventListener('input', () => {
@@ -68,9 +156,9 @@ $('relayout-btn').addEventListener('click', () => {
 
 // ── Filter wiring ────────────────────────────────────────────────────────────
 
-const _textFilterIds = ['filterCategory', 'filterTag', 'filterDateFrom', 'filterDateTo',
-                        'filterTitle', 'filterAuthor'];
-const _checkFilterIds = ['showPapers', 'showAuthors', 'filterHasPdf'];
+const _textFilterIds  = ['filterCategory', 'filterDateFrom', 'filterDateTo',
+                         'filterTitle', 'filterAuthor'];
+const _checkFilterIds = ['showPapers', 'showAuthors', 'showTags', 'filterHasPdf'];
 
 _textFilterIds.forEach(id => {
     $(id).addEventListener('input', _scheduleFilter);
@@ -98,24 +186,69 @@ function _applyFilter() {
     filterGraph({
         showPapers:   $('showPapers').checked,
         showAuthors:  $('showAuthors').checked,
+        showTags:     $('showTags').checked,
         category:     $('filterCategory').value.trim() || null,
-        tag:          $('filterTag').value.trim()      || null,
         hasPdf:       $('filterHasPdf').checked,
         dateFrom:     $('filterDateFrom').value.trim() || null,
         dateTo:       $('filterDateTo').value.trim()   || null,
         highlight:    $('filterTitle').value.trim()    || null,
         authorFilter: $('filterAuthor').value.trim()   || null,
         isolate:      $('isolate-btn').classList.contains('active'),
+        projectIds:   _activeProjectIds.size > 0 ? [..._activeProjectIds] : null,
+        projTagIds:   _activeProjTagIds.size > 0 ? [..._activeProjTagIds] : null,
     });
 }
 
-// ── Called from Python to populate datalists ─────────────────────────────────
+// ── Called from Python to populate filter chips & datalists ──────────────────
 
-function setFilterOptions(categories, tags) {
-    const catList = $('categoryList');
-    const tagList = $('tagList');
-    catList.innerHTML = categories.map(c => `<option value="${c}">`).join('');
-    tagList.innerHTML = tags.map(t => `<option value="${t}">`).join('');
+function _makeChip(label, color) {
+    const chip = document.createElement('button');
+    chip.className = 'chip';
+    chip.textContent = label;
+    chip.style.setProperty('--chip-color', color);
+    return chip;
+}
+
+function setFilterOptions(categories, tags, projects) {
+    // Category datalist
+    $('categoryList').innerHTML = categories.map(c => `<option value="${c}">`).join('');
+
+    // Tag datalist for the logic builder input
+    $('tagList').innerHTML = tags.map(t => `<option value="${t}">`).join('');
+
+    // Project chips + project-tag collection
+    _activeProjectIds.clear();
+    _activeProjTagIds.clear();
+    _projectMap.clear();
+    const projChips    = $('project-chips');
+    const projTagChips = $('project-tag-chips');
+    projChips.innerHTML    = '';
+    projTagChips.innerHTML = '';
+
+    const allProjTags = new Set();
+    (projects || []).forEach(proj => {
+        _projectMap.set(proj.id, proj);
+        (proj.tags || []).forEach(t => allProjTags.add(t));
+        const chip = _makeChip(proj.name, proj.color || '#5b8dee');
+        chip.addEventListener('click', () => {
+            chip.classList.toggle('active');
+            if (chip.classList.contains('active')) _activeProjectIds.add(proj.id);
+            else _activeProjectIds.delete(proj.id);
+            _applyFilter();
+        });
+        projChips.appendChild(chip);
+    });
+
+    [...allProjTags].sort().forEach(tag => {
+        const chip = _makeChip(tag, '#9b59b6');
+        chip.addEventListener('click', () => {
+            chip.classList.toggle('active');
+            if (chip.classList.contains('active')) _activeProjTagIds.add(tag);
+            else _activeProjTagIds.delete(tag);
+            _applyFilter();
+        });
+        projTagChips.appendChild(chip);
+    });
 }
 
 // ── Called from Python toolbar "Clear filters" ───────────────────────────────
@@ -124,6 +257,11 @@ function clearFilters() {
     _textFilterIds.forEach(id => { $(id).value = ''; });
     _checkFilterIds.forEach(id => { $(id).checked = id !== 'filterHasPdf'; });
     $('isolate-btn').classList.remove('active');
+    _tagRows.length = 0;
+    _renderTagRows();
+    _activeProjectIds.clear();
+    _activeProjTagIds.clear();
+    document.querySelectorAll('.chip.active').forEach(c => c.classList.remove('active'));
     _applyFilter();
 }
 
@@ -137,14 +275,22 @@ function loadGraph(data) {
     _simNodeById = new Map();
     _visiblePaperIds  = null;
     _visibleAuthorIds = null;
+    _visibleTagIds    = null;
     _filterIsolate    = false;
+    _tagRows.length = 0;
+    _renderTagRows();
+    _activeProjectIds.clear();
+    _activeProjTagIds.clear();
+    document.querySelectorAll('.chip.active').forEach(c => c.classList.remove('active'));
 
     const simNodes = nodes.map(n => ({
         id: n.id,
         x:  (Math.random() - 0.5) * 800,
         y:  (Math.random() - 0.5) * 800,
     }));
-    const simLinks = edges.map(e => ({ source: e.source, target: e.target }));
+    // Store original edge defs before D3 mutates source/target to object refs
+    _allEdgeDefs = edges.map(e => ({ source: String(e.source), target: String(e.target) }));
+    const simLinks = _allEdgeDefs.map(e => ({ ...e }));
     simNodes.forEach(n => _simNodeById.set(n.id, n));
 
     const cyElements = [
@@ -153,13 +299,14 @@ function loadGraph(data) {
             return {
                 group: 'nodes',
                 data: {
-                    id:        n.id,
-                    label:     n.label,
-                    type:      n.type,
-                    category:  n.category  || null,
-                    tags:      n.tags      || [],
-                    has_pdf:   n.has_pdf   || false,
-                    published: n.published || null,
+                    id:          n.id,
+                    label:       n.label,
+                    type:        n.type,
+                    category:    n.category    || null,
+                    tags:        n.tags        || [],
+                    has_pdf:     n.has_pdf     || false,
+                    published:   n.published   || null,
+                    project_ids: n.project_ids || [],
                 },
                 position: { x: sn.x, y: sn.y },
             };
@@ -213,6 +360,11 @@ function loadGraph(data) {
             _notifySelectionChanged();
             console.log('GRAPHVIEW_PAPER_CLICKED:' + paper_id);
         }
+    });
+
+    // Right-click paper node → open its Library detail page
+    cy.on('cxttap', 'node[type = "paper"]', e => {
+        console.log('GRAPHVIEW_PAPER_RIGHT_CLICKED:' + e.target.id());
     });
 
     // Tap background → clear selection (unless Ctrl/Cmd held)
@@ -284,6 +436,23 @@ function cytoscapeStyle() {
             },
         },
         {
+            selector: 'node[type = "tag"]',
+            style: {
+                'shape':            'roundrectangle',
+                'width':            'label',
+                'height':           18,
+                'padding':          '0 6px',
+                'background-color': TAG_COLOR,
+                'label':            'data(label)',
+                'font-size':        '10px',
+                'color':            '#d4f0e0',
+                'font-family':      'Segoe UI, sans-serif',
+                'text-valign':      'center',
+                'text-halign':      'center',
+                'border-width':     0,
+            },
+        },
+        {
             selector: 'edge',
             style: {
                 'width':       1.5,
@@ -302,14 +471,16 @@ function filterGraph(opts) {
     const {
         showAuthors  = true,
         showPapers   = true,
+        showTags     = true,
         category     = null,
-        tag          = null,
         hasPdf       = false,
         highlight    = null,
         authorFilter = null,
         dateFrom     = null,
         dateTo       = null,
         isolate      = false,
+        projectIds   = null,
+        projTagIds   = null,
     } = opts;
 
     const hlLower   = highlight    ? highlight.toLowerCase()    : null;
@@ -320,8 +491,17 @@ function filterGraph(opts) {
         if (!showPapers) return;
         const d = n.data();
         if (category && !d.category?.toLowerCase().includes(category.toLowerCase())) return;
-        if (tag && !(Array.isArray(d.tags) && d.tags.some(t => t.toLowerCase().includes(tag.toLowerCase())))) return;
         if (hasPdf && !d.has_pdf) return;
+        if (!_evalTagFilter(d.tags)) return;
+        if (projectIds && !(Array.isArray(d.project_ids) && d.project_ids.some(id => projectIds.includes(id)))) return;
+        if (projTagIds) {
+            const pids = Array.isArray(d.project_ids) ? d.project_ids : [];
+            const hasProjTag = pids.some(pid => {
+                const proj = _projectMap.get(pid);
+                return proj && Array.isArray(proj.tags) && proj.tags.some(t => projTagIds.includes(t));
+            });
+            if (!hasProjTag) return;
+        }
         if (hlLower && !d.label.toLowerCase().includes(hlLower)) return;
         if (dateFrom && d.published && d.published < dateFrom) return;
         if (dateTo   && d.published && d.published > dateTo)   return;
@@ -346,22 +526,52 @@ function filterGraph(opts) {
         });
     }
 
+    const visibleTagIds = new Set();
+    if (showTags) {
+        cy.nodes('[type = "tag"]').forEach(t => {
+            t.connectedEdges().forEach(e => {
+                const other = e.source().id() === t.id() ? e.target() : e.source();
+                if (visiblePaperIds.has(other.id())) visibleTagIds.add(t.id());
+            });
+        });
+    }
+
     _visiblePaperIds  = visiblePaperIds;
     _visibleAuthorIds = visibleAuthorIds;
+    _visibleTagIds    = visibleTagIds;
     _filterIsolate    = isolate;
 
     _applyAllStyles();
 
-    // Physics: pin non-visible nodes when isolating
+    // Physics: remove non-visible nodes from simulation forces so they
+    // don't push/pull visible nodes at all.
     if (simulation) {
+        const visibleNodeIds = new Set([
+            ...visiblePaperIds, ...visibleAuthorIds, ...visibleTagIds,
+        ]);
+
+        // Pin non-visible nodes in place; unpin visible ones
         _simNodeById.forEach((sn, id) => {
-            const visible = visiblePaperIds.has(id) || visibleAuthorIds.has(id);
-            if (isolate && !visible) {
+            if (!visibleNodeIds.has(id)) {
                 if (sn.fx == null) { sn.fx = sn.x; sn.fy = sn.y; }
-            } else if (!isolate) {
-                sn.fx = null; sn.fy = null;
+            } else {
+                // Only unpin if we own the pin (drag handler sets fx/fy too)
+                if (!isolate) { sn.fx = null; sn.fy = null; }
             }
         });
+
+        // Restrict link force to edges where both endpoints are visible
+        const activeLinks = _allEdgeDefs
+            .filter(e => visibleNodeIds.has(e.source) && visibleNodeIds.has(e.target))
+            .map(e => ({ ...e }));
+        simulation.force('link').links(activeLinks);
+
+        // Zero out charge for non-visible nodes so they don't repel/attract
+        const repel = parseFloat($('repelForce').value);
+        simulation.force('charge',
+            d3.forceManyBody().strength(n => visibleNodeIds.has(n.id) ? -repel : 0)
+        );
+
         simulation.alpha(0.3).restart();
     }
 }
@@ -376,14 +586,16 @@ function _applyAllStyles() {
     const filterActive  = _visiblePaperIds !== null;
     const filterHideOp  = _filterIsolate ? 0 : DIM_OPACITY;
 
-    // Author ids connected to any selected paper
+    // Neighbour ids (authors + tags) connected to any selected paper
     const selAuthorIds = new Set();
+    const selTagIds    = new Set();
     if (anySelected) {
         _selectedIds.forEach(pid => {
             const n = cy.getElementById(pid);
             n.connectedEdges().forEach(e => {
                 const other = e.source().id() === pid ? e.target() : e.source();
                 if (other.data('type') === 'author') selAuthorIds.add(other.id());
+                if (other.data('type') === 'tag')    selTagIds.add(other.id());
             });
         });
     }
@@ -423,20 +635,37 @@ function _applyAllStyles() {
             }
         });
 
+        cy.nodes('[type = "tag"]').forEach(n => {
+            const nid = n.id();
+            const filterVisible = !filterActive || (_visibleTagIds && _visibleTagIds.has(nid));
+
+            if (!filterVisible) {
+                n.style({ 'opacity': filterHideOp });
+            } else if (anySelected && selTagIds.has(nid)) {
+                n.style({ 'opacity': FULL_OPACITY });
+            } else if (anySelected) {
+                n.style({ 'opacity': SEL_DIM_OPACITY });
+            } else {
+                n.style({ 'opacity': FULL_OPACITY });
+            }
+        });
+
         cy.edges().forEach(e => {
             const sid = e.source().id(), tid = e.target().id();
             const srcFilterVis = !filterActive
-                || (_visiblePaperIds && _visiblePaperIds.has(sid))
-                || (_visibleAuthorIds && _visibleAuthorIds.has(sid));
+                || (_visiblePaperIds  && _visiblePaperIds.has(sid))
+                || (_visibleAuthorIds && _visibleAuthorIds.has(sid))
+                || (_visibleTagIds    && _visibleTagIds.has(sid));
             const tgtFilterVis = !filterActive
-                || (_visiblePaperIds && _visiblePaperIds.has(tid))
-                || (_visibleAuthorIds && _visibleAuthorIds.has(tid));
+                || (_visiblePaperIds  && _visiblePaperIds.has(tid))
+                || (_visibleAuthorIds && _visibleAuthorIds.has(tid))
+                || (_visibleTagIds    && _visibleTagIds.has(tid));
 
             if (!srcFilterVis || !tgtFilterVis) {
                 e.style({ 'opacity': filterHideOp });
             } else if (anySelected) {
-                const srcSel = _selectedIds.has(sid) || selAuthorIds.has(sid);
-                const tgtSel = _selectedIds.has(tid) || selAuthorIds.has(tid);
+                const srcSel = _selectedIds.has(sid) || selAuthorIds.has(sid) || selTagIds.has(sid);
+                const tgtSel = _selectedIds.has(tid) || selAuthorIds.has(tid) || selTagIds.has(tid);
                 e.style({ 'opacity': (srcSel || tgtSel) ? FULL_OPACITY : SEL_DIM_OPACITY });
             } else {
                 e.style({ 'opacity': FULL_OPACITY });

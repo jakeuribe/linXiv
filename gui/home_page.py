@@ -15,6 +15,13 @@ from PyQt6.QtWidgets import (
 from db import get_tags, list_papers
 from gui.theme import BG as _BG, PANEL as _PANEL, BORDER as _BORDER
 from gui.theme import ACCENT as _ACCENT, TEXT as _TEXT, MUTED as _MUTED
+from gui.theme import (
+    FONT_TITLE, FONT_SUBHEADING, FONT_BODY, FONT_SECONDARY, FONT_TERTIARY,
+    SPACE_XL, SPACE_XS,
+    RADIUS_SM,
+    PAGE_MARGIN_H,
+    DIALOG_PAD,
+)
 _RECENT_N = 10
 
 
@@ -26,14 +33,14 @@ class HomePage(QWidget):
         self.setStyleSheet(f"background: {_BG}; color: {_TEXT};")
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(48, 40, 48, 40)
-        outer.setSpacing(28)
+        outer.setContentsMargins(PAGE_MARGIN_H, 40, PAGE_MARGIN_H, 40)
+        outer.setSpacing(SPACE_XL)
 
         # ── Header ────────────────────────────────────────────────────────────
         title = QLabel("linXiv")
-        title.setStyleSheet(f"font-size: 34px; font-weight: bold; color: {_ACCENT}; background: transparent;")
+        title.setStyleSheet(f"font-size: {FONT_TITLE}px; font-weight: bold; color: {_ACCENT}; background: transparent;")
         subtitle = QLabel("Your arXiv paper collection")
-        subtitle.setStyleSheet(f"font-size: 13px; color: {_MUTED}; background: transparent;")
+        subtitle.setStyleSheet(f"font-size: {FONT_BODY}px; color: {_MUTED}; background: transparent;")
         outer.addWidget(title)
         outer.addWidget(subtitle)
 
@@ -49,14 +56,14 @@ class HomePage(QWidget):
         recent_hdr = QHBoxLayout()
         recent_lbl = QLabel("Recent papers")
         recent_lbl.setStyleSheet(
-            f"font-size: 15px; font-weight: 600; color: {_TEXT}; background: transparent;"
+            f"font-size: {FONT_SUBHEADING}px; font-weight: 600; color: {_TEXT}; background: transparent;"
         )
         refresh_btn = QPushButton("Refresh")
         refresh_btn.setFixedWidth(80)
         refresh_btn.setStyleSheet(f"""
             QPushButton {{
                 background: {_PANEL}; border: 1px solid {_BORDER};
-                border-radius: 4px; color: {_TEXT}; font-size: 12px; padding: 4px 8px;
+                border-radius: {RADIUS_SM}px; color: {_TEXT}; font-size: {FONT_SECONDARY}px; padding: 4px 8px;
             }}
             QPushButton:hover {{ background: #2a2a4a; }}
         """)
@@ -70,7 +77,7 @@ class HomePage(QWidget):
         self._recent_list.setStyleSheet(f"""
             QListWidget {{
                 background: {_PANEL}; border: 1px solid {_BORDER};
-                border-radius: 8px; color: {_TEXT}; font-size: 13px;
+                border-radius: 8px; color: {_TEXT}; font-size: {FONT_BODY}px;
             }}
             QListWidget::item {{
                 padding: 7px 12px;
@@ -145,15 +152,15 @@ class HomePage(QWidget):
             QLabel {{ border: none; background: transparent; }}
         """)
         lay = QVBoxLayout(card)
-        lay.setContentsMargins(20, 14, 20, 14)
-        lay.setSpacing(4)
+        lay.setContentsMargins(DIALOG_PAD, 14, DIALOG_PAD, 14)
+        lay.setSpacing(SPACE_XS)
 
         num = QLabel(value)
         num.setStyleSheet(f"font-size: 30px; font-weight: bold; color: {_ACCENT};")
         num.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         lbl = QLabel(label)
-        lbl.setStyleSheet(f"font-size: 11px; color: {_MUTED}; letter-spacing: 0.05em;")
+        lbl.setStyleSheet(f"font-size: {FONT_TERTIARY}px; color: {_MUTED}; letter-spacing: 0.05em;")
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         lay.addWidget(num)

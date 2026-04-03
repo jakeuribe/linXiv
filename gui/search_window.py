@@ -22,6 +22,7 @@ _PDF_DIR = Path(__file__).parent.parent / "pdfs"
 from downloads import download_pdf, cleanup_pdfs as _cleanup_pdfs, saved_pdfs_size
 from .tex_view import TexView
 from .pdf_window import PdfWindow
+from .theme import FONT_TERTIARY, SPACE_XS, SPACE_SM, SPACE_MD
 
 _FIELD_OPTIONS = [
     ("Author",     "au:"),
@@ -119,7 +120,7 @@ class _ResultRow(QWidget):
         super().__init__(parent)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 2, 4, 2)
-        layout.setSpacing(8)
+        layout.setSpacing(SPACE_SM)
 
         if source and source != "arxiv":
             badge = QLabel(source)
@@ -229,8 +230,8 @@ class SearchWindow(QMainWindow):
         root = QWidget()
         self.setCentralWidget(root)
         layout = QVBoxLayout(root)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(SPACE_MD, SPACE_MD, SPACE_MD, SPACE_MD)
+        layout.setSpacing(SPACE_SM)
 
         # Search bar row
         search_row = QHBoxLayout()
@@ -264,7 +265,7 @@ class SearchWindow(QMainWindow):
         self._clause_container = QWidget()
         self._clause_layout = QVBoxLayout(self._clause_container)
         self._clause_layout.setContentsMargins(0, 0, 0, 0)
-        self._clause_layout.setSpacing(4)
+        self._clause_layout.setSpacing(SPACE_XS)
         adv_outer.addWidget(self._clause_container)
 
         # Add clause button
@@ -298,7 +299,7 @@ class SearchWindow(QMainWindow):
 
         # Sort / order / max row
         opts_row = QHBoxLayout()
-        opts_row.setSpacing(12)
+        opts_row.setSpacing(SPACE_MD)
 
         opts_row.addWidget(QLabel("Sort:"))
         self._sort_combo = QComboBox()
@@ -337,7 +338,7 @@ class SearchWindow(QMainWindow):
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(4)
+        left_layout.setSpacing(SPACE_XS)
         self._list = _ResultList()
         self._list.currentRowChanged.connect(self._on_select)
         self._status = QLabel("")
@@ -348,8 +349,8 @@ class SearchWindow(QMainWindow):
 
         meta = QWidget()
         meta_layout = QVBoxLayout(meta)
-        meta_layout.setContentsMargins(8, 0, 0, 0)
-        meta_layout.setSpacing(4)
+        meta_layout.setContentsMargins(SPACE_SM, 0, 0, 0)
+        meta_layout.setSpacing(SPACE_XS)
 
         self._sidebar_title = TexView()
         self._sidebar_title.setFixedHeight(70)
@@ -382,7 +383,7 @@ class SearchWindow(QMainWindow):
         pdf_row.addWidget(self._link_pdf_btn)
 
         self._linked_indicator = QLabel("")
-        self._linked_indicator.setStyleSheet("color: #4caf7d; font-size: 11px;")
+        self._linked_indicator.setStyleSheet(f"color: #4caf7d; font-size: {FONT_TERTIARY}px;")
         pdf_row.addWidget(self._linked_indicator)
 
         meta_layout.addWidget(self._sidebar_title)
@@ -757,6 +758,14 @@ class SearchWindow(QMainWindow):
             self._paper_pdf_paths.get(key) or self._pdf_path_for_key(key)
             for key in self._saved_papers
         }
+        # Also keep any PDF that's already recorded in the DB (e.g. downloaded via Library page)
+        from db import list_papers as _list_papers
+        for row in _list_papers():
+            pdf_path = row["pdf_path"] if "pdf_path" in row.keys() else None
+            if pdf_path and os.path.isfile(pdf_path):
+                keep.add(pdf_path)
+            if row["has_pdf"]:
+                keep.add(self._pdf_path_for_key((row["paper_id"], row["version"])))
         deleted = _cleanup_pdfs(str(_PDF_DIR), keep=keep)
 
         # Update has_pdf flag in DB

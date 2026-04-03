@@ -22,6 +22,13 @@ from sources.base import PaperMetadata
 
 from gui.theme import BG as _BG, PANEL as _PANEL, BORDER as _BORDER
 from gui.theme import ACCENT as _ACCENT, TEXT as _TEXT, MUTED as _MUTED
+from gui.theme import (
+    FONT_TITLE, FONT_SUBHEADING, FONT_BODY, FONT_SECONDARY, FONT_TERTIARY,
+    SPACE_XL, SPACE_XS,
+    RADIUS_MD, RADIUS_LG,
+    PAGE_MARGIN_H,
+    DIALOG_PAD,
+)
 
 _GREEN  = "#4caf7d"
 _RED    = "#e05c5c"
@@ -256,20 +263,20 @@ class DoiPage(QWidget):
         self._worker: _LookupWorker | None = None
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(48, 40, 48, 40)
+        outer.setContentsMargins(PAGE_MARGIN_H, 40, PAGE_MARGIN_H, 40)
         outer.setSpacing(0)
 
         # Header
         title_lbl = QLabel("Add by DOI")
         title_lbl.setStyleSheet(
-            f"font-size: 34px; font-weight: bold; color: {_ACCENT}; background: transparent;"
+            f"font-size: {FONT_TITLE}px; font-weight: bold; color: {_ACCENT}; background: transparent;"
         )
         sub_lbl = QLabel("Look up any paper by its DOI and add it to your library.")
-        sub_lbl.setStyleSheet(f"font-size: 13px; color: {_MUTED}; background: transparent;")
+        sub_lbl.setStyleSheet(f"font-size: {FONT_BODY}px; color: {_MUTED}; background: transparent;")
         outer.addWidget(title_lbl)
-        outer.addSpacing(4)
+        outer.addSpacing(SPACE_XS)
         outer.addWidget(sub_lbl)
-        outer.addSpacing(28)
+        outer.addSpacing(SPACE_XL)
 
         # Input row
         input_row = QHBoxLayout()
@@ -279,7 +286,7 @@ class DoiPage(QWidget):
         self._doi_input.setStyleSheet(f"""
             QLineEdit {{
                 background: {_PANEL}; border: 1px solid {_BORDER};
-                border-radius: 6px; color: {_TEXT}; font-size: 13px;
+                border-radius: {RADIUS_MD}px; color: {_TEXT}; font-size: {FONT_BODY}px;
                 padding: 8px 12px;
             }}
             QLineEdit:focus {{ border-color: {_ACCENT}; }}
@@ -291,8 +298,8 @@ class DoiPage(QWidget):
         self._lookup_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._lookup_btn.setStyleSheet(f"""
             QPushButton {{
-                background: {_ACCENT}; border: none; border-radius: 6px;
-                color: #fff; font-size: 13px; font-weight: 600;
+                background: {_ACCENT}; border: none; border-radius: {RADIUS_MD}px;
+                color: #fff; font-size: {FONT_BODY}px; font-weight: 600;
             }}
             QPushButton:hover   {{ background: #7aa3f5; }}
             QPushButton:pressed {{ background: #4a7add; }}
@@ -307,7 +314,7 @@ class DoiPage(QWidget):
 
         # Status label
         self._status = QLabel("")
-        self._status.setStyleSheet(f"font-size: 12px; color: {_MUTED}; background: transparent;")
+        self._status.setStyleSheet(f"font-size: {FONT_SECONDARY}px; color: {_MUTED}; background: transparent;")
         self._status.setWordWrap(True)
         outer.addWidget(self._status)
         outer.addSpacing(16)
@@ -325,24 +332,24 @@ class DoiPage(QWidget):
         card = QFrame()
         card.setStyleSheet(f"""
             QFrame {{
-                background: {_PANEL}; border: 1px solid {_BORDER}; border-radius: 10px;
+                background: {_PANEL}; border: 1px solid {_BORDER}; border-radius: {RADIUS_LG}px;
             }}
             QLabel {{ border: none; background: transparent; }}
         """)
         lay = QVBoxLayout(card)
-        lay.setContentsMargins(20, 16, 20, 16)
+        lay.setContentsMargins(DIALOG_PAD, 16, DIALOG_PAD, 16)
         lay.setSpacing(6)
 
         self._res_title = QLabel()
         self._res_title.setWordWrap(True)
-        self._res_title.setStyleSheet(f"font-size: 15px; font-weight: 600; color: {_TEXT};")
+        self._res_title.setStyleSheet(f"font-size: {FONT_SUBHEADING}px; font-weight: 600; color: {_TEXT};")
 
         self._res_meta = QLabel()
-        self._res_meta.setStyleSheet(f"font-size: 12px; color: {_MUTED};")
+        self._res_meta.setStyleSheet(f"font-size: {FONT_SECONDARY}px; color: {_MUTED};")
 
         self._res_abstract = QLabel()
         self._res_abstract.setWordWrap(True)
-        self._res_abstract.setStyleSheet(f"font-size: 12px; color: {_TEXT}; line-height: 1.5;")
+        self._res_abstract.setStyleSheet(f"font-size: {FONT_SECONDARY}px; color: {_TEXT}; line-height: 1.5;")
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(10)
@@ -351,8 +358,8 @@ class DoiPage(QWidget):
         self._save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._save_btn.setStyleSheet(f"""
             QPushButton {{
-                background: {_GREEN}; border: none; border-radius: 6px;
-                color: #fff; font-size: 13px; font-weight: 600; padding: 8px 18px;
+                background: {_GREEN}; border: none; border-radius: {RADIUS_MD}px;
+                color: #fff; font-size: {FONT_BODY}px; font-weight: 600; padding: 8px 18px;
             }}
             QPushButton:hover   {{ background: #5dcc8f; }}
             QPushButton:pressed {{ background: #3a9e60; }}
@@ -361,7 +368,7 @@ class DoiPage(QWidget):
         self._save_btn.clicked.connect(self._on_save)
 
         self._source_lbl = QLabel()
-        self._source_lbl.setStyleSheet(f"font-size: 11px; color: {_MUTED};")
+        self._source_lbl.setStyleSheet(f"font-size: {FONT_TERTIARY}px; color: {_MUTED};")
 
         btn_row.addWidget(self._save_btn)
         btn_row.addStretch()
@@ -392,7 +399,7 @@ class DoiPage(QWidget):
     def _on_success(self, meta: PaperMetadata) -> None:
         self._result = meta
         self._set_busy(False)
-        self._status.setStyleSheet(f"font-size: 12px; color: {_GREEN}; background: transparent;")
+        self._status.setStyleSheet(f"font-size: {FONT_SECONDARY}px; color: {_GREEN}; background: transparent;")
         self._status.setText("Paper found.")
 
         authors = ", ".join(meta.authors[:4])
@@ -425,7 +432,7 @@ class DoiPage(QWidget):
 
     def _on_error(self, msg: str) -> None:
         self._set_busy(False)
-        self._status.setStyleSheet(f"font-size: 12px; color: {_RED}; background: transparent;")
+        self._status.setStyleSheet(f"font-size: {FONT_SECONDARY}px; color: {_RED}; background: transparent;")
         self._status.setText(msg)
 
     def _on_save(self) -> None:
@@ -434,11 +441,11 @@ class DoiPage(QWidget):
         save_paper_metadata(self._result)
         self._save_btn.setText("Saved ✓")
         self._save_btn.setEnabled(False)
-        self._status.setStyleSheet(f"font-size: 12px; color: {_GREEN}; background: transparent;")
+        self._status.setStyleSheet(f"font-size: {FONT_SECONDARY}px; color: {_GREEN}; background: transparent;")
         self._status.setText("Paper saved to library.")
 
     def _set_busy(self, busy: bool) -> None:
         self._lookup_btn.setEnabled(not busy)
         self._doi_input.setEnabled(not busy)
-        self._status.setStyleSheet(f"font-size: 12px; color: {_MUTED}; background: transparent;")
+        self._status.setStyleSheet(f"font-size: {FONT_SECONDARY}px; color: {_MUTED}; background: transparent;")
         self._status.setText("Looking up…" if busy else "")

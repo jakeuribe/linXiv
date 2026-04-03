@@ -10,21 +10,21 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-_NAV_W = 120
+from .theme import FONT_BODY, NAV_WIDTH, SPACE_MD, SPACE_SM
 
-_SIDEBAR_STYLE = """
-    QWidget#sidebar { background: #1a1a2e; }
-    QPushButton {
+_SIDEBAR_STYLE = f"""
+    QWidget#sidebar {{ background: #1a1a2e; }}
+    QPushButton {{
         color: #ccccdd;
         background: transparent;
         border: none;
-        padding: 10px 8px;
+        padding: {SPACE_MD}px {SPACE_SM}px;
         font-family: 'Segoe UI', sans-serif;
-        font-size: 13px;
+        font-size: {FONT_BODY}px;
         text-align: left;
-    }
-    QPushButton:hover   { background: #2a2a4a; }
-    QPushButton:checked { background: #5b8dee; color: #ffffff; }
+    }}
+    QPushButton:hover   {{ background: #2a2a4a; }}
+    QPushButton:checked {{ background: #5b8dee; color: #ffffff; }}
 """
 
 
@@ -40,11 +40,11 @@ class AppShell(QMainWindow):
 
         self._sidebar = QWidget()
         self._sidebar.setObjectName("sidebar")
-        self._sidebar.setFixedWidth(_NAV_W)
+        self._sidebar.setFixedWidth(NAV_WIDTH)
         self._sidebar.setStyleSheet(_SIDEBAR_STYLE)
 
         self._nav = QVBoxLayout(self._sidebar)
-        self._nav.setContentsMargins(0, 8, 0, 8)
+        self._nav.setContentsMargins(0, SPACE_SM, 0, SPACE_SM)
         self._nav.setSpacing(2)
         self._nav.setAlignment(Qt.AlignmentFlag.AlignTop)
 
@@ -75,6 +75,12 @@ class AppShell(QMainWindow):
         btn = QPushButton(label)
         btn.clicked.connect(callback)
         self._nav.addWidget(btn)
+
+    def go_to_widget(self, widget: QWidget) -> None:
+        """Navigate to the page containing widget (must have been added via add_page)."""
+        idx = self._stack.indexOf(widget)
+        if idx >= 0:
+            self._go_to(idx)
 
     # ── Internal ──────────────────────────────────────────────────────────────
 

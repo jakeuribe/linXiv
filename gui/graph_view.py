@@ -15,8 +15,9 @@ class _GraphPage(QWebEnginePage):
 
 
 class GraphView(QWebEngineView):
-    node_clicked = pyqtSignal(str)  # emits paper_id when a paper node is clicked
-    selection_changed = pyqtSignal(int)  # emits count of selected nodes
+    node_clicked       = pyqtSignal(str)   # emits paper_id on left-click
+    node_right_clicked = pyqtSignal(str)   # emits paper_id on right-click
+    selection_changed  = pyqtSignal(int)   # emits count of selected nodes
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -25,6 +26,7 @@ class GraphView(QWebEngineView):
         self._pending_edges: list = []
         self._pending_categories: list = []
         self._pending_tags: list = []
+        self._pending_projects: list = []
 
         self._page = _GraphPage(self)
         self._page.console_message_received.connect(self._on_console_message)
@@ -40,10 +42,12 @@ class GraphView(QWebEngineView):
         if self._loaded:
             self._push()
 
-    def set_filter_options(self, categories: list[str], tags: list[str]) -> None:
-        """Populate the in-graph filter datalists with available categories and tags."""
+    def set_filter_options(self, categories: list[str], tags: list[str],
+                           projects: list[dict] | None = None) -> None:
+        """Populate the in-graph filter chips with available categories, tags, and projects."""
         self._pending_categories = categories
         self._pending_tags = tags
+        self._pending_projects = projects or []
         if self._loaded:
             self._push_filter_options()
 
@@ -58,9 +62,10 @@ class GraphView(QWebEngineView):
         self.page().runJavaScript(f"loadGraph({data})")  # pyright: ignore[reportOptionalMemberAccess]
 
     def _push_filter_options(self) -> None:
-        cats = json.dumps(self._pending_categories)
-        tags = json.dumps(self._pending_tags)
-        self.page().runJavaScript(f"setFilterOptions({cats}, {tags})")  # pyright: ignore[reportOptionalMemberAccess]
+        cats  = json.dumps(self._pending_categories)
+        tags  = json.dumps(self._pending_tags)
+        projs = json.dumps(self._pending_projects)
+        self.page().runJavaScript(f"setFilterOptions({cats}, {tags}, {projs})")  # pyright: ignore[reportOptionalMemberAccess]
 
     def run_js(self, code: str) -> None:
         """Run arbitrary JavaScript in the graph page."""
@@ -100,6 +105,9 @@ class GraphView(QWebEngineView):
         if message.startswith("GRAPHVIEW_PAPER_CLICKED:"):
             paper_id = message[len("GRAPHVIEW_PAPER_CLICKED:"):]
             self.node_clicked.emit(paper_id)
+        elif message.startswith("GRAPHVIEW_PAPER_RIGHT_CLICKED:"):
+            paper_id = message[len("GRAPHVIEW_PAPER_RIGHT_CLICKED:"):]
+            self.node_right_clicked.emit(paper_id)
         elif message.startswith("GRAPHVIEW_SELECTION_COUNT:"):
             count = int(message[len("GRAPHVIEW_SELECTION_COUNT:"):])
             self.selection_changed.emit(count)

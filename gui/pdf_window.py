@@ -5,6 +5,8 @@ from PyQt6.QtPdfWidgets import QPdfView
 from PyQt6.QtPdf import QPdfDocument
 from PyQt6.QtCore import Qt
 
+from .theme import BTN_H_SM
+
 
 class PdfWindow(QMainWindow):
     def __init__(self, parent=None):
@@ -27,11 +29,11 @@ class PdfWindow(QMainWindow):
         self.addToolBar(bar)
 
         zoom_out = QPushButton("−")
-        zoom_out.setFixedWidth(28)
+        zoom_out.setFixedWidth(BTN_H_SM)
         zoom_out.clicked.connect(lambda: self._zoom(-0.15))
 
         zoom_in = QPushButton("+")
-        zoom_in.setFixedWidth(28)
+        zoom_in.setFixedWidth(BTN_H_SM)
         zoom_in.clicked.connect(lambda: self._zoom(0.15))
 
         fit_btn = QPushButton("Fit")

@@ -58,6 +58,7 @@
                 <div class="check-row">
                     <label><input type="checkbox" id="showPapers" checked> Papers</label>
                     <label><input type="checkbox" id="showAuthors" checked> Authors</label>
+                    <label><input type="checkbox" id="showTags" checked> Tags</label>
                 </div>
 
                 <div class="section-title">Attributes</div>
@@ -66,14 +67,15 @@
                     <input type="text" id="filterCategory" list="categoryList" placeholder="type to filter…">
                     <datalist id="categoryList"></datalist>
                 </div>
-                <div class="filter-row">
-                    <label>Tag</label>
-                    <input type="text" id="filterTag" list="tagList" placeholder="type to filter…">
-                    <datalist id="tagList"></datalist>
-                </div>
                 <div class="check-row">
                     <label><input type="checkbox" id="filterHasPdf"> Has PDF only</label>
                 </div>
+
+                <div class="section-title">Projects</div>
+                <div class="chip-row" id="project-chips"></div>
+
+                <div class="section-title">Project Tags</div>
+                <div class="chip-row" id="project-tag-chips"></div>
 
                 <div class="section-title">Date range</div>
                 <div class="filter-row">
@@ -96,6 +98,26 @@
                 </div>
 
                 <button id="isolate-btn" class="full-btn toggle-btn">Show highlighted only</button>
+            </div>
+        </div>
+
+        <!-- Tag Filter panel -->
+        <div class="panel" id="tag-filter-panel">
+            <div class="panel-header">
+                <span>Tag Filter</span>
+                <button class="panel-toggle" data-target="tag-filter-body">▼</button>
+            </div>
+            <div class="panel-body" id="tag-filter-body">
+                <div class="tag-input-row">
+                    <input type="text" id="tagFilterInput" list="tagList"
+                           placeholder="type a tag…" autocomplete="off">
+                    <datalist id="tagList"></datalist>
+                    <button id="addTagBtn" title="Add tag">+</button>
+                </div>
+                <div id="tag-filter-rows"></div>
+                <div id="tag-filter-empty" style="font-size:11px; color:#3e3e60; font-style:italic; margin-top:4px;">
+                    No tag filters active.
+                </div>
             </div>
         </div>
 

@@ -5,7 +5,7 @@ import datetime
 import io
 import json
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QFileDialog,
     QHeaderView,
@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .graph_view import GraphView
+from .theme import FONT_SECONDARY, FONT_TERTIARY
 from db import get_categories, get_graph_data, get_tags, list_papers
 
 
@@ -42,7 +43,7 @@ def _fmt_tags(val) -> str:
     return str(val)
 
 
-# ── Paper list panel ──────────────────────────────────────────────────────────
+# ── Paper list panel ──
 
 _COLUMNS = ["Title", "Category", "Published", "Tags", "PDF"]
 _COL_WIDTHS = [320, 80, 90, 180, 40]
@@ -78,7 +79,7 @@ class PaperListPanel(QWidget):
 
         # Status bar
         self._status_lbl = QLabel("")
-        self._status_lbl.setStyleSheet("color: #7777aa; font-size: 11px; padding: 2px 6px;")
+        self._status_lbl.setStyleSheet(f"color: #7777aa; font-size: {FONT_TERTIARY}px; padding: 2px 6px;")
         layout.addWidget(self._status_lbl)
 
         # Scroll detection for lazy loading
@@ -159,6 +160,7 @@ class PaperListPanel(QWidget):
 
 class GraphPage(QWidget):
     """Graph + paper list, embeddable as a page inside AppShell."""
+    paper_right_clicked = pyqtSignal(str)  # emits paper_id when a node is right-clicked
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -196,7 +198,7 @@ class GraphPage(QWidget):
         bar.addStretch()
 
         self._selection_lbl = QLabel("0 selected")
-        self._selection_lbl.setStyleSheet("color: #7777aa; font-size: 12px;")
+        self._selection_lbl.setStyleSheet(f"color: #7777aa; font-size: {FONT_SECONDARY}px;")
         bar.addWidget(self._selection_lbl)
 
         self._export_btn = QPushButton("Export selected")
@@ -225,6 +227,7 @@ class GraphPage(QWidget):
 
         self._paper_list.table.currentCellChanged.connect(self._on_paper_selected)
         self._graph_view.node_clicked.connect(self._on_graph_node_clicked)
+        self._graph_view.node_right_clicked.connect(self.paper_right_clicked)
         self._graph_view.selection_changed.connect(self._on_selection_changed)
 
     # ── Data loading ──────────────────────────────────────────────────────────
@@ -236,6 +239,35 @@ class GraphPage(QWidget):
 
     def _load_graph(self) -> None:
         nodes, edges = get_graph_data()
+
+        # Generate tag nodes from paper tags
+        seen_tag_ids: set[str] = set()
+        tag_edges: list[dict] = []
+        for node in nodes:
+            if node["type"] == "paper":
+                for tag in (node.get("tags") or []):
+                    tag_node_id = f"tag::{tag}"
+                    if tag_node_id not in seen_tag_ids:
+                        seen_tag_ids.add(tag_node_id)
+                    tag_edges.append({"source": node["id"], "target": tag_node_id})
+        tag_nodes = [{"id": tid, "label": tid[5:], "type": "tag"} for tid in seen_tag_ids]
+        nodes = nodes + tag_nodes
+        edges = edges + tag_edges
+
+        # Augment paper nodes with project membership
+        try:
+            from projects import filter_projects
+            paper_to_projects: dict[str, list[int]] = {}
+            for proj in filter_projects():
+                if proj.id is not None:
+                    for pid in (proj.paper_ids or []):
+                        paper_to_projects.setdefault(pid, []).append(proj.id)
+            for node in nodes:
+                if node["type"] == "paper":
+                    node["project_ids"] = paper_to_projects.get(node["id"], [])
+        except Exception:
+            pass
+
         self._graph_view.set_graph_data(nodes, edges)
 
     def _load_paper_list(self) -> None:
@@ -245,7 +277,20 @@ class GraphPage(QWidget):
     def _load_dropdowns(self) -> None:
         categories = get_categories()
         tags = get_tags()
-        self._graph_view.set_filter_options(categories, tags)
+        proj_data: list[dict] = []
+        try:
+            from projects import filter_projects, color_to_hex, Status
+            for p in filter_projects():
+                if p.id is not None and p.status != Status.DELETED:
+                    proj_data.append({
+                        "id":    p.id,
+                        "name":  p.name,
+                        "color": color_to_hex(p.color) if p.color else "#5b8dee",
+                        "tags":  p.tags or [],
+                    })
+        except Exception:
+            pass
+        self._graph_view.set_filter_options(categories, tags, proj_data)
 
     # ── Button actions ────────────────────────────────────────────────────────
 
