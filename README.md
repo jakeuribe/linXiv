@@ -19,6 +19,10 @@ A Python application for discovering, managing, and visualizing academic papers 
 linXiv/
 ├── main.py                    # Launch original graph viewer
 ├── main_shell.py              # Launch full app shell (recommended)
+├── run_api.py                 # HTTP API (FastAPI) for external frontends — run_api.bat
+├── api/
+│   ├── app.py                 # FastAPI routes + /assets/graph (bundled D3 graph for iframe/proxy)
+│   └── graph_payload.py       # Graph JSON (tags + projects) for /api/graph
 ├── db.py                      # SQLite DB: versioned paper storage, graph data queries
 ├── projects.py                # Projects: data model, Status enum, Q query builder
 ├── notes.py                   # Notes: per-paper annotations scoped to projects
@@ -61,8 +65,10 @@ linXiv/
 ### Install dependencies
 
 ```bash
-pip install arxiv PyQt6 PyQt6-WebEngine google-genai pydantic python-dotenv
+pip install -r requirements.txt
 ```
+
+(Includes PyQt6 for the desktop app and FastAPI/uvicorn for the HTTP API.)
 
 ### Environment variables
 
@@ -74,10 +80,20 @@ GENAI_API_KEY_TAG_GEN=your_google_gemini_api_key
 
 ### Run
 
+**Desktop (PyQt6)**
+
 ```bash
 python main_shell.py  # Full app shell (recommended)
 python main.py        # Original graph viewer only
 ```
+
+**HTTP API (JSON backend for a separate frontend)**
+
+```bash
+python run_api.py     # http://127.0.0.1:8000 — see /docs for OpenAPI
+```
+
+On Windows, `run_api.bat` uses your project venv if present. The API serves JSON under `/api/…` and the bundled graph viewer under `/assets/graph/` (for iframe or dev-server proxy).
 
 ## App Shell
 

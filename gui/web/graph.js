@@ -755,3 +755,24 @@ function getSelectedPaperData() {
 }
 
 window.addEventListener('resize', () => { if (cy) cy.resize(); });
+
+// When served over HTTP(S) from the FastAPI app, load graph data from the API (file:// keeps Qt bridge).
+(function bootstrapWebGraph() {
+    if (window.location.protocol !== 'http:' && window.location.protocol !== 'https:') return;
+    const base = window.location.origin;
+    Promise.all([
+        fetch(base + '/api/graph').then(r => r.json()),
+        fetch(base + '/api/categories').then(r => r.json()),
+        fetch(base + '/api/tags').then(r => r.json()),
+        fetch(base + '/api/graph/project-options').then(r => r.json()),
+    ]).then(([graphData, catData, tagData, projData]) => {
+        loadGraph(graphData);
+        const projects = (projData.projects || []).map(p => ({
+            id: p.id,
+            name: p.name,
+            color: p.color,
+            tags: p.tags || [],
+        }));
+        setFilterOptions(catData.categories || [], tagData.tags || [], projects);
+    }).catch(e => console.error('Graph bootstrap failed', e));
+})();
