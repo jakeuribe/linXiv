@@ -1,6 +1,6 @@
 import sys
 from PyQt6.QtWidgets import QApplication
-from gui.search_window import SearchWindow
+from gui.search import SearchWindow
 from db import init_db
 
 

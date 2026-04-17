@@ -1,38 +1,25 @@
 import os
-from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QPushButton, QListWidget, QListWidgetItem,
     QLabel, QSplitter, QCheckBox, QComboBox, QSpinBox,
-    QFrame, QFileDialog
+    QFrame, QFileDialog,
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt
 import arxiv
-from fetch_paper_metadata import search_papers
 from db import (
     save_paper, save_paper_metadata, delete_paper,
     get_paper, set_has_pdf, set_pdf_path, parse_entry_id,
     search_full_text,
 )
-from sources import ArxivSource, OpenAlexSource
 from sources.base import PaperMetadata
-
-_PDF_DIR = Path(__file__).parent.parent / "pdfs"
-from downloads import download_pdf, cleanup_pdfs as _cleanup_pdfs, saved_pdfs_size
-from .tex_view import TexView
-from .pdf_window import PdfWindow
-from .theme import FONT_TERTIARY, SPACE_XS, SPACE_SM, SPACE_MD
-
-_FIELD_OPTIONS = [
-    ("Author",     "au:"),
-    ("Title",      "ti:"),
-    ("Abstract",   "abs:"),
-    ("Category",   "cat:"),
-    ("Comment",    "co:"),
-    ("Journal Ref","jr:"),
-    ("All fields", ""),
-]
+from downloads import cleanup_pdfs as _cleanup_pdfs, saved_pdfs_size
+from gui.tex_view import TexView
+from gui.pdf_window import PdfWindow
+from gui.theme import FONT_TERTIARY, SPACE_XS, SPACE_SM, SPACE_MD
+from gui.search._workers import _SearchWorker, _SourceSearchWorker, _PdfWorker, _PDF_DIR
+from gui.search._widgets import _ClauseRow, _ResultList, _ResultRow, _FIELD_OPTIONS
 
 _SORT_BY_OPTIONS = [
     ("Relevance",     arxiv.SortCriterion.Relevance),
@@ -44,162 +31,6 @@ _SORT_ORDER_OPTIONS = [
     ("Descending", arxiv.SortOrder.Descending),
     ("Ascending",  arxiv.SortOrder.Ascending),
 ]
-
-
-class _ClauseRow(QWidget):
-    changed = pyqtSignal()
-    remove_requested = pyqtSignal(object)
-
-    def __init__(self, show_operator: bool = False, parent=None):
-        super().__init__(parent)
-        self._layout = QHBoxLayout(self)
-        self._layout.setContentsMargins(0, 0, 0, 0)
-        self._layout.setSpacing(6)
-
-        self._op_combo = QComboBox()
-        self._op_combo.addItems(["AND", "OR", "ANDNOT"])
-        self._op_combo.setFixedWidth(80)
-        self._op_combo.currentIndexChanged.connect(self.changed)
-        self._op_combo.setVisible(show_operator)
-        self._layout.addWidget(self._op_combo)
-
-        self._field_combo = QComboBox()
-        for label, _ in _FIELD_OPTIONS:
-            self._field_combo.addItem(label)
-        self._field_combo.currentIndexChanged.connect(self.changed)
-        self._layout.addWidget(self._field_combo)
-
-        self._value = QLineEdit()
-        self._value.setPlaceholderText("value…")
-        self._value.textChanged.connect(self.changed)
-        self._layout.addWidget(self._value, stretch=1)
-
-        rm = QPushButton("×")
-        rm.setFixedWidth(28)
-        rm.clicked.connect(lambda: self.remove_requested.emit(self))
-        self._layout.addWidget(rm)
-
-    def set_operator_visible(self, visible: bool) -> None:
-        self._op_combo.setVisible(visible)
-
-    @property
-    def operator(self) -> str:
-        return self._op_combo.currentText()
-
-    @property
-    def prefix(self) -> str:
-        return _FIELD_OPTIONS[self._field_combo.currentIndex()][1]
-
-    @property
-    def value(self) -> str:
-        return self._value.text().strip()
-
-    def to_clause(self) -> str:
-        if not self.value:
-            return ""
-        v = self.value
-        if " " in v:
-            v = f'"{v}"'
-        return f"{self.prefix}{v}"
-
-
-class _ResultList(QListWidget):
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        w = self.viewport().width()  # pyright: ignore[reportOptionalMemberAccess] — technically fixable but awkward with current setup
-        for i in range(self.count()):
-            item = self.item(i)
-            widget = self.itemWidget(item)
-            if widget is not None:
-                widget.setFixedWidth(w)
-                item.setSizeHint(widget.sizeHint())  # pyright: ignore[reportOptionalMemberAccess] — technically fixable but awkward with current setup
-
-
-class _ResultRow(QWidget):
-    def __init__(self, title: str, source: str = "", parent=None):
-        super().__init__(parent)
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(4, 2, 4, 2)
-        layout.setSpacing(SPACE_SM)
-
-        if source and source != "arxiv":
-            badge = QLabel(source)
-            badge.setFixedWidth(70)
-            badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            badge.setStyleSheet(
-                "background: #2a4a3a; color: #4caf7d; border-radius: 3px;"
-                " font-size: 10px; padding: 1px 4px;"
-            )
-            layout.addWidget(badge, alignment=Qt.AlignmentFlag.AlignTop)
-
-        self._label = QLabel(title)
-        self._label.setWordWrap(True)
-        layout.addWidget(self._label, stretch=1)
-
-        self._checkbox = QCheckBox("Save")
-        self._checkbox.setFixedWidth(60)
-        layout.addWidget(self._checkbox, alignment=Qt.AlignmentFlag.AlignTop)
-
-    @property
-    def checked(self) -> bool:
-        return self._checkbox.isChecked()
-
-    def set_checked(self, value: bool) -> None:
-        self._checkbox.setChecked(value)
-
-
-class _SearchWorker(QThread):
-    done = pyqtSignal(list)
-
-    def __init__(self, query: str, max_results: int,
-                 sort_by: arxiv.SortCriterion, sort_order: arxiv.SortOrder):
-        super().__init__()
-        self.query = query
-        self.max_results = max_results
-        self.sort_by = sort_by
-        self.sort_order = sort_order
-
-    def run(self) -> None:
-        results = search_papers(
-            self.query,
-            max_results=self.max_results,
-            sort_by=self.sort_by,
-            sort_order=self.sort_order,
-        )
-        self.done.emit(results)
-
-
-class _SourceSearchWorker(QThread):
-    """Search worker for any PaperSource (arXiv or OpenAlex)."""
-    done = pyqtSignal(list)
-
-    def __init__(self, source_name: str, query: str, max_results: int):
-        super().__init__()
-        self._source_name = source_name
-        self.query = query
-        self.max_results = max_results
-
-    def run(self) -> None:
-        if self._source_name == "openalex":
-            source = OpenAlexSource()
-        else:
-            source = ArxivSource()
-        results = source.search(self.query, max_results=self.max_results)
-        self.done.emit(results)
-
-
-class _PdfWorker(QThread):
-    done = pyqtSignal(str)
-
-    def __init__(self, paper: arxiv.Result):
-        super().__init__()
-        self.paper = paper
-
-    def run(self) -> None:
-        _PDF_DIR.mkdir(parents=True, exist_ok=True)
-        path = download_pdf(self.paper, dirpath=str(_PDF_DIR))
-        self.done.emit(path)
-
 
 _SOURCE_OPTIONS = [
     ("arXiv", "arxiv"),

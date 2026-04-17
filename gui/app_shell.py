@@ -9,7 +9,7 @@ from gui.library_page import LibraryPage
 from gui.projects_page import ProjectsPage
 from gui.setup_page import SetupPage
 from gui.doi_page import DoiPage
-from gui.search_window import SearchWindow
+from gui.search import SearchWindow
 from db import init_db
 
 

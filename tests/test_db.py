@@ -162,7 +162,7 @@ class TestSavePaperMetadata:
             source="openalex",
         )
         defaults.update(kwargs)
-        return PaperMetadata(**defaults)  # pyright: ignore[reportArgumentType]
+        return PaperMetadata.model_validate(defaults)
 
     def test_save_and_get_by_id(self, tmp_db):
         meta = self._make_meta()

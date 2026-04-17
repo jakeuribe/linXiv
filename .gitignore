@@ -29,3 +29,6 @@ Thumbs.db
 features.md
 *T.md
 pyrightconfig.json
+
+# Session state
+selected_papers.json
