@@ -4,7 +4,7 @@ import arxiv
 from datetime import datetime
 from pathlib import Path
 from typing import Sequence, Generator, Iterable, Iterator
-from db import init_db, save_paper, save_papers
+from storage.db import init_db, save_paper, save_papers
 
 _client = arxiv.Client(num_retries=1, delay_seconds=7.0)
 

@@ -19,7 +19,7 @@ def tmp_db(tmp_path, monkeypatch):
     imported into projects via `from db import _connect`) need to be patched so
     that every call in either module ends up at the temp DB.
     """
-    import db
+    import storage.db as db
     import projects
 
     db_file = str(tmp_path / "test.db")
