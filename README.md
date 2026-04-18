@@ -17,7 +17,6 @@ A Python application for discovering, managing, and visualizing academic papers 
 
 ```
 linXiv/
-├── main.py                    # Launch original graph viewer
 ├── main_shell.py              # Launch full app shell (recommended)
 ├── run_api.py                 # HTTP API (FastAPI) for external frontends — run_api.bat
 ├── api/
@@ -84,7 +83,6 @@ GENAI_API_KEY_TAG_GEN=your_google_gemini_api_key
 
 ```bash
 python main_shell.py  # Full app shell (recommended)
-python main.py        # Original graph viewer only
 ```
 
 **HTTP API (JSON backend for a separate frontend)**
