@@ -2,7 +2,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import QThread, pyqtSignal
 import arxiv
-from fetch_paper_metadata import search_papers
+from sources import search_papers
 from sources import ArxivSource, OpenAlexSource
 from downloads import download_pdf
 

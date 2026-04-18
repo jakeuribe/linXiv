@@ -3,8 +3,14 @@
 Add new sources by implementing PaperSource and importing them here.
 """
 
-from sources.base import PaperMetadata, PaperSource
-from sources.arxiv_source import ArxivSource
-from sources.openalex_source import OpenAlexSource
+from .base import PaperMetadata, PaperSource
+from .arxiv_source import ArxivSource
+from .openalex_source import OpenAlexSource
+from .fetch_paper_metadata import fetch_paper_metadata, search_papers, gen_md_file, gen_md_files
+from .doi_resolve import resolve_doi, _resolve_doi
 
-__all__ = ["PaperMetadata", "PaperSource", "ArxivSource", "OpenAlexSource"]
+__all__ = [
+    "PaperMetadata", "PaperSource", "ArxivSource", "OpenAlexSource",
+    "fetch_paper_metadata", "search_papers", "gen_md_file", "gen_md_files",
+    "resolve_doi", "_resolve_doi",
+]

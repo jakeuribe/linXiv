@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
 )
 
 from db import get_paper, save_paper_metadata
-from doi_resolve import _resolve_doi
+from sources import _resolve_doi
 from sources.base import PaperMetadata
 
 from gui.theme import BG as _BG, PANEL as _PANEL, BORDER as _BORDER

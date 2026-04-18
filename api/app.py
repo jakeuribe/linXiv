@@ -31,8 +31,7 @@ from db import (
     save_papers,
     save_paper_metadata,
 )
-from doi_resolve import resolve_doi
-from fetch_paper_metadata import fetch_paper_metadata, search_papers
+from sources import resolve_doi, fetch_paper_metadata, search_papers
 from notes import Note, ensure_notes_db, get_notes
 from projects import (
     Project,
