@@ -286,7 +286,7 @@ class GraphPage(QWidget):
                         "id":    p.id,
                         "name":  p.name,
                         "color": color_to_hex(p.color) if p.color else "#5b8dee",
-                        "tags":  p.tags or [],
+                        "tags":  p.project_tags or [],
                     })
         except Exception:
             pass

@@ -376,6 +376,8 @@ class NoteEditorDialog(QDialog):
             self._note.content = self._editor.toPlainText().strip()
             self._note.save()
         else:
+            if self._paper_id is None:
+                return
             Note(
                 paper_id   = self._paper_id,
                 project_id = self._project_id,

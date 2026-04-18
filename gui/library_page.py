@@ -400,8 +400,10 @@ class PaperDetailView(QWidget):
         # Clear previous content
         while self._body_layout.count():
             item = self._body_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()  # pyright: ignore[reportOptionalMemberAccess]
+            if item:
+                widget = item.widget()
+                if widget:
+                    widget.deleteLater()
 
         paper_id = row["paper_id"]
 
@@ -805,8 +807,10 @@ class LibraryPage(QWidget):
         # Remove old cards
         while self._cards_layout.count() > 1:
             item = self._cards_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()  # pyright: ignore[reportOptionalMemberAccess]
+            if item:
+                widget = item.widget()
+                if widget:
+                    widget.deleteLater()
         self._cards = []
 
         self._empty_lbl.setVisible(not rows)
