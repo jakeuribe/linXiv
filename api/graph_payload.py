@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from db import get_graph_data
+from storage.db import get_graph_data
 from projects import Status, filter_projects
 
 

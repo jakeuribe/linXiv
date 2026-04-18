@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .graph_payload import get_augmented_graph_data, project_filter_options
-from db import (
+from storage.db import (
     delete_paper,
     get_categories,
     get_paper,
@@ -32,7 +32,7 @@ from db import (
     save_paper_metadata,
 )
 from sources import resolve_doi, fetch_paper_metadata, search_papers
-from notes import Note, ensure_notes_db, get_notes
+from storage.notes import Note, ensure_notes_db, get_notes
 from projects import (
     Project,
     Status,

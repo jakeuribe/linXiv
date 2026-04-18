@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from db import list_papers, set_has_pdf, set_pdf_path
+from storage.db import list_papers, set_has_pdf, set_pdf_path
 from gui.theme import BG as _BG, PANEL as _PANEL, BORDER as _BORDER
 from gui.theme import ACCENT as _ACCENT, TEXT as _TEXT, MUTED as _MUTED
 from gui.theme import (
@@ -517,7 +517,7 @@ class PaperDetailView(QWidget):
         self._body_layout.addSpacing(SPACE_SM)
 
         try:
-            from notes import get_notes
+            from storage.notes import get_notes
             all_notes = get_notes(paper_id, all_projects=True)
         except Exception:
             all_notes = []
@@ -827,7 +827,7 @@ class LibraryPage(QWidget):
         on_back: optional callable invoked when the back button is pressed
                  instead of returning to the library list.
         """
-        from db import get_paper
+        from storage.db import get_paper
         row = get_paper(paper_id)
         if row is not None:
             self._back_override = on_back

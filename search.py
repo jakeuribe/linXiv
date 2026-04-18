@@ -1,7 +1,7 @@
 import sys
 from PyQt6.QtWidgets import QApplication
 from gui.search import SearchWindow
-from db import init_db
+from storage.db import init_db
 
 
 if __name__ == "__main__":

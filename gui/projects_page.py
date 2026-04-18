@@ -176,7 +176,7 @@ class NewProjectDialog(QDialog):
         project_tags = [t.strip() for t in raw.split(",") if t.strip()] if raw else []
 
         from projects import Project, ensure_projects_db
-        from notes import ensure_notes_db
+        from storage.notes import ensure_notes_db
         ensure_projects_db()
         ensure_notes_db()
 
@@ -236,7 +236,7 @@ class AddPaperDialog(QDialog):
         self._load_papers()
 
     def _load_papers(self) -> None:
-        from db import list_papers
+        from storage.db import list_papers
         self._all_papers = list_papers()
         already = set(self._project.paper_ids)
         self._papers = [r for r in self._all_papers if r["paper_id"] not in already]
@@ -369,7 +369,7 @@ class NoteEditorDialog(QDialog):
         lay.addLayout(btn_row)
 
     def _on_save(self) -> None:
-        from notes import Note, ensure_notes_db
+        from storage.notes import Note, ensure_notes_db
         ensure_notes_db()
         if self._note is not None:
             self._note.title   = self._note_title.text().strip()
@@ -456,7 +456,7 @@ class NotesDialog(QDialog):
             if item.widget():  # pyright: ignore[reportOptionalMemberAccess] — technically fixable but awkward with current setup
                 item.widget().deleteLater()  # pyright: ignore[reportOptionalMemberAccess]
 
-        from notes import get_notes, ensure_notes_db
+        from storage.notes import get_notes, ensure_notes_db
         ensure_notes_db()
         notes = get_notes(self._paper_id, project_id=self._project_id)
 
@@ -556,7 +556,7 @@ class _PaperRow(QFrame):
 
     def _fetch_title(self) -> str:
         try:
-            from db import get_paper
+            from storage.db import get_paper
             row = get_paper(self._paper_id)
             return row["title"] if row else self._paper_id
         except Exception:
@@ -564,7 +564,7 @@ class _PaperRow(QFrame):
 
     def _note_count(self) -> int:
         try:
-            from notes import count_paper_notes
+            from storage.notes import count_paper_notes
             return count_paper_notes(self._paper_id, self._project_id)
         except Exception:
             return 0
@@ -833,7 +833,7 @@ class ProjectCard(QFrame):
         if project.id is None:
             return 0
         try:
-            from notes import count_project_notes
+            from storage.notes import count_project_notes
             return count_project_notes(project.id)
         except Exception:
             return 0

@@ -7,7 +7,9 @@ import json
 import sys
 from typing import Any
 
-import db
+import storage.db as db
+from projects import ensure_projects_db
+from storage.notes import ensure_notes_db
 from sources.arxiv_source import ArxivSource
 from sources.openalex_source import OpenAlexSource
 from sources.base import PaperMetadata, PaperSource
@@ -35,7 +37,7 @@ def _output(data: Any) -> None:
     json.dump(data, sys.stdout, indent=2, default=str)
     sys.stdout.write("\n")
 
-# Commands 
+# Commands
 
 def cmd_search(args: argparse.Namespace) -> None:
     source = _source_for(args.source)
@@ -62,8 +64,6 @@ def cmd_list(args: argparse.Namespace) -> None:
     _output(papers)
 
 
-
-
 def cmd_tag(args: argparse.Namespace) -> None:
     from AI_tools import PaperContent, tag
 
@@ -79,9 +79,8 @@ def cmd_tag(args: argparse.Namespace) -> None:
 
 
 def cmd_project_list(args: argparse.Namespace) -> None:
-    from projects import ensure_projects_db, filter_projects, Status, Q
+    from projects import filter_projects, Status, Q
 
-    ensure_projects_db()
     if args.status:
         projects = filter_projects(Q("status = ?", Status(args.status)))
     else:
@@ -93,18 +92,16 @@ def cmd_project_list(args: argparse.Namespace) -> None:
 
 
 def cmd_project_create(args: argparse.Namespace) -> None:
-    from projects import ensure_projects_db, Project
+    from projects import Project
 
-    ensure_projects_db()
     p = Project(name=args.name, description=args.description or "")
     p.save()
     _output({"id": p.id, "name": p.name, "status": p.status.value})
 
 
 def cmd_project_add_paper(args: argparse.Namespace) -> None:
-    from projects import ensure_projects_db, get_project
+    from projects import get_project
 
-    ensure_projects_db()
     p = get_project(args.project_id)
     if p is None:
         print(json.dumps({"error": f"Project {args.project_id} not found"}), file=sys.stderr)
@@ -115,7 +112,24 @@ def cmd_project_add_paper(args: argparse.Namespace) -> None:
     _output({"project_id": p.id, "paper_id": args.paper_id, "paper_count": len(p.paper_ids)})
 
 
-# Argument parsing 
+def cmd_create_note(args: argparse.Namespace) -> None:
+    from storage.notes import Note
+
+    if db.get_paper(args.paper_id) is None:
+        print(json.dumps({"error": f"Paper {args.paper_id} not found in DB"}), file=sys.stderr)
+        sys.exit(1)
+
+    note = Note(
+        paper_id=args.paper_id,
+        project_id=args.project_id,
+        title=args.title or "",
+        content=args.content,
+    )
+    note.save()
+    _output({"id": note.id, "paper_id": note.paper_id, "project_id": note.project_id, "title": note.title})
+
+
+# Argument parsing
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="arxiv_cli", description="linXiv headless CLI")
@@ -166,11 +180,25 @@ def build_parser() -> argparse.ArgumentParser:
     p_proj_add.add_argument("paper_id", help="Paper ID to add")
     p_proj_add.set_defaults(func=cmd_project_add_paper)
 
+    # note
+    p_note = sub.add_parser("note", help="Manage notes")
+    note_sub = p_note.add_subparsers(dest="note_command", required=True)
+
+    p_note_create = note_sub.add_parser("create", help="Create a note on a paper")
+    p_note_create.add_argument("paper_id", help="Paper ID to attach the note to")
+    p_note_create.add_argument("content", help="Note body text")
+    p_note_create.add_argument("--title", help="Note title", default="")
+    p_note_create.add_argument("--project-id", type=int, dest="project_id", default=None,
+                               help="Associate note with a project")
+    p_note_create.set_defaults(func=cmd_create_note)
+
     return parser
 
 
 def main(argv: list[str] | None = None) -> None:
     db.init_db()
+    ensure_projects_db()
+    ensure_notes_db()
     parser = build_parser()
     args = parser.parse_args(argv)
     args.func(args)

@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from db import get_paper, save_paper_metadata
+from storage.db import get_paper, save_paper_metadata
 from sources import _resolve_doi
 from sources.base import PaperMetadata
 

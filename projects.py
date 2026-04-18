@@ -5,7 +5,7 @@ import enum
 from dataclasses import dataclass, field
 from typing import Optional
 
-from db import _connect, init_table
+from storage.db import _connect, init_table
 
 
 # ── Query builder

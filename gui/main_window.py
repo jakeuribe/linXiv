@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .graph_view import GraphView
-from db import get_categories, get_graph_data, get_tags, list_papers
+from storage.db import get_categories, get_graph_data, get_tags, list_papers
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

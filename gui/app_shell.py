@@ -10,7 +10,7 @@ from gui.projects_page import ProjectsPage
 from gui.setup_page import SetupPage
 from gui.doi_page import DoiPage
 from gui.search import SearchWindow
-from db import init_db
+from storage.db import init_db
 
 
 def run_shell() -> None:

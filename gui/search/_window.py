@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 import arxiv
-from db import (
+from storage.db import (
     save_paper, save_paper_metadata, delete_paper,
     get_paper, set_has_pdf, set_pdf_path, parse_entry_id,
     search_full_text,
@@ -590,7 +590,7 @@ class SearchWindow(QMainWindow):
             for key in self._saved_papers
         }
         # Also keep any PDF that's already recorded in the DB (e.g. downloaded via Library page)
-        from db import list_papers as _list_papers
+        from storage.db import list_papers as _list_papers
         for row in _list_papers():
             pdf_path = row["pdf_path"] if "pdf_path" in row.keys() else None
             if pdf_path and os.path.isfile(pdf_path):

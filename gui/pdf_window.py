@@ -55,7 +55,7 @@ class PdfWindow(QMainWindow):
     @staticmethod
     def resolve_pdf_path(paper_id: str, version: int, fallback_dir: str) -> str | None:
         """Return the best PDF path for a paper: pdf_path from DB, then fallback."""
-        from db import get_paper
+        from storage.db import get_paper
         row = get_paper(paper_id, version)
         if row:
             db_path = row["pdf_path"]
