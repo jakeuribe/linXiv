@@ -8,7 +8,7 @@ import sys
 from typing import Any
 
 import storage.db as db
-from projects import ensure_projects_db
+from storage.projects import ensure_projects_db
 from storage.notes import ensure_notes_db
 from sources.arxiv_source import ArxivSource
 from sources.openalex_source import OpenAlexSource
@@ -79,7 +79,7 @@ def cmd_tag(args: argparse.Namespace) -> None:
 
 
 def cmd_project_list(args: argparse.Namespace) -> None:
-    from projects import filter_projects, Status, Q
+    from storage.projects import filter_projects, Status, Q
 
     if args.status:
         projects = filter_projects(Q("status = ?", Status(args.status)))
@@ -92,7 +92,7 @@ def cmd_project_list(args: argparse.Namespace) -> None:
 
 
 def cmd_project_create(args: argparse.Namespace) -> None:
-    from projects import Project
+    from storage.projects import Project
 
     p = Project(name=args.name, description=args.description or "")
     p.save()
@@ -100,7 +100,7 @@ def cmd_project_create(args: argparse.Namespace) -> None:
 
 
 def cmd_project_add_paper(args: argparse.Namespace) -> None:
-    from projects import get_project
+    from storage.projects import get_project
 
     p = get_project(args.project_id)
     if p is None:

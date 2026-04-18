@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from projects import color_to_hex
+from storage.projects import color_to_hex
 from gui.theme import BG as _BG, PANEL as _PANEL, BORDER as _BORDER
 from gui.theme import ACCENT as _ACCENT, TEXT as _TEXT, MUTED as _MUTED
 from gui.theme import (
@@ -175,7 +175,7 @@ class NewProjectDialog(QDialog):
         raw = self._project_tags.text().strip()
         project_tags = [t.strip() for t in raw.split(",") if t.strip()] if raw else []
 
-        from projects import Project, ensure_projects_db
+        from storage.projects import Project, ensure_projects_db
         from storage.notes import ensure_notes_db
         ensure_projects_db()
         ensure_notes_db()
@@ -928,7 +928,7 @@ class ProjectsPage(QWidget):
                 item.widget().deleteLater()  # pyright: ignore[reportOptionalMemberAccess]
 
         try:
-            from projects import filter_projects, ensure_projects_db, Q, Status
+            from storage.projects import filter_projects, ensure_projects_db, Q, Status
             ensure_projects_db()
             projects = filter_projects(Q("status = ?", Status.ACTIVE))
         except Exception:

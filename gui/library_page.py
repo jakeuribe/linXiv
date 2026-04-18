@@ -464,7 +464,7 @@ class PaperDetailView(QWidget):
         self._body_layout.addSpacing(SPACE_SM)
 
         try:
-            from projects import filter_projects, Status
+            from storage.projects import filter_projects, Status
             all_projects = filter_projects()
             containing = [p for p in all_projects
                           if paper_id in (p.paper_ids or [])
@@ -537,7 +537,7 @@ class PaperDetailView(QWidget):
             missing_ids = note_proj_ids - set(proj_names)
             if missing_ids:
                 try:
-                    from projects import get_project
+                    from storage.projects import get_project
                     for pid in missing_ids:
                         p = get_project(pid)
                         if p and p.id is not None:
@@ -880,7 +880,7 @@ class LibraryPage(QWidget):
         if not self._selected:
             return
         from PyQt6.QtWidgets import QDialog, QComboBox, QDialogButtonBox, QMessageBox
-        from projects import filter_projects, Q
+        from storage.projects import filter_projects, Q
 
         projects = filter_projects(Q("status = 'active'"))
         if not projects:

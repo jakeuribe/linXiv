@@ -256,7 +256,7 @@ class GraphPage(QWidget):
 
         # Augment paper nodes with project membership
         try:
-            from projects import filter_projects
+            from storage.projects import filter_projects
             paper_to_projects: dict[str, list[int]] = {}
             for proj in filter_projects():
                 if proj.id is not None:
@@ -279,7 +279,7 @@ class GraphPage(QWidget):
         tags = get_tags()
         proj_data: list[dict] = []
         try:
-            from projects import filter_projects, color_to_hex, Status
+            from storage.projects import filter_projects, color_to_hex, Status
             for p in filter_projects():
                 if p.id is not None and p.status != Status.DELETED:
                     proj_data.append({

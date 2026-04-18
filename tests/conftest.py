@@ -20,7 +20,7 @@ def tmp_db(tmp_path, monkeypatch):
     that every call in either module ends up at the temp DB.
     """
     import storage.db as db
-    import projects
+    import storage.projects as projects
 
     db_file = str(tmp_path / "test.db")
 

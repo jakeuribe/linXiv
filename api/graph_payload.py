@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from storage.db import get_graph_data
-from projects import Status, filter_projects
+from storage.projects import Status, filter_projects
 
 
 def get_augmented_graph_data() -> dict:
@@ -39,7 +39,7 @@ def get_augmented_graph_data() -> dict:
 
 def project_filter_options() -> list[dict]:
     """Project chips for the graph (same shape as desktop GraphPage._load_dropdowns)."""
-    from projects import color_to_hex
+    from storage.projects import color_to_hex
 
     out: list[dict] = []
     for p in filter_projects():

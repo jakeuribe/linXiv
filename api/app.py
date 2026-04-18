@@ -33,7 +33,7 @@ from storage.db import (
 )
 from sources import resolve_doi, fetch_paper_metadata, search_papers
 from storage.notes import Note, ensure_notes_db, get_notes
-from projects import (
+from storage.projects import (
     Project,
     Status,
     color_from_hex,
