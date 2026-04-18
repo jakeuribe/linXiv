@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
+from pathlib import Path
 from typing import Any
 
 import storage.db as db
@@ -13,6 +15,30 @@ from storage.notes import ensure_notes_db
 from sources.arxiv_source import ArxivSource
 from sources.openalex_source import OpenAlexSource
 from sources.base import PaperMetadata, PaperSource
+
+_FORMATS_DIR = Path(__file__).parent / "formats"
+
+# arXiv ID patterns: new-style (YYMM.NNNNN) or old-style (category/NNNNNNN)
+_ARXIV_ID_RE = re.compile(r"^\d{4}\.\d{4,5}(v\d+)?$|^[a-z\-]+(\.[A-Z]{2})?/\d{7}(v\d+)?$")
+
+
+def _validate_arxiv_id(paper_id: str) -> str:
+    """Return the id unchanged if valid, else exit with an error message."""
+    if not _ARXIV_ID_RE.match(paper_id):
+        print(json.dumps({"error": f"Invalid arXiv ID format: {paper_id!r}"}), file=sys.stderr)
+        sys.exit(1)
+    return paper_id
+
+
+def _render_paper(meta: PaperMetadata) -> str | None:
+    """Render paper metadata using formats/{source}_paper.md if it exists."""
+    template_path = _FORMATS_DIR / f"{meta.source}_paper.md"
+    if not template_path.exists():
+        return None
+    template = template_path.read_text(encoding="utf-8")
+    data = meta.model_dump(mode="json")
+    data["authors_inline"] = ", ".join(meta.authors)
+    return template.format_map(data)
 
 _SOURCES: dict[str, type[PaperSource]] = {
     "arxiv":    ArxivSource,
@@ -46,6 +72,8 @@ def cmd_search(args: argparse.Namespace) -> None:
 
 
 def cmd_fetch(args: argparse.Namespace) -> None:
+    if args.source == "arxiv":
+        _validate_arxiv_id(args.paper_id)
     source = _source_for(args.source)
     try:
         meta = source.fetch_by_id(args.paper_id)
@@ -53,7 +81,11 @@ def cmd_fetch(args: argparse.Namespace) -> None:
         print(json.dumps({"error": str(e)}), file=sys.stderr)
         sys.exit(1)
     db.save_paper_metadata(meta)
-    _output(_meta_to_dict(meta))
+    rendered = _render_paper(meta)
+    if rendered:
+        sys.stdout.write(rendered + "\n")
+    else:
+        _output(_meta_to_dict(meta))
 
 
 def cmd_list(args: argparse.Namespace) -> None:

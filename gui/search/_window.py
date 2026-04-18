@@ -14,7 +14,7 @@ from storage.db import (
     search_full_text,
 )
 from sources.base import PaperMetadata
-from downloads import cleanup_pdfs as _cleanup_pdfs, saved_pdfs_size
+from sources.arxiv_downloads import cleanup_pdfs as _cleanup_pdfs, saved_pdfs_size
 from gui.tex_view import TexView
 from gui.pdf_window import PdfWindow
 from gui.theme import FONT_TERTIARY, SPACE_XS, SPACE_SM, SPACE_MD

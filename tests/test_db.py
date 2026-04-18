@@ -270,7 +270,7 @@ class TestFullTextSearch:
 class TestExtractSource:
     def test_extract_from_tar(self, tmp_path):
         import tarfile
-        from downloads import extract_source
+        from sources.arxiv_downloads import extract_source
 
         # Create a fake .tex file
         tex_content = r"""
@@ -296,7 +296,7 @@ Hello world of transformers.
 
     def test_extract_empty_tar(self, tmp_path):
         import tarfile
-        from downloads import extract_source
+        from sources.arxiv_downloads import extract_source
 
         # Create an empty .tar.gz (no .tex files)
         tar_path = str(tmp_path / "empty.tar.gz")
@@ -307,7 +307,7 @@ Hello world of transformers.
         assert result == ""
 
     def test_extract_invalid_tar(self, tmp_path):
-        from downloads import extract_source
+        from sources.arxiv_downloads import extract_source
 
         bad_path = str(tmp_path / "bad.tar.gz")
         (tmp_path / "bad.tar.gz").write_text("not a tarball")

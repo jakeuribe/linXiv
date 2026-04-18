@@ -4,7 +4,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 import arxiv
 from sources import search_papers
 from sources import ArxivSource, OpenAlexSource
-from downloads import download_pdf
+from sources.arxiv_downloads import download_pdf
 
 _PDF_DIR = Path(__file__).parent.parent.parent / "pdfs"
 
