@@ -33,3 +33,5 @@ pyrightconfig.json
 # Session state
 selected_papers.json
 .venv
+# env state
+uv.lock

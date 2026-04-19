@@ -1,3 +1,3 @@
-from gui.search._window import SearchWindow
+from gui.search._window import SearchPage
 
-__all__ = ["SearchWindow"]
+__all__ = ["SearchPage"]

@@ -1,7 +1,7 @@
 import os
 
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QPushButton, QListWidget, QListWidgetItem,
     QLabel, QSplitter, QCheckBox, QComboBox, QSpinBox,
     QFrame, QFileDialog,
@@ -17,7 +17,7 @@ from sources.base import PaperMetadata
 from sources.arxiv_downloads import cleanup_pdfs as _cleanup_pdfs, saved_pdfs_size
 from gui.tex_view import TexView
 from gui.pdf_window import PdfWindow
-from gui.theme import BG as _BG, TEXT as _TEXT, BORDER as _BORDER, FONT_TERTIARY, SPACE_XS, SPACE_SM, SPACE_MD
+from gui.theme import FONT_TERTIARY, SPACE_XS, SPACE_SM, SPACE_MD
 from gui.search._workers import _SearchWorker, _SourceSearchWorker, _PdfWorker, _PDF_DIR
 from gui.search._widgets import _ClauseRow, _ResultList, _ResultRow, _FIELD_OPTIONS
 
@@ -39,27 +39,35 @@ _SOURCE_OPTIONS = [
 ]
 
 
-class SearchWindow(QMainWindow):
+class SearchPage(QWidget):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Paper Search")
-        self.resize(1000, 600)  # TODO: Make more customizable
-        self.setStyleSheet(f"""
-            background: {_BG}; color: {_TEXT};
-            QLineEdit, QComboBox, QSpinBox {{
-                border: 1px solid #ffffff;
+        self.setStyleSheet("""
+            background: #ffffff; color: #111111;
+            QLineEdit, QComboBox, QSpinBox {
+                border: 1px solid #cccccc;
                 border-radius: 4px;
                 padding: 2px 4px;
-                background: {_BG};
-                color: {_TEXT};
-            }}
-            QListWidget {{
-                border: 1px solid #ffffff;
-                background: {_BG};
-            }}
-            QFrame[frameShape="1"] {{
-                border: 1px solid #ffffff;
-            }}
+                background: #ffffff;
+                color: #111111;
+            }
+            QListWidget {
+                border: 1px solid #cccccc;
+                background: #ffffff;
+                color: #111111;
+            }
+            QPushButton {
+                background: #f0f0f0;
+                color: #111111;
+                border: 1px solid #cccccc;
+                border-radius: 4px;
+                padding: 2px 8px;
+            }
+            QPushButton:hover { background: #e0e0e0; }
+            QPushButton:disabled { color: #999999; }
+            QCheckBox { color: #111111; }
+            QLabel { color: #111111; }
+            QFrame[frameShape="1"] { border: 1px solid #cccccc; }
         """)
         self._results: list[arxiv.Result] = []
         self._meta_results: list[PaperMetadata] = []  # unified results from any source
@@ -75,9 +83,7 @@ class SearchWindow(QMainWindow):
         self._build_ui()
 
     def _build_ui(self) -> None:
-        root = QWidget()
-        self.setCentralWidget(root)
-        layout = QVBoxLayout(root)
+        layout = QVBoxLayout(self)
         layout.setContentsMargins(SPACE_MD, SPACE_MD, SPACE_MD, SPACE_MD)
         layout.setSpacing(SPACE_SM)
 
@@ -97,9 +103,13 @@ class SearchWindow(QMainWindow):
         self._adv_btn.clicked.connect(self._toggle_advanced)
         self._search_btn = QPushButton("Search")
         self._search_btn.clicked.connect(self._on_search)
+        self._cleanup_btn = QPushButton("Clean up PDFs")
+        self._cleanup_btn.setToolTip("Delete unsaved PDFs and update the database")
+        self._cleanup_btn.clicked.connect(self._on_cleanup_pdfs)
         search_row.addWidget(self._search_box)
         search_row.addWidget(self._adv_btn)
         search_row.addWidget(self._search_btn)
+        search_row.addWidget(self._cleanup_btn)
         layout.addLayout(search_row)
 
         # Advanced panel
@@ -628,9 +638,9 @@ class SearchWindow(QMainWindow):
         print(f"[cleanup] kept: {self._saved_papers} | deleted {len(deleted)} file(s): {deleted}")
         return deleted
 
-    def closeEvent(self, event) -> None:
-        self.cleanup_pdfs()
-        super().closeEvent(event)
+    def _on_cleanup_pdfs(self) -> None:
+        deleted = self.cleanup_pdfs()
+        self._status.setText(f"Cleaned up {len(deleted)} PDF(s).")
 
     def _clear_sidebar(self) -> None:
         self._sidebar_title.set_content("")

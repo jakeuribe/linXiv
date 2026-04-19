@@ -97,8 +97,8 @@ class _ResultRow(QWidget):
             badge.setFixedWidth(70)  # TODO: Make more customizable
             badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
             badge.setStyleSheet(
-                f"background: #2a4a3a; color: #4caf7d; border-radius: {RADIUS_SM}px;"
-                f" font-size: 10px; padding: 1px {SPACE_XS}px;"
+                f"background: #e6f4ee; color: #1a7a42; border: 1px solid #a8d5bc;"
+                f" border-radius: {RADIUS_SM}px; font-size: 10px; padding: 1px {SPACE_XS}px;"
             )
             layout.addWidget(badge, alignment=Qt.AlignmentFlag.AlignTop)
 

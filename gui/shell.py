@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QHBoxLayout,
@@ -38,6 +39,7 @@ class AppShell(QMainWindow):
         self.setStyleSheet(f"background: {_BG}; color: {_TEXT};")
         self._page_btns: list[QPushButton] = []
         self._stack = QStackedWidget()
+        self._close_callbacks: list[Callable[[], object]] = []
 
         self._sidebar = QWidget()
         self._sidebar.setObjectName("sidebar")
@@ -71,6 +73,10 @@ class AppShell(QMainWindow):
             btn.setChecked(True)
         return idx
 
+    def register_on_close(self, callback: Callable[[], object]) -> None:
+        """Register a callback to run when the shell window closes."""
+        self._close_callbacks.append(callback)
+
     def add_launcher(self, label: str, callback) -> None:
         """Add a nav button that runs callback (e.g. opens a floating window)."""
         btn = QPushButton(label)
@@ -84,6 +90,11 @@ class AppShell(QMainWindow):
             self._go_to(idx)
 
     # ── Internal ──────────────────────────────────────────────────────────────
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        for cb in self._close_callbacks:
+            cb()
+        super().closeEvent(event)
 
     def _go_to(self, idx: int) -> None:
         self._stack.setCurrentIndex(idx)

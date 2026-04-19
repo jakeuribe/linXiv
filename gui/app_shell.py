@@ -9,7 +9,7 @@ from gui.library_page import LibraryPage
 from gui.projects_page import ProjectsPage
 from gui.setup_page import SetupPage
 from gui.doi_page import DoiPage
-from gui.search import SearchWindow
+from gui.search import SearchPage
 from storage.db import init_db
 
 
@@ -26,6 +26,8 @@ def run_shell() -> None:
     shell.add_page("Library", library_page)
     shell.add_page("Graph", graph_page)
     shell.add_page("Projects", projects_page)
+    search_page = SearchPage()
+    shell.add_page("Search", search_page)
     shell.add_page("Add by DOI", DoiPage())
     shell.add_page("Setup", SetupPage())
 
@@ -41,16 +43,8 @@ def run_shell() -> None:
 
     graph_page.paper_right_clicked.connect(_on_paper_right_clicked)
 
-    _sw: list[SearchWindow] = []
+    shell.register_on_close(search_page.cleanup_pdfs)
+    app.aboutToQuit.connect(search_page.cleanup_pdfs)
 
-    def _open_search() -> None:
-        if not _sw:
-            _sw.append(SearchWindow())
-        w = _sw[0]
-        w.show()
-        w.raise_()
-        w.activateWindow()
-
-    shell.add_launcher("Search", _open_search)
     shell.show()
     sys.exit(app.exec())
