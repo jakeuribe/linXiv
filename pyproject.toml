@@ -25,3 +25,23 @@ mcp = ["mcp[cli]"]
 
 [project.scripts]
 linxiv = "linxiv_cli:main"
+
+# TODO: split into two packages (linxiv core + linxiv-gui) so GUI files are
+# excluded from the CLI-only install. Requires restructuring into separate
+# pyproject.toml files or a monorepo layout.
+# CLI only:   uv tool install ~/Documents/linxiv
+# With GUI:   uv tool install "~/Documents/linxiv[gui]"
+[tool.hatch.build.targets.wheel]
+include = [
+    "linxiv_cli.py",
+    "linxiv_mcp.py",
+    "main_shell.py",
+    "pdf.py",
+    "search.py",
+    "AI_tools.py",
+    "api",
+    "gui",
+    "sources",
+    "storage",
+    "assets",
+]
