@@ -23,8 +23,8 @@ from storage.db import list_papers, set_has_pdf, set_pdf_path
 from gui.theme import BG as _BG, PANEL as _PANEL, BORDER as _BORDER
 from gui.theme import ACCENT as _ACCENT, TEXT as _TEXT, MUTED as _MUTED
 from gui.theme import (
-    FONT_TITLE, FONT_BODY, FONT_SECONDARY, FONT_TERTIARY,
-    SPACE_XL, SPACE_LG, SPACE_MD, SPACE_SM,
+    FONT_TITLE, FONT_SUBHEADING, FONT_BODY, FONT_SECONDARY, FONT_TERTIARY,
+    SPACE_XL, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XS,
     RADIUS_LG, RADIUS_MD, RADIUS_SM,
     BTN_H_MD, BTN_H_SM,
     PAGE_MARGIN_H, PAGE_MARGIN_V, CARD_PAD_H, CARD_PAD_V, DIALOG_PAD,
@@ -128,8 +128,8 @@ class _PaperCard(QFrame):
 
         # Body
         body = QVBoxLayout()
-        body.setContentsMargins(14, 11, 0, 11)
-        body.setSpacing(3)
+        body.setContentsMargins(CARD_PAD_H, CARD_PAD_V, 0, CARD_PAD_V)
+        body.setSpacing(SPACE_XS)
 
         title_lbl = QLabel(row["title"] or "(untitled)")
         title_lbl.setWordWrap(True)
@@ -162,7 +162,7 @@ class _PaperCard(QFrame):
 
         # PDF action button
         self._pdf_btn = QPushButton()
-        self._pdf_btn.setFixedSize(116, BTN_H_SM)
+        self._pdf_btn.setFixedSize(116, BTN_H_SM)  # TODO: Make more customizable
         self._pdf_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._refresh_pdf_btn()
         self._pdf_btn.clicked.connect(self._on_pdf_action)
@@ -220,21 +220,21 @@ class _PaperCard(QFrame):
             self._pdf_btn.setText("Open PDF")
             self._pdf_btn.setStyleSheet(f"""
                 QPushButton {{ background: transparent; border: 1px solid {_GREEN};
-                    border-radius: 5px; color: {_GREEN}; font-size: {FONT_TERTIARY}px; }}
+                    border-radius: {RADIUS_SM}px; color: {_GREEN}; font-size: {FONT_TERTIARY}px; }}
                 QPushButton:hover {{ background: #1a2e1f; }}
             """)
         elif self.is_arxiv():
             self._pdf_btn.setText("Download PDF")
             self._pdf_btn.setStyleSheet(f"""
                 QPushButton {{ background: transparent; border: 1px solid {_BLUE};
-                    border-radius: 5px; color: {_BLUE}; font-size: {FONT_TERTIARY}px; }}
+                    border-radius: {RADIUS_SM}px; color: {_BLUE}; font-size: {FONT_TERTIARY}px; }}
                 QPushButton:hover {{ background: #1a1f2e; }}
             """)
         else:
             self._pdf_btn.setText("Link PDF")
             self._pdf_btn.setStyleSheet(f"""
                 QPushButton {{ background: transparent; border: 1px solid {_BORDER};
-                    border-radius: 5px; color: {_MUTED}; font-size: {FONT_TERTIARY}px; }}
+                    border-radius: {RADIUS_SM}px; color: {_MUTED}; font-size: {FONT_TERTIARY}px; }}
                 QPushButton:hover {{ background: #1a1a2a; }}
             """)
 
@@ -301,7 +301,7 @@ class _ActionBar(QFrame):
             QFrame {{ background: #1e1e36; border-top: 1px solid {_BORDER}; }}
             QLabel {{ background: transparent; border: none; }}
         """)
-        self.setFixedHeight(52)
+        self.setFixedHeight(52)  # TODO: Make more customizable
 
         row = QHBoxLayout(self)
         row.setContentsMargins(24, 0, 24, 0)
@@ -364,7 +364,7 @@ class PaperDetailView(QWidget):
         self.setStyleSheet(f"background: {_BG}; color: {_TEXT};")
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(48, 32, 48, 24)
+        outer.setContentsMargins(PAGE_MARGIN_H, 32, PAGE_MARGIN_H, 24)
         outer.setSpacing(0)
 
         # Back button
@@ -438,7 +438,7 @@ class PaperDetailView(QWidget):
         if tags:
             tags_lbl = QLabel("  ".join(f"#{t}" for t in tags))
             tags_lbl.setStyleSheet(f"font-size: {FONT_SECONDARY}px; color: {_ACCENT}; background: transparent;")
-            self._body_layout.addSpacing(6)
+            self._body_layout.addSpacing(SPACE_XS)
             self._body_layout.addWidget(tags_lbl)
 
         self._body_layout.addSpacing(SPACE_LG)
@@ -559,19 +559,19 @@ class PaperDetailView(QWidget):
     def _section_label(text: str) -> QLabel:
         lbl = QLabel(text)
         lbl.setStyleSheet(
-            f"font-size: 16px; font-weight: 600; color: {_TEXT}; background: transparent;"
+            f"font-size: {FONT_SUBHEADING}px; font-weight: 600; color: {_TEXT}; background: transparent;"
         )
         return lbl
 
     def _note_card(self, note, proj_names: dict[int, str]) -> QFrame:
         card = QFrame()
         card.setStyleSheet(f"""
-            QFrame {{ background: {_PANEL}; border: 1px solid {_BORDER}; border-radius: 8px; }}
+            QFrame {{ background: {_PANEL}; border: 1px solid {_BORDER}; border-radius: {RADIUS_LG}px; }}
             QLabel {{ border: none; background: transparent; }}
         """)
         col = QVBoxLayout(card)
-        col.setContentsMargins(14, 10, 14, 10)
-        col.setSpacing(6)
+        col.setContentsMargins(CARD_PAD_H, CARD_PAD_V, CARD_PAD_H, CARD_PAD_V)
+        col.setSpacing(SPACE_XS)
 
         # Note header: project chip + date + edit button
         hdr = QHBoxLayout()
@@ -591,7 +591,7 @@ class PaperDetailView(QWidget):
             date_lbl.setStyleSheet(f"font-size: {FONT_TERTIARY}px; color: {_MUTED};")
             hdr.addWidget(date_lbl)
 
-        _ghost = f"QPushButton {{ background: transparent; border: none; font-size: {FONT_TERTIARY}px; padding: 0 4px; }}"
+        _ghost = f"QPushButton {{ background: transparent; border: none; font-size: {FONT_TERTIARY}px; padding: 0 {SPACE_XS}px; }}"
         edit_btn = QPushButton("Edit")
         edit_btn.setStyleSheet(_ghost + f" QPushButton {{ color: {_MUTED}; }} QPushButton:hover {{ color: {_TEXT}; }}")
         edit_btn.clicked.connect(lambda _, n=note: self._edit_note(n))
@@ -669,7 +669,7 @@ class LibraryPage(QWidget):
             f"font-size: {FONT_BODY}px; color: {_MUTED}; background: transparent;"
         )
         hdr.addWidget(title_lbl)
-        hdr.addSpacing(14)
+        hdr.addSpacing(SPACE_MD)
         hdr.addWidget(self._count_lbl, alignment=Qt.AlignmentFlag.AlignBottom)
         hdr.addStretch()
 
@@ -684,7 +684,7 @@ class LibraryPage(QWidget):
 
         # Filter bar
         filter_row = QHBoxLayout()
-        filter_row.setSpacing(10)
+        filter_row.setSpacing(SPACE_MD)
 
         self._search = QLineEdit()
         self._search.setPlaceholderText("Search title or author…")

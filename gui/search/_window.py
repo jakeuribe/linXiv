@@ -43,7 +43,7 @@ class SearchWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Paper Search")
-        self.resize(1000, 600)
+        self.resize(1000, 600)  # TODO: Make more customizable
         self.setStyleSheet(f"""
             background: {_BG}; color: {_TEXT};
             QLineEdit, QComboBox, QSpinBox {{
@@ -86,14 +86,14 @@ class SearchWindow(QMainWindow):
         self._source_combo = QComboBox()
         for label, _ in _SOURCE_OPTIONS:
             self._source_combo.addItem(label)
-        self._source_combo.setFixedWidth(100)
+        self._source_combo.setFixedWidth(100)  # TODO: Make more customizable
         self._source_combo.currentIndexChanged.connect(self._on_source_changed)
         search_row.addWidget(self._source_combo)
         self._search_box = QLineEdit()
         self._search_box.setPlaceholderText("Search arXiv…")
         self._search_box.returnPressed.connect(self._on_search)
         self._adv_btn = QPushButton("Advanced ▾")
-        self._adv_btn.setFixedWidth(100)
+        self._adv_btn.setFixedWidth(100)  # TODO: Make more customizable
         self._adv_btn.clicked.connect(self._toggle_advanced)
         self._search_btn = QPushButton("Search")
         self._search_btn.clicked.connect(self._on_search)
@@ -106,8 +106,8 @@ class SearchWindow(QMainWindow):
         self._adv_panel = QFrame()
         self._adv_panel.setFrameShape(QFrame.Shape.StyledPanel)
         adv_outer = QVBoxLayout(self._adv_panel)
-        adv_outer.setContentsMargins(8, 6, 8, 6)
-        adv_outer.setSpacing(6)
+        adv_outer.setContentsMargins(SPACE_SM, SPACE_XS, SPACE_SM, SPACE_XS)
+        adv_outer.setSpacing(SPACE_SM)
 
         # Clause rows container
         self._clause_container = QWidget()
@@ -118,7 +118,7 @@ class SearchWindow(QMainWindow):
 
         # Add clause button
         add_btn = QPushButton("+ Add clause")
-        add_btn.setFixedWidth(110)
+        add_btn.setFixedWidth(110)  # TODO: Make more customizable
         add_btn.clicked.connect(self._add_clause)
         adv_outer.addWidget(add_btn, alignment=Qt.AlignmentFlag.AlignLeft)
 
@@ -165,7 +165,7 @@ class SearchWindow(QMainWindow):
         self._max_spin = QSpinBox()
         self._max_spin.setRange(1, 200)
         self._max_spin.setValue(25)
-        self._max_spin.setFixedWidth(80)
+        self._max_spin.setFixedWidth(80)  # TODO: Make more customizable
         opts_row.addWidget(self._max_spin)
 
         opts_row.addStretch()
@@ -201,13 +201,13 @@ class SearchWindow(QMainWindow):
         meta_layout.setSpacing(SPACE_XS)
 
         self._sidebar_title = TexView()
-        self._sidebar_title.setFixedHeight(70)
+        self._sidebar_title.setFixedHeight(70)  # TODO: Make more customizable
         self._sidebar_meta = TexView()
-        self._sidebar_meta.setFixedHeight(40)
+        self._sidebar_meta.setFixedHeight(40)  # TODO: Make more customizable
 
         tag_row = QHBoxLayout()
         tag_label = QLabel("Tags:")
-        tag_label.setFixedWidth(36)
+        tag_label.setFixedWidth(36)  # TODO: Make more customizable
         self._tag_input = QLineEdit()
         self._tag_input.setPlaceholderText("comma-separated tags…")
         tag_row.addWidget(tag_label)
@@ -241,12 +241,12 @@ class SearchWindow(QMainWindow):
         meta_layout.addStretch()
         top.addWidget(meta)
 
-        top.setSizes([400, 600])
+        top.setSizes([400, 600])  # TODO: Make more customizable
         outer.addWidget(top)
 
         self._sidebar_abstract = TexView()
         outer.addWidget(self._sidebar_abstract)
-        outer.setSizes([300, 300])
+        outer.setSizes([300, 300])  # TODO: Make more customizable
 
     # --- query builder ---
 

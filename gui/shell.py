@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .theme import BG as _BG, TEXT as _TEXT, FONT_BODY, NAV_WIDTH, SPACE_MD, SPACE_SM
+from .theme import BG as _BG, TEXT as _TEXT, FONT_BODY, NAV_WIDTH, SPACE_XS, SPACE_MD, SPACE_SM
 
 _SIDEBAR_STYLE = f"""
     QWidget#sidebar {{ background: #1a1a2e; }}
@@ -46,7 +46,7 @@ class AppShell(QMainWindow):
 
         self._nav = QVBoxLayout(self._sidebar)
         self._nav.setContentsMargins(0, SPACE_SM, 0, SPACE_SM)
-        self._nav.setSpacing(2)
+        self._nav.setSpacing(SPACE_XS)
         self._nav.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         central = QWidget()

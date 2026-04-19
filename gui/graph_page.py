@@ -21,12 +21,12 @@ from PyQt6.QtWidgets import (
 )
 
 from .graph_view import GraphView
-from .theme import FONT_SECONDARY, FONT_TERTIARY
+from .theme import FONT_SECONDARY, FONT_TERTIARY, SPACE_XS, SPACE_SM
 from storage.db import get_categories, get_graph_data, get_tags, list_papers
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
+# TODO: Break down into smaller chunks
 def _fmt_date(val) -> str:
     if val is None:
         return ""
@@ -177,8 +177,8 @@ class GraphPage(QWidget):
 
     def _build_btn_bar(self, layout: QVBoxLayout) -> None:
         bar = QHBoxLayout()
-        bar.setContentsMargins(6, 4, 6, 4)
-        bar.setSpacing(6)
+        bar.setContentsMargins(SPACE_SM, SPACE_XS, SPACE_SM, SPACE_XS)
+        bar.setSpacing(SPACE_SM)
 
         refresh_btn = QPushButton("Refresh")
         refresh_btn.setToolTip("Reload graph data from database")

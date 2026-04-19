@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (
     QComboBox, QPushButton, QListWidget, QListWidgetItem, QCheckBox,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
-from gui.theme import SPACE_SM
+from gui.theme import SPACE_SM, SPACE_XS, BTN_H_SM, RADIUS_SM
 
 _FIELD_OPTIONS = [
     ("Author",     "au:"),
@@ -24,11 +24,11 @@ class _ClauseRow(QWidget):
         super().__init__(parent)
         self._layout = QHBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
-        self._layout.setSpacing(6)
+        self._layout.setSpacing(SPACE_SM)
 
         self._op_combo = QComboBox()
         self._op_combo.addItems(["AND", "OR", "ANDNOT"])
-        self._op_combo.setFixedWidth(80)
+        self._op_combo.setFixedWidth(80)  # TODO: Make more customizable
         self._op_combo.currentIndexChanged.connect(self.changed)
         self._op_combo.setVisible(show_operator)
         self._layout.addWidget(self._op_combo)
@@ -45,7 +45,7 @@ class _ClauseRow(QWidget):
         self._layout.addWidget(self._value, stretch=1)
 
         rm = QPushButton("×")
-        rm.setFixedWidth(28)
+        rm.setFixedWidth(BTN_H_SM)
         rm.clicked.connect(lambda: self.remove_requested.emit(self))
         self._layout.addWidget(rm)
 
@@ -89,16 +89,16 @@ class _ResultRow(QWidget):
     def __init__(self, title: str, source: str = "", parent=None):
         super().__init__(parent)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(4, 2, 4, 2)
+        layout.setContentsMargins(SPACE_XS, 2, SPACE_XS, 2)
         layout.setSpacing(SPACE_SM)
 
         if source and source != "arxiv":
             badge = QLabel(source)
-            badge.setFixedWidth(70)
+            badge.setFixedWidth(70)  # TODO: Make more customizable
             badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
             badge.setStyleSheet(
-                "background: #2a4a3a; color: #4caf7d; border-radius: 3px;"
-                " font-size: 10px; padding: 1px 4px;"
+                f"background: #2a4a3a; color: #4caf7d; border-radius: {RADIUS_SM}px;"
+                f" font-size: 10px; padding: 1px {SPACE_XS}px;"
             )
             layout.addWidget(badge, alignment=Qt.AlignmentFlag.AlignTop)
 
@@ -107,7 +107,7 @@ class _ResultRow(QWidget):
         layout.addWidget(self._label, stretch=1)
 
         self._checkbox = QCheckBox("Save")
-        self._checkbox.setFixedWidth(60)
+        self._checkbox.setFixedWidth(60)  # TODO: Make more customizable
         layout.addWidget(self._checkbox, alignment=Qt.AlignmentFlag.AlignTop)
 
     @property

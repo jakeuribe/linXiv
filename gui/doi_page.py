@@ -19,10 +19,11 @@ from gui.theme import BG as _BG, PANEL as _PANEL, BORDER as _BORDER
 from gui.theme import ACCENT as _ACCENT, TEXT as _TEXT, MUTED as _MUTED
 from gui.theme import (
     FONT_TITLE, FONT_SUBHEADING, FONT_BODY, FONT_SECONDARY, FONT_TERTIARY,
-    SPACE_XL, SPACE_XS,
+    SPACE_XL, SPACE_MD, SPACE_XS,
     RADIUS_MD, RADIUS_LG,
-    PAGE_MARGIN_H,
-    DIALOG_PAD,
+    BTN_H_LG,
+    PAGE_MARGIN_H, PAGE_MARGIN_V,
+    CARD_PAD_H, DIALOG_PAD,
 )
 
 _GREEN  = "#4caf7d"
@@ -58,7 +59,7 @@ class DoiPage(QWidget):
         self._worker: _LookupWorker | None = None
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(PAGE_MARGIN_H, 40, PAGE_MARGIN_H, 40)
+        outer.setContentsMargins(PAGE_MARGIN_H, PAGE_MARGIN_V, PAGE_MARGIN_H, PAGE_MARGIN_V)
         outer.setSpacing(0)
 
         # Header
@@ -75,7 +76,7 @@ class DoiPage(QWidget):
 
         # Input row
         input_row = QHBoxLayout()
-        input_row.setSpacing(10)
+        input_row.setSpacing(SPACE_MD)
         self._doi_input = QLineEdit()
         self._doi_input.setPlaceholderText("e.g.  10.48550/arXiv.1706.03762  or  https://doi.org/10.1038/…")
         self._doi_input.setStyleSheet(f"""
@@ -89,7 +90,7 @@ class DoiPage(QWidget):
         self._doi_input.returnPressed.connect(self._on_lookup)
 
         self._lookup_btn = QPushButton("Look up")
-        self._lookup_btn.setFixedSize(96, 38)
+        self._lookup_btn.setFixedSize(96, BTN_H_LG)  # TODO: Make more customizable (width)
         self._lookup_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._lookup_btn.setStyleSheet(f"""
             QPushButton {{
@@ -105,14 +106,14 @@ class DoiPage(QWidget):
         input_row.addWidget(self._doi_input)
         input_row.addWidget(self._lookup_btn)
         outer.addLayout(input_row)
-        outer.addSpacing(16)
+        outer.addSpacing(CARD_PAD_H)
 
         # Status label
         self._status = QLabel("")
         self._status.setStyleSheet(f"font-size: {FONT_SECONDARY}px; color: {_MUTED}; background: transparent;")
         self._status.setWordWrap(True)
         outer.addWidget(self._status)
-        outer.addSpacing(16)
+        outer.addSpacing(CARD_PAD_H)
 
         # Result card (hidden until a result arrives)
         self._result_card = self._build_result_card()
@@ -132,8 +133,8 @@ class DoiPage(QWidget):
             QLabel {{ border: none; background: transparent; }}
         """)
         lay = QVBoxLayout(card)
-        lay.setContentsMargins(DIALOG_PAD, 16, DIALOG_PAD, 16)
-        lay.setSpacing(6)
+        lay.setContentsMargins(DIALOG_PAD, CARD_PAD_H, DIALOG_PAD, CARD_PAD_H)
+        lay.setSpacing(SPACE_XS)
 
         self._res_title = QLabel()
         self._res_title.setWordWrap(True)
@@ -147,7 +148,7 @@ class DoiPage(QWidget):
         self._res_abstract.setStyleSheet(f"font-size: {FONT_SECONDARY}px; color: {_TEXT}; line-height: 1.5;")
 
         btn_row = QHBoxLayout()
-        btn_row.setSpacing(10)
+        btn_row.setSpacing(SPACE_MD)
 
         self._save_btn = QPushButton("Save to library")
         self._save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -171,9 +172,9 @@ class DoiPage(QWidget):
 
         lay.addWidget(self._res_title)
         lay.addWidget(self._res_meta)
-        lay.addSpacing(6)
+        lay.addSpacing(SPACE_XS)
         lay.addWidget(self._res_abstract)
-        lay.addSpacing(10)
+        lay.addSpacing(SPACE_MD)
         lay.addLayout(btn_row)
         return card
 

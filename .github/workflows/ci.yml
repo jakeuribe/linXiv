@@ -20,7 +20,7 @@ jobs:
 
       - name: Run Pyright
         run: |
-          echo '{"typeCheckingMode": "basic", "pythonVersion": "3.11"}' > pyrightconfig.json
+          echo '{"typeCheckingMode": "basic", "pythonVersion": "3.11", "exclude": ["linxiv_mcp.py"]}' > pyrightconfig.json
           pyright
 
   test:

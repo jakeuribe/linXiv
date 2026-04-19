@@ -27,7 +27,7 @@ from gui.theme import (
     FONT_TITLE, FONT_HEADING, FONT_SUBHEADING, FONT_BODY, FONT_SECONDARY, FONT_TERTIARY,
     SPACE_XL, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XS,
     RADIUS_LG, RADIUS_MD, RADIUS_SM,
-    BTN_H_LG, BTN_H_MD,
+    BTN_H_LG, BTN_H_MD, BTN_H_SM,
     PAGE_MARGIN_H, CARD_PAD_H, CARD_PAD_V, DIALOG_PAD,
     NOTE_HEIGHT,
 )
@@ -141,7 +141,7 @@ class NewProjectDialog(QDialog):
         self._swatch_btns: list[QPushButton] = []
         for color in _PRESET_COLORS:
             btn = QPushButton()
-            btn.setFixedSize(28, 28)
+            btn.setFixedSize(BTN_H_SM, BTN_H_SM)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setCheckable(True)
             btn.setChecked(color == self._color)
@@ -887,7 +887,7 @@ class ProjectsPage(QWidget):
         col.addWidget(subtitle)
 
         add_btn = QPushButton("＋  New Project")
-        add_btn.setFixedSize(160, 40)
+        add_btn.setFixedSize(160, BTN_H_LG)
         add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         add_btn.setStyleSheet(_BTN_STYLE)
         add_btn.clicked.connect(self._on_add)

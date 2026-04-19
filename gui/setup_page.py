@@ -17,6 +17,12 @@ from PyQt6.QtWidgets import (
 
 from gui.theme import BG as _BG, PANEL as _PANEL, BORDER as _BORDER
 from gui.theme import ACCENT as _ACCENT, TEXT as _TEXT, MUTED as _MUTED
+from gui.theme import (
+    FONT_TITLE, FONT_HEADING, FONT_SUBHEADING, FONT_BODY, FONT_SECONDARY,
+    SPACE_XS, SPACE_SM, SPACE_MD,
+    RADIUS_MD, RADIUS_LG,
+    CARD_PAD_H, CARD_PAD_V, DIALOG_PAD, PAGE_MARGIN_H,
+)
 
 _GREEN  = "#4caf7d"
 _AMBER  = "#e8a838"
@@ -31,15 +37,15 @@ _PROVIDERS = {
 
 _INPUT_STYLE = f"""
     QLineEdit {{
-        background: #0f0f1a; border: 1px solid {_BORDER}; border-radius: 6px;
-        color: {_TEXT}; font-size: 13px; padding: 8px 10px;
+        background: #0f0f1a; border: 1px solid {_BORDER}; border-radius: {RADIUS_MD}px;
+        color: {_TEXT}; font-size: {FONT_BODY}px; padding: {SPACE_SM}px 10px;
     }}
     QLineEdit:focus {{ border-color: {_ACCENT}; }}
 """
 _COMBO_STYLE = f"""
     QComboBox {{
-        background: #0f0f1a; border: 1px solid {_BORDER}; border-radius: 6px;
-        color: {_TEXT}; font-size: 13px; padding: 6px 10px;
+        background: #0f0f1a; border: 1px solid {_BORDER}; border-radius: {RADIUS_MD}px;
+        color: {_TEXT}; font-size: {FONT_BODY}px; padding: {SPACE_XS}px 10px;
     }}
     QComboBox:focus {{ border-color: {_ACCENT}; }}
     QComboBox::drop-down {{ border: none; }}
@@ -49,8 +55,8 @@ _COMBO_STYLE = f"""
 """
 _BTN_STYLE = f"""
     QPushButton {{
-        background: {_ACCENT}; border: none; border-radius: 6px;
-        color: #fff; font-size: 13px; font-weight: 600; padding: 8px 20px;
+        background: {_ACCENT}; border: none; border-radius: {RADIUS_MD}px;
+        color: #fff; font-size: {FONT_BODY}px; font-weight: 600; padding: {SPACE_SM}px 20px;
     }}
     QPushButton:hover   {{ background: #7aa3f5; }}
     QPushButton:pressed {{ background: #4a7add; }}
@@ -58,8 +64,8 @@ _BTN_STYLE = f"""
 """
 _BTN_MUTED_STYLE = f"""
     QPushButton {{
-        background: transparent; border: 1px solid {_BORDER}; border-radius: 6px;
-        color: {_MUTED}; font-size: 13px; padding: 8px 20px;
+        background: transparent; border: 1px solid {_BORDER}; border-radius: {RADIUS_MD}px;
+        color: {_MUTED}; font-size: {FONT_BODY}px; padding: {SPACE_SM}px 20px;
     }}
     QPushButton:hover {{ border-color: {_TEXT}; color: {_TEXT}; }}
 """
@@ -86,7 +92,7 @@ class SetupPage(QWidget):
         content = QWidget()
         content.setStyleSheet(f"background: {_BG};")
         inner = QVBoxLayout(content)
-        inner.setContentsMargins(48, 40, 48, 48)
+        inner.setContentsMargins(PAGE_MARGIN_H, 40, PAGE_MARGIN_H, PAGE_MARGIN_H)
         inner.setSpacing(0)
 
         def add(w: QWidget, space_after: int = 0) -> None:
@@ -95,8 +101,8 @@ class SetupPage(QWidget):
                 inner.addSpacing(space_after)
 
         # ── Title ─────────────────────────────────────────────────────────────
-        add(_h(f"Setup", 34, _ACCENT), 4)
-        add(_p("Configure API keys so linXiv's AI features work correctly.", _MUTED, 13), 24)
+        add(_h("Setup", FONT_TITLE, _ACCENT), SPACE_XS)
+        add(_p("Configure API keys so linXiv's AI features work correctly.", _MUTED, FONT_BODY), 24)
 
         # ── Security warning ──────────────────────────────────────────────────
         add(_security_warning(), 32)
@@ -105,17 +111,17 @@ class SetupPage(QWidget):
         add(self._status_banner(), 32)
 
         # ── AI provider config ───────────────────────────────────────────────
-        add(_h("AI Provider", 20, _ACCENT), 12)
-        add(_p("Choose your AI provider and enter the API key.", _MUTED, 13), 12)
+        add(_h("AI Provider", FONT_HEADING, _ACCENT), SPACE_MD)
+        add(_p("Choose your AI provider and enter the API key.", _MUTED, FONT_BODY), SPACE_MD)
         add(self._build_provider_config(), 32)
 
         # ── Step 1 ────────────────────────────────────────────────────────────
-        add(_h("1 · Get a Google Gemini API key", 17, _TEXT), 10)
+        add(_h("1 · Get a Google Gemini API key", FONT_HEADING, _TEXT), SPACE_SM)
         add(_p(
             "linXiv uses the <b>Google Gemini API</b> (gemini-2.0-flash) to generate tags, "
             "summarise papers, and find related work. You need a free API key from Google AI Studio.",
-            _TEXT, 13,
-        ), 12)
+            _TEXT, FONT_BODY,
+        ), SPACE_MD)
         add(_link_card(
             "Google AI Studio",
             "aistudio.google.com/app/apikey",
@@ -123,29 +129,29 @@ class SetupPage(QWidget):
         ), 24)
 
         # ── Step 2 ────────────────────────────────────────────────────────────
-        add(_h("2 · Create a <code>.env</code> file", 17, _TEXT), 10)
+        add(_h("2 · Create a <code>.env</code> file", FONT_HEADING, _TEXT), SPACE_SM)
         add(_p(
             "In the <b>project root</b> (the same folder as <code>main.py</code>), "
             "create a file named <code>.env</code> and add the line below:",
-            _TEXT, 13,
-        ), 12)
+            _TEXT, FONT_BODY,
+        ), SPACE_MD)
         add(_code_block("GENAI_API_KEY_TAG_GEN=your_api_key_here"), 8)
         add(_p(
             "Replace <code>your_api_key_here</code> with the key you copied from AI Studio. "
             "Do <b>not</b> add quotes around the value.",
-            _MUTED, 12,
+            _MUTED, FONT_SECONDARY,
         ), 24)
 
         # ── Step 3 ────────────────────────────────────────────────────────────
-        add(_h("3 · Restart linXiv", 17, _TEXT), 10)
+        add(_h("3 · Restart linXiv", FONT_HEADING, _TEXT), SPACE_SM)
         add(_p(
             "The <code>.env</code> file is loaded at startup. Close and reopen the app, "
             "then return to this page — the status banner above will turn green when the key is detected.",
-            _TEXT, 13,
+            _TEXT, FONT_BODY,
         ), 32)
 
         # ── Features table ────────────────────────────────────────────────────
-        add(_h("What uses this key", 17, _TEXT), 14)
+        add(_h("What uses this key", FONT_HEADING, _TEXT), SPACE_MD)
         for fn, desc in (
             ("Tag generation",    "Automatically suggests 3–5 Obsidian-style tags from a paper's content."),
             ("Summarisation",     "Produces a one-sentence TL;DR and a list of key contributions."),
@@ -166,18 +172,18 @@ class SetupPage(QWidget):
         frame = QFrame()
         frame.setStyleSheet(f"""
             QFrame {{
-                background: {_PANEL}; border: 1px solid {_BORDER}; border-radius: 8px;
+                background: {_PANEL}; border: 1px solid {_BORDER}; border-radius: {RADIUS_LG}px;
             }}
             QLabel {{ border: none; background: transparent; }}
         """)
         col = QVBoxLayout(frame)
-        col.setContentsMargins(20, 16, 20, 16)
-        col.setSpacing(12)
+        col.setContentsMargins(DIALOG_PAD, CARD_PAD_H, DIALOG_PAD, CARD_PAD_H)
+        col.setSpacing(SPACE_MD)
 
         # Provider dropdown
         prov_row = QHBoxLayout()
         prov_lbl = QLabel("Provider")
-        prov_lbl.setStyleSheet(f"font-size: 13px; color: {_MUTED}; font-weight: 600; min-width: 80px;")
+        prov_lbl.setStyleSheet(f"font-size: {FONT_BODY}px; color: {_MUTED}; font-weight: 600; min-width: 80px;")  # TODO: Make more customizable (min-width)
         self._provider_combo = QComboBox()
         self._provider_combo.addItems(list(_PROVIDERS.keys()))
         self._provider_combo.setStyleSheet(_COMBO_STYLE)
@@ -189,7 +195,7 @@ class SetupPage(QWidget):
         # API key input
         key_row = QHBoxLayout()
         key_lbl = QLabel("API Key")
-        key_lbl.setStyleSheet(f"font-size: 13px; color: {_MUTED}; font-weight: 600; min-width: 80px;")
+        key_lbl.setStyleSheet(f"font-size: {FONT_BODY}px; color: {_MUTED}; font-weight: 600; min-width: 80px;")  # TODO: Make more customizable (min-width)
         self._key_input = QLineEdit()
         self._key_input.setEchoMode(QLineEdit.EchoMode.Password)
         self._key_input.setPlaceholderText("Paste your API key here")
@@ -218,7 +224,7 @@ class SetupPage(QWidget):
         # Status label
         self._provider_status = QLabel("")
         self._provider_status.setWordWrap(True)
-        self._provider_status.setStyleSheet(f"font-size: 12px; color: {_MUTED};")
+        self._provider_status.setStyleSheet(f"font-size: {FONT_SECONDARY}px; color: {_MUTED};")
         col.addWidget(self._provider_status)
 
         # Load current state from .env
@@ -246,7 +252,7 @@ class SetupPage(QWidget):
         current_key = os.getenv(env_var, "")
         self._key_input.setText(current_key)
         self._provider_status.setText("")
-        self._provider_status.setStyleSheet(f"font-size: 12px; color: {_MUTED};")
+        self._provider_status.setStyleSheet(f"font-size: {FONT_SECONDARY}px; color: {_MUTED};")
 
     def _on_test(self) -> None:
         """Test connection with the selected provider and entered key."""
@@ -260,7 +266,7 @@ class SetupPage(QWidget):
             return
 
         self._provider_status.setText("Testing connection...")
-        self._provider_status.setStyleSheet(f"font-size: 12px; color: {_MUTED};")
+        self._provider_status.setStyleSheet(f"font-size: {FONT_SECONDARY}px; color: {_MUTED};")
         self._test_btn.setEnabled(False)
 
         # Set key in env temporarily for provider init
@@ -360,16 +366,16 @@ class SetupPage(QWidget):
             QFrame {{
                 background: transparent;
                 border: 1px solid {color};
-                border-radius: 8px;
+                border-radius: {RADIUS_LG}px;
                 padding: 0px;
             }}
             QLabel {{ border: none; background: transparent; }}
         """)
         row = QVBoxLayout(frame)
-        row.setContentsMargins(16, 12, 16, 12)
+        row.setContentsMargins(CARD_PAD_H, CARD_PAD_V, CARD_PAD_H, CARD_PAD_V)
 
         lbl = QLabel(f"{icon}  {text}")
-        lbl.setStyleSheet(f"color: {color}; font-size: 13px;")
+        lbl.setStyleSheet(f"color: {color}; font-size: {FONT_BODY}px;")
         lbl.setWordWrap(True)
         lbl.setTextFormat(Qt.TextFormat.RichText)
         row.addWidget(lbl)
@@ -388,17 +394,17 @@ def _security_warning() -> QFrame:
         QFrame {{
             background: {_RED_BG};
             border: 2px solid {_RED_BORDER};
-            border-radius: 10px;
+            border-radius: {RADIUS_LG}px;
         }}
         QLabel {{ border: none; background: transparent; }}
     """)
     lay = QVBoxLayout(frame)
-    lay.setContentsMargins(20, 16, 20, 16)
-    lay.setSpacing(8)
+    lay.setContentsMargins(DIALOG_PAD, CARD_PAD_H, DIALOG_PAD, CARD_PAD_H)
+    lay.setSpacing(SPACE_SM)
 
     icon_lbl = QLabel("⚠  Keep your API key safe")
     icon_lbl.setStyleSheet(
-        f"font-size: 16px; font-weight: bold; color: {_RED}; letter-spacing: 0.02em;"
+        f"font-size: {FONT_SUBHEADING}px; font-weight: bold; color: {_RED}; letter-spacing: 0.02em;"
     )
 
     body = QLabel(
@@ -410,7 +416,7 @@ def _security_warning() -> QFrame:
     )
     body.setTextFormat(Qt.TextFormat.RichText)
     body.setWordWrap(True)
-    body.setStyleSheet(f"font-size: 13px; color: #ddbbbb; line-height: 1.5;")
+    body.setStyleSheet(f"font-size: {FONT_BODY}px; color: #ddbbbb; line-height: 1.5;")
 
     lay.addWidget(icon_lbl)
     lay.addWidget(body)
@@ -442,14 +448,14 @@ def _code_block(text: str) -> QFrame:
         QFrame {{
             background: {_CODE};
             border: 1px solid {_BORDER};
-            border-radius: 6px;
+            border-radius: {RADIUS_MD}px;
         }}
         QLabel {{ border: none; background: transparent; }}
     """)
     lay = QVBoxLayout(frame)
-    lay.setContentsMargins(16, 10, 16, 10)
+    lay.setContentsMargins(CARD_PAD_H, SPACE_MD, CARD_PAD_H, SPACE_MD)
     lbl = QLabel(text)
-    lbl.setStyleSheet(f"font-family: 'Consolas', monospace; font-size: 13px; color: {_GREEN};")
+    lbl.setStyleSheet(f"font-family: 'Consolas', monospace; font-size: {FONT_BODY}px; color: {_GREEN};")
     lay.addWidget(lbl)
     return frame
 
@@ -460,22 +466,22 @@ def _link_card(title: str, url: str, desc: str) -> QFrame:
         QFrame {{
             background: {_PANEL};
             border: 1px solid {_BORDER};
-            border-radius: 8px;
+            border-radius: {RADIUS_LG}px;
         }}
         QLabel {{ border: none; background: transparent; }}
     """)
     lay = QVBoxLayout(frame)
-    lay.setContentsMargins(16, 12, 16, 12)
-    lay.setSpacing(4)
+    lay.setContentsMargins(CARD_PAD_H, CARD_PAD_V, CARD_PAD_H, CARD_PAD_V)
+    lay.setSpacing(SPACE_XS)
 
     title_lbl = QLabel(title)
-    title_lbl.setStyleSheet(f"font-size: 13px; font-weight: 600; color: {_ACCENT};")
+    title_lbl.setStyleSheet(f"font-size: {FONT_BODY}px; font-weight: 600; color: {_ACCENT};")
 
     url_lbl = QLabel(url)
-    url_lbl.setStyleSheet(f"font-size: 12px; color: {_MUTED}; font-family: 'Consolas', monospace;")
+    url_lbl.setStyleSheet(f"font-size: {FONT_SECONDARY}px; color: {_MUTED}; font-family: 'Consolas', monospace;")
 
     desc_lbl = QLabel(desc)
-    desc_lbl.setStyleSheet(f"font-size: 12px; color: {_TEXT};")
+    desc_lbl.setStyleSheet(f"font-size: {FONT_SECONDARY}px; color: {_TEXT};")
 
     lay.addWidget(title_lbl)
     lay.addWidget(url_lbl)
@@ -489,19 +495,19 @@ def _feature_row(name: str, desc: str) -> QFrame:
         QFrame {{
             background: {_PANEL};
             border: 1px solid {_BORDER};
-            border-radius: 6px;
+            border-radius: {RADIUS_MD}px;
         }}
         QLabel {{ border: none; background: transparent; }}
     """)
     lay = QVBoxLayout(frame)
-    lay.setContentsMargins(14, 9, 14, 9)
-    lay.setSpacing(2)
+    lay.setContentsMargins(CARD_PAD_H, SPACE_SM, CARD_PAD_H, SPACE_SM)
+    lay.setSpacing(SPACE_XS)
 
     name_lbl = QLabel(name)
-    name_lbl.setStyleSheet(f"font-size: 13px; font-weight: 600; color: {_TEXT};")
+    name_lbl.setStyleSheet(f"font-size: {FONT_BODY}px; font-weight: 600; color: {_TEXT};")
 
     desc_lbl = QLabel(desc)
-    desc_lbl.setStyleSheet(f"font-size: 12px; color: {_MUTED};")
+    desc_lbl.setStyleSheet(f"font-size: {FONT_SECONDARY}px; color: {_MUTED};")
     desc_lbl.setWordWrap(True)
 
     lay.addWidget(name_lbl)

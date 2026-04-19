@@ -17,9 +17,10 @@ from gui.theme import BG as _BG, PANEL as _PANEL, BORDER as _BORDER
 from gui.theme import ACCENT as _ACCENT, TEXT as _TEXT, MUTED as _MUTED
 from gui.theme import (
     FONT_TITLE, FONT_SUBHEADING, FONT_BODY, FONT_SECONDARY, FONT_TERTIARY,
-    SPACE_XL, SPACE_XS,
-    RADIUS_SM,
-    PAGE_MARGIN_H,
+    SPACE_XL, SPACE_SM, SPACE_XS,
+    RADIUS_SM, RADIUS_LG,
+    PAGE_MARGIN_H, PAGE_MARGIN_V,
+    CARD_PAD_H, CARD_PAD_V,
     DIALOG_PAD,
 )
 _RECENT_N = 10
@@ -33,7 +34,7 @@ class HomePage(QWidget):
         self.setStyleSheet(f"background: {_BG}; color: {_TEXT};")
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(PAGE_MARGIN_H, 40, PAGE_MARGIN_H, 40)
+        outer.setContentsMargins(PAGE_MARGIN_H, PAGE_MARGIN_V, PAGE_MARGIN_H, PAGE_MARGIN_V)
         outer.setSpacing(SPACE_XL)
 
         # ── Header ────────────────────────────────────────────────────────────
@@ -49,7 +50,7 @@ class HomePage(QWidget):
         self._stats_container.setStyleSheet("background: transparent;")
         self._stats_row = QHBoxLayout(self._stats_container)
         self._stats_row.setContentsMargins(0, 0, 0, 0)
-        self._stats_row.setSpacing(16)
+        self._stats_row.setSpacing(CARD_PAD_H)
         outer.addWidget(self._stats_container)
 
         # ── Recent papers ─────────────────────────────────────────────────────
@@ -63,7 +64,7 @@ class HomePage(QWidget):
         refresh_btn.setStyleSheet(f"""
             QPushButton {{
                 background: {_PANEL}; border: 1px solid {_BORDER};
-                border-radius: {RADIUS_SM}px; color: {_TEXT}; font-size: {FONT_SECONDARY}px; padding: 4px 8px;
+                border-radius: {RADIUS_SM}px; color: {_TEXT}; font-size: {FONT_SECONDARY}px; padding: {SPACE_XS}px {SPACE_SM}px;
             }}
             QPushButton:hover {{ background: #2a2a4a; }}
         """)
@@ -77,7 +78,7 @@ class HomePage(QWidget):
         self._recent_list.setStyleSheet(f"""
             QListWidget {{
                 background: {_PANEL}; border: 1px solid {_BORDER};
-                border-radius: 8px; color: {_TEXT}; font-size: {FONT_BODY}px;
+                border-radius: {RADIUS_LG}px; color: {_TEXT}; font-size: {FONT_BODY}px;
             }}
             QListWidget::item {{
                 padding: 7px 12px;
@@ -147,16 +148,16 @@ class HomePage(QWidget):
             QFrame {{
                 background: {_PANEL};
                 border: 1px solid {_BORDER};
-                border-radius: 8px;
+                border-radius: {RADIUS_LG}px;
             }}
             QLabel {{ border: none; background: transparent; }}
         """)
         lay = QVBoxLayout(card)
-        lay.setContentsMargins(DIALOG_PAD, 14, DIALOG_PAD, 14)
+        lay.setContentsMargins(DIALOG_PAD, CARD_PAD_V, DIALOG_PAD, CARD_PAD_V)
         lay.setSpacing(SPACE_XS)
 
         num = QLabel(value)
-        num.setStyleSheet(f"font-size: 30px; font-weight: bold; color: {_ACCENT};")
+        num.setStyleSheet(f"font-size: 30px; font-weight: bold; color: {_ACCENT};")  # TODO: Make more customizable
         num.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         lbl = QLabel(label)

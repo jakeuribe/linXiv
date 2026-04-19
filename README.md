@@ -135,7 +135,7 @@ All commands output JSON (or a formatted markdown card for `fetch`). Pass `--hel
 To expose linXiv as tools that Claude can call directly, add the `mcp` optional dependency and create a thin server:
 
 ```bash
-uv pip install -e ".[mcp]"
+uv pip install -e ".[mcp]"   # installs the mcp package (not included by default)
 ```
 
 Then register it with Claude Code — the absolute path and `cwd` are required because `linxiv_mcp.py` uses relative imports:
