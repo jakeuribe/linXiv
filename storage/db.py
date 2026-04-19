@@ -1,10 +1,9 @@
 from __future__ import annotations
-
-import sqlite3
-import json
-import re
 import datetime
+import json
 from pathlib import Path
+import re
+import sqlite3
 from typing import Optional, TYPE_CHECKING
 
 import arxiv

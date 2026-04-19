@@ -66,7 +66,7 @@ class PaperListPanel(QWidget):
         self._table.setHorizontalHeaderLabels(_COLUMNS)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self._table.setAlternatingRowColors(True)
+        self._table.setAlternatingRowColors(False)
         self._table.verticalHeader().setVisible(False)  # pyright: ignore[reportOptionalMemberAccess]
         self._table.setSortingEnabled(True)
 

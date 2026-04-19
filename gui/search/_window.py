@@ -17,7 +17,7 @@ from sources.base import PaperMetadata
 from sources.arxiv_downloads import cleanup_pdfs as _cleanup_pdfs, saved_pdfs_size
 from gui.tex_view import TexView
 from gui.pdf_window import PdfWindow
-from gui.theme import FONT_TERTIARY, SPACE_XS, SPACE_SM, SPACE_MD
+from gui.theme import BG as _BG, TEXT as _TEXT, BORDER as _BORDER, FONT_TERTIARY, SPACE_XS, SPACE_SM, SPACE_MD
 from gui.search._workers import _SearchWorker, _SourceSearchWorker, _PdfWorker, _PDF_DIR
 from gui.search._widgets import _ClauseRow, _ResultList, _ResultRow, _FIELD_OPTIONS
 
@@ -44,6 +44,23 @@ class SearchWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Paper Search")
         self.resize(1000, 600)
+        self.setStyleSheet(f"""
+            background: {_BG}; color: {_TEXT};
+            QLineEdit, QComboBox, QSpinBox {{
+                border: 1px solid #ffffff;
+                border-radius: 4px;
+                padding: 2px 4px;
+                background: {_BG};
+                color: {_TEXT};
+            }}
+            QListWidget {{
+                border: 1px solid #ffffff;
+                background: {_BG};
+            }}
+            QFrame[frameShape="1"] {{
+                border: 1px solid #ffffff;
+            }}
+        """)
         self._results: list[arxiv.Result] = []
         self._meta_results: list[PaperMetadata] = []  # unified results from any source
         self._local_results: list[dict] = []  # results from local FTS

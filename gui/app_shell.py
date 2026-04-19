@@ -1,6 +1,6 @@
 import sys
 
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QStyleFactory
 
 from gui.shell import AppShell
 from gui.home_page import HomePage
@@ -16,6 +16,7 @@ from storage.db import init_db
 def run_shell() -> None:
     init_db()
     app = QApplication(sys.argv)
+    app.setStyle(QStyleFactory.create("Fusion"))
 
     shell = AppShell()
     shell.add_page("Home", HomePage())

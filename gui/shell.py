@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .theme import FONT_BODY, NAV_WIDTH, SPACE_MD, SPACE_SM
+from .theme import BG as _BG, TEXT as _TEXT, FONT_BODY, NAV_WIDTH, SPACE_MD, SPACE_SM
 
 _SIDEBAR_STYLE = f"""
     QWidget#sidebar {{ background: #1a1a2e; }}
@@ -35,6 +35,7 @@ class AppShell(QMainWindow):
         super().__init__()
         self.setWindowTitle("linXiv")
         self.resize(1500, 950)
+        self.setStyleSheet(f"background: {_BG}; color: {_TEXT};")
         self._page_btns: list[QPushButton] = []
         self._stack = QStackedWidget()
 

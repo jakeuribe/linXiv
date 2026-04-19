@@ -4,17 +4,17 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 import re
 import sys
-from pathlib import Path
 from typing import Any
 
-import storage.db as db
-from storage.projects import ensure_projects_db
-from storage.notes import ensure_notes_db
 from sources.arxiv_source import ArxivSource
-from sources.openalex_source import OpenAlexSource
 from sources.base import PaperMetadata, PaperSource
+from sources.openalex_source import OpenAlexSource
+import storage.db as db
+from storage.notes import ensure_notes_db
+from storage.projects import ensure_projects_db
 
 _FORMATS_DIR = Path(__file__).parent / "formats"
 
@@ -67,7 +67,11 @@ def _output(data: Any) -> None:
 
 def cmd_search(args: argparse.Namespace) -> None:
     source = _source_for(args.source)
-    results = source.search(args.query, max_results=args.max)
+    try:
+        results = source.search(args.query, max_results=args.max)
+    except Exception as e:
+        print(json.dumps({"error": str(e)}), file=sys.stderr)
+        sys.exit(1)
     _output([_meta_to_dict(r) for r in results])
 
 
