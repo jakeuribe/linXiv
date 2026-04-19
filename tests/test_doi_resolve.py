@@ -80,26 +80,26 @@ class TestTryArxivDoi:
 
     def test_fetches_arxiv_for_matching_doi(self):
         mock_meta = _make_meta(paper_id="2204.12985")
-        with patch("fetch_paper_metadata.fetch_paper_metadata", return_value=MagicMock()), \
+        with patch("sources.fetch_paper_metadata.fetch_paper_metadata", return_value=MagicMock()), \
              patch("sources.arxiv_source._result_to_metadata", return_value=mock_meta):
             result = _try_arxiv_doi("10.48550/arXiv.2204.12985")
         assert result is mock_meta
 
     def test_raises_value_error_on_429(self):
-        with patch("fetch_paper_metadata.fetch_paper_metadata",
+        with patch("sources.fetch_paper_metadata.fetch_paper_metadata",
                    side_effect=Exception("429 Too Many Requests")):
             with pytest.raises(ValueError, match="rate limit"):
                 _try_arxiv_doi("10.48550/arXiv.2204.12985")
 
     def test_returns_none_on_other_arxiv_error(self):
-        with patch("fetch_paper_metadata.fetch_paper_metadata",
+        with patch("sources.fetch_paper_metadata.fetch_paper_metadata",
                    side_effect=Exception("network error")):
             result = _try_arxiv_doi("10.48550/arXiv.2204.12985")
         assert result is None
 
     def test_matches_case_insensitive(self):
         mock_meta = _make_meta()
-        with patch("fetch_paper_metadata.fetch_paper_metadata", return_value=MagicMock()), \
+        with patch("sources.fetch_paper_metadata.fetch_paper_metadata", return_value=MagicMock()), \
              patch("sources.arxiv_source._result_to_metadata", return_value=mock_meta):
             result = _try_arxiv_doi("10.48550/ARXIV.2204.12985")
         assert result is mock_meta
@@ -111,15 +111,15 @@ class TestTryArxivDoi:
 
 class TestTrySemanticScholar:
     def test_returns_none_on_url_error(self):
-        with patch("doi_resolve._fetch_url", side_effect=URLError("timeout")):
+        with patch("sources.doi_resolve._fetch_url", side_effect=URLError("timeout")):
             assert _try_semantic_scholar("10.1000/xyz") is None
 
     def test_returns_none_on_empty_response(self):
-        with patch("doi_resolve._fetch_url", return_value={}):
+        with patch("sources.doi_resolve._fetch_url", return_value={}):
             assert _try_semantic_scholar("10.1000/xyz") is None
 
     def test_returns_none_when_no_title(self):
-        with patch("doi_resolve._fetch_url", return_value={"authors": []}):
+        with patch("sources.doi_resolve._fetch_url", return_value={"authors": []}):
             assert _try_semantic_scholar("10.1000/xyz") is None
 
     def test_builds_metadata_from_s2_without_arxiv_id(self):
@@ -131,7 +131,7 @@ class TestTrySemanticScholar:
             "externalIds": {},
             "url": "https://www.semanticscholar.org/paper/abc",
         }
-        with patch("doi_resolve._fetch_url", return_value=s2_data):
+        with patch("sources.doi_resolve._fetch_url", return_value=s2_data):
             result = _try_semantic_scholar("10.1000/xyz")
         assert result is not None
         assert result.title == "A Test Paper"
@@ -148,8 +148,8 @@ class TestTrySemanticScholar:
             "externalIds": {"ArXiv": "2204.12985"},
         }
         mock_meta = _make_meta(paper_id="2204.12985")
-        with patch("doi_resolve._fetch_url", return_value=s2_data), \
-             patch("fetch_paper_metadata.fetch_paper_metadata", return_value=MagicMock()), \
+        with patch("sources.doi_resolve._fetch_url", return_value=s2_data), \
+             patch("sources.fetch_paper_metadata.fetch_paper_metadata", return_value=MagicMock()), \
              patch("sources.arxiv_source._result_to_metadata", return_value=mock_meta):
             result = _try_semantic_scholar("10.1000/xyz")
         assert result is mock_meta
@@ -160,8 +160,8 @@ class TestTrySemanticScholar:
             "authors": [],
             "externalIds": {"ArXiv": "2204.12985"},
         }
-        with patch("doi_resolve._fetch_url", return_value=s2_data), \
-             patch("fetch_paper_metadata.fetch_paper_metadata",
+        with patch("sources.doi_resolve._fetch_url", return_value=s2_data), \
+             patch("sources.fetch_paper_metadata.fetch_paper_metadata",
                    side_effect=Exception("429")):
             with pytest.raises(ValueError, match="rate limit"):
                 _try_semantic_scholar("10.1000/xyz")
@@ -175,7 +175,7 @@ class TestTrySemanticScholar:
             "abstract": None,
             "externalIds": {},
         }
-        with patch("doi_resolve._fetch_url", return_value=s2_data):
+        with patch("sources.doi_resolve._fetch_url", return_value=s2_data):
             result = _try_semantic_scholar("10.1000/xyz")
         assert result is not None
         assert result.published.year == 2019
@@ -189,7 +189,7 @@ class TestTrySemanticScholar:
             "abstract": None,
             "externalIds": {},
         }
-        with patch("doi_resolve._fetch_url", return_value=s2_data):
+        with patch("sources.doi_resolve._fetch_url", return_value=s2_data):
             result = _try_semantic_scholar("10.1000/xyz")
         assert result is not None
         assert result.published == datetime.date.today()
@@ -201,11 +201,11 @@ class TestTrySemanticScholar:
 
 class TestTryCrossref:
     def test_returns_none_on_url_error(self):
-        with patch("doi_resolve._fetch_url", side_effect=URLError("timeout")):
+        with patch("sources.doi_resolve._fetch_url", side_effect=URLError("timeout")):
             assert _try_crossref("10.1000/xyz") is None
 
     def test_returns_none_when_no_title(self):
-        with patch("doi_resolve._fetch_url", return_value={"message": {"title": []}}):
+        with patch("sources.doi_resolve._fetch_url", return_value={"message": {"title": []}}):
             assert _try_crossref("10.1000/xyz") is None
 
     def test_builds_metadata_from_crossref_response(self):
@@ -219,7 +219,7 @@ class TestTryCrossref:
                 "URL": "https://doi.org/10.1000/xyz",
             }
         }
-        with patch("doi_resolve._fetch_url", return_value=cr_data):
+        with patch("sources.doi_resolve._fetch_url", return_value=cr_data):
             result = _try_crossref("10.1000/xyz")
         assert result is not None
         assert result.title == "A CrossRef Paper"
@@ -237,7 +237,7 @@ class TestTryCrossref:
                 "container-title": [],
             }
         }
-        with patch("doi_resolve._fetch_url", return_value=cr_data):
+        with patch("sources.doi_resolve._fetch_url", return_value=cr_data):
             result = _try_crossref("10.1000/xyz")
         assert result is not None
         assert "<" not in result.summary
@@ -253,7 +253,7 @@ class TestTryCrossref:
                 "container-title": [],
             }
         }
-        with patch("doi_resolve._fetch_url", return_value=cr_data):
+        with patch("sources.doi_resolve._fetch_url", return_value=cr_data):
             result = _try_crossref("10.1000/xyz")
         assert result is not None
 
@@ -267,7 +267,7 @@ class TestTryCrossref:
                 "container-title": [],
             }
         }
-        with patch("doi_resolve._fetch_url", return_value=cr_data):
+        with patch("sources.doi_resolve._fetch_url", return_value=cr_data):
             result = _try_crossref("10.1000/xyz")
         assert result is not None
         assert result.published.year == 2020
@@ -290,45 +290,45 @@ class TestResolveDoiFallbackChain:
 
     def test_arxiv_path_used_for_arxiv_doi(self):
         mock_meta = _make_meta()
-        with patch("doi_resolve._try_arxiv_doi", return_value=mock_meta) as mock_ax, \
-             patch("doi_resolve._try_semantic_scholar") as mock_s2:
+        with patch("sources.doi_resolve._try_arxiv_doi", return_value=mock_meta), \
+             patch("sources.doi_resolve._try_semantic_scholar") as mock_s2:
             result = resolve_doi("10.48550/arXiv.2204.12985")
         assert result is mock_meta
         mock_s2.assert_not_called()
 
     def test_falls_back_to_s2_when_arxiv_returns_none(self):
         mock_meta = _make_meta(source="semanticscholar")
-        with patch("doi_resolve._try_arxiv_doi", return_value=None), \
-             patch("doi_resolve._try_semantic_scholar", return_value=mock_meta), \
-             patch("doi_resolve._try_crossref") as mock_cr:
+        with patch("sources.doi_resolve._try_arxiv_doi", return_value=None), \
+             patch("sources.doi_resolve._try_semantic_scholar", return_value=mock_meta), \
+             patch("sources.doi_resolve._try_crossref") as mock_cr:
             result = resolve_doi("10.1000/xyz")
         assert result is mock_meta
         mock_cr.assert_not_called()
 
     def test_falls_back_to_crossref_when_s2_returns_none(self):
         mock_meta = _make_meta(source="crossref")
-        with patch("doi_resolve._try_arxiv_doi", return_value=None), \
-             patch("doi_resolve._try_semantic_scholar", return_value=None), \
-             patch("doi_resolve._try_crossref", return_value=mock_meta):
+        with patch("sources.doi_resolve._try_arxiv_doi", return_value=None), \
+             patch("sources.doi_resolve._try_semantic_scholar", return_value=None), \
+             patch("sources.doi_resolve._try_crossref", return_value=mock_meta):
             result = resolve_doi("10.1000/xyz")
         assert result is mock_meta
 
     def test_raises_when_all_strategies_fail(self):
-        with patch("doi_resolve._try_arxiv_doi", return_value=None), \
-             patch("doi_resolve._try_semantic_scholar", return_value=None), \
-             patch("doi_resolve._try_crossref", return_value=None):
+        with patch("sources.doi_resolve._try_arxiv_doi", return_value=None), \
+             patch("sources.doi_resolve._try_semantic_scholar", return_value=None), \
+             patch("sources.doi_resolve._try_crossref", return_value=None):
             with pytest.raises(ValueError, match="Could not resolve"):
                 resolve_doi("10.1000/unknown")
 
     def test_strips_doi_url_before_resolving(self):
         mock_meta = _make_meta()
-        with patch("doi_resolve._try_arxiv_doi", return_value=None), \
-             patch("doi_resolve._try_semantic_scholar", return_value=mock_meta):
+        with patch("sources.doi_resolve._try_arxiv_doi", return_value=None), \
+             patch("sources.doi_resolve._try_semantic_scholar", return_value=mock_meta):
             result = resolve_doi("https://doi.org/10.1000/xyz")
         assert result is mock_meta
 
     def test_rate_limit_error_propagates_through_chain(self):
-        with patch("doi_resolve._try_arxiv_doi",
+        with patch("sources.doi_resolve._try_arxiv_doi",
                    side_effect=ValueError("arXiv rate limit reached")):
             with pytest.raises(ValueError, match="rate limit"):
                 resolve_doi("10.48550/arXiv.2204.12985")
