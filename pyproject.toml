@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "linxiv"
+version = "0.1.0"
+description = "Discover, manage, and visualize academic papers from arXiv"
+requires-python = ">=3.10"
+dependencies = [
+    "arxiv",
+    "fastapi",
+    "google-genai",
+    "httpx",
+    "markdown",
+    "openai",
+    "pydantic",
+    "python-dotenv",
+    "uvicorn[standard]",
+]
+
+[project.optional-dependencies]
+gui = ["PyQt6", "PyQt6-WebEngine"]
+mcp = ["mcp[cli]"]
+
+[project.scripts]
+linxiv = "linxiv_cli:main"

@@ -107,6 +107,59 @@ python -m api         # http://127.0.0.1:8000 — see /docs for OpenAPI
 
 The API serves JSON under `/api/…` and the bundled graph viewer under `/assets/graph/` (for iframe or dev-server proxy).
 
+**CLI**
+
+Install once (editable install via uv):
+
+```bash
+uv pip install -e .
+```
+
+Then run from anywhere:
+
+```bash
+linxiv search "attention is all you need" --max 5
+linxiv fetch 2204.12985
+linxiv list --limit 20 --category cs.LG
+linxiv tag 2204.12985
+linxiv project list
+linxiv project create "Diffusion Models" --description "Score-based generative models"
+linxiv project add-paper 1 2006.11239
+linxiv note create 2204.12985 "Key insight: scaled dot-product attention" --title "Reading notes"
+```
+
+All commands output JSON (or a formatted markdown card for `fetch`). Pass `--help` to any subcommand for full options.
+
+**MCP server (Claude integration)**
+
+To expose linXiv as tools that Claude can call directly, add the `mcp` optional dependency and create a thin server:
+
+```bash
+uv pip install -e ".[mcp]"
+```
+
+Then register it with Claude Code — the absolute path and `cwd` are required because `linxiv_mcp.py` uses relative imports:
+
+```bash
+claude mcp add linxiv -- uv run /absolute/path/to/linxiv/linxiv_mcp.py
+```
+
+Or add it manually to `.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "linxiv": {
+      "command": "uv",
+      "args": ["run", "linxiv_mcp.py"],
+      "cwd": "/absolute/path/to/linxiv"
+    }
+  }
+}
+```
+
+Once registered, Claude can call these tools directly in conversation: `search_papers`, `fetch_paper`, `list_papers`, `get_paper`, `search_full_text`, `tag_paper`, `list_projects`, `create_project`, `add_paper_to_project`, `remove_paper_from_project`, `create_note`, `get_notes_for_paper`, `get_notes_for_project`.
+
 ## App Shell
 
 The shell (`gui/shell.py`) is a `QMainWindow` with a fixed 120px sidebar and a `QStackedWidget` that fills the remaining space. Pages and launchers are registered at startup in `gui/app_shell.py`:
