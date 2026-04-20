@@ -20,8 +20,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .graph_view import GraphView
-from .theme import FONT_SECONDARY, FONT_TERTIARY, SPACE_XS, SPACE_SM
+from .view import GraphView
+from gui.theme import FONT_SECONDARY, FONT_TERTIARY, SPACE_XS, SPACE_SM
 from storage.db import get_categories, get_graph_data, get_tags, list_papers
 
 

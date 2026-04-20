@@ -15,8 +15,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .graph_view import GraphView
-from .theme import TABLE_BG, TABLE_TEXT, TABLE_GRID
+from gui.graph import GraphView
+from gui.theme import TABLE_BG, TABLE_TEXT, TABLE_GRID
 from storage.db import get_categories, get_graph_data, get_tags, list_papers
 
 

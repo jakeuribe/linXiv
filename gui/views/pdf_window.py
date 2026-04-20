@@ -5,7 +5,7 @@ from PyQt6.QtPdfWidgets import QPdfView
 from PyQt6.QtPdf import QPdfDocument
 from PyQt6.QtCore import Qt
 
-from .theme import BTN_H_SM
+from gui.theme import BTN_H_SM
 
 
 class PdfWindow(QMainWindow):

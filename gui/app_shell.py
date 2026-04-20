@@ -3,12 +3,12 @@ import sys
 from PyQt6.QtWidgets import QApplication, QStyleFactory
 
 from gui.shell import AppShell
-from gui.home_page import HomePage
-from gui.graph_page import GraphPage
-from gui.library_page import LibraryPage
-from gui.projects_page import ProjectsPage
-from gui.setup_page import SetupPage
-from gui.doi_page import DoiPage
+from gui.home import HomePage
+from gui.graph import GraphPage
+from gui.library import LibraryPage
+from gui.projects import ProjectsPage
+from gui.setup import SetupPage
+from gui.doi import DoiPage
 from gui.search import SearchPage
 from storage.db import init_db
 

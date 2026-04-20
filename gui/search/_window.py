@@ -15,8 +15,7 @@ from storage.db import (
 )
 from sources.base import PaperMetadata
 from sources.arxiv_downloads import cleanup_pdfs as _cleanup_pdfs, saved_pdfs_size
-from gui.tex_view import TexView
-from gui.pdf_window import PdfWindow
+from gui.views import TexView, PdfWindow
 from gui.theme import FONT_TERTIARY, SPACE_XS, SPACE_SM, SPACE_MD
 from gui.search._workers import _SearchWorker, _SourceSearchWorker, _PdfWorker, _PDF_DIR
 from gui.search._widgets import _ClauseRow, _ResultList, _ResultRow

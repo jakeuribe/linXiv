@@ -346,7 +346,7 @@ class NoteEditorDialog(QDialog):
             self._editor.setPlainText(note.content or "")
         splitter.addWidget(self._editor)
 
-        from gui.markdown_view import MarkdownView
+        from gui.views import MarkdownView
         self._preview = MarkdownView()
         self._preview.set_title(self._note_title.text())
         self._preview.set_content(self._editor.toPlainText())
@@ -514,7 +514,7 @@ class NotesDialog(QDialog):
         card = self._cards.get(note_id)
         if card is None:
             return None
-        from gui.markdown_view import MarkdownView
+        from gui.views import MarkdownView
         md_view = card.findChild(MarkdownView)
         if md_view is not None:
             self._md_cache_put(note_id, md_view)
@@ -569,7 +569,7 @@ class NotesDialog(QDialog):
         top_row.addWidget(del_btn)
         col.addLayout(top_row)
 
-        from gui.markdown_view import MarkdownView
+        from gui.views import MarkdownView
         md_view = MarkdownView()
         md_view.set_title(note.title or "Untitled")
         md_view.set_content(note.content or "")

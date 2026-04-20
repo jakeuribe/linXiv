@@ -449,7 +449,7 @@ class PaperDetailView(QWidget):
 
         summary = row["summary"] if "summary" in row.keys() else None
         if summary:
-            from gui.markdown_view import MarkdownView
+            from gui.views import MarkdownView
             md = MarkdownView()
             md.set_content(summary)
             md.setFixedHeight(ABSTRACT_HEIGHT)
@@ -598,7 +598,7 @@ class PaperDetailView(QWidget):
         hdr.addWidget(edit_btn)
         col.addLayout(hdr)
 
-        from gui.markdown_view import MarkdownView
+        from gui.views import MarkdownView
         md = MarkdownView()
         md.set_title(note.title or "Untitled")
         md.set_content(note.content or "")
@@ -608,7 +608,7 @@ class PaperDetailView(QWidget):
         return card
 
     def _edit_note(self, note) -> None:
-        from gui.projects_page import NoteEditorDialog
+        from gui.projects import NoteEditorDialog
         dlg = NoteEditorDialog(note=note, parent=self)
         if dlg.exec():
             self.load(self._current_row)
@@ -626,7 +626,7 @@ class LibraryPage(QWidget):
         self._cards:    list[_PaperCard] = []
         self._selected: set[str] = set()   # paper_ids
 
-        from gui.pdf_window import PdfWindow
+        from gui.views import PdfWindow
         self._pdf_window = PdfWindow(self)
 
         root = QVBoxLayout(self)
