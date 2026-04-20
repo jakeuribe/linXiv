@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QMainWindow,
