@@ -1,9 +1,10 @@
-import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+import os
 from typing import cast
-from pydantic import BaseModel
+
 from dotenv import load_dotenv
+from pydantic import BaseModel
 
 _ = load_dotenv()
 

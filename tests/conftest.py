@@ -1,6 +1,4 @@
 """Shared fixtures for the test suite."""
-import sqlite3
-import functools
 import pytest
 import sys
 import os
@@ -19,23 +17,25 @@ def tmp_db(tmp_path, monkeypatch):
     imported into projects via `from db import _connect`) need to be patched so
     that every call in either module ends up at the temp DB.
     """
-    import db
-    import projects
+    import storage.db as db
+    import storage.projects as projects
+    import storage.notes as notes
 
     db_file = str(tmp_path / "test.db")
 
     real_connect = db._connect
 
     def patched_connect(db_path=None):
-        # Ignore whatever db_path was passed (usually the module-level constant)
-        # and always use the temp file.
+        del db_path
         return real_connect(db_file)
 
     monkeypatch.setattr(db, "_connect", patched_connect)
     monkeypatch.setattr(projects, "_connect", patched_connect)
+    monkeypatch.setattr(notes, "_connect", patched_connect)
 
     # Initialise the schema in the temp DB.
     db.init_db()
     projects.init_projects_db()
+    notes.init_notes_db()
 
     return db_file

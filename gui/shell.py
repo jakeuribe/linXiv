@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QMainWindow,
@@ -10,7 +12,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .theme import FONT_BODY, NAV_WIDTH, SPACE_MD, SPACE_SM
+from .theme import BG as _BG, TEXT as _TEXT, FONT_BODY, NAV_WIDTH, SPACE_XS, SPACE_MD, SPACE_SM
 
 _SIDEBAR_STYLE = f"""
     QWidget#sidebar {{ background: #1a1a2e; }}
@@ -35,8 +37,10 @@ class AppShell(QMainWindow):
         super().__init__()
         self.setWindowTitle("linXiv")
         self.resize(1500, 950)
+        self.setStyleSheet(f"background: {_BG}; color: {_TEXT};")
         self._page_btns: list[QPushButton] = []
         self._stack = QStackedWidget()
+        self._close_callbacks: list[Callable[[], object]] = []
 
         self._sidebar = QWidget()
         self._sidebar.setObjectName("sidebar")
@@ -45,7 +49,7 @@ class AppShell(QMainWindow):
 
         self._nav = QVBoxLayout(self._sidebar)
         self._nav.setContentsMargins(0, SPACE_SM, 0, SPACE_SM)
-        self._nav.setSpacing(2)
+        self._nav.setSpacing(SPACE_XS)
         self._nav.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         central = QWidget()
@@ -70,6 +74,10 @@ class AppShell(QMainWindow):
             btn.setChecked(True)
         return idx
 
+    def register_on_close(self, callback: Callable[[], object]) -> None:
+        """Register a callback to run when the shell window closes."""
+        self._close_callbacks.append(callback)
+
     def add_launcher(self, label: str, callback) -> None:
         """Add a nav button that runs callback (e.g. opens a floating window)."""
         btn = QPushButton(label)
@@ -83,6 +91,11 @@ class AppShell(QMainWindow):
             self._go_to(idx)
 
     # ── Internal ──────────────────────────────────────────────────────────────
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        for cb in self._close_callbacks:
+            cb()
+        super().closeEvent(event)
 
     def _go_to(self, idx: int) -> None:
         self._stack.setCurrentIndex(idx)

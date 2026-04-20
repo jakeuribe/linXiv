@@ -38,13 +38,14 @@ def _result_to_metadata(result: arxiv.Result) -> PaperMetadata:
     )
 
 
-class ArxivSource:
+class ArxivSource(PaperSource):
     """Paper source backed by the arXiv API."""
 
     source_name: str = "arxiv"
 
+    # TODO: should these be hardcoded?
     def __init__(self) -> None:
-        self._client = arxiv.Client(num_retries=3, delay_seconds=7.0)
+        self._client = arxiv.Client(num_retries=1, delay_seconds=7.0)
 
     def search(self, query: str, max_results: int = 10) -> list[PaperMetadata]:
         search = arxiv.Search(
@@ -53,7 +54,10 @@ class ArxivSource:
             sort_by=arxiv.SortCriterion.Relevance,
             sort_order=arxiv.SortOrder.Descending,
         )
-        results = list(self._client.results(search))
+        try:
+            results = list(self._client.results(search))
+        except Exception as e:
+            raise ValueError(f"arXiv search failed: {e}") from e
         return [_result_to_metadata(r) for r in results]
 
     def fetch_by_id(self, paper_id: str) -> PaperMetadata:
@@ -62,4 +66,6 @@ class ArxivSource:
             result = next(self._client.results(search))
         except StopIteration:
             raise ValueError(f"Paper '{paper_id}' not found on arXiv.")
+        except Exception as e:
+            raise ValueError(f"arXiv fetch failed for '{paper_id}': {e}") from e
         return _result_to_metadata(result)

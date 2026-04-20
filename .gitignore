@@ -4,6 +4,8 @@
 __pycache__/
 *.py[cod]
 
+.vscode
+
 # Database
 *.db
 
@@ -27,3 +29,9 @@ Thumbs.db
 features.md
 *T.md
 pyrightconfig.json
+
+# Session state
+selected_papers.json
+.venv
+# env state
+uv.lock
