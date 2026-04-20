@@ -35,3 +35,6 @@ selected_papers.json
 .venv
 # env state
 uv.lock
+
+# Dev utility scripts
+pdf.py
