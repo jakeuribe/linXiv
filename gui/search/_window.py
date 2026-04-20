@@ -2,7 +2,7 @@ import os
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
-    QLineEdit, QPushButton, QListWidget, QListWidgetItem,
+    QLineEdit, QPushButton, QListWidgetItem,
     QLabel, QSplitter, QCheckBox, QComboBox, QSpinBox,
     QFrame, QFileDialog,
 )
@@ -19,7 +19,7 @@ from gui.tex_view import TexView
 from gui.pdf_window import PdfWindow
 from gui.theme import FONT_TERTIARY, SPACE_XS, SPACE_SM, SPACE_MD
 from gui.search._workers import _SearchWorker, _SourceSearchWorker, _PdfWorker, _PDF_DIR
-from gui.search._widgets import _ClauseRow, _ResultList, _ResultRow, _FIELD_OPTIONS
+from gui.search._widgets import _ClauseRow, _ResultList, _ResultRow
 
 _SORT_BY_OPTIONS = [
     ("Relevance",     arxiv.SortCriterion.Relevance),
@@ -56,6 +56,13 @@ class SearchPage(QWidget):
                 background: #ffffff;
                 color: #111111;
             }
+            QListWidget::item:selected {
+                background: #5b8dee;
+                color: #ffffff;
+            }
+            QListWidget::item:hover {
+                background: #eef2fd;
+            }
             QPushButton {
                 background: #f0f0f0;
                 color: #111111;
@@ -79,7 +86,9 @@ class SearchPage(QWidget):
         self._saved_papers: set[tuple[str, int]] = set()          # (paper_id, version) marked to keep
         self._paper_pdf_paths: dict[tuple[str, int], str] = {}    # (paper_id, version) → local pdf path
         self._current_paper_key: tuple[str, int] | None = None
+        # TODO: Make configurable in user specific settings
         self._save_limit_bytes: int = 1 * 1024 ** 3               # 1 GB cap on saved PDFs
+
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -198,6 +207,11 @@ class SearchPage(QWidget):
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(SPACE_XS)
         self._list = _ResultList()
+        self._list.setStyleSheet("""
+            QListWidget { background: #ffffff; border: 1px solid #cccccc; }
+            QListWidget::item:selected { background: #5b8dee; color: #ffffff; }
+            QListWidget::item:hover { background: #eef2fd; color: #111111; }
+        """)
         self._list.currentRowChanged.connect(self._on_select)
         self._status = QLabel("")
         self._status.setStyleSheet("color: grey;")
@@ -210,9 +224,9 @@ class SearchPage(QWidget):
         meta_layout.setContentsMargins(SPACE_SM, 0, 0, 0)
         meta_layout.setSpacing(SPACE_XS)
 
-        self._sidebar_title = TexView()
+        self._sidebar_title = TexView(color="#111111", bg="#ffffff")
         self._sidebar_title.setFixedHeight(70)  # TODO: Make more customizable
-        self._sidebar_meta = TexView()
+        self._sidebar_meta = TexView(color="#111111", bg="#ffffff")
         self._sidebar_meta.setFixedHeight(40)  # TODO: Make more customizable
 
         tag_row = QHBoxLayout()
@@ -241,7 +255,7 @@ class SearchPage(QWidget):
         pdf_row.addWidget(self._link_pdf_btn)
 
         self._linked_indicator = QLabel("")
-        self._linked_indicator.setStyleSheet(f"color: #4caf7d; font-size: {FONT_TERTIARY}px;")
+        self._linked_indicator.setStyleSheet(f"color: #444444; font-size: {FONT_TERTIARY}px;")
         pdf_row.addWidget(self._linked_indicator)
 
         meta_layout.addWidget(self._sidebar_title)
@@ -254,7 +268,7 @@ class SearchPage(QWidget):
         top.setSizes([400, 600])  # TODO: Make more customizable
         outer.addWidget(top)
 
-        self._sidebar_abstract = TexView()
+        self._sidebar_abstract = TexView(color="#111111", bg="#ffffff")
         outer.addWidget(self._sidebar_abstract)
         outer.setSizes([300, 300])  # TODO: Make more customizable
 
@@ -285,7 +299,7 @@ class SearchPage(QWidget):
 
     def _build_clause_query(self) -> str:
         parts = []
-        for i, clause in enumerate(self._clauses):
+        for _, clause in enumerate(self._clauses):
             part = clause.to_clause()
             if not part:
                 continue
@@ -417,7 +431,7 @@ class SearchPage(QWidget):
         self._status.setText(f"{len(self._local_results)} results from local source")
 
     def _on_meta_checkbox_changed(
-        self, row_widget: _ResultRow, paper: PaperMetadata, state: int
+        self, _row_widget: _ResultRow, paper: PaperMetadata, state: int
     ) -> None:
         if state == Qt.CheckState.Checked.value:
             tags = self._parse_tags()
@@ -431,7 +445,7 @@ class SearchPage(QWidget):
             return []
         return [t.strip() for t in raw.split(",") if t.strip()]
 
-    def _on_checkbox_changed(self, row_widget: _ResultRow, paper: arxiv.Result, state: int) -> None:
+    def _on_checkbox_changed(self, _row_widget: _ResultRow, paper: arxiv.Result, state: int) -> None:
         if state == Qt.CheckState.Checked.value:
             tags = self._parse_tags()
             save_paper(paper, tags=tags if tags else None)

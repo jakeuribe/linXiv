@@ -88,6 +88,7 @@ class _ResultList(QListWidget):
 class _ResultRow(QWidget):
     def __init__(self, title: str, source: str = "", parent=None):
         super().__init__(parent)
+        self.setStyleSheet("background: transparent;")
         layout = QHBoxLayout(self)
         layout.setContentsMargins(SPACE_XS, 2, SPACE_XS, 2)
         layout.setSpacing(SPACE_SM)
@@ -97,7 +98,7 @@ class _ResultRow(QWidget):
             badge.setFixedWidth(70)  # TODO: Make more customizable
             badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
             badge.setStyleSheet(
-                f"background: #e6f4ee; color: #1a7a42; border: 1px solid #a8d5bc;"
+                f"background: #f0f0f0; color: #444444; border: 1px solid #cccccc;"
                 f" border-radius: {RADIUS_SM}px; font-size: 10px; padding: 1px {SPACE_XS}px;"
             )
             layout.addWidget(badge, alignment=Qt.AlignmentFlag.AlignTop)
