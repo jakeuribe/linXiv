@@ -2,7 +2,7 @@
 FastAPI JSON API for linXiv (backend only — UI lives in separate clients).
 
 Serves ``/api/...`` routes and, for the graph viewer, static files under
-``/assets/graph/`` (from ``gui/web/``) so a frontend can iframe them or proxy the path.
+``/assets/graph/`` (from ``gui/graph/web/``) so a frontend can iframe them or proxy the path.
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ from storage.projects import (
 
 ROOT = Path(__file__).resolve().parent.parent
 PDF_DIR = ROOT / "pdfs"
-GUI_WEB = ROOT / "gui" / "web"
+GUI_WEB = ROOT / "gui" / "graph" / "web"
 
 
 def _cors_config() -> tuple[list[str], bool]:
