@@ -21,8 +21,11 @@ from PyQt6.QtWidgets import (
 )
 
 from .view import GraphView
+from formats.bibtex import BibTeXFormat
 from gui.theme import FONT_SECONDARY, FONT_TERTIARY, SPACE_XS, SPACE_SM
 from storage.db import get_categories, get_graph_data, get_tags, list_papers
+
+_bibtex_fmt = BibTeXFormat()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -346,6 +349,8 @@ class GraphPage(QWidget):
         menu = QMenu(self)
         menu.addAction("Export as JSON", self._export_json)
         menu.addAction("Export as CSV", self._export_csv)
+        menu.addAction("Export as BibTeX", self._export_bibtex)
+        menu.addSeparator()
         menu.addAction("Export as Markdown", self._export_markdown)
         menu.addAction("Export as Obsidian", self._export_obsidian)
         menu.exec(self._export_btn.mapToGlobal(self._export_btn.rect().bottomLeft()))
@@ -383,6 +388,17 @@ class GraphPage(QWidget):
             ])
         with open(path, "w", encoding="utf-8", newline="") as f:
             f.write(buf.getvalue())
+
+    def _export_bibtex(self) -> None:
+        self._graph_view.get_selected_paper_data(self._save_bibtex)
+
+    def _save_bibtex(self, data: dict) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, "Export BibTeX", "selected_papers.bib", "BibTeX (*.bib)")
+        if not path:
+            return
+        content = _bibtex_fmt.export_papers(data.get("papers", []))
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
 
     def _export_markdown(self) -> None:
         self._graph_view.get_selected_paper_data(self._save_markdown)
