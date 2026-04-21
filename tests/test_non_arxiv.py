@@ -509,3 +509,113 @@ class TestObsidianNonArxivRoundTrip:
         rt = _obs.import_string(_obs.export_papers(papers))
         ids = {p.paper_id for p in rt}
         assert ids == {"10.1145/3290605.3300741", "vaswani2017attention", "2301.00001"}
+
+
+# ---------------------------------------------------------------------------
+# Graph export contract — getSelectedPaperData() shape
+#
+# graph.js builds paper dicts with a fixed set of fields. These tests use that
+# exact shape to ensure the format layer handles missing/null url correctly and
+# that Paper-ID round-trips survive even when url is absent from the payload.
+# ---------------------------------------------------------------------------
+
+def _graph_paper(paper_id: str, title: str, url=None, doi=None, **kwargs) -> dict:
+    """Mirrors the shape emitted by getSelectedPaperData() in graph.js."""
+    return {
+        "paper_id":  paper_id,
+        "title":     title,
+        "category":  kwargs.get("category", ""),
+        "tags":      kwargs.get("tags", []),
+        "has_pdf":   kwargs.get("has_pdf", False),
+        "published": kwargs.get("published", "2023-01-01"),
+        "authors":   kwargs.get("authors", []),
+        "url":       url,
+        "doi":       doi,
+        "summary":   kwargs.get("summary", ""),
+    }
+
+
+class TestGraphExportContract:
+    """Ensure format exporters handle the exact dict shape graph.js produces."""
+
+    # arXiv paper — url is None but paper_id is an arXiv ID
+    def test_arxiv_paper_no_url_markdown(self):
+        p = _graph_paper("2301.00001", "A Paper")
+        out = _md.export_papers([p])
+        assert "arxiv.org/abs/2301.00001" in out
+        assert "Paper-ID:" not in out
+
+    def test_arxiv_paper_no_url_obsidian(self):
+        p = _graph_paper("2301.00001", "A Paper")
+        out = _obs.export_papers([p])
+        assert "arxiv.org/abs/2301.00001" in out
+        assert "**Paper-ID:**" not in out
+
+    def test_arxiv_paper_round_trip_markdown(self):
+        p = _graph_paper("2301.00001", "A Paper")
+        rt = _md.import_string(_md.export_papers([p]))
+        assert rt[0].paper_id == "2301.00001"
+
+    def test_arxiv_paper_round_trip_obsidian(self):
+        p = _graph_paper("2301.00001", "A Paper")
+        rt = _obs.import_string(_obs.export_papers([p]))
+        assert rt[0].paper_id == "2301.00001"
+
+    # DOI paper — url is populated by graph.js
+    def test_doi_paper_with_url_markdown(self):
+        p = _graph_paper("10.1145/3290605.3300741", "CHI Paper",
+                         url="https://dl.acm.org/doi/10.1145/3290605.3300741")
+        out = _md.export_papers([p])
+        assert "dl.acm.org" in out
+        assert "arxiv.org/abs/10.1145" not in out
+
+    def test_doi_paper_with_url_round_trip_markdown(self):
+        p = _graph_paper("10.1145/3290605.3300741", "CHI Paper",
+                         url="https://dl.acm.org/doi/10.1145/3290605.3300741")
+        rt = _md.import_string(_md.export_papers([p]))
+        assert rt[0].paper_id == "10.1145/3290605.3300741"
+        assert rt[0].url == "https://dl.acm.org/doi/10.1145/3290605.3300741"
+
+    def test_doi_paper_with_url_round_trip_obsidian(self):
+        p = _graph_paper("10.1145/3290605.3300741", "CHI Paper",
+                         url="https://dl.acm.org/doi/10.1145/3290605.3300741")
+        rt = _obs.import_string(_obs.export_papers([p]))
+        assert rt[0].paper_id == "10.1145/3290605.3300741"
+
+    # DOI paper — url is None (shouldn't happen after our db fix, but defensive)
+    def test_doi_paper_null_url_markdown_no_fake_arxiv_link(self):
+        p = _graph_paper("10.1145/3290605.3300741", "CHI Paper", url=None)
+        out = _md.export_papers([p])
+        assert "arxiv.org/abs/10.1145" not in out
+        assert "Paper-ID: 10.1145/3290605.3300741" in out
+
+    def test_doi_paper_null_url_round_trip_markdown(self):
+        p = _graph_paper("10.1145/3290605.3300741", "CHI Paper", url=None)
+        rt = _md.import_string(_md.export_papers([p]))
+        assert rt[0].paper_id == "10.1145/3290605.3300741"
+
+    def test_doi_paper_null_url_round_trip_obsidian(self):
+        p = _graph_paper("10.1145/3290605.3300741", "CHI Paper", url=None)
+        rt = _obs.import_string(_obs.export_papers([p]))
+        assert rt[0].paper_id == "10.1145/3290605.3300741"
+
+    # Mixed arXiv + non-arXiv from graph export
+    def test_mixed_graph_export_markdown(self):
+        papers = [
+            _graph_paper("2301.00001", "arXiv Paper"),
+            _graph_paper("10.1145/xyz", "ACM Paper",
+                         url="https://dl.acm.org/doi/10.1145/xyz"),
+        ]
+        rt = _md.import_string(_md.export_papers(papers))
+        ids = {p.paper_id for p in rt}
+        assert ids == {"2301.00001", "10.1145/xyz"}
+
+    def test_mixed_graph_export_obsidian(self):
+        papers = [
+            _graph_paper("2301.00001", "arXiv Paper"),
+            _graph_paper("10.1145/xyz", "ACM Paper",
+                         url="https://dl.acm.org/doi/10.1145/xyz"),
+        ]
+        rt = _obs.import_string(_obs.export_papers(papers))
+        ids = {p.paper_id for p in rt}
+        assert ids == {"2301.00001", "10.1145/xyz"}
