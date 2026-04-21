@@ -6,7 +6,9 @@ from typing import cast
 from dotenv import load_dotenv
 from pydantic import BaseModel
 
-_ = load_dotenv()
+from config import ENV_PATH
+
+_ = load_dotenv(ENV_PATH)
 
 
 @dataclass
