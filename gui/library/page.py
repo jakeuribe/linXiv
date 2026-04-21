@@ -22,9 +22,16 @@ from PyQt6.QtWidgets import (
 )
 
 from formats.bibtex import BibTeXFormat
+from formats.csv_fmt import CSVFormat
+from formats.json_fmt import JSONFormat
+from formats.markdown import MarkdownFormat, ObsidianFormat
 from storage.db import list_papers, save_papers_metadata, set_has_pdf, set_pdf_path
 
-_bibtex_fmt = BibTeXFormat()
+_bibtex_fmt   = BibTeXFormat()
+_csv_fmt      = CSVFormat()
+_json_fmt     = JSONFormat()
+_markdown_fmt = MarkdownFormat()
+_obsidian_fmt = ObsidianFormat()
 from gui.theme import BG as _BG, PANEL as _PANEL, BORDER as _BORDER
 from gui.theme import ACCENT as _ACCENT, TEXT as _TEXT, MUTED as _MUTED
 from gui.theme import (
@@ -897,8 +904,12 @@ class LibraryPage(QWidget):
 
     def _show_import_menu(self) -> None:
         menu = QMenu(self)
-        menu.addAction("BibTeX file…",        self._import_bibtex_file)
+        menu.addAction("BibTeX file…",           self._import_bibtex_file)
         menu.addAction("Paste BibTeX citation…", self._import_bibtex_paste)
+        menu.addAction("JSON file…",             self._import_json_file)
+        menu.addAction("CSV file…",              self._import_csv_file)
+        menu.addAction("Markdown file…",         self._import_markdown_file)
+        menu.addAction("Obsidian file…",         self._import_obsidian_file)
         menu.addSeparator()
         menu.addAction("PDF…",    self._import_not_implemented)
         menu.addAction("Folder…", self._import_not_implemented)
@@ -957,6 +968,54 @@ class LibraryPage(QWidget):
             return
         try:
             papers = _bibtex_fmt.import_string(text)
+        except Exception as e:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Import Failed", str(e))
+            return
+        self._finish_import(papers)
+
+    def _import_json_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Import JSON", "", "JSON (*.json)")
+        if not path:
+            return
+        try:
+            papers = _json_fmt.import_file(path)
+        except Exception as e:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Import Failed", str(e))
+            return
+        self._finish_import(papers)
+
+    def _import_csv_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Import CSV", "", "CSV (*.csv)")
+        if not path:
+            return
+        try:
+            papers = _csv_fmt.import_file(path)
+        except Exception as e:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Import Failed", str(e))
+            return
+        self._finish_import(papers)
+
+    def _import_markdown_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Import Markdown", "", "Markdown (*.md)")
+        if not path:
+            return
+        try:
+            papers = _markdown_fmt.import_file(path)
+        except Exception as e:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Import Failed", str(e))
+            return
+        self._finish_import(papers)
+
+    def _import_obsidian_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Import Obsidian", "", "Markdown (*.md)")
+        if not path:
+            return
+        try:
+            papers = _obsidian_fmt.import_file(path)
         except Exception as e:
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.critical(self, "Import Failed", str(e))
