@@ -11,6 +11,11 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+from config import ENV_PATH
+load_dotenv(ENV_PATH)
+
 import arxiv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware

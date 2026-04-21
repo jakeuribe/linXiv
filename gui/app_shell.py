@@ -8,6 +8,7 @@ from gui.graph import GraphPage
 from gui.library import LibraryPage
 from gui.projects import ProjectsPage
 from gui.setup import SetupPage
+from gui.settings import SettingsPage
 from gui.doi import DoiPage
 from gui.search import SearchPage
 from storage.db import init_db
@@ -30,6 +31,7 @@ def run_shell() -> None:
     shell.add_page("Search", search_page)
     shell.add_page("Add by DOI", DoiPage())
     shell.add_page("Setup", SetupPage())
+    shell.add_page("Settings", SettingsPage())
 
     def _on_navigate_to_project(project) -> None:
         shell.go_to_widget(projects_page)

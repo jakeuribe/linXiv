@@ -13,9 +13,8 @@ __pycache__/
 .arxiv_ratelimit
 
 # Downloaded files, create directories manually if this errors
-pdfs/
 source/
-
+pdfs/
 # Obsidian vault content (keep folder structure)
 obsidian_vault/*
 !obsidian_vault/.gitkeep
@@ -32,6 +31,7 @@ pyrightconfig.json
 
 # Session state
 selected_papers.json
+user_settings.json
 .venv
 # env state
 uv.lock

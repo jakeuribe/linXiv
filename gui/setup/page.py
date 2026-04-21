@@ -28,7 +28,7 @@ _GREEN  = "#4caf7d"
 _AMBER  = "#e8a838"
 _CODE   = "#0a0a14"
 
-_ENV_PATH = os.path.join(os.path.dirname(__file__), "..", ".env")
+from config import ENV_PATH as _ENV_PATH
 
 _PROVIDERS = {
     "Gemini": "GENAI_API_KEY_TAG_GEN",

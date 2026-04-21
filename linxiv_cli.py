@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from dotenv import load_dotenv
+from config import ENV_PATH
+load_dotenv(ENV_PATH)
+
 import argparse
 import json
 from pathlib import Path
