@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime
 import httpx
-from sources.base import PaperMetadata
+from sources.base import PaperMetadata, PaperSource
 
 _BASE_URL = "https://api.openalex.org"
 _USER_AGENT = "linXiv/1.0 (mailto:contact@example.com)"
@@ -70,7 +70,7 @@ def _reconstruct_abstract(inverted_index: dict | None) -> str | None:
     return " ".join(word for _, word in word_positions)
 
 
-class OpenAlexSource:
+class OpenAlexSource(PaperSource):
     """Paper source backed by the OpenAlex REST API."""
 
     source_name: str = "openalex"

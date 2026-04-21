@@ -1,6 +1,6 @@
 # linXiv
 
-A Python application for discovering, managing, and visualizing academic papers from arXiv. Combines a local SQLite database, AI-powered tagging, Obsidian vault integration, and an interactive D3.js network graph — all wrapped in a PyQt6 GUI.
+A Python application for discovering, managing, and visualizing academic papers from arXiv. Combines a local SQLite database, OPTIONAL AI-powered tagging, Obsidian vault integration, and an interactive D3.js network graph, wrapped in a PyQt6 GUI.
 
 ## Features
 
@@ -17,37 +17,57 @@ A Python application for discovering, managing, and visualizing academic papers 
 
 ```
 linXiv/
-├── main.py                    # Launch original graph viewer
 ├── main_shell.py              # Launch full app shell (recommended)
-├── db.py                      # SQLite DB: versioned paper storage, graph data queries
-├── projects.py                # Projects: data model, Status enum, Q query builder
-├── notes.py                   # Notes: per-paper annotations scoped to projects
-├── fetch_paper_metadata.py    # arXiv API: fetch, search, save, generate Obsidian notes
-├── downloads.py               # PDF and TeX source download helpers
 ├── AI_tools.py                # Gemini: tag(), summarize(), find_related(); PaperContent input type
+├── linxiv_cli.py              # CLI entry point (linxiv command via pyproject.toml)
+├── linxiv_mcp.py              # MCP server for Claude integration
+├── search.py                  # Standalone search script
+├── pyproject.toml             # Package metadata + CLI/MCP entry points
+├── requirements.txt           # Pip-compatible dependency list
+├── api/
+│   ├── __main__.py            # Entry point: python -m api
+│   ├── app.py                 # FastAPI routes + /assets/graph (bundled D3 graph for iframe/proxy)
+│   ├── graph_payload.py       # Graph JSON (tags + projects) for /api/graph
+│   └── run_api.py             # uvicorn launcher helper
+├── sources/
+│   ├── base.py                # PaperSource ABC + PaperMetadata dataclass
+│   ├── arxiv_source.py        # ArxivSource: search and fetch from arXiv API
+│   ├── openalex_source.py     # OpenAlexSource: lookup via OpenAlex
+│   ├── doi_resolve.py         # DOI resolution (arXiv, Semantic Scholar, CrossRef fallback)
+│   ├── fetch_paper_metadata.py# High-level fetch/search helpers + Obsidian note generation
+│   └── arxiv_downloads.py     # PDF and TeX source download helpers
+├── storage/
+│   ├── db.py                  # SQLite DB: versioned paper storage, graph data queries
+│   ├── projects.py            # Projects: data model, Status enum, Q query builder
+│   └── notes.py               # Notes: per-paper annotations scoped to projects
 ├── formats/
-│   └── table_format.md        # YAML frontmatter template for Obsidian notes
+│   ├── table_format.md        # YAML frontmatter template for Obsidian notes
+│   └── arxiv_paper.md         # Plain-text paper card template
 ├── gui/
 │   ├── app_shell.py           # QApplication + AppShell wiring (run via main_shell.py)
 │   ├── shell.py               # AppShell: sidebar nav + QStackedWidget page container
-│   ├── home_page.py           # Home: stat cards, recent papers list
-│   ├── graph_page.py          # Graph page (embedded in shell)
-│   ├── projects_page.py       # Projects: list, detail view, add paper/note dialogs
-│   ├── doi_page.py            # Add by DOI: three-strategy resolution + save to library
-│   ├── setup_page.py          # Setup: API key instructions and status
-│   ├── search_window.py       # Floating search UI: tri-pane with TeX rendering and PDF button
-│   ├── graph_view.py          # QWebEngineView wrapper for D3 graph
-│   ├── tex_view.py            # QWebEngineView wrapper for KaTeX rendering
-│   ├── pdf_window.py          # QPdfView PDF viewer with toolbar
-│   └── web/
-│       ├── graph.html/js/css  # D3 force-directed graph
-│       ├── d3.v7.min.js       # Bundled D3
-│       ├── tex_view.html      # KaTeX auto-render template
-│       ├── katex.min.js/css   # Bundled KaTeX
-│       ├── auto-render.min.js # KaTeX auto-render extension
-│       └── fonts/             # KaTeX WOFF2 fonts (offline)
-├── obsidian_vault/
-│   └── arXivVault/            # Generated markdown notes (gitignored)
+│   ├── theme.py               # Shared colours, fonts, spacing constants
+│   ├── home/page.py           # Home: stat cards, recent papers list
+│   ├── graph/
+│   │   ├── page.py            # Graph page (embedded in shell)
+│   │   ├── view.py            # QWebEngineView wrapper for D3 graph
+│   │   └── web/               # D3 force-directed graph (HTML/JS/CSS + bundled D3)
+│   ├── library/page.py        # Library: full paper list with filtering
+│   ├── projects/page.py       # Projects: list, detail view, add paper/note dialogs
+│   ├── doi/page.py            # Add by DOI: three-strategy resolution + save to library
+│   ├── setup/page.py          # Setup: API key instructions and status
+│   ├── search/
+│   │   ├── _window.py         # Search page: tri-pane with TeX rendering and PDF button
+│   │   ├── _widgets.py        # Reusable search widget components
+│   │   └── _workers.py        # QThread workers for async search
+│   └── views/
+│       ├── pdf_window.py      # QPdfView PDF viewer with toolbar
+│       ├── tex_view.py        # QWebEngineView wrapper for KaTeX rendering
+│       ├── markdown_view.py   # QWebEngineView wrapper for markdown rendering
+│       └── web/               # KaTeX assets + fonts (offline)
+├── tests/                     # pytest suite (API, CLI, DB, sources, DOI, notes, projects)
+├── docs/                      # Development notes and technical debt log
+├── obsidian_vault/            # Generated markdown notes (gitignored)
 └── pdfs/                      # Downloaded PDFs (gitignored)
 ```
 
@@ -61,8 +81,12 @@ linXiv/
 ### Install dependencies
 
 ```bash
-pip install arxiv PyQt6 PyQt6-WebEngine google-genai pydantic python-dotenv
+uv sync   # recommended (uses uv)
+# or
+pip install -r requirements.txt
 ```
+
+(Includes PyQt6 for the desktop app and FastAPI/uvicorn for the HTTP API.)
 
 ### Environment variables
 
@@ -74,10 +98,72 @@ GENAI_API_KEY_TAG_GEN=your_google_gemini_api_key
 
 ### Run
 
+**Desktop (PyQt6)**
+
 ```bash
 python main_shell.py  # Full app shell (recommended)
-python main.py        # Original graph viewer only
 ```
+
+**HTTP API (JSON backend for a separate frontend)**
+
+```bash
+python -m api         # http://127.0.0.1:8000 — see /docs for OpenAPI
+```
+
+The API serves JSON under `/api/…` and the bundled graph viewer under `/assets/graph/` (for iframe or dev-server proxy).
+
+**CLI**
+
+Install once (editable install via uv):
+
+```bash
+uv pip install -e .
+```
+
+Then run from anywhere:
+
+```bash
+linxiv search "attention is all you need" --max 5
+linxiv fetch 2204.12985
+linxiv list --limit 20 --category cs.LG
+linxiv tag 2204.12985
+linxiv project list
+linxiv project create "Diffusion Models" --description "Score-based generative models"
+linxiv project add-paper 1 2006.11239
+linxiv note create 2204.12985 "Key insight: scaled dot-product attention" --title "Reading notes"
+```
+
+All commands output JSON (or a formatted markdown card for `fetch`). Pass `--help` to any subcommand for full options.
+
+**MCP server (Claude integration)**
+
+To expose linXiv as tools that Claude can call directly, add the `mcp` optional dependency and create a thin server:
+
+```bash
+uv pip install -e ".[mcp]"   # installs the mcp package (not included by default)
+```
+
+Then register it with Claude Code — the absolute path and `cwd` are required because `linxiv_mcp.py` uses relative imports:
+
+```bash
+claude mcp add linxiv -- uv run /absolute/path/to/linxiv/linxiv_mcp.py
+```
+
+Or add it manually to `.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "linxiv": {
+      "command": "uv",
+      "args": ["run", "linxiv_mcp.py"],
+      "cwd": "/absolute/path/to/linxiv"
+    }
+  }
+}
+```
+
+Once registered, Claude can call these tools directly in conversation: `search_papers`, `fetch_paper`, `list_papers`, `get_paper`, `search_full_text`, `tag_paper`, `list_projects`, `create_project`, `add_paper_to_project`, `remove_paper_from_project`, `create_note`, `get_notes_for_paper`, `get_notes_for_project`.
 
 ## App Shell
 
@@ -109,7 +195,7 @@ shell.add_launcher("Settings", open_settings) # opens a floating window
 ### Projects
 
 ```python
-from projects import Project, filter_projects, Q, Status
+from storage import Project, filter_projects, Q, Status
 
 # Create and save a project
 p = Project(name="Diffusion Models", color=0x5b8dee, project_tags=["generative"])
@@ -132,7 +218,7 @@ blue_diffusion = filter_projects(
 ### Notes
 
 ```python
-from notes import Note, get_notes, count_paper_notes, ensure_notes_db
+from storage import Note, get_notes, count_paper_notes, ensure_notes_db
 
 ensure_notes_db()
 
@@ -148,8 +234,8 @@ count = count_paper_notes("2006.11239", project_id=p.id)
 ### Search and save papers
 
 ```python
-from fetch_paper_metadata import search_papers, fetch_paper_metadata
-from db import init_db
+from sources import search_papers, fetch_paper_metadata
+from storage import init_db
 
 init_db()
 papers = search_papers("lattice QCD", max_results=25)  # auto-saves to DB
@@ -160,9 +246,9 @@ papers = search_papers("lattice QCD", max_results=25)  # auto-saves to DB
 Use the "Add by DOI" page in the app shell, or resolve programmatically:
 
 ```python
-from gui.doi_page import _resolve_doi
+from sources import resolve_doi
 
-result = _resolve_doi("10.48550/arXiv.1706.03762")
+result = resolve_doi("10.48550/arXiv.1706.03762")
 ```
 
 ### AI tools
@@ -180,7 +266,7 @@ print(s.tldr)
 print(s.key_contributions)
 
 # Semantic edges for the graph
-from db import list_papers
+from storage import list_papers
 candidates = [(r["paper_id"], r["summary"]) for r in list_papers()]
 related_ids = find_related(content, candidates)
 ```
@@ -188,7 +274,7 @@ related_ids = find_related(content, candidates)
 ### Download PDFs
 
 ```python
-from downloads import download_pdf, download_pdf_batch, download_source_batch
+from sources.arxiv_downloads import download_pdf, download_pdf_batch, download_source_batch
 
 download_pdf(paper, dirpath="pdfs/")
 download_pdf_batch(papers, dirpath="pdfs/")
@@ -198,7 +284,7 @@ download_source_batch(papers, dirpath="source/")
 ### Database queries
 
 ```python
-from db import get_paper, get_all_versions, list_papers, get_graph_data
+from storage import get_paper, get_all_versions, list_papers, get_graph_data
 
 get_paper("2204.12985")           # latest version
 get_paper("2204.12985", version=2)

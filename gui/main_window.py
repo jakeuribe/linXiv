@@ -15,8 +15,9 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .graph_view import GraphView
-from db import get_categories, get_graph_data, get_tags, list_papers
+from gui.graph import GraphView
+from gui.theme import TABLE_BG, TABLE_TEXT, TABLE_GRID
+from storage.db import get_categories, get_graph_data, get_tags, list_papers
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -55,9 +56,12 @@ class PaperListPanel(QWidget):
         self._table.setHorizontalHeaderLabels(_COLUMNS)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self._table.setAlternatingRowColors(True)
         self._table.verticalHeader().setVisible(False)  # pyright: ignore[reportOptionalMemberAccess]
         self._table.setSortingEnabled(True)
+        # TODO: Fix coloring of edges
+        self._table.setStyleSheet(
+            f"background: {TABLE_BG}; color: {TABLE_TEXT}; gridline-color: {TABLE_GRID};"
+        )
 
         hdr = self._table.horizontalHeader()
         for i, w in enumerate(_COL_WIDTHS):

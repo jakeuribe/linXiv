@@ -1,6 +1,6 @@
 import sys
 from PyQt6.QtWidgets import QApplication, QFileDialog
-from gui.pdf_window import PdfWindow
+from gui.views import PdfWindow
 
 
 if __name__ == "__main__":

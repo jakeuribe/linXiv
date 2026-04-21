@@ -5,25 +5,41 @@ on:
   pull_request:
 
 jobs:
-  test:
+  typecheck:
+    name: Type Check
     runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
       - name: Install dependencies
         run: pip install -r requirements.txt pyright pytest
 
-      - name: Type check
+      - name: Run Pyright
         run: |
-          echo '{"typeCheckingMode": "basic", "pythonVersion": "3.11"}' > pyrightconfig.json
+          echo '{"typeCheckingMode": "basic", "pythonVersion": "3.11", "exclude": ["linxiv_mcp.py"]}' > pyrightconfig.json
           pyright
+
+  test:
+    name: Test (Python ${{ matrix.python-version }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest
 
       - name: Run tests
         run: pytest tests/

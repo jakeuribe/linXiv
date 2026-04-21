@@ -1,21 +1,23 @@
 import sys
 
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QStyleFactory
 
 from gui.shell import AppShell
-from gui.home_page import HomePage
-from gui.graph_page import GraphPage
-from gui.library_page import LibraryPage
-from gui.projects_page import ProjectsPage
-from gui.setup_page import SetupPage
-from gui.doi_page import DoiPage
-from gui.search_window import SearchWindow
-from db import init_db
+from gui.home import HomePage
+from gui.graph import GraphPage
+from gui.library import LibraryPage
+from gui.projects import ProjectsPage
+from gui.setup import SetupPage
+from gui.settings import SettingsPage
+from gui.doi import DoiPage
+from gui.search import SearchPage
+from storage.db import init_db
 
 
 def run_shell() -> None:
     init_db()
     app = QApplication(sys.argv)
+    app.setStyle(QStyleFactory.create("Fusion"))
 
     shell = AppShell()
     shell.add_page("Home", HomePage())
@@ -25,8 +27,11 @@ def run_shell() -> None:
     shell.add_page("Library", library_page)
     shell.add_page("Graph", graph_page)
     shell.add_page("Projects", projects_page)
+    search_page = SearchPage()
+    shell.add_page("Search", search_page)
     shell.add_page("Add by DOI", DoiPage())
     shell.add_page("Setup", SetupPage())
+    shell.add_page("Settings", SettingsPage())
 
     def _on_navigate_to_project(project) -> None:
         shell.go_to_widget(projects_page)
@@ -40,16 +45,8 @@ def run_shell() -> None:
 
     graph_page.paper_right_clicked.connect(_on_paper_right_clicked)
 
-    _sw: list[SearchWindow] = []
+    shell.register_on_close(search_page.cleanup_pdfs)
+    app.aboutToQuit.connect(search_page.cleanup_pdfs)
 
-    def _open_search() -> None:
-        if not _sw:
-            _sw.append(SearchWindow())
-        w = _sw[0]
-        w.show()
-        w.raise_()
-        w.activateWindow()
-
-    shell.add_launcher("Search", _open_search)
     shell.show()
     sys.exit(app.exec())

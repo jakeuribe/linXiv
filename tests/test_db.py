@@ -8,7 +8,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import arxiv
-import db
+import storage.db as db
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +162,7 @@ class TestSavePaperMetadata:
             source="openalex",
         )
         defaults.update(kwargs)
-        return PaperMetadata(**defaults)  # pyright: ignore[reportArgumentType]
+        return PaperMetadata.model_validate(defaults)
 
     def test_save_and_get_by_id(self, tmp_db):
         meta = self._make_meta()
@@ -270,7 +270,7 @@ class TestFullTextSearch:
 class TestExtractSource:
     def test_extract_from_tar(self, tmp_path):
         import tarfile
-        from downloads import extract_source
+        from sources.arxiv_downloads import extract_source
 
         # Create a fake .tex file
         tex_content = r"""
@@ -296,7 +296,7 @@ Hello world of transformers.
 
     def test_extract_empty_tar(self, tmp_path):
         import tarfile
-        from downloads import extract_source
+        from sources.arxiv_downloads import extract_source
 
         # Create an empty .tar.gz (no .tex files)
         tar_path = str(tmp_path / "empty.tar.gz")
@@ -307,7 +307,7 @@ Hello world of transformers.
         assert result == ""
 
     def test_extract_invalid_tar(self, tmp_path):
-        from downloads import extract_source
+        from sources.arxiv_downloads import extract_source
 
         bad_path = str(tmp_path / "bad.tar.gz")
         (tmp_path / "bad.tar.gz").write_text("not a tarball")

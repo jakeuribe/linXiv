@@ -46,6 +46,12 @@ CARD_PAD_H     = 16   # horizontal padding inside cards
 CARD_PAD_V     = 12   # vertical padding inside cards
 DIALOG_PAD     = 20   # padding inside dialog content areas
 
+# ── Table (light surface) ────────────────────────────────────────────────────
+
+TABLE_BG   = "#ffffff"
+TABLE_TEXT = "#000000"
+TABLE_GRID = "#ffffff"
+
 # ── Fixed widget sizes ────────────────────────────────────────────────────────
 
 NAV_WIDTH       = 120   # sidebar navigation width
