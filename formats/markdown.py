@@ -8,8 +8,9 @@ import re
 from sources.base import PaperMetadata
 
 _FALLBACK_DATE = datetime.date(1900, 1, 1)
-_ARXIV_URL_RE = re.compile(r"https?://arxiv\.org/abs/([^\s\)]+)")
-_MD_LINK_RE   = re.compile(r"\[([^\]]+)\]\(([^\)]+)\)")
+_ARXIV_URL_RE  = re.compile(r"https?://arxiv\.org/abs/([^\s\)]+)")
+_ARXIV_ID_RE   = re.compile(r"^\d{4}\.\d{4,5}(v\d+)?$|^[a-z-]+/\d{7}$")
+_MD_LINK_RE    = re.compile(r"\[([^\]]+)\]\(([^\)]*)\)")
 
 
 def _parse_date(val: str) -> datetime.date:
@@ -19,6 +20,19 @@ def _parse_date(val: str) -> datetime.date:
         except ValueError:
             pass
     return _FALLBACK_DATE
+
+
+def _is_arxiv_id(pid: str) -> bool:
+    return bool(_ARXIV_ID_RE.match(pid))
+
+
+def _paper_url(pid: str, stored_url: str | None) -> str:
+    """Best URL for a paper: stored url > arXiv abs link > empty."""
+    if stored_url:
+        return stored_url
+    if _is_arxiv_id(pid):
+        return f"https://arxiv.org/abs/{pid}"
+    return ""
 
 
 def _paper_id_from_url(url: str) -> str:
@@ -39,11 +53,13 @@ class MarkdownFormat:
     def export_papers(self, papers: list[dict]) -> str:
         lines = ["# Selected Papers\n"]
         for p in papers:
-            pid    = p.get("paper_id", "")
-            title  = p.get("title", pid)
+            pid     = p.get("paper_id", "")
+            title   = p.get("title", pid)
             authors = ", ".join(p.get("authors") or [])
-            url    = f"https://arxiv.org/abs/{pid}"
+            url     = _paper_url(pid, p.get("url"))
             lines.append(f"- **[{title}]({url})**")
+            if not _is_arxiv_id(pid):
+                lines.append(f"  - Paper-ID: {pid}")
             if authors:
                 lines.append(f"  - Authors: {authors}")
             cat = p.get("category", "")
@@ -88,7 +104,9 @@ class MarkdownFormat:
                 continue
 
             # Sub-bullets: '  - Key: value'
-            if line.startswith("- Authors: "):
+            if line.startswith("- Paper-ID: "):
+                current["paper_id"] = line[12:].strip()
+            elif line.startswith("- Authors: "):
                 current["authors"] = [a.strip() for a in line[11:].split(",") if a.strip()]
             elif line.startswith("- Category: "):
                 current["category"] = line[12:].strip()
@@ -124,12 +142,14 @@ class ObsidianFormat:
         lines += ["---", "", "# Selected Papers", ""]
 
         for p in papers:
-            pid    = p.get("paper_id", "")
-            title  = p.get("title", pid)
+            pid     = p.get("paper_id", "")
+            title   = p.get("title", pid)
             authors = ", ".join(p.get("authors") or [])
-            url    = f"https://arxiv.org/abs/{pid}"
+            url     = _paper_url(pid, p.get("url"))
             lines.append(f"## [{title}]({url})")
             lines.append("")
+            if not _is_arxiv_id(pid):
+                lines.append(f"**Paper-ID:** {pid}")
             if authors:
                 lines.append(f"**Authors:** {authors}")
             cat = p.get("category", "")
@@ -180,7 +200,9 @@ class ObsidianFormat:
             if current is None:
                 continue
 
-            if line.startswith("**Authors:**"):
+            if line.startswith("**Paper-ID:**"):
+                current["paper_id"] = line[13:].strip()
+            elif line.startswith("**Authors:**"):
                 current["authors"] = [a.strip() for a in line[12:].split(",") if a.strip()]
             elif line.startswith("**Category:**"):
                 current["category"] = line[13:].strip()
