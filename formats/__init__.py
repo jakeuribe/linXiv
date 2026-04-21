@@ -19,12 +19,15 @@ from formats.base import PaperFileFormat
 from formats.json_fmt import JSONFormat
 from formats.csv_fmt import CSVFormat, TSVFormat
 from formats.bibtex import BibTeXFormat
+from formats.markdown import MarkdownFormat, ObsidianFormat
 
 registry: dict[str, PaperFileFormat] = {
-    "json":   JSONFormat(),
-    "csv":    CSVFormat(),
-    "tsv":    TSVFormat(),
-    "bibtex": BibTeXFormat(),
+    "json":     JSONFormat(),
+    "csv":      CSVFormat(),
+    "tsv":      TSVFormat(),
+    "bibtex":   BibTeXFormat(),
+    "markdown": MarkdownFormat(),
+    "obsidian": ObsidianFormat(),
 }
 
 
