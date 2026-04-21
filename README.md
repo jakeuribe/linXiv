@@ -19,6 +19,11 @@ A Python application for discovering, managing, and visualizing academic papers 
 linXiv/
 ├── main_shell.py              # Launch full app shell (recommended)
 ├── AI_tools.py                # Gemini: tag(), summarize(), find_related(); PaperContent input type
+├── linxiv_cli.py              # CLI entry point (linxiv command via pyproject.toml)
+├── linxiv_mcp.py              # MCP server for Claude integration
+├── search.py                  # Standalone search script
+├── pyproject.toml             # Package metadata + CLI/MCP entry points
+├── requirements.txt           # Pip-compatible dependency list
 ├── api/
 │   ├── __main__.py            # Entry point: python -m api
 │   ├── app.py                 # FastAPI routes + /assets/graph (bundled D3 graph for iframe/proxy)
@@ -28,7 +33,7 @@ linXiv/
 │   ├── base.py                # PaperSource ABC + PaperMetadata dataclass
 │   ├── arxiv_source.py        # ArxivSource: search and fetch from arXiv API
 │   ├── openalex_source.py     # OpenAlexSource: lookup via OpenAlex
-│   ├── doi_resolve.py         # DOI resolution (arXiv, OpenAlex, CrossRef fallback)
+│   ├── doi_resolve.py         # DOI resolution (arXiv, Semantic Scholar, CrossRef fallback)
 │   ├── fetch_paper_metadata.py# High-level fetch/search helpers + Obsidian note generation
 │   └── arxiv_downloads.py     # PDF and TeX source download helpers
 ├── storage/
@@ -36,33 +41,33 @@ linXiv/
 │   ├── projects.py            # Projects: data model, Status enum, Q query builder
 │   └── notes.py               # Notes: per-paper annotations scoped to projects
 ├── formats/
-│   └── table_format.md        # YAML frontmatter template for Obsidian notes
+│   ├── table_format.md        # YAML frontmatter template for Obsidian notes
+│   └── arxiv_paper.md         # Plain-text paper card template
 ├── gui/
 │   ├── app_shell.py           # QApplication + AppShell wiring (run via main_shell.py)
 │   ├── shell.py               # AppShell: sidebar nav + QStackedWidget page container
-│   ├── home_page.py           # Home: stat cards, recent papers list
-│   ├── graph_page.py          # Graph page (embedded in shell)
-│   ├── library_page.py        # Library: full paper list with filtering
-│   ├── projects_page.py       # Projects: list, detail view, add paper/note dialogs
-│   ├── doi_page.py            # Add by DOI: three-strategy resolution + save to library
-│   ├── setup_page.py          # Setup: API key instructions and status
-│   ├── graph_view.py          # QWebEngineView wrapper for D3 graph
-│   ├── markdown_view.py       # QWebEngineView wrapper for markdown rendering
-│   ├── tex_view.py            # QWebEngineView wrapper for KaTeX rendering
-│   ├── pdf_window.py          # QPdfView PDF viewer with toolbar
+│   ├── theme.py               # Shared colours, fonts, spacing constants
+│   ├── home/page.py           # Home: stat cards, recent papers list
+│   ├── graph/
+│   │   ├── page.py            # Graph page (embedded in shell)
+│   │   ├── view.py            # QWebEngineView wrapper for D3 graph
+│   │   └── web/               # D3 force-directed graph (HTML/JS/CSS + bundled D3)
+│   ├── library/page.py        # Library: full paper list with filtering
+│   ├── projects/page.py       # Projects: list, detail view, add paper/note dialogs
+│   ├── doi/page.py            # Add by DOI: three-strategy resolution + save to library
+│   ├── setup/page.py          # Setup: API key instructions and status
 │   ├── search/
-│   │   ├── _window.py         # Floating search UI: tri-pane with TeX rendering and PDF button
+│   │   ├── _window.py         # Search page: tri-pane with TeX rendering and PDF button
 │   │   ├── _widgets.py        # Reusable search widget components
 │   │   └── _workers.py        # QThread workers for async search
-│   └── web/
-│       ├── graph.html/js/css  # D3 force-directed graph
-│       ├── d3.v7.min.js       # Bundled D3
-│       ├── tex_view.html      # KaTeX auto-render template
-│       ├── katex.min.js/css   # Bundled KaTeX
-│       ├── auto-render.min.js # KaTeX auto-render extension
-│       └── fonts/             # KaTeX WOFF2 fonts (offline)
-├── obsidian_vault/
-│   └── arXivVault/            # Generated markdown notes (gitignored)
+│   └── views/
+│       ├── pdf_window.py      # QPdfView PDF viewer with toolbar
+│       ├── tex_view.py        # QWebEngineView wrapper for KaTeX rendering
+│       ├── markdown_view.py   # QWebEngineView wrapper for markdown rendering
+│       └── web/               # KaTeX assets + fonts (offline)
+├── tests/                     # pytest suite (API, CLI, DB, sources, DOI, notes, projects)
+├── docs/                      # Development notes and technical debt log
+├── obsidian_vault/            # Generated markdown notes (gitignored)
 └── pdfs/                      # Downloaded PDFs (gitignored)
 ```
 
