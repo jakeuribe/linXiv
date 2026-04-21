@@ -113,7 +113,7 @@ class TestExportPapers:
 # import_file
 # ---------------------------------------------------------------------------
 
-def _write_temp_json(data: dict) -> str:
+def _write_temp_json(data: dict | list) -> str:
     f = tempfile.NamedTemporaryFile(suffix=".json", mode="w", delete=False, encoding="utf-8")
     json.dump(data, f)
     f.close()
