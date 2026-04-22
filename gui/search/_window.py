@@ -1,35 +1,22 @@
-import os
-
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QPushButton, QListWidgetItem,
-    QLabel, QSplitter, QCheckBox, QComboBox, QSpinBox,
-    QFrame, QFileDialog,
+    QLabel, QSplitter, QCheckBox, QComboBox,
 )
 from PyQt6.QtCore import Qt
 import arxiv
 from storage.db import (
     save_paper, save_paper_metadata, delete_paper,
-    get_paper, set_has_pdf, set_pdf_path, parse_entry_id,
+    get_paper, parse_entry_id,
     search_full_text,
 )
 from sources.base import PaperMetadata
-from sources.arxiv_downloads import cleanup_pdfs as _cleanup_pdfs, saved_pdfs_size
 from gui.views import TexView, PdfWindow
 from gui.theme import FONT_TERTIARY, SPACE_XS, SPACE_SM, SPACE_MD
-from gui.search._workers import _SearchWorker, _SourceSearchWorker, _PdfWorker, _PDF_DIR
-from gui.search._widgets import _ClauseRow, _ResultList, _ResultRow
-
-_SORT_BY_OPTIONS = [
-    ("Relevance",     arxiv.SortCriterion.Relevance),
-    ("Submitted Date",arxiv.SortCriterion.SubmittedDate),
-    ("Last Updated",  arxiv.SortCriterion.LastUpdatedDate),
-]
-
-_SORT_ORDER_OPTIONS = [
-    ("Descending", arxiv.SortOrder.Descending),
-    ("Ascending",  arxiv.SortOrder.Ascending),
-]
+from gui.search._workers import _SearchWorker, _SourceSearchWorker
+from gui.search._widgets import _ResultList, _ResultRow
+from gui.search._query_builder import _QueryBuilderPanel
+from gui.search._pdf_controller import _PdfController
 
 _SOURCE_OPTIONS = [
     ("arXiv", "arxiv"),
@@ -80,13 +67,7 @@ class SearchPage(QWidget):
         self._local_results: list[dict] = []  # results from local FTS
         self._active_source: str = "arxiv"
         self._row_widgets: list[_ResultRow] = []
-        self._clauses: list[_ClauseRow] = []
-        self._pdf_window = PdfWindow()
-        self._saved_papers: set[tuple[str, int]] = set()          # (paper_id, version) marked to keep
-        self._paper_pdf_paths: dict[tuple[str, int], str] = {}    # (paper_id, version) → local pdf path
         self._current_paper_key: tuple[str, int] | None = None
-        # TODO: Make configurable in user specific settings
-        self._save_limit_bytes: int = 1 * 1024 ** 3               # 1 GB cap on saved PDFs
 
         self._build_ui()
 
@@ -108,7 +89,7 @@ class SearchPage(QWidget):
         self._search_box.returnPressed.connect(self._on_search)
         self._adv_btn = QPushButton("Advanced ▾")
         self._adv_btn.setFixedWidth(100)  # TODO: Make more customizable
-        self._adv_btn.clicked.connect(self._toggle_advanced)
+        self._adv_btn.clicked.connect(lambda: self._query_panel.toggle())
         self._search_btn = QPushButton("Search")
         self._search_btn.clicked.connect(self._on_search)
         self._cleanup_btn = QPushButton("Clean up PDFs")
@@ -120,80 +101,12 @@ class SearchPage(QWidget):
         search_row.addWidget(self._cleanup_btn)
         layout.addLayout(search_row)
 
-        # Advanced panel
-        self._adv_panel = QFrame()
-        self._adv_panel.setFrameShape(QFrame.Shape.StyledPanel)
-        adv_outer = QVBoxLayout(self._adv_panel)
-        adv_outer.setContentsMargins(SPACE_SM, SPACE_XS, SPACE_SM, SPACE_XS)
-        adv_outer.setSpacing(SPACE_SM)
-
-        # Clause rows container
-        self._clause_container = QWidget()
-        self._clause_layout = QVBoxLayout(self._clause_container)
-        self._clause_layout.setContentsMargins(0, 0, 0, 0)
-        self._clause_layout.setSpacing(SPACE_XS)
-        adv_outer.addWidget(self._clause_container)
-
-        # Add clause button
-        add_btn = QPushButton("+ Add clause")
-        add_btn.setFixedWidth(110)  # TODO: Make more customizable
-        add_btn.clicked.connect(self._add_clause)
-        adv_outer.addWidget(add_btn, alignment=Qt.AlignmentFlag.AlignLeft)
-
-        # Preview + insert row
-        preview_row = QHBoxLayout()
-        self._preview_label = QLabel()
-        self._preview_label.setStyleSheet("color: grey; font-family: monospace;")
-        self._preview_label.setWordWrap(True)
-        preview_row.addWidget(self._preview_label, stretch=1)
-
-        clear_btn = QPushButton("Clear")
-        clear_btn.setFixedWidth(60)
-        clear_btn.clicked.connect(self._clear_builder)
-        preview_row.addWidget(clear_btn)
-
-        insert_btn = QPushButton("Insert Query →")
-        insert_btn.clicked.connect(self._insert_query)
-        preview_row.addWidget(insert_btn)
-        adv_outer.addLayout(preview_row)
-
-        # Divider
-        line = QFrame()
-        line.setFrameShape(QFrame.Shape.HLine)
-        line.setFrameShadow(QFrame.Shadow.Sunken)
-        adv_outer.addWidget(line)
-
-        # Sort / order / max row
-        opts_row = QHBoxLayout()
-        opts_row.setSpacing(SPACE_MD)
-
-        opts_row.addWidget(QLabel("Sort:"))
-        self._sort_combo = QComboBox()
-        for label, _ in _SORT_BY_OPTIONS:
-            self._sort_combo.addItem(label)
-        opts_row.addWidget(self._sort_combo)
-
-        opts_row.addWidget(QLabel("Order:"))
-        self._order_combo = QComboBox()
-        for label, _ in _SORT_ORDER_OPTIONS:
-            self._order_combo.addItem(label)
-        opts_row.addWidget(self._order_combo)
-
-        opts_row.addWidget(QLabel("Max:"))
-        self._max_spin = QSpinBox()
-        self._max_spin.setRange(1, 200)
-        self._max_spin.setValue(25)
-        self._max_spin.setFixedWidth(80)  # TODO: Make more customizable
-        opts_row.addWidget(self._max_spin)
-
-        opts_row.addStretch()
-        adv_outer.addLayout(opts_row)
-
-        self._adv_panel.setVisible(False)
-        layout.addWidget(self._adv_panel)
-
-        # Seed with one blank clause
-        self._add_clause()
+        self._query_panel = _QueryBuilderPanel()
+        self._query_panel.query_inserted.connect(self._search_box.setText)
+        self._query_panel.toggled.connect(
+            lambda v: self._adv_btn.setText("Advanced ▴" if v else "Advanced ▾")
+        )
+        layout.addWidget(self._query_panel)
 
         # Results area
         outer = QSplitter(Qt.Orientation.Vertical)
@@ -239,23 +152,36 @@ class SearchPage(QWidget):
         pdf_row = QHBoxLayout()
         self._pdf_btn = QPushButton("View PDF")
         self._pdf_btn.setEnabled(False)
-        self._pdf_btn.clicked.connect(self._on_view_pdf)
         pdf_row.addWidget(self._pdf_btn)
 
         self._save_pdf_btn = QCheckBox("Save PDF")
         self._save_pdf_btn.setEnabled(False)
-        self._save_pdf_btn.toggled.connect(self._on_save_pdf_toggled)
         pdf_row.addWidget(self._save_pdf_btn)
 
         self._link_pdf_btn = QPushButton("Link PDF")
         self._link_pdf_btn.setToolTip("Link an external PDF file to this paper")
         self._link_pdf_btn.setEnabled(False)
-        self._link_pdf_btn.clicked.connect(self._on_link_pdf)
         pdf_row.addWidget(self._link_pdf_btn)
 
         self._linked_indicator = QLabel("")
         self._linked_indicator.setStyleSheet(f"color: #444444; font-size: {FONT_TERTIARY}px;")
         pdf_row.addWidget(self._linked_indicator)
+
+        self._pdf = _PdfController(
+            self._pdf_btn, self._save_pdf_btn, self._link_pdf_btn,
+            self._linked_indicator, self._status, PdfWindow(),
+        )
+        self._pdf_btn.clicked.connect(
+            lambda: self._pdf.on_view_pdf(
+                self._current_paper_key, self._results, self._list.currentRow()
+            )
+        )
+        self._save_pdf_btn.toggled.connect(
+            lambda c: self._pdf.on_save_pdf_toggled(c, self._current_paper_key)
+        )
+        self._link_pdf_btn.clicked.connect(
+            lambda: self._pdf.on_link_pdf(self._current_paper_key, self)
+        )
 
         meta_layout.addWidget(self._sidebar_title)
         meta_layout.addWidget(self._sidebar_meta)
@@ -271,61 +197,6 @@ class SearchPage(QWidget):
         outer.addWidget(self._sidebar_abstract)
         outer.setSizes([300, 300])  # TODO: Make more customizable
 
-    # --- query builder ---
-
-    def _add_clause(self) -> None:
-        show_op = len(self._clauses) > 0
-        clause = _ClauseRow(show_operator=show_op)
-        clause.changed.connect(self._update_preview)
-        clause.remove_requested.connect(self._remove_clause)
-        self._clauses.append(clause)
-        self._clause_layout.addWidget(clause)
-        self._update_preview()
-
-    def _remove_clause(self, clause: _ClauseRow) -> None:
-        idx = self._clauses.index(clause)
-        self._clauses.pop(idx)
-        self._clause_layout.removeWidget(clause)
-        clause.deleteLater()
-        if self._clauses:
-            self._clauses[0].set_operator_visible(False)
-        if not self._clauses:
-            self._add_clause()
-        self._update_preview()
-
-    def _update_preview(self) -> None:
-        self._preview_label.setText(self._build_clause_query() or "(empty)")
-
-    def _build_clause_query(self) -> str:
-        parts = []
-        for _, clause in enumerate(self._clauses):
-            part = clause.to_clause()
-            if not part:
-                continue
-            if parts:
-                parts.append(clause.operator)
-            parts.append(part)
-        return " ".join(parts)
-
-    def _clear_builder(self) -> None:
-        for clause in list(self._clauses):
-            self._clause_layout.removeWidget(clause)
-            clause.deleteLater()
-        self._clauses.clear()
-        self._add_clause()
-
-    def _insert_query(self) -> None:
-        q = self._build_clause_query()
-        if q:
-            self._search_box.setText(q)
-        self._adv_panel.setVisible(False)
-        self._adv_btn.setText("Advanced ▾")
-
-    def _toggle_advanced(self) -> None:
-        visible = not self._adv_panel.isVisible()
-        self._adv_panel.setVisible(visible)
-        self._adv_btn.setText("Advanced ▴" if visible else "Advanced ▾")
-
     # --- source selection ---
 
     def _on_source_changed(self, index: int) -> None:
@@ -334,7 +205,7 @@ class SearchPage(QWidget):
         # Advanced query builder and sort options are arXiv-specific
         self._adv_btn.setVisible(is_arxiv)
         if not is_arxiv:
-            self._adv_panel.setVisible(False)
+            self._query_panel.setVisible(False)
         placeholders = {
             "arxiv": "Search arXiv…",
             "openalex": "Search OpenAlex…",
@@ -350,7 +221,7 @@ class SearchPage(QWidget):
         query = self._search_box.text().strip()
         if not query:
             return
-        max_results = self._max_spin.value()
+        max_results = self._query_panel.max_results()
         self._set_busy(True)
         self._list.clear()
         self._row_widgets = []
@@ -362,8 +233,8 @@ class SearchPage(QWidget):
             self._on_local_search(query, max_results)
             return
         if self._active_source == "arxiv":
-            sort_by     = _SORT_BY_OPTIONS[self._sort_combo.currentIndex()][1]
-            sort_order  = _SORT_ORDER_OPTIONS[self._order_combo.currentIndex()][1]
+            sort_by    = self._query_panel.sort_by()
+            sort_order = self._query_panel.sort_order()
             self._worker = _SearchWorker(query, max_results, sort_by, sort_order)
             self._worker.done.connect(self._on_done)
             self._worker.start()
@@ -524,132 +395,11 @@ class SearchPage(QWidget):
 
         # Show linked indicator if paper has an external pdf_path
         db_row = get_paper(key[0], key[1])
-        if db_row and db_row["pdf_path"]:
-            self._linked_indicator.setText("Linked")
-        else:
-            self._linked_indicator.setText("")
-        # Auto-check if already saved in session OR PDF exists on disk from a prior session
-        already_saved = key in self._saved_papers or os.path.isfile(self._pdf_path_for_key(key))
-        if already_saved:
-            self._saved_papers.add(key)
-        self._save_pdf_btn.blockSignals(True)
-        self._save_pdf_btn.setChecked(already_saved)
-        self._save_pdf_btn.blockSignals(False)
-
-    def _on_view_pdf(self) -> None:
-        row = self._list.currentRow()
-        # Capture key now — _current_paper_key may change before download completes
-        key = self._current_paper_key
-        # Check for linked external PDF first
-        if key:
-            db_row = get_paper(key[0], key[1])
-            if db_row and db_row["pdf_path"] and os.path.isfile(db_row["pdf_path"]):
-                self._pdf_window.load_pdf(db_row["pdf_path"], is_external=True)
-                return
-        # Only arXiv results support direct PDF download
-        if row < 0 or row >= len(self._results):
-            return
-        self._pdf_btn.setEnabled(False)
-        self._pdf_btn.setText("Downloading…")
-        self._pdf_worker = _PdfWorker(self._results[row])
-        self._pdf_worker.done.connect(lambda path, k=key: self._on_pdf_ready(path, k))
-        self._pdf_worker.start()
-
-    def _on_pdf_ready(self, path: str, key: tuple[str, int] | None = None) -> None:
-        self._pdf_btn.setEnabled(True)
-        self._pdf_btn.setText("View PDF")
-        if key:
-            self._paper_pdf_paths[key] = path
-            print(f"[pdf] downloaded {key} → {path}")
-
-        # If this paper is marked to save, check size limit before displaying
-        if key and key in self._saved_papers:
-            saved_paths = {
-                self._paper_pdf_paths.get(k) or self._pdf_path_for_key(k)
-                for k in self._saved_papers
-            }
-            total = saved_pdfs_size(saved_paths)
-            limit_mb = self._save_limit_bytes / 1024 ** 2
-            total_mb = total / 1024 ** 2
-            print(f"[size] saved total: {total_mb:.1f} MB / {limit_mb:.0f} MB limit")
-            if total > self._save_limit_bytes:
-                self._saved_papers.discard(key)
-                self._save_pdf_btn.blockSignals(True)
-                self._save_pdf_btn.setChecked(False)
-                self._save_pdf_btn.blockSignals(False)
-                self._status.setText(
-                    f"Save limit reached ({total_mb:.0f} MB / {limit_mb:.0f} MB) — PDF not saved."
-                )
-                print(f"[size] limit exceeded — not saving {key}")
-                return  # don't open viewer
-
-        self._pdf_window.load_pdf(path)
-
-    def _on_save_pdf_toggled(self, checked: bool) -> None:
-        if self._current_paper_key is None:
-            return
-        if checked:
-            self._saved_papers.add(self._current_paper_key)
-            print(f"[save] marked {self._current_paper_key} as saved | saved set: {self._saved_papers}")
-        else:
-            self._saved_papers.discard(self._current_paper_key)
-            print(f"[save] unmarked {self._current_paper_key} | saved set: {self._saved_papers}")
-
-    def _on_link_pdf(self) -> None:
-        if self._current_paper_key is None:
-            return
-        paper_id, version = self._current_paper_key
-        # Check if the paper is saved in the DB first
-        row = get_paper(paper_id, version)
-        if row is None:
-            self._status.setText("Save the paper first before linking a PDF.")
-            return
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Link PDF to paper", "", "PDF Files (*.pdf)"
-        )
-        if not path:
-            return
-        set_pdf_path(paper_id, path)
-        self._linked_indicator.setText("Linked")
-        self._status.setText(f"Linked PDF: {os.path.basename(path)}")
-
-    def _pdf_path_for_key(self, key: tuple[str, int]) -> str:
-        """Reconstruct the expected PDF path from a (paper_id, version) key."""
-        paper_id, version = key
-        return str(_PDF_DIR / f"{paper_id}v{version}.pdf")
+        self._linked_indicator.setText("Linked" if db_row and db_row["pdf_path"] else "")
+        self._pdf.sync_save_state(key)
 
     def cleanup_pdfs(self) -> list[str]:
-        """Delete all unsaved PDFs. Always runs — no size condition for deletion."""
-        self._pdf_window._doc.close()  # release Windows file lock before deleting
-        from PyQt6.QtWidgets import QApplication
-        QApplication.processEvents()   # flush handle release (required on Windows)
-        if not _PDF_DIR.is_dir():
-            return []
-        keep = {
-            self._paper_pdf_paths.get(key) or self._pdf_path_for_key(key)
-            for key in self._saved_papers
-        }
-        # Also keep any PDF that's already recorded in the DB (e.g. downloaded via Library page)
-        from storage.db import list_papers as _list_papers
-        for row in _list_papers():
-            pdf_path = row["pdf_path"] if "pdf_path" in row.keys() else None
-            if pdf_path and os.path.isfile(pdf_path):
-                keep.add(pdf_path)
-            if row["has_pdf"]:
-                keep.add(self._pdf_path_for_key((row["paper_id"], row["version"])))
-        deleted = _cleanup_pdfs(str(_PDF_DIR), keep=keep)
-
-        # Update has_pdf flag in DB
-        for key in self._saved_papers:
-            path = self._paper_pdf_paths.get(key) or self._pdf_path_for_key(key)
-            set_has_pdf(key[0], key[1], os.path.isfile(path))
-        for path in deleted:
-            fname = os.path.splitext(os.path.basename(path))[0]  # e.g. '2204.12985v4'
-            key = parse_entry_id(fname)
-            set_has_pdf(key[0], key[1], False)
-
-        print(f"[cleanup] kept: {self._saved_papers} | deleted {len(deleted)} file(s): {deleted}")
-        return deleted
+        return self._pdf.cleanup_pdfs()
 
     def _on_cleanup_pdfs(self) -> None:
         deleted = self.cleanup_pdfs()
