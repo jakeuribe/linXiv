@@ -73,7 +73,7 @@ def _reconstruct_abstract(inverted_index: dict | None) -> str | None:
 class OpenAlexSource(PaperSource):
     """Paper source backed by the OpenAlex REST API."""
 
-    source_name: str = "openalex"
+    source_name: str = "openalex"  # written into PaperMetadata.source for every record this class produces
 
     def __init__(self) -> None:
         self._http = httpx.Client(
