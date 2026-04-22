@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import datetime
-import json
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -21,6 +20,7 @@ from PyQt6.QtWidgets import (
 from .view import GraphView
 from formats.bibtex import BibTeXFormat
 from formats.csv_fmt import CSVFormat
+from formats.json_fmt import JSONFormat
 from formats.markdown import MarkdownFormat, ObsidianFormat
 from gui.theme import FONT_SECONDARY, FONT_TERTIARY, SPACE_XS, SPACE_SM
 from storage.db import get_categories, get_graph_data, get_tags, list_papers
@@ -29,7 +29,7 @@ _bibtex_fmt   = BibTeXFormat()
 _csv_fmt      = CSVFormat()
 _markdown_fmt = MarkdownFormat()
 _obsidian_fmt = ObsidianFormat()
-
+_json_fmt     = JSONFormat()
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 # TODO: Break down into smaller chunks
@@ -366,7 +366,7 @@ class GraphPage(QWidget):
         if not path:
             return
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.write(_json_fmt.export_papers(data.get("papers", [])))
 
     def _export_csv(self) -> None:
         self._graph_view.get_selected_paper_data(self._save_csv)
