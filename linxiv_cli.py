@@ -7,11 +7,17 @@ from config import ENV_PATH
 load_dotenv(ENV_PATH)
 
 import argparse
+from importlib.metadata import version, PackageNotFoundError
 import json
 from pathlib import Path
 import re
 import sys
 from typing import Any
+
+try:
+    __version__ = version("linxiv")
+except PackageNotFoundError:
+    __version__ = "unknown"
 
 from sources.arxiv_source import ArxivSource
 from sources.base import PaperMetadata, PaperSource
@@ -172,7 +178,8 @@ def cmd_create_note(args: argparse.Namespace) -> None:
 # Argument parsing
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="arxiv_cli", description="linXiv headless CLI")
+    parser = argparse.ArgumentParser(prog="linxiv", description="linXiv headless CLI")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     _source_choices = list(_SOURCES)
