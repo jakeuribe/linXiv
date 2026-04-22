@@ -110,7 +110,7 @@ def cmd_list(args: argparse.Namespace) -> None:
     _output(papers)
 
 
-def cmd_tag(args: argparse.Namespace) -> None:
+def ai_cmd_tag(args: argparse.Namespace) -> None:
     from AI_tools import PaperContent, tag
 
     row = db.get_paper(args.paper_id)
@@ -122,6 +122,32 @@ def cmd_tag(args: argparse.Namespace) -> None:
     content = PaperContent(abstract=summary, full_text=full_text)
     tags = tag(content)
     _output({"paper_id": args.paper_id, "tags": tags})
+
+
+def cmd_tag_add(args: argparse.Namespace) -> None:
+    try:
+        updated = db.add_paper_tags(args.paper_id, args.tags)
+    except KeyError:
+        print(json.dumps({"error": f"Paper {args.paper_id} not found in DB"}), file=sys.stderr)
+        sys.exit(1)
+    _output({"paper_id": args.paper_id, "tags": updated})
+
+
+def cmd_tag_remove(args: argparse.Namespace) -> None:
+    try:
+        updated = db.remove_paper_tags(args.paper_id, args.tags)
+    except KeyError:
+        print(json.dumps({"error": f"Paper {args.paper_id} not found in DB"}), file=sys.stderr)
+        sys.exit(1)
+    _output({"paper_id": args.paper_id, "tags": updated})
+
+
+def cmd_tag_list(args: argparse.Namespace) -> None:
+    row = db.get_paper(args.paper_id)
+    if row is None:
+        print(json.dumps({"error": f"Paper {args.paper_id} not found in DB"}), file=sys.stderr)
+        sys.exit(1)
+    _output({"paper_id": args.paper_id, "tags": row["tags"] or []})
 
 
 def cmd_project_list(args: argparse.Namespace) -> None:
@@ -205,9 +231,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_list.set_defaults(func=cmd_list)
 
     # tag
-    p_tag = sub.add_parser("tag", help="Generate AI tags for a paper")
-    p_tag.add_argument("paper_id", help="Paper ID to tag")
-    p_tag.set_defaults(func=cmd_tag)
+    p_tag = sub.add_parser("tag", help="Manage tags on a paper")
+    tag_sub = p_tag.add_subparsers(dest="tag_command", required=True)
+
+    p_tag_add = tag_sub.add_parser("add", help="Add one or more tags to a paper")
+    p_tag_add.add_argument("paper_id", help="Paper ID")
+    p_tag_add.add_argument("tags", nargs="+", help="Tags to add")
+    p_tag_add.set_defaults(func=cmd_tag_add)
+
+    p_tag_remove = tag_sub.add_parser("remove", help="Remove one or more tags from a paper")
+    p_tag_remove.add_argument("paper_id", help="Paper ID")
+    p_tag_remove.add_argument("tags", nargs="+", help="Tags to remove")
+    p_tag_remove.set_defaults(func=cmd_tag_remove)
+
+    p_tag_list = tag_sub.add_parser("list", help="List tags on a paper")
+    p_tag_list.add_argument("paper_id", help="Paper ID")
+    p_tag_list.set_defaults(func=cmd_tag_list)
 
     # project
     p_proj = sub.add_parser("project", help="Manage projects")

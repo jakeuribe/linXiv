@@ -349,6 +349,35 @@ def get_tags() -> list[str]:
     return [row["tag"] for row in rows]
 
 
+def add_paper_tags(paper_id: str, tags: list[str]) -> list[str]:
+    """Add tags to a paper, deduplicating. Returns the updated tag list."""
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT tags FROM latest_papers WHERE paper_id = ?", (paper_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(paper_id)
+        current: list[str] = row["tags"] or []
+        merged = list(dict.fromkeys(current + tags))
+        conn.execute("UPDATE papers SET tags = ? WHERE paper_id = ?", (merged, paper_id))
+    return merged
+
+
+def remove_paper_tags(paper_id: str, tags: list[str]) -> list[str]:
+    """Remove tags from a paper. Returns the updated tag list."""
+    remove = set(tags)
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT tags FROM latest_papers WHERE paper_id = ?", (paper_id,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(paper_id)
+        current: list[str] = row["tags"] or []
+        updated = [t for t in current if t not in remove]
+        conn.execute("UPDATE papers SET tags = ? WHERE paper_id = ?", (updated, paper_id))
+    return updated
+
+
 def set_full_text(paper_id: str, version: int, full_text: str) -> None:
     """Store extracted TeX full text and update the FTS index."""
     with _connect() as conn:
