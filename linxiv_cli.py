@@ -15,6 +15,7 @@ from typing import Any
 
 from sources.arxiv_source import ArxivSource
 from sources.base import PaperMetadata, PaperSource
+from sources.crossref_source import CrossRefSource
 from sources.openalex_source import OpenAlexSource
 import storage.db as db
 from storage.notes import ensure_notes_db
@@ -47,6 +48,7 @@ def _render_paper(meta: PaperMetadata) -> str | None:
 _SOURCES: dict[str, type[PaperSource]] = {
     "arxiv":    ArxivSource,
     "openalex": OpenAlexSource,
+    "crossref": CrossRefSource,
 }
 
 def _source_for(name: str) -> PaperSource:
