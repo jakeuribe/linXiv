@@ -11,7 +11,7 @@ import re
 
 import httpx
 
-from sources.base import PaperMetadata
+from sources.base import PaperMetadata, PaperSource
 
 CROSSREF_BASE = "https://api.crossref.org/works"
 
@@ -104,7 +104,7 @@ def search_by_title(title: str, limit: int = 5) -> list[PaperMetadata]:
         return []
 
 
-class CrossRefSource:
+class CrossRefSource(PaperSource):
     """Paper source backed by the CrossRef REST API."""
 
     source_name: str = "crossref"
