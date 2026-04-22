@@ -4,11 +4,9 @@ import datetime
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
-    QFileDialog,
     QHeaderView,
     QHBoxLayout,
     QLabel,
-    QMenu,
     QPushButton,
     QSplitter,
     QTableWidget,
@@ -17,19 +15,10 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ._export_handler import _ExportHandler
 from .view import GraphView
-from formats.bibtex import BibTeXFormat
-from formats.csv_fmt import CSVFormat
-from formats.json_fmt import JSONFormat
-from formats.markdown import MarkdownFormat, ObsidianFormat
 from gui.theme import FONT_SECONDARY, FONT_TERTIARY, SPACE_XS, SPACE_SM
 from storage.db import get_categories, get_graph_data, get_tags, list_papers
-
-_bibtex_fmt   = BibTeXFormat()
-_csv_fmt      = CSVFormat()
-_markdown_fmt = MarkdownFormat()
-_obsidian_fmt = ObsidianFormat()
-_json_fmt     = JSONFormat()
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 # TODO: Break down into smaller chunks
@@ -176,6 +165,7 @@ class GraphPage(QWidget):
 
         self._build_btn_bar(layout)
         self._build_split(layout)
+        self._export_handler = _ExportHandler(self._graph_view, self)
         self._load_all()
         QTimer.singleShot(100, self._toggle_paper_list)
 
@@ -349,62 +339,4 @@ class GraphPage(QWidget):
         self._export_btn.setEnabled(count > 0)
 
     def _show_export_menu(self) -> None:
-        menu = QMenu(self)
-        menu.addAction("Export as JSON", self._export_json)
-        menu.addAction("Export as CSV", self._export_csv)
-        menu.addAction("Export as BibTeX", self._export_bibtex)
-        menu.addSeparator()
-        menu.addAction("Export as Markdown", self._export_markdown)
-        menu.addAction("Export as Obsidian", self._export_obsidian)
-        menu.exec(self._export_btn.mapToGlobal(self._export_btn.rect().bottomLeft()))
-
-    def _export_json(self) -> None:
-        self._graph_view.get_selected_paper_data(self._save_json)
-
-    def _save_json(self, data: dict) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "Export JSON", "selected_papers.json", "JSON (*.json)")
-        if not path:
-            return
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(_json_fmt.export_papers(data.get("papers", [])))
-
-    def _export_csv(self) -> None:
-        self._graph_view.get_selected_paper_data(self._save_csv)
-
-    def _save_csv(self, data: dict) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "Export CSV", "selected_papers.csv", "CSV (*.csv)")
-        if not path:
-            return
-        with open(path, "w", encoding="utf-8", newline="") as f:
-            f.write(_csv_fmt.export_papers(data.get("papers", [])))
-
-    def _export_bibtex(self) -> None:
-        self._graph_view.get_selected_paper_data(self._save_bibtex)
-
-    def _save_bibtex(self, data: dict) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "Export BibTeX", "selected_papers.bib", "BibTeX (*.bib)")
-        if not path:
-            return
-        content = _bibtex_fmt.export_papers(data.get("papers", []))
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(content)
-
-    def _export_markdown(self) -> None:
-        self._graph_view.get_selected_paper_data(self._save_markdown)
-
-    def _save_markdown(self, data: dict) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "Export Markdown", "selected_papers.md", "Markdown (*.md)")
-        if not path:
-            return
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(_markdown_fmt.export_papers(data.get("papers", [])))
-
-    def _export_obsidian(self) -> None:
-        self._graph_view.get_selected_paper_data(self._save_obsidian)
-
-    def _save_obsidian(self, data: dict) -> None:
-        path, _ = QFileDialog.getSaveFileName(self, "Export Obsidian", "selected_papers.md", "Markdown (*.md)")
-        if not path:
-            return
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(_obsidian_fmt.export_papers(data.get("papers", [])))
+        self._export_handler.show_menu(self._export_btn)
