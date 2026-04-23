@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import csv
 import datetime
-import io
-import json
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -21,9 +18,18 @@ from PyQt6.QtWidgets import (
 )
 
 from .view import GraphView
+from formats.bibtex import BibTeXFormat
+from formats.csv_fmt import CSVFormat
+from formats.json_fmt import JSONFormat
+from formats.markdown import MarkdownFormat, ObsidianFormat
 from gui.theme import FONT_SECONDARY, FONT_TERTIARY, SPACE_XS, SPACE_SM
 from storage.db import get_categories, get_graph_data, get_tags, list_papers
 
+_bibtex_fmt   = BibTeXFormat()
+_csv_fmt      = CSVFormat()
+_markdown_fmt = MarkdownFormat()
+_obsidian_fmt = ObsidianFormat()
+_json_fmt     = JSONFormat()
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 # TODO: Break down into smaller chunks
@@ -346,6 +352,8 @@ class GraphPage(QWidget):
         menu = QMenu(self)
         menu.addAction("Export as JSON", self._export_json)
         menu.addAction("Export as CSV", self._export_csv)
+        menu.addAction("Export as BibTeX", self._export_bibtex)
+        menu.addSeparator()
         menu.addAction("Export as Markdown", self._export_markdown)
         menu.addAction("Export as Obsidian", self._export_obsidian)
         menu.exec(self._export_btn.mapToGlobal(self._export_btn.rect().bottomLeft()))
@@ -358,7 +366,7 @@ class GraphPage(QWidget):
         if not path:
             return
         with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.write(_json_fmt.export_papers(data.get("papers", [])))
 
     def _export_csv(self) -> None:
         self._graph_view.get_selected_paper_data(self._save_csv)
@@ -367,22 +375,19 @@ class GraphPage(QWidget):
         path, _ = QFileDialog.getSaveFileName(self, "Export CSV", "selected_papers.csv", "CSV (*.csv)")
         if not path:
             return
-        papers = data.get("papers", [])
-        buf = io.StringIO()
-        writer = csv.writer(buf)
-        writer.writerow(["paper_id", "title", "authors", "category", "tags", "published", "has_pdf"])
-        for p in papers:
-            writer.writerow([
-                p.get("paper_id", ""),
-                p.get("title", ""),
-                "; ".join(p.get("authors", [])),
-                p.get("category", ""),
-                ", ".join(p.get("tags", [])),
-                p.get("published", ""),
-                "Y" if p.get("has_pdf") else "N",
-            ])
         with open(path, "w", encoding="utf-8", newline="") as f:
-            f.write(buf.getvalue())
+            f.write(_csv_fmt.export_papers(data.get("papers", [])))
+
+    def _export_bibtex(self) -> None:
+        self._graph_view.get_selected_paper_data(self._save_bibtex)
+
+    def _save_bibtex(self, data: dict) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, "Export BibTeX", "selected_papers.bib", "BibTeX (*.bib)")
+        if not path:
+            return
+        content = _bibtex_fmt.export_papers(data.get("papers", []))
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
 
     def _export_markdown(self) -> None:
         self._graph_view.get_selected_paper_data(self._save_markdown)
@@ -391,25 +396,8 @@ class GraphPage(QWidget):
         path, _ = QFileDialog.getSaveFileName(self, "Export Markdown", "selected_papers.md", "Markdown (*.md)")
         if not path:
             return
-        papers = data.get("papers", [])
-        lines = ["# Selected Papers\n"]
-        for p in papers:
-            pid = p.get("paper_id", "")
-            title = p.get("title", pid)
-            authors = ", ".join(p.get("authors", []))
-            url = f"https://arxiv.org/abs/{pid}"
-            lines.append(f"- **[{title}]({url})**")
-            if authors:
-                lines.append(f"  - Authors: {authors}")
-            cat = p.get("category", "")
-            if cat:
-                lines.append(f"  - Category: {cat}")
-            tags = p.get("tags", [])
-            if tags:
-                lines.append(f"  - Tags: {', '.join(tags)}")
-            lines.append("")
         with open(path, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
+            f.write(_markdown_fmt.export_papers(data.get("papers", [])))
 
     def _export_obsidian(self) -> None:
         self._graph_view.get_selected_paper_data(self._save_obsidian)
@@ -418,37 +406,5 @@ class GraphPage(QWidget):
         path, _ = QFileDialog.getSaveFileName(self, "Export Obsidian", "selected_papers.md", "Markdown (*.md)")
         if not path:
             return
-        papers = data.get("papers", [])
-        all_tags: list[str] = []
-        for p in papers:
-            all_tags.extend(p.get("tags", []))
-        unique_tags = sorted(set(all_tags))
-
-        lines = ["---"]
-        lines.append(f"papers: {len(papers)}")
-        if unique_tags:
-            lines.append("tags:")
-            for t in unique_tags:
-                lines.append(f"  - {t}")
-        lines.append("---")
-        lines.append("")
-        lines.append("# Selected Papers")
-        lines.append("")
-        for p in papers:
-            pid = p.get("paper_id", "")
-            title = p.get("title", pid)
-            authors = ", ".join(p.get("authors", []))
-            url = f"https://arxiv.org/abs/{pid}"
-            lines.append(f"## [{title}]({url})")
-            lines.append("")
-            if authors:
-                lines.append(f"**Authors:** {authors}")
-            cat = p.get("category", "")
-            if cat:
-                lines.append(f"**Category:** {cat}")
-            tags = p.get("tags", [])
-            if tags:
-                lines.append(f"**Tags:** {', '.join(tags)}")
-            lines.append("")
         with open(path, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines))
+            f.write(_obsidian_fmt.export_papers(data.get("papers", [])))

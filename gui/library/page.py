@@ -11,15 +11,27 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QPushButton,
     QScrollArea,
     QSizePolicy,
     QStackedWidget,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
-from storage.db import list_papers, set_has_pdf, set_pdf_path
+from formats.bibtex import BibTeXFormat
+from formats.csv_fmt import CSVFormat
+from formats.json_fmt import JSONFormat
+from formats.markdown import MarkdownFormat, ObsidianFormat
+from storage.db import list_papers, save_papers_metadata, set_has_pdf, set_pdf_path
+
+_bibtex_fmt   = BibTeXFormat()
+_csv_fmt      = CSVFormat()
+_json_fmt     = JSONFormat()
+_markdown_fmt = MarkdownFormat()
+_obsidian_fmt = ObsidianFormat()
 from gui.theme import BG as _BG, PANEL as _PANEL, BORDER as _BORDER
 from gui.theme import ACCENT as _ACCENT, TEXT as _TEXT, MUTED as _MUTED
 from gui.theme import (
@@ -679,6 +691,14 @@ class LibraryPage(QWidget):
         refresh_btn.setStyleSheet(_BTN)
         refresh_btn.clicked.connect(self.refresh)
         hdr.addWidget(refresh_btn)
+
+        self._import_btn = QPushButton("Import")
+        self._import_btn.setFixedHeight(BTN_H_MD)
+        self._import_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._import_btn.setStyleSheet(_BTN)
+        self._import_btn.clicked.connect(self._show_import_menu)
+        hdr.addWidget(self._import_btn)
+
         inner.addLayout(hdr)
         inner.addSpacing(SPACE_LG)
 
@@ -879,6 +899,152 @@ class LibraryPage(QWidget):
         for card in self._cards:
             if card.paper_id() in self._selected:
                 card.start_download_if_needed()
+
+    # ── Import ────────────────────────────────────────────────────────────────
+
+    def _show_import_menu(self) -> None:
+        menu = QMenu(self)
+        menu.addAction("BibTeX file…",           self._import_bibtex_file)
+        menu.addAction("Paste BibTeX citation…", self._import_bibtex_paste)
+        menu.addAction("JSON file…",             self._import_json_file)
+        menu.addAction("CSV file…",              self._import_csv_file)
+        menu.addAction("Markdown file…",         self._import_markdown_file)
+        menu.addAction("Obsidian file…",         self._import_obsidian_file)
+        menu.addSeparator()
+        menu.addAction("PDF…",    self._import_not_implemented)
+        menu.addAction("Folder…", self._import_not_implemented)
+        menu.exec(self._import_btn.mapToGlobal(self._import_btn.rect().bottomLeft()))
+
+    def _import_bibtex_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Import BibTeX", "", "BibTeX (*.bib)")
+        if not path:
+            return
+        try:
+            papers = _bibtex_fmt.import_file(path)
+        except Exception as e:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Import Failed", str(e))
+            return
+        self._finish_import(papers)
+
+    def _import_bibtex_paste(self) -> None:
+        from PyQt6.QtWidgets import QDialog, QDialogButtonBox
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Paste BibTeX")
+        dlg.setStyleSheet(f"background: {_BG}; color: {_TEXT};")
+        dlg.resize(560, 340)
+
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(DIALOG_PAD, DIALOG_PAD, DIALOG_PAD, DIALOG_PAD)
+        lay.setSpacing(SPACE_MD)
+
+        lbl = QLabel("Paste one or more BibTeX entries below:")
+        lbl.setStyleSheet(f"font-size: {FONT_BODY}px;")
+        lay.addWidget(lbl)
+
+        editor = QTextEdit()
+        editor.setPlaceholderText("@article{...}")
+        editor.setStyleSheet(f"""
+            QTextEdit {{
+                background: {_PANEL}; border: 1px solid {_BORDER};
+                border-radius: {RADIUS_MD}px; color: {_TEXT};
+                font-family: monospace; font-size: {FONT_SECONDARY}px; padding: 8px;
+            }}
+        """)
+        lay.addWidget(editor, stretch=1)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        lay.addWidget(btns)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        text = editor.toPlainText().strip()
+        if not text:
+            return
+        try:
+            papers = _bibtex_fmt.import_string(text)
+        except Exception as e:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Import Failed", str(e))
+            return
+        self._finish_import(papers)
+
+    def _import_json_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Import JSON", "", "JSON (*.json)")
+        if not path:
+            return
+        try:
+            papers = _json_fmt.import_file(path)
+        except Exception as e:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Import Failed", str(e))
+            return
+        self._finish_import(papers)
+
+    def _import_csv_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Import CSV", "", "CSV (*.csv)")
+        if not path:
+            return
+        try:
+            papers = _csv_fmt.import_file(path)
+        except Exception as e:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Import Failed", str(e))
+            return
+        self._finish_import(papers)
+
+    def _import_markdown_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Import Markdown", "", "Markdown (*.md)")
+        if not path:
+            return
+        try:
+            papers = _markdown_fmt.import_file(path)
+        except Exception as e:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Import Failed", str(e))
+            return
+        self._finish_import(papers)
+
+    def _import_obsidian_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Import Obsidian", "", "Markdown (*.md)")
+        if not path:
+            return
+        try:
+            papers = _obsidian_fmt.import_file(path)
+        except Exception as e:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.critical(self, "Import Failed", str(e))
+            return
+        self._finish_import(papers)
+
+    def _import_not_implemented(self) -> None:
+        from PyQt6.QtGui import QAction
+        from PyQt6.QtWidgets import QMessageBox
+        sender = self.sender()
+        label = sender.text() if isinstance(sender, QAction) else "This"
+        QMessageBox.warning(self, "Not Implemented", f"{label} is not yet implemented.")
+
+    def _finish_import(self, papers) -> None:
+        from PyQt6.QtWidgets import QMessageBox
+        from storage.db import get_paper
+        added = skipped = 0
+        for meta in papers:
+            existing = get_paper(meta.paper_id)
+            if existing is not None:
+                skipped += 1
+            else:
+                save_papers_metadata([meta])
+                added += 1
+        self.refresh()
+        QMessageBox.information(
+            self, "Import Complete",
+            f"Added {added} paper(s).  Skipped {skipped} already in library."
+        )
 
     def _on_add_to_project(self) -> None:
         if not self._selected:

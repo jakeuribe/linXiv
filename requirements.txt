@@ -6,6 +6,7 @@ google-genai
 httpx
 markdown
 openai
+pybtex
 pydantic
 python-dotenv
 uvicorn[standard]

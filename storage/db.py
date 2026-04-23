@@ -292,9 +292,12 @@ def get_graph_data() -> tuple[list[dict], list[dict]]:
                 "tags":      row["tags"] if row["tags"] is not None else [],
                 "has_pdf":   bool(row["has_pdf"]),
                 "published": row["published"].isoformat() if row["published"] else None,
+                "url":       row["url"],
+                "doi":       row["doi"],
+                "summary":   row["summary"],
             }
             for row in conn.execute(
-                "SELECT paper_id, title, category, tags, has_pdf, published FROM latest_papers"
+                "SELECT paper_id, title, category, tags, has_pdf, published, url, doi, summary FROM latest_papers"
             )
         ]
         author_rows = conn.execute("""

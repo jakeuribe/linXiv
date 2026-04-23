@@ -1,4 +1,5 @@
 # linXiv
+#todo: create table of contents
 
 A Python application for discovering, managing, and visualizing academic papers from arXiv. Combines a local SQLite database, OPTIONAL AI-powered tagging, Obsidian vault integration, and an interactive D3.js network graph, wrapped in a PyQt6 GUI.
 
