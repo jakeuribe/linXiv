@@ -26,6 +26,9 @@ from PyQt6.QtWidgets import (
 )
 
 from storage.projects import color_to_hex
+
+from gui.library.page import LibraryPage
+from gui.shell import AppShell
 from gui.theme import BG as _BG, PANEL as _PANEL, BORDER as _BORDER
 from gui.theme import ACCENT as _ACCENT, TEXT as _TEXT, MUTED as _MUTED
 from gui.theme import (
@@ -986,8 +989,8 @@ class ProjectsPage(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setStyleSheet(f"background: {_BG}; color: {_TEXT};")
-        self._app_shell: object | None = None
-        self._library_page: object | None = None
+        self._app_shell: AppShell | None = None
+        self._library_page: LibraryPage | None = None
         self._project_detail_prior_shell_tab = False
         self._return_to_library_paper_id: str | None = None
 
@@ -1004,10 +1007,10 @@ class ProjectsPage(QWidget):
         outer.addWidget(self._inner)
         self._refresh()
 
-    def attach_app_shell(self, shell: object) -> None:
+    def attach_app_shell(self, shell: AppShell) -> None:
         self._app_shell = shell
 
-    def attach_library_page(self, library_page: object) -> None:
+    def attach_library_page(self, library_page: LibraryPage) -> None:
         self._library_page = library_page
 
     def show_project_list(self) -> None:

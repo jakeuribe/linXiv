@@ -26,6 +26,7 @@ from formats.csv_fmt import CSVFormat
 from formats.json_fmt import JSONFormat
 from formats.markdown import MarkdownFormat, ObsidianFormat
 from storage.db import list_papers, save_papers_metadata, set_has_pdf, set_pdf_path
+from gui.shell import AppShell
 
 _bibtex_fmt   = BibTeXFormat()
 _csv_fmt      = CSVFormat()
@@ -663,7 +664,7 @@ class LibraryPage(QWidget):
 
         # ── Page 1: detail ────────────────────────────────────────────────────
         self._detail_view = PaperDetailView()
-        self._app_shell: object | None = None
+        self._app_shell: AppShell | None = None
         self._paper_detail_back_goes_to_prior_shell_tab = False
         self._paper_id_for_project_return: str | None = None
         self._detail_view.back_requested.connect(self._on_back_requested)
@@ -852,7 +853,7 @@ class LibraryPage(QWidget):
 
     # ── Selection ─────────────────────────────────────────────────────────────
 
-    def attach_app_shell(self, shell: object) -> None:
+    def attach_app_shell(self, shell: AppShell) -> None:
         """Shell reference for cross-tab Back after open_paper() from another page."""
         self._app_shell = shell
 
@@ -867,17 +868,24 @@ class LibraryPage(QWidget):
         self.navigate_to_project.emit(project)
 
     def show_paper_detail_by_id(self, paper_id: str) -> None:
-        """Re-open paper detail (e.g. after Back from Projects). Does not set cross-tab back."""
+        """Re-open paper detail (e.g. after Back from Projects).
+
+        Does not change cross-tab Back: if the user opened this paper via ``open_paper``
+        from another tab (e.g. Graph), that return path stays active.
+        """
         from storage.db import get_paper
         row = get_paper(paper_id)
         if row is None:
             return
-        self._paper_detail_back_goes_to_prior_shell_tab = False
         self._open_detail(row)
 
     def show_library_list(self) -> None:
-        """Show the paper list (not detail). Used when switching back to the Library tab."""
-        self._paper_detail_back_goes_to_prior_shell_tab = False
+        """Show the paper list (not detail). Used when switching back to the Library tab.
+
+        Does not clear ``_paper_detail_back_goes_to_prior_shell_tab``: tab switches run
+        before programmatic detail restore (e.g. Back from Projects), and clearing here
+        would drop a Graph→Library ``open_paper`` handoff.
+        """
         self._stack.setCurrentIndex(0)
 
     def open_paper(self, paper_id: str) -> None:
