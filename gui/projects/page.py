@@ -431,7 +431,7 @@ class NotesDialog(QDialog):
         add_btn.clicked.connect(self._on_add)
         header_row.addWidget(add_btn, alignment=Qt.AlignmentFlag.AlignBottom)
         lay.addLayout(header_row)
-
+        # TODO: Test by adding enough notes to make Scrollable
         # Scrollable notes list
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -563,6 +563,11 @@ class NotesDialog(QDialog):
                 font-size: {FONT_TERTIARY}px; padding: 0 {SPACE_XS}px;
             }}
         """
+        edit_btn = QPushButton("Edit")
+        edit_btn.setStyleSheet(_ghost + f"QPushButton {{ color: {_MUTED}; }} QPushButton:hover {{ color: {_TEXT}; }}")
+        edit_btn.clicked.connect(lambda _, n=note: self._edit_note(n))
+        top_row.addWidget(edit_btn)
+
         del_btn = QPushButton("Delete")
         del_btn.setStyleSheet(_ghost + "QPushButton { color: #e05c5c; } QPushButton:hover { color: #ff7070; }")
         del_btn.clicked.connect(lambda _, n=note: self._delete_note(n))
