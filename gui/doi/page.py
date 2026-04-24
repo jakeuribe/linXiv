@@ -214,7 +214,8 @@ class DoiPage(QWidget):
             "semanticscholar": "Semantic Scholar",
             "crossref":      "CrossRef",
         }
-        self._source_lbl.setText(f"via {source_labels.get(meta.source, meta.source)}: {meta.paper_id}")
+        src = meta.source or ""
+        self._source_lbl.setText(f"via {source_labels.get(src, src)}: {meta.paper_id}")
 
         already = get_paper(meta.paper_id) is not None
         if already:

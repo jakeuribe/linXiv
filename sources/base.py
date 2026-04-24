@@ -23,7 +23,9 @@ class PaperMetadata(BaseModel):
     comment: str | None = None
     url: str | None = None
     tags: list[str] | None = None
-    source: str = "arxiv"
+    # Identifies which backend produced this record (e.g. 'arxiv', 'openalex').
+    # Must equal the source_name of the PaperSource that fetched it.
+    source: str | None = None
 
 
 class PaperSource(Protocol):
@@ -31,7 +33,11 @@ class PaperSource(Protocol):
 
     @property
     def source_name(self) -> str:
-        """Short identifier for this source (e.g. 'arxiv', 'openalex')."""
+        """Short identifier for this backend (e.g. 'arxiv', 'openalex').
+
+        Written into PaperMetadata.source on every record this backend produces,
+        so papers can be traced back to the source that fetched them.
+        """
         ...
 
     def search(self, query: str, max_results: int = 10) -> list[PaperMetadata]:
