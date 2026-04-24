@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections import OrderedDict
 import traceback
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import (
     QDialog,
@@ -26,6 +26,9 @@ from PyQt6.QtWidgets import (
 )
 
 from storage.projects import color_to_hex
+
+from gui.library.page import LibraryPage
+from gui.shell import AppShell
 from gui.theme import BG as _BG, PANEL as _PANEL, BORDER as _BORDER
 from gui.theme import ACCENT as _ACCENT, TEXT as _TEXT, MUTED as _MUTED
 from gui.theme import (
@@ -992,6 +995,10 @@ class ProjectsPage(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setStyleSheet(f"background: {_BG}; color: {_TEXT};")
+        self._app_shell: AppShell | None = None
+        self._library_page: LibraryPage | None = None
+        self._project_detail_prior_shell_tab = False
+        self._return_to_library_paper_id: str | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -1005,6 +1012,18 @@ class ProjectsPage(QWidget):
 
         outer.addWidget(self._inner)
         self._refresh()
+
+    def attach_app_shell(self, shell: AppShell) -> None:
+        self._app_shell = shell
+
+    def attach_library_page(self, library_page: LibraryPage) -> None:
+        self._library_page = library_page
+
+    def show_project_list(self) -> None:
+        """Show the project list when returning to the Projects tab from elsewhere."""
+        self._project_detail_prior_shell_tab = False
+        self._return_to_library_paper_id = None
+        self._inner.setCurrentIndex(0)
 
     # ── List page ─────────────────────────────────────────────────────────────
 
@@ -1088,17 +1107,41 @@ class ProjectsPage(QWidget):
 
     # ── Navigation ────────────────────────────────────────────────────────────
 
-    def open_project(self, project) -> None:
-        """Navigate directly to a project's detail view (callable from other pages)."""
+    def open_project(
+        self,
+        project,
+        *,
+        opened_from_other_shell_tab: bool = False,
+        return_to_library_paper_id: str | None = None,
+    ) -> None:
+        """Navigate directly to a project's detail view (callable from other pages).
+
+        Set opened_from_other_shell_tab when opening from Library (etc.) so Back
+        returns to the previous main tab. If return_to_library_paper_id is set, Back
+        also re-opens that paper's detail in Library.
+        """
+        self._project_detail_prior_shell_tab = opened_from_other_shell_tab
+        self._return_to_library_paper_id = (
+            return_to_library_paper_id if opened_from_other_shell_tab else None
+        )
         self._detail_view.load(project)
         self._inner.setCurrentIndex(1)
 
     def _open_project(self, project) -> None:
-        self.open_project(project)
+        self.open_project(project, opened_from_other_shell_tab=False)
 
     def _on_back(self) -> None:
+        prior_shell = self._project_detail_prior_shell_tab
+        paper_id = self._return_to_library_paper_id
+        self._project_detail_prior_shell_tab = False
+        self._return_to_library_paper_id = None
         self._inner.setCurrentIndex(0)
         self._refresh()
+        if prior_shell and self._app_shell is not None:
+            self._app_shell.go_back()
+            if paper_id and self._library_page is not None:
+                lib = self._library_page
+                QTimer.singleShot(0, lambda pid=paper_id, lp=lib: lp.show_paper_detail_by_id(pid))
 
     def _on_add(self) -> None:
         dlg = NewProjectDialog(self)
