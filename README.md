@@ -1,4 +1,5 @@
 # linXiv
+#todo: create table of contents
 
 A Python application for discovering, managing, and visualizing academic papers from arXiv. Combines a local SQLite database, OPTIONAL AI-powered tagging, Obsidian vault integration, and an interactive D3.js network graph, wrapped in a PyQt6 GUI.
 
@@ -81,12 +82,12 @@ linXiv/
 ### Install dependencies
 
 ```bash
-uv sync   # recommended (uses uv)
+uv sync --extra gui   # recommended (uses uv); includes PyQt6 for the desktop app
 # or
 pip install -r requirements.txt
 ```
 
-(Includes PyQt6 for the desktop app and FastAPI/uvicorn for the HTTP API.)
+> **Note:** `uv sync` without `--extra gui` installs only the base dependencies (CLI + API) and will raise `ModuleNotFoundError: No module named 'PyQt6'` if you try to run the GUI. Add `--extra mcp` as well if you need the MCP server.
 
 ### Environment variables
 

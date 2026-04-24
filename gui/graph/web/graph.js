@@ -737,6 +737,9 @@ function getSelectedPaperData() {
             has_pdf:   d.has_pdf || false,
             published: d.published || '',
             authors:   authors,
+            url:       d.url || null,
+            doi:       d.doi || null,
+            summary:   d.summary || '',
         });
     });
     cy.edges().forEach(e => {

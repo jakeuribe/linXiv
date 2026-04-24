@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+import traceback
 
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import (
     QDialog,
     QFrame,
@@ -17,6 +19,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
     QSplitter,
     QStackedWidget,
+    QTextBrowser,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -286,10 +289,34 @@ class _ClickableCard(QFrame):
         super().mousePressEvent(event)
 
 
-# ── Note editor dialog (add + edit, with live Markdown/KaTeX preview) ─────────
+# ── Notes preview (Projects only) ─────────────────────────────────────────────
+# Project notes used to embed MarkdownView (QWebEngineView). QWebEngine teardown while
+# other WebEngine widgets (Graph, Search) stay alive reliably crashed on Linux and
+# Windows after closing the notes dialog. Preview here is QTextBrowser + Qt Markdown
+# (no KaTeX); storage is still plain Markdown text.
+
+def _note_card_markdown(title: str, body: str) -> str:
+    t = (title or "").strip() or "Untitled"
+    return f"### {t}\n\n{body or ''}"
+
+
+def _make_notes_qtext_preview(parent: QWidget | None) -> QTextBrowser:
+    br = QTextBrowser(parent)
+    br.setFrameShape(QFrame.Shape.NoFrame)
+    br.setOpenExternalLinks(True)
+    br.setStyleSheet(f"""
+        QTextBrowser {{
+            background: {_BG}; border: none; color: {_TEXT};
+            font-size: {FONT_BODY}px; padding: 0;
+        }}
+    """)
+    return br
+
+
+# ── Note editor dialog (add + edit, with live Markdown preview) ───────────────
 
 class NoteEditorDialog(QDialog):
-    """Split-pane note editor with live Markdown + KaTeX preview.
+    """Split-pane note editor: raw Markdown editor + QTextBrowser preview (no WebEngine).
 
     Add mode:  NoteEditorDialog(paper_id=..., project_id=..., parent=...)
     Edit mode: NoteEditorDialog(note=..., parent=...)
@@ -329,11 +356,11 @@ class NoteEditorDialog(QDialog):
         lay.addWidget(self._note_title)
 
         # Split pane: raw editor | rendered preview
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.setStyleSheet("QSplitter::handle { background: #2e2e50; width: 2px; }")
+        self._splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._splitter.setStyleSheet("QSplitter::handle { background: #2e2e50; width: 2px; }")
 
         self._editor = QPlainTextEdit()
-        self._editor.setPlaceholderText("Markdown + $\\LaTeX$ supported…")
+        self._editor.setPlaceholderText("Markdown supported (preview uses Qt rich text, not KaTeX)…")
         self._editor.setStyleSheet(f"""
             QPlainTextEdit {{
                 background: {_BG}; border: 1px solid {_BORDER}; border-radius: {RADIUS_MD}px;
@@ -344,21 +371,19 @@ class NoteEditorDialog(QDialog):
         """)
         if note:
             self._editor.setPlainText(note.content or "")
-        splitter.addWidget(self._editor)
+        self._splitter.addWidget(self._editor)
 
-        from gui.views import MarkdownView
-        self._preview = MarkdownView()
-        self._preview.set_title(self._note_title.text())
-        self._preview.set_content(self._editor.toPlainText())
-        splitter.addWidget(self._preview)
-        splitter.setSizes([460, 460])
-
-        lay.addWidget(splitter, stretch=1)
-
-        self._note_title.textChanged.connect(lambda t: self._preview.set_title(t))
-        self._editor.textChanged.connect(
-            lambda: self._preview.set_content(self._editor.toPlainText())
+        self._preview = _make_notes_qtext_preview(self)
+        self._preview.setMarkdown(
+            _note_card_markdown(self._note_title.text(), self._editor.toPlainText())
         )
+        self._splitter.addWidget(self._preview)
+        self._splitter.setSizes([460, 460])
+
+        lay.addWidget(self._splitter, stretch=1)
+
+        self._note_title.textChanged.connect(self._refresh_note_preview)
+        self._editor.textChanged.connect(self._refresh_note_preview)
 
         btn_row = QHBoxLayout()
         cancel = QPushButton("Cancel")
@@ -371,6 +396,11 @@ class NoteEditorDialog(QDialog):
         btn_row.addStretch()
         btn_row.addWidget(save_btn)
         lay.addLayout(btn_row)
+
+    def _refresh_note_preview(self, *_args: object) -> None:
+        self._preview.setMarkdown(
+            _note_card_markdown(self._note_title.text(), self._editor.toPlainText())
+        )
 
     def _on_save(self) -> None:
         from storage.notes import Note, ensure_notes_db
@@ -484,17 +514,24 @@ class NotesDialog(QDialog):
             self._empty_lbl.setVisible(True)
 
     def _retire_card(self, card: QWidget) -> None:
-        """Hide card and keep it alive as a dialog child until closeEvent, so Qt can clean up
-        its QWebEngineView GL context while the dialog's surface is still valid."""
+        """Hide card and keep it alive as a dialog child until closeEvent."""
         self._notes_layout.removeWidget(card)
         card.setParent(self)
         card.hide()
         self._retired_cards.append(card)
 
-    def closeEvent(self, event) -> None:
+    def closeEvent(self, event: QCloseEvent) -> None:
+        # Tear down note cards while this dialog still exists (orderly widget cleanup).
+        while self._notes_layout.count() > 1:
+            item = self._notes_layout.takeAt(0)
+            w = item.widget()  # pyright: ignore[reportOptionalMemberAccess]
+            if w is not None:
+                self._retire_card(w)
         for card in self._retired_cards:
             card.deleteLater()
         self._retired_cards.clear()
+        self._cards.clear()
+        self._md_cache.clear()
         super().closeEvent(event)
 
     def _md_cache_put(self, note_id: int, md_view) -> None:
@@ -507,18 +544,17 @@ class NotesDialog(QDialog):
         self._md_cache[note_id] = md_view
 
     def _get_md_view(self, note_id: int):
-        """Return the MarkdownView for note_id, recovering it from the card tree on cache miss."""
+        """Return the QTextBrowser preview for note_id, recovering it from the card on cache miss."""
         if note_id in self._md_cache:
             self._md_cache.move_to_end(note_id)
             return self._md_cache[note_id]
         card = self._cards.get(note_id)
         if card is None:
             return None
-        from gui.views import MarkdownView
-        md_view = card.findChild(MarkdownView)
-        if md_view is not None:
-            self._md_cache_put(note_id, md_view)
-        return md_view
+        pv = card.findChild(QTextBrowser)
+        if pv is not None:
+            self._md_cache_put(note_id, pv)
+        return pv
 
     def _pop_and_recreate(self, note) -> None:
         """Remove and recreate a single card in-place (last resort for a corrupt/missing card)."""
@@ -541,7 +577,7 @@ class NotesDialog(QDialog):
         card = _ClickableCard(lambda n=note: self._edit_note(n))
         card.setStyleSheet(f"""
             QFrame {{ background: {_BG}; border: 1px solid {_BORDER}; border-radius: {RADIUS_MD}px; }}
-            QFrame:hover {{ border-color: {_ACCENT}; }}
+            QFrame:hover {{ border: 2px solid {_ACCENT}; background: #1a1a2e; }}
             QLabel {{ border: none; background: transparent; }}
         """)
         col = QVBoxLayout(card)
@@ -557,36 +593,41 @@ class NotesDialog(QDialog):
 
         top_row.addStretch()
 
-        _ghost = f"""
+        _btn_base = f"""
             QPushButton {{
-                background: transparent; border: none;
-                font-size: {FONT_TERTIARY}px; padding: 0 {SPACE_XS}px;
+                background: transparent; border: 1px solid;
+                border-radius: {RADIUS_SM}px;
+                font-size: {FONT_TERTIARY}px; padding: 2px 8px;
             }}
         """
+        edit_btn = QPushButton("Edit")
+        edit_btn.setStyleSheet(_btn_base + f"QPushButton {{ border-color: {_BORDER}; color: {_MUTED}; }} QPushButton:hover {{ border-color: {_ACCENT}; color: {_ACCENT}; }}")
+        edit_btn.clicked.connect(lambda _, n=note: self._edit_note(n))
+        top_row.addWidget(edit_btn)
+
         del_btn = QPushButton("Delete")
-        del_btn.setStyleSheet(_ghost + "QPushButton { color: #e05c5c; } QPushButton:hover { color: #ff7070; }")
+        del_btn.setStyleSheet(_btn_base + "QPushButton { border-color: #e05c5c; color: #e05c5c; } QPushButton:hover { border-color: #ff7070; color: #ff7070; }")
         del_btn.clicked.connect(lambda _, n=note: self._delete_note(n))
         top_row.addWidget(del_btn)
         col.addLayout(top_row)
 
-        from gui.views import MarkdownView
-        md_view = MarkdownView()
-        md_view.set_title(note.title or "Untitled")
-        md_view.set_content(note.content or "")
+        md_view = _make_notes_qtext_preview(card)
+        md_view.setMarkdown(_note_card_markdown(note.title or "", note.content or ""))
         md_view.setFixedHeight(NOTE_HEIGHT)
         col.addWidget(md_view)
 
         return card, md_view
 
     def _edit_note(self, note) -> None:
-        dlg = NoteEditorDialog(note=note, parent=self)
+        dlg = NoteEditorDialog(note=note, parent=self.window() or self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             note_id = note.id
             if note_id is not None:
-                md_view = self._get_md_view(note_id)
-                if md_view is not None:
-                    md_view.set_title(note.title or "Untitled")
-                    md_view.set_content(note.content or "")
+                pv = self._get_md_view(note_id)
+                if pv is not None:
+                    pv.setMarkdown(
+                        _note_card_markdown(note.title or "", note.content or "")
+                    )
                     return
             self._pop_and_recreate(note)
 
@@ -602,7 +643,9 @@ class NotesDialog(QDialog):
                 self._empty_lbl.setVisible(True)
 
     def _on_add(self) -> None:
-        dlg = NoteEditorDialog(paper_id=self._paper_id, project_id=self._project_id, parent=self)
+        dlg = NoteEditorDialog(
+            paper_id=self._paper_id, project_id=self._project_id, parent=self.window() or self
+        )
         if dlg.exec() == QDialog.DialogCode.Accepted:
             from storage.notes import get_notes, ensure_notes_db
             ensure_notes_db()
@@ -651,6 +694,7 @@ class _PaperRow(QFrame):
             row = get_paper(self._paper_id)
             return row["title"] if row else self._paper_id
         except Exception:
+            print(f"error: {traceback.format_exc()}")
             return self._paper_id
 
     def _note_count(self) -> int:
@@ -658,6 +702,7 @@ class _PaperRow(QFrame):
             from storage.notes import count_paper_notes
             return count_paper_notes(self._paper_id, self._project_id)
         except Exception:
+            print(f"error: {traceback.format_exc()}")
             return 0
 
     def _note_label(self) -> str:
@@ -665,8 +710,15 @@ class _PaperRow(QFrame):
         return f"📝 {n} {'note' if n == 1 else 'notes'}"
 
     def _on_open_notes(self) -> None:
-        dlg = NotesDialog(self._paper_id, self._project_id, self._fetch_title(), self)
+        # Parent must be a top-level window, not this embedded QFrame. With a nested parent,
+        # Qt can mishandle activation after exec() on Linux and Windows (shell looks minimized
+        # or only reachable from the taskbar; the next activation can race WebEngine teardown).
+        host = self.window()
+        dlg = NotesDialog(self._paper_id, self._project_id, self._fetch_title(), host)
         dlg.exec()
+        if host is not None:
+            host.raise_()
+            host.activateWindow()
         self._note_btn.setText(self._note_label())
 
 
