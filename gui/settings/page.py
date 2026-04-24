@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import os
+
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QScrollArea,
     QVBoxLayout,
     QWidget,
@@ -98,17 +101,36 @@ class SettingsPage(QWidget):
         inner.addWidget(title)
         inner.addSpacing(SPACE_XL)
 
-        # ── Placeholder section ───────────────────────────────────────────────
-        inner.addWidget(_section_label("General"))
+        # ── Metadata Sources section ──────────────────────────────────────────
+        inner.addWidget(_section_label("Metadata Sources"))
         inner.addSpacing(SPACE_SM)
 
-        placeholder = QLabel("No settings configured yet.")
-        placeholder.setStyleSheet(
-            f"color: {_MUTED}; font-size: {FONT_BODY}px; "
+        mailto_field = QLineEdit()
+        mailto_field.setPlaceholderText("your@email.com")
+        mailto_field.setText(os.environ.get("CROSSREF_MAILTO", ""))
+        mailto_field.setFixedWidth(240)
+        mailto_field.setStyleSheet(
             f"background: {_PANEL}; border: 1px solid {_BORDER}; "
-            f"border-radius: {RADIUS_LG}px; padding: {CARD_PAD_V}px {CARD_PAD_H}px;"
+            f"border-radius: 6px; color: {_TEXT}; font-size: {FONT_BODY}px; "
+            f"padding: 4px 10px;"
         )
-        inner.addWidget(placeholder)
+
+        def _save_mailto() -> None:
+            from config import ENV_PATH
+            from dotenv import set_key
+            value = mailto_field.text().strip()
+            os.environ["CROSSREF_MAILTO"] = value
+            set_key(str(ENV_PATH), "CROSSREF_MAILTO", value)
+
+        mailto_field.editingFinished.connect(_save_mailto)
+
+        inner.addWidget(_Card([
+            _SettingRow(
+                "CrossRef Email (mailto)",
+                "Your email for CrossRef's polite pool — faster, more reliable metadata responses.",
+                mailto_field,
+            )
+        ]))
 
         inner.addStretch()
         scroll.setWidget(content)
