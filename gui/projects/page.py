@@ -822,7 +822,7 @@ class ProjectDetailView(QWidget):
         self._papers_layout.addStretch()
 
         scroll.setWidget(self._papers_widget)
-        outer.addWidget(scroll)
+        outer.addWidget(scroll, stretch=1)
 
         self._empty_papers_lbl = QLabel("No papers yet — add one to get started.")
         self._empty_papers_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -830,7 +830,6 @@ class ProjectDetailView(QWidget):
             f"font-size: {FONT_BODY}px; color: {_MUTED}; background: transparent;"
         )
         outer.addWidget(self._empty_papers_lbl)
-        outer.addStretch()
 
     def load(self, project) -> None:
         self._project = project
@@ -1046,7 +1045,7 @@ class ProjectsPage(QWidget):
         self._list_layout.addStretch()
 
         scroll.setWidget(self._list_widget)
-        outer.addWidget(scroll)
+        outer.addWidget(scroll, stretch=1)
 
         self._empty_lbl = QLabel("No projects yet — create one to get started.")
         self._empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1054,7 +1053,6 @@ class ProjectsPage(QWidget):
             f"font-size: 14px; color: {_MUTED}; background: transparent;"
         )
         outer.addWidget(self._empty_lbl)
-        outer.addStretch()
 
         return page
 
