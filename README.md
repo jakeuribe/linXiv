@@ -101,7 +101,9 @@ GENAI_API_KEY_TAG_GEN=your_google_gemini_api_key
 **Desktop (PyQt6)**
 
 ```bash
-python main_shell.py  # Full app shell (recommended)
+linxiv-gui            # after uv pip install -e ".[gui]"
+# or without installing:
+python main_shell.py
 ```
 
 **HTTP API (JSON backend for a separate frontend)**
@@ -123,30 +125,37 @@ uv pip install -e .
 Then run from anywhere:
 
 ```bash
+linxiv --version
 linxiv search "attention is all you need" --max 5
+linxiv search "diffusion models" --source openalex --max 10
 linxiv fetch 2204.12985
+linxiv fetch W3123456789 --source openalex
 linxiv list --limit 20 --category cs.LG
-linxiv tag 2204.12985
+linxiv tag add 2204.12985 transformers attention deep-learning
+linxiv tag remove 2204.12985 attention
+linxiv tag list 2204.12985
 linxiv project list
+linxiv project list --status active
 linxiv project create "Diffusion Models" --description "Score-based generative models"
 linxiv project add-paper 1 2006.11239
 linxiv note create 2204.12985 "Key insight: scaled dot-product attention" --title "Reading notes"
+linxiv note create 2204.12985 "Follow-up question" --project-id 1
 ```
 
 All commands output JSON (or a formatted markdown card for `fetch`). Pass `--help` to any subcommand for full options.
 
 **MCP server (Claude integration)**
 
-To expose linXiv as tools that Claude can call directly, add the `mcp` optional dependency and create a thin server:
+To expose linXiv as tools that Claude can call directly, install with the `mcp` extra:
 
 ```bash
-uv pip install -e ".[mcp]"   # installs the mcp package (not included by default)
+uv pip install -e ".[mcp]"
 ```
 
-Then register it with Claude Code — the absolute path and `cwd` are required because `linxiv_mcp.py` uses relative imports:
+Then register it with Claude Code:
 
 ```bash
-claude mcp add linxiv -- uv run /absolute/path/to/linxiv/linxiv_mcp.py
+claude mcp add linxiv -- linxiv-mcp
 ```
 
 Or add it manually to `.claude/settings.json`:
@@ -155,13 +164,16 @@ Or add it manually to `.claude/settings.json`:
 {
   "mcpServers": {
     "linxiv": {
-      "command": "uv",
-      "args": ["run", "linxiv_mcp.py"],
-      "cwd": "/absolute/path/to/linxiv"
+      "command": "linxiv-mcp"
     }
   }
 }
 ```
+
+> **Note:** if you haven't done an editable install, fall back to `uv run` with an explicit `cwd`:
+> ```json
+> { "command": "uv", "args": ["run", "linxiv_mcp.py"], "cwd": "/absolute/path/to/linxiv" }
+> ```
 
 Once registered, Claude can call these tools directly in conversation: `search_papers`, `fetch_paper`, `list_papers`, `get_paper`, `search_full_text`, `tag_paper`, `list_projects`, `create_project`, `add_paper_to_project`, `remove_paper_from_project`, `create_note`, `get_notes_for_paper`, `get_notes_for_project`.
 
