@@ -431,6 +431,7 @@ class NotesDialog(QDialog):
         add_btn.clicked.connect(self._on_add)
         header_row.addWidget(add_btn, alignment=Qt.AlignmentFlag.AlignBottom)
         lay.addLayout(header_row)
+
         # Scrollable notes list
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
