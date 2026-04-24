@@ -14,12 +14,12 @@ import hashlib
 import re
 from pathlib import Path
 from typing import Optional
-from urllib.parse import quote_plus
 
 from pypdf import PdfReader
 
 from .base import PaperMetadata
-from .doi_resolve import _fetch_url, resolve_doi
+from .crossref_source import search_by_title
+from .doi_resolve import resolve_doi
 
 _DOI_RE = re.compile(r"\b10\.\d{4,}/\S+")
 
@@ -48,66 +48,18 @@ def _title_similarity(a: str, b: str) -> float:
 
 
 def _try_crossref_title(title: str) -> PaperMetadata | None:
-    """Search CrossRef by title; rejects results with low similarity to the query."""
-    try:
-        data = _fetch_url(
-            f"https://api.crossref.org/works?query.title={quote_plus(title)}&rows=1"
-        )
-    except Exception:
-        return None
-
-    items = data.get("message", {}).get("items", [])
-    if not items:
-        return None
-
-    item = items[0]
-    item_title = (item.get("title") or [""])[0]
-    if not item_title or _title_similarity(title, item_title) < 0.5:
-        return None
-
-    doi = item.get("DOI")
-    if doi:
-        try:
-            return resolve_doi(doi)
-        except Exception:
-            pass
-
-    authors: list[str] = []
-    for a in item.get("author", []):
-        given = a.get("given", "")
-        family = a.get("family", "")
-        name = f"{given} {family}".strip()
-        if name:
-            authors.append(name)
-
-    pub_date = datetime.date.today()
-    dp = (item.get("published") or {}).get("date-parts", [[]])
-    if dp and dp[0]:
-        parts = dp[0]
-        try:
-            pub_date = datetime.date(
-                parts[0],
-                parts[1] if len(parts) > 1 else 1,
-                parts[2] if len(parts) > 2 else 1,
-            )
-        except (ValueError, TypeError):
-            pass
-
-    abstract = re.sub(r"<[^>]+>", "", item.get("abstract") or "").strip()
-    journal = (item.get("container-title") or [""])[0]
-
-    return PaperMetadata(
-        paper_id=doi or f"pdf:{hashlib.sha256(item_title.encode()).hexdigest()[:16]}",
-        version=1,
-        title=item_title,
-        authors=authors,
-        published=pub_date,
-        summary=abstract,
-        category=journal or None,
-        doi=doi,
-        url=item.get("URL") or (f"https://doi.org/{doi}" if doi else None),
-        source="crossref",
-    )
+    """Search CrossRef by title via CrossRefSource; rejects results with low similarity."""
+    candidates = search_by_title(title, limit=3)
+    for candidate in candidates:
+        if candidate.title and _title_similarity(title, candidate.title) >= 0.5:
+            # Upgrade to full resolution if we have a DOI (gets arXiv record when available)
+            if candidate.doi:
+                try:
+                    return resolve_doi(candidate.doi)
+                except Exception:
+                    pass
+            return candidate
+    return None
 
 
 def _pdf_paper_id(pdf_path: str) -> str:

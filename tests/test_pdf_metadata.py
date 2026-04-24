@@ -194,7 +194,7 @@ class TestResolvePdfMetadata:
         )
         with self._patch_extract(doi="10.9999/bad", title="Title Match"):
             with patch("sources.pdf_metadata.resolve_doi", side_effect=ValueError("not found")):
-                with patch("sources.pdf_metadata._try_crossref_title", return_value=crossref_result):
+                with patch("sources.pdf_metadata.search_by_title", return_value=[crossref_result]):
                     result = resolve_pdf_metadata("/fake/path.pdf")
         assert result.source == "crossref"
 
@@ -204,7 +204,7 @@ class TestResolvePdfMetadata:
             published=datetime.date(2021, 6, 1), summary="", source="crossref",
         )
         with self._patch_extract(title="My Paper"):
-            with patch("sources.pdf_metadata._try_crossref_title", return_value=crossref_result):
+            with patch("sources.pdf_metadata.search_by_title", return_value=[crossref_result]):
                 result = resolve_pdf_metadata("/fake/path.pdf")
         assert result.title == "My Paper"
 
