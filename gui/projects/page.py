@@ -1,4 +1,4 @@
-from __future__ import annotations
+    from __future__ import annotations
 
 from collections import OrderedDict
 
@@ -431,7 +431,6 @@ class NotesDialog(QDialog):
         add_btn.clicked.connect(self._on_add)
         header_row.addWidget(add_btn, alignment=Qt.AlignmentFlag.AlignBottom)
         lay.addLayout(header_row)
-        # TODO: Test by adding enough notes to make Scrollable
         # Scrollable notes list
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
