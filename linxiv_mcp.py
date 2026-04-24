@@ -262,5 +262,9 @@ def get_notes_for_project(project_id: int) -> list[dict]:
     ]
 
 
-if __name__ == "__main__":
+def main() -> None:
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()
