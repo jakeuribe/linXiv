@@ -3,8 +3,10 @@ from __future__ import annotations
 from collections import OrderedDict
 import traceback
 
+
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QCloseEvent
+from PyQt6.QtGui import QCloseEvent, QFontMetrics
+
 from PyQt6.QtWidgets import (
     QDialog,
     QFrame,
@@ -290,6 +292,64 @@ class _ClickableCard(QFrame):
         if event.button() == Qt.MouseButton.LeftButton:
             self._on_click()
         super().mousePressEvent(event)
+
+
+# ── Word-wrapped label capped at N lines with trailing ellipsis ───────────────
+
+class _ElidedLabel(QLabel):
+    _MAX_LINES = 3
+
+    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._full_text = text
+        self.setWordWrap(False)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        if text:
+            self._relayout()
+
+    def setText(self, text: str) -> None:
+        self._full_text = text
+        self._relayout()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._relayout()
+
+    def _relayout(self) -> None:
+        w = self.width()
+        if w <= 0:
+            super().setText(self._full_text)
+            return
+        fm = self.fontMetrics()
+        lines = self._wrap(self._full_text, fm, w)
+        if len(lines) > self._MAX_LINES:
+            kept = lines[: self._MAX_LINES - 1]
+            remaining = " ".join(lines[self._MAX_LINES - 1 :])
+            kept.append(fm.elidedText(remaining, Qt.TextElideMode.ElideRight, w))
+            lines = kept
+        # Elide any line that still overflows (e.g. single long word with no spaces)
+        lines = [
+            fm.elidedText(ln, Qt.TextElideMode.ElideRight, w)
+            if fm.horizontalAdvance(ln) > w else ln
+            for ln in lines
+        ]
+        super().setText("\n".join(lines))
+
+    @staticmethod
+    def _wrap(text: str, fm: QFontMetrics, width: int) -> list[str]:
+        words = text.split()
+        if not words:
+            return []
+        lines, current = [], words[0]
+        for word in words[1:]:
+            candidate = current + " " + word
+            if fm.horizontalAdvance(candidate) <= width:
+                current = candidate
+            else:
+                lines.append(current)
+                current = word
+        lines.append(current)
+        return lines
 
 
 # ── Notes preview (Projects only) ─────────────────────────────────────────────
@@ -680,9 +740,8 @@ class _PaperRow(QFrame):
         row.setSpacing(SPACE_MD)
 
         title_str = self._fetch_title()
-        title_lbl = QLabel(title_str)
+        title_lbl = _ElidedLabel(title_str)
         title_lbl.setStyleSheet(f"font-size: {FONT_BODY}px; color: {_TEXT};")
-        title_lbl.setWordWrap(True)
         row.addWidget(title_lbl, stretch=1)
 
         self._note_btn = QPushButton(self._note_label())
@@ -831,7 +890,7 @@ class ProjectDetailView(QWidget):
         self._papers_layout.addStretch()
 
         scroll.setWidget(self._papers_widget)
-        outer.addWidget(scroll)
+        outer.addWidget(scroll, stretch=1)
 
         self._empty_papers_lbl = QLabel("No papers yet — add one to get started.")
         self._empty_papers_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -839,7 +898,6 @@ class ProjectDetailView(QWidget):
             f"font-size: {FONT_BODY}px; color: {_MUTED}; background: transparent;"
         )
         outer.addWidget(self._empty_papers_lbl)
-        outer.addStretch()
 
     def load(self, project) -> None:
         self._project = project
@@ -946,9 +1004,8 @@ class ProjectCard(QFrame):
         inner.addWidget(name_lbl)
 
         if project.description:
-            desc_lbl = QLabel(project.description)
+            desc_lbl = _ElidedLabel(project.description)
             desc_lbl.setStyleSheet(f"font-size: {FONT_SECONDARY}px; color: {_MUTED};")
-            desc_lbl.setWordWrap(True)
             inner.addWidget(desc_lbl)
 
         stats_row = QHBoxLayout()
@@ -1071,7 +1128,7 @@ class ProjectsPage(QWidget):
         self._list_layout.addStretch()
 
         scroll.setWidget(self._list_widget)
-        outer.addWidget(scroll)
+        outer.addWidget(scroll, stretch=1)
 
         self._empty_lbl = QLabel("No projects yet — create one to get started.")
         self._empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1079,7 +1136,6 @@ class ProjectsPage(QWidget):
             f"font-size: 14px; color: {_MUTED}; background: transparent;"
         )
         outer.addWidget(self._empty_lbl)
-        outer.addStretch()
 
         return page
 
