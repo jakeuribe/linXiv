@@ -541,7 +541,7 @@ class NotesDialog(QDialog):
         card = _ClickableCard(lambda n=note: self._edit_note(n))
         card.setStyleSheet(f"""
             QFrame {{ background: {_BG}; border: 1px solid {_BORDER}; border-radius: {RADIUS_MD}px; }}
-            QFrame:hover {{ border-color: {_ACCENT}; }}
+            QFrame:hover {{ border: 2px solid {_ACCENT}; background: #1a1a2e; }}
             QLabel {{ border: none; background: transparent; }}
         """)
         col = QVBoxLayout(card)
@@ -557,19 +557,20 @@ class NotesDialog(QDialog):
 
         top_row.addStretch()
 
-        _ghost = f"""
+        _btn_base = f"""
             QPushButton {{
-                background: transparent; border: none;
-                font-size: {FONT_TERTIARY}px; padding: 0 {SPACE_XS}px;
+                background: transparent; border: 1px solid;
+                border-radius: {RADIUS_SM}px;
+                font-size: {FONT_TERTIARY}px; padding: 2px 8px;
             }}
         """
         edit_btn = QPushButton("Edit")
-        edit_btn.setStyleSheet(_ghost + f"QPushButton {{ color: {_MUTED}; }} QPushButton:hover {{ color: {_TEXT}; }}")
+        edit_btn.setStyleSheet(_btn_base + f"QPushButton {{ border-color: {_BORDER}; color: {_MUTED}; }} QPushButton:hover {{ border-color: {_ACCENT}; color: {_ACCENT}; }}")
         edit_btn.clicked.connect(lambda _, n=note: self._edit_note(n))
         top_row.addWidget(edit_btn)
 
         del_btn = QPushButton("Delete")
-        del_btn.setStyleSheet(_ghost + "QPushButton { color: #e05c5c; } QPushButton:hover { color: #ff7070; }")
+        del_btn.setStyleSheet(_btn_base + "QPushButton { border-color: #e05c5c; color: #e05c5c; } QPushButton:hover { border-color: #ff7070; color: #ff7070; }")
         del_btn.clicked.connect(lambda _, n=note: self._delete_note(n))
         top_row.addWidget(del_btn)
         col.addLayout(top_row)
