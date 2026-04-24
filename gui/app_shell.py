@@ -34,16 +34,33 @@ def run_shell() -> None:
     shell.add_page("Settings", SettingsPage())
 
     def _on_navigate_to_project(project) -> None:
+        paper_id = library_page.take_paper_id_for_project_return()
         shell.go_to_widget(projects_page)
-        projects_page.open_project(project)
+        projects_page.open_project(
+            project,
+            opened_from_other_shell_tab=True,
+            return_to_library_paper_id=paper_id,
+        )
 
     library_page.navigate_to_project.connect(_on_navigate_to_project)
 
     def _on_paper_right_clicked(paper_id: str) -> None:
         shell.go_to_widget(library_page)
-        library_page.open_paper(paper_id, on_back=lambda: shell.go_to_widget(graph_page))
+        library_page.open_paper(paper_id)
 
     graph_page.paper_right_clicked.connect(_on_paper_right_clicked)
+
+    library_page.attach_app_shell(shell)
+    projects_page.attach_app_shell(shell)
+    projects_page.attach_library_page(library_page)
+
+    def _on_shell_page_changed(idx: int) -> None:
+        if idx == shell._stack.indexOf(library_page):
+            library_page.show_library_list()
+        if idx == shell._stack.indexOf(projects_page):
+            projects_page.show_project_list()
+
+    shell._stack.currentChanged.connect(_on_shell_page_changed)
 
     shell.register_on_close(search_page.cleanup_pdfs)
     app.aboutToQuit.connect(search_page.cleanup_pdfs)

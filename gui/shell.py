@@ -41,6 +41,7 @@ class AppShell(QMainWindow):
         self._page_btns: list[QPushButton] = []
         self._stack = QStackedWidget()
         self._close_callbacks: list[Callable[[], object]] = []
+        self._nav_history: list[int] = []
 
         self._sidebar = QWidget()
         self._sidebar.setObjectName("sidebar")
@@ -90,6 +91,14 @@ class AppShell(QMainWindow):
         if idx >= 0:
             self._go_to(idx)
 
+    def go_back(self) -> bool:
+        """Return to the previous main stack page (sidebar index). False if there is none."""
+        if not self._nav_history:
+            return False
+        prev = self._nav_history.pop()
+        self._go_to(prev, record_history=False)
+        return True
+
     # ── Internal ──────────────────────────────────────────────────────────────
 
     def closeEvent(self, event: QCloseEvent) -> None:
@@ -97,7 +106,10 @@ class AppShell(QMainWindow):
             cb()
         super().closeEvent(event)
 
-    def _go_to(self, idx: int) -> None:
+    def _go_to(self, idx: int, *, record_history: bool = True) -> None:
+        cur = self._stack.currentIndex()
+        if record_history and cur != idx and cur >= 0:
+            self._nav_history.append(cur)
         self._stack.setCurrentIndex(idx)
         for i, btn in enumerate(self._page_btns):
             btn.setChecked(i == idx)

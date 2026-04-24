@@ -28,7 +28,12 @@ Thumbs.db
 features.md
 *T.md
 pyrightconfig.json
+# docs: ignore everything except architecture decision records
+# (see gitignore(5): re-include a subtree by un-ignoring the dir, then ignoring its contents, then un-ignoring paths)
 docs/*
+!docs/adr/
+docs/adr/*
+!docs/adr/**
 # Session state
 selected_papers.json
 user_settings.json
