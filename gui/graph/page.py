@@ -17,6 +17,10 @@ from PyQt6.QtWidgets import (
 
 from ._export_handler import _ExportHandler
 from .view import GraphView
+from formats.bibtex import BibTeXFormat
+from formats.csv_fmt import CSVFormat
+from formats.json_fmt import JSONFormat
+from formats.markdown import MarkdownFormat, ObsidianFormat
 from gui.theme import FONT_SECONDARY, FONT_TERTIARY, SPACE_XS, SPACE_SM
 from storage.db import get_categories, get_graph_data, get_tags, list_papers
 
