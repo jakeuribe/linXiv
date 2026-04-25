@@ -1,6 +1,9 @@
 # linXiv
 
 <img src="assets/wide_logo.png" alt="linXiv logo"/>
+A local-first, Python application for discovering, managing, and visualizing academic papers from arXiv, and more sources. Combines a local SQLite database, OPTIONAL AI-powered tagging, Obsidian vault integration, and an interactive D3.js network graph, wrapped in a PyQt6 GUI.
+
+Upload your pdfs, create projects, manage notes, tags, and more to organize your files. All locally without ever sending out your data intermediately. This project aims to be a one-stop-shop for researchers who look to manage their literature, with the near-term goal of extending this to research groups who seek to share their knowledge and literature with each other, without going to the web.
 
 ## Table of Contents
 
