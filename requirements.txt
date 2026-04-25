@@ -8,5 +8,6 @@ markdown
 openai
 pybtex
 pydantic
+pypdf>=6.10.2
 python-dotenv
 uvicorn[standard]
