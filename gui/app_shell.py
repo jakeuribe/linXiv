@@ -1,5 +1,7 @@
 import sys
+from pathlib import Path
 
+from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication, QStyleFactory
 
 from gui.shell import AppShell
@@ -17,9 +19,13 @@ from storage.db import init_db
 def run_shell() -> None:
     init_db()
     app = QApplication(sys.argv)
+    app.setApplicationName("Linxiv")
     app.setStyle(QStyleFactory.create("Fusion"))
+    _icon = QIcon(str(Path(__file__).parent.parent / "assets" / "app_icon.png"))
+    app.setWindowIcon(_icon)
 
     shell = AppShell()
+    shell.setWindowIcon(_icon)
     shell.add_page("Home", HomePage())
     library_page  = LibraryPage()
     projects_page = ProjectsPage()

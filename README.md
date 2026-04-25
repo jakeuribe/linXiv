@@ -1,5 +1,27 @@
 # linXiv
-#todo: create table of contents
+
+<img src="assets/app_icon.png" width="80" alt="linXiv icon"/>
+
+## Table of Contents
+
+- [Features](#features)
+- [Project Structure](#project-structure)
+- [Setup](#setup)
+  - [Prerequisites](#prerequisites)
+  - [Install dependencies](#install-dependencies)
+  - [Environment variables](#environment-variables)
+  - [Run](#run)
+- [App Shell](#app-shell)
+- [Usage](#usage)
+  - [Projects](#projects)
+  - [Notes](#notes)
+  - [Search and save papers](#search-and-save-papers)
+  - [Add by DOI](#add-by-doi)
+  - [AI tools](#ai-tools)
+  - [Download PDFs](#download-pdfs)
+  - [Database queries](#database-queries)
+- [Graph Visualization](#graph-visualization)
+- [Acknowledgements](#acknowledgements)
 
 A Python application for discovering, managing, and visualizing academic papers from arXiv. Combines a local SQLite database, OPTIONAL AI-powered tagging, Obsidian vault integration, and an interactive D3.js network graph, wrapped in a PyQt6 GUI.
 
