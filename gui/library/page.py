@@ -60,6 +60,23 @@ _BTN = f"""
 
 # ── PDF download worker ───────────────────────────────────────────────────────
 
+class _PdfMetadataWorker(QThread):
+    finished = pyqtSignal(object, str)   # PaperMetadata, pdf_path
+    failed   = pyqtSignal(str)
+
+    def __init__(self, pdf_path: str) -> None:
+        super().__init__()
+        self._path = pdf_path
+
+    def run(self) -> None:
+        from sources.pdf_metadata import resolve_pdf_metadata
+        try:
+            meta = resolve_pdf_metadata(self._path)
+            self.finished.emit(meta, self._path)
+        except Exception as e:
+            self.failed.emit(str(e))
+
+
 class _DownloadWorker(QThread):
     finished = pyqtSignal(str, int, str)   # paper_id, version, local_path
     failed   = pyqtSignal(str, int, str)   # paper_id, version, error
@@ -637,6 +654,12 @@ class LibraryPage(QWidget):
         self._all_rows: list = []
         self._cards:    list[_PaperCard] = []
         self._selected: set[str] = set()   # paper_ids
+        self._pdf_worker: _PdfMetadataWorker | None = None
+        self._pdf_queue:  list[str] = []
+        self._pdf_total  = 0
+        self._pdf_added  = 0
+        self._pdf_skipped = 0
+        self._pdf_failed  = 0
 
         from gui.views import PdfWindow
         self._pdf_window = PdfWindow(self)
@@ -911,7 +934,7 @@ class LibraryPage(QWidget):
         menu.addAction("Markdown file…",         self._import_markdown_file)
         menu.addAction("Obsidian file…",         self._import_obsidian_file)
         menu.addSeparator()
-        menu.addAction("PDF…",    self._import_not_implemented)
+        menu.addAction("PDF…",    self._import_pdf)
         menu.addAction("Folder…", self._import_not_implemented)
         menu.exec(self._import_btn.mapToGlobal(self._import_btn.rect().bottomLeft()))
 
@@ -1021,6 +1044,65 @@ class LibraryPage(QWidget):
             QMessageBox.critical(self, "Import Failed", str(e))
             return
         self._finish_import(papers)
+
+    def _import_pdf(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(self, "Import PDFs", "", "PDF Files (*.pdf)")
+        if not paths:
+            return
+        self._pdf_queue   = list(paths)
+        self._pdf_total   = len(paths)
+        self._pdf_added   = 0
+        self._pdf_skipped = 0
+        self._pdf_failed  = 0
+        self._import_btn.setEnabled(False)
+        self._start_next_pdf()
+
+    def _start_next_pdf(self) -> None:
+        idx = self._pdf_total - len(self._pdf_queue) + 1
+        self._import_btn.setText(f"Resolving {idx}/{self._pdf_total}…")
+        path = self._pdf_queue[0]
+        self._pdf_worker = _PdfMetadataWorker(path)
+        self._pdf_worker.finished.connect(self._on_pdf_metadata_done)
+        self._pdf_worker.failed.connect(self._on_pdf_metadata_failed)
+        self._pdf_worker.start()
+
+    def _on_pdf_metadata_done(self, meta, path: str) -> None:
+        self._pdf_queue.pop(0)
+        from storage.db import get_paper
+        existing = get_paper(meta.paper_id)
+        if existing is None:
+            save_papers_metadata([meta])
+            self._pdf_added += 1
+        else:
+            self._pdf_skipped += 1
+        set_pdf_path(meta.paper_id, path)
+        set_has_pdf(meta.paper_id, meta.version, True)
+        if self._pdf_queue:
+            self._start_next_pdf()
+        else:
+            self._finish_pdf_import()
+
+    def _on_pdf_metadata_failed(self, _err: str) -> None:
+        self._pdf_queue.pop(0)
+        self._pdf_failed += 1
+        if self._pdf_queue:
+            self._start_next_pdf()
+        else:
+            self._finish_pdf_import()
+
+    def _finish_pdf_import(self) -> None:
+        self._import_btn.setEnabled(True)
+        self._import_btn.setText("Import")
+        self.refresh()
+        from PyQt6.QtWidgets import QMessageBox
+        parts = []
+        if self._pdf_added:
+            parts.append(f"Added {self._pdf_added} paper(s).")
+        if self._pdf_skipped:
+            parts.append(f"{self._pdf_skipped} already in library (PDF path updated).")
+        if self._pdf_failed:
+            parts.append(f"{self._pdf_failed} failed to resolve.")
+        QMessageBox.information(self, "Import Complete", "  ".join(parts) or "Nothing imported.")
 
     def _import_not_implemented(self) -> None:
         from PyQt6.QtGui import QAction
