@@ -3,10 +3,13 @@ from __future__ import annotations
 from collections import OrderedDict
 import traceback
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QCloseEvent
+
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
+from PyQt6.QtGui import QCloseEvent, QFontMetrics
+
 from PyQt6.QtWidgets import (
     QDialog,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -26,6 +29,9 @@ from PyQt6.QtWidgets import (
 )
 
 from storage.projects import color_to_hex
+
+from gui.library.page import LibraryPage
+from gui.shell import AppShell
 from gui.theme import BG as _BG, PANEL as _PANEL, BORDER as _BORDER
 from gui.theme import ACCENT as _ACCENT, TEXT as _TEXT, MUTED as _MUTED
 from gui.theme import (
@@ -38,6 +44,8 @@ from gui.theme import (
 )
 
 _CARD_CACHE_MAX = 30
+# Long project descriptions as a single tall QLabel can blow layout/GPU on window resize (Windows D3D11).
+_PROJECT_DESC_VIEWPORT_MAX_H = 550
 
 _PRESET_COLORS: list[int] = [
     0x5b8dee,  # blue (default)
@@ -78,6 +86,25 @@ _INPUT_STYLE = f"""
     }}
     QLineEdit:focus, QTextEdit:focus {{ border-color: {_ACCENT}; }}
 """
+
+
+# ── PDF metadata worker ───────────────────────────────────────────────────────
+
+class _PdfMetadataWorker(QThread):
+    finished = pyqtSignal(object, str)   # PaperMetadata, pdf_path
+    failed   = pyqtSignal(str)
+
+    def __init__(self, pdf_path: str) -> None:
+        super().__init__()
+        self._path = pdf_path
+
+    def run(self) -> None:
+        from sources.pdf_metadata import resolve_pdf_metadata
+        try:
+            meta = resolve_pdf_metadata(self._path)
+            self.finished.emit(meta, self._path)
+        except Exception as e:
+            self.failed.emit(str(e))
 
 
 # ── New-project dialog ────────────────────────────────────────────────────────
@@ -287,6 +314,67 @@ class _ClickableCard(QFrame):
         if event.button() == Qt.MouseButton.LeftButton:
             self._on_click()
         super().mousePressEvent(event)
+
+
+# ── Word-wrapped label capped at N lines with trailing ellipsis ───────────────
+
+class _ElidedLabel(QLabel):
+    _MAX_LINES = 3
+
+    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._full_text = text
+        self.setWordWrap(False)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        self._relayout()
+
+    def setText(self, text: str) -> None:
+        self._full_text = text
+        self._relayout()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._relayout()
+
+    def _relayout(self) -> None:
+        if not self._full_text:
+            super().setText("")
+            return
+        w = self.width()
+        fm = self.fontMetrics()
+        if w <= 0:
+            super().setText(self._full_text)
+            return
+        fm = self.fontMetrics()
+        lines = self._wrap(self._full_text, fm, w)
+        if len(lines) > self._MAX_LINES:
+            kept = lines[: self._MAX_LINES - 1]
+            remaining = " ".join(lines[self._MAX_LINES - 1 :])
+            kept.append(fm.elidedText(remaining, Qt.TextElideMode.ElideRight, w))
+            lines = kept
+        # Elide any line that still overflows (e.g. single long word with no spaces)
+        lines = [
+            fm.elidedText(ln, Qt.TextElideMode.ElideRight, w)
+            if fm.horizontalAdvance(ln) > w else ln
+            for ln in lines
+        ]
+        super().setText("\n".join(lines))
+
+    @staticmethod
+    def _wrap(text: str, fm: QFontMetrics, width: int) -> list[str]:
+        words = text.split()
+        if not words:
+            return []
+        lines, current = [], words[0]
+        for word in words[1:]:
+            candidate = current + " " + word
+            if fm.horizontalAdvance(candidate) <= width:
+                current = candidate
+            else:
+                lines.append(current)
+                current = word
+        lines.append(current)
+        return lines
 
 
 # ── Notes preview (Projects only) ─────────────────────────────────────────────
@@ -677,9 +765,8 @@ class _PaperRow(QFrame):
         row.setSpacing(SPACE_MD)
 
         title_str = self._fetch_title()
-        title_lbl = QLabel(title_str)
+        title_lbl = _ElidedLabel(title_str)
         title_lbl.setStyleSheet(f"font-size: {FONT_BODY}px; color: {_TEXT};")
-        title_lbl.setWordWrap(True)
         row.addWidget(title_lbl, stretch=1)
 
         self._note_btn = QPushButton(self._note_label())
@@ -731,6 +818,12 @@ class ProjectDetailView(QWidget):
         super().__init__(parent)
         self.setStyleSheet(f"background: {_BG}; color: {_TEXT};")
         self._project = None
+        self._pdf_worker: _PdfMetadataWorker | None = None
+        self._pdf_queue:  list[str] = []
+        self._pdf_total  = 0
+        self._pdf_added  = 0
+        self._pdf_skipped = 0
+        self._pdf_failed  = 0
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(PAGE_MARGIN_H, 32, PAGE_MARGIN_H, 32)
@@ -786,11 +879,21 @@ class ProjectDetailView(QWidget):
         outer.addLayout(header)
         outer.addSpacing(16)
 
-        # Meta (description + tags)
+        # Meta (description + tags): bounded height so huge text cannot stress layout on resize.
+        self._desc_scroll = QScrollArea()
+        self._desc_scroll.setWidgetResizable(True)
+        self._desc_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._desc_scroll.setMaximumHeight(_PROJECT_DESC_VIEWPORT_MAX_H)
+        self._desc_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._desc_scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+
         self._desc_lbl = QLabel()
         self._desc_lbl.setWordWrap(True)
+        self._desc_lbl.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self._desc_lbl.setStyleSheet(f"font-size: {FONT_BODY}px; color: {_MUTED}; background: transparent;")
         outer.addWidget(self._desc_lbl)
+        self._desc_scroll.setWidget(self._desc_lbl)
+        outer.addWidget(self._desc_scroll)
 
         self._tags_lbl = QLabel()
         self._tags_lbl.setStyleSheet(f"font-size: {FONT_SECONDARY}px; color: {_ACCENT}; background: transparent;")
@@ -808,8 +911,16 @@ class ProjectDetailView(QWidget):
         self._add_paper_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._add_paper_btn.setFixedHeight(BTN_H_LG)
         self._add_paper_btn.clicked.connect(self._on_add_paper)
+
+        self._import_pdf_btn = QPushButton("Import PDF")
+        self._import_pdf_btn.setStyleSheet(_BTN_MUTED_STYLE)
+        self._import_pdf_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._import_pdf_btn.setFixedHeight(BTN_H_LG)
+        self._import_pdf_btn.clicked.connect(self._on_import_pdf)
+
         papers_header.addWidget(self._papers_lbl)
         papers_header.addStretch()
+        papers_header.addWidget(self._import_pdf_btn)
         papers_header.addWidget(self._add_paper_btn)
         outer.addLayout(papers_header)
         outer.addSpacing(10)
@@ -828,7 +939,7 @@ class ProjectDetailView(QWidget):
         self._papers_layout.addStretch()
 
         scroll.setWidget(self._papers_widget)
-        outer.addWidget(scroll)
+        outer.addWidget(scroll, stretch=1)
 
         self._empty_papers_lbl = QLabel("No papers yet — add one to get started.")
         self._empty_papers_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -836,7 +947,6 @@ class ProjectDetailView(QWidget):
             f"font-size: {FONT_BODY}px; color: {_MUTED}; background: transparent;"
         )
         outer.addWidget(self._empty_papers_lbl)
-        outer.addStretch()
 
     def load(self, project) -> None:
         self._project = project
@@ -878,6 +988,77 @@ class ProjectDetailView(QWidget):
         dlg = AddPaperDialog(self._project, self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._rebuild_papers()
+
+    def _on_import_pdf(self) -> None:
+        if self._project is None:
+            return
+        paths, _ = QFileDialog.getOpenFileNames(self, "Import PDFs", "", "PDF Files (*.pdf)")
+        if not paths:
+            return
+        self._pdf_queue   = list(paths)
+        self._pdf_total   = len(paths)
+        self._pdf_added   = 0
+        self._pdf_skipped = 0
+        self._pdf_failed  = 0
+        self._import_pdf_btn.setEnabled(False)
+        self._start_next_pdf()
+
+    def _start_next_pdf(self) -> None:
+        idx = self._pdf_total - len(self._pdf_queue) + 1
+        self._import_pdf_btn.setText(f"Resolving {idx}/{self._pdf_total}…")
+        path = self._pdf_queue[0]
+        self._pdf_worker = _PdfMetadataWorker(path)
+        self._pdf_worker.finished.connect(self._on_pdf_metadata_done)
+        self._pdf_worker.failed.connect(self._on_pdf_metadata_failed)
+        self._pdf_worker.start()
+
+    def _on_pdf_metadata_done(self, meta, path: str) -> None:
+        self._pdf_queue.pop(0)
+        if self._project is None:
+            if not self._pdf_queue:
+                self._finish_pdf_import()
+            else:
+                self._start_next_pdf()
+            return
+        from storage.db import get_paper, save_papers_metadata, set_has_pdf, set_pdf_path
+        existing = get_paper(meta.paper_id)
+        if existing is None:
+            save_papers_metadata([meta])
+            self._pdf_added += 1
+        else:
+            self._pdf_skipped += 1
+        set_pdf_path(meta.paper_id, path)
+        set_has_pdf(meta.paper_id, meta.version, True)
+        try:
+            self._project.add_paper(meta.paper_id)
+        except Exception:
+            pass
+        if self._pdf_queue:
+            self._start_next_pdf()
+        else:
+            self._rebuild_papers()
+            self._finish_pdf_import()
+
+    def _on_pdf_metadata_failed(self, _err: str) -> None:
+        self._pdf_queue.pop(0)
+        self._pdf_failed += 1
+        if self._pdf_queue:
+            self._start_next_pdf()
+        else:
+            self._finish_pdf_import()
+
+    def _finish_pdf_import(self) -> None:
+        self._import_pdf_btn.setEnabled(True)
+        self._import_pdf_btn.setText("Import PDF")
+        from PyQt6.QtWidgets import QMessageBox
+        parts = []
+        if self._pdf_added:
+            parts.append(f"Added {self._pdf_added} paper(s).")
+        if self._pdf_skipped:
+            parts.append(f"{self._pdf_skipped} already in library (added to project).")
+        if self._pdf_failed:
+            parts.append(f"{self._pdf_failed} failed to resolve.")
+        QMessageBox.information(self, "Import Complete", "  ".join(parts) or "Nothing imported.")
 
     def _on_archive(self) -> None:
         if self._project is None:
@@ -943,9 +1124,8 @@ class ProjectCard(QFrame):
         inner.addWidget(name_lbl)
 
         if project.description:
-            desc_lbl = QLabel(project.description)
+            desc_lbl = _ElidedLabel(project.description)
             desc_lbl.setStyleSheet(f"font-size: {FONT_SECONDARY}px; color: {_MUTED};")
-            desc_lbl.setWordWrap(True)
             inner.addWidget(desc_lbl)
 
         stats_row = QHBoxLayout()
@@ -992,6 +1172,10 @@ class ProjectsPage(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setStyleSheet(f"background: {_BG}; color: {_TEXT};")
+        self._app_shell: AppShell | None = None
+        self._library_page: LibraryPage | None = None
+        self._project_detail_prior_shell_tab = False
+        self._return_to_library_paper_id: str | None = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -1005,6 +1189,18 @@ class ProjectsPage(QWidget):
 
         outer.addWidget(self._inner)
         self._refresh()
+
+    def attach_app_shell(self, shell: AppShell) -> None:
+        self._app_shell = shell
+
+    def attach_library_page(self, library_page: LibraryPage) -> None:
+        self._library_page = library_page
+
+    def show_project_list(self) -> None:
+        """Show the project list when returning to the Projects tab from elsewhere."""
+        self._project_detail_prior_shell_tab = False
+        self._return_to_library_paper_id = None
+        self._inner.setCurrentIndex(0)
 
     # ── List page ─────────────────────────────────────────────────────────────
 
@@ -1052,7 +1248,7 @@ class ProjectsPage(QWidget):
         self._list_layout.addStretch()
 
         scroll.setWidget(self._list_widget)
-        outer.addWidget(scroll)
+        outer.addWidget(scroll, stretch=1)
 
         self._empty_lbl = QLabel("No projects yet — create one to get started.")
         self._empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1060,7 +1256,6 @@ class ProjectsPage(QWidget):
             f"font-size: 14px; color: {_MUTED}; background: transparent;"
         )
         outer.addWidget(self._empty_lbl)
-        outer.addStretch()
 
         return page
 
@@ -1088,17 +1283,40 @@ class ProjectsPage(QWidget):
 
     # ── Navigation ────────────────────────────────────────────────────────────
 
-    def open_project(self, project) -> None:
-        """Navigate directly to a project's detail view (callable from other pages)."""
+    def open_project(
+        self,
+        project,
+        *,
+        opened_from_other_shell_tab: bool = False,
+        return_to_library_paper_id: str | None = None,
+    ) -> None:
+        """Navigate directly to a project's detail view (callable from other pages).
+
+        Set opened_from_other_shell_tab when opening from Library (etc.) so Back
+        returns to the previous main tab. If return_to_library_paper_id is set, Back
+        also re-opens that paper's detail in Library.
+        """
+        self._project_detail_prior_shell_tab = opened_from_other_shell_tab
+        self._return_to_library_paper_id = (
+            return_to_library_paper_id if opened_from_other_shell_tab else None
+        )
         self._detail_view.load(project)
         self._inner.setCurrentIndex(1)
 
     def _open_project(self, project) -> None:
-        self.open_project(project)
+        self.open_project(project, opened_from_other_shell_tab=False)
 
     def _on_back(self) -> None:
+        prior_shell = self._project_detail_prior_shell_tab
+        paper_id = self._return_to_library_paper_id
+        self._project_detail_prior_shell_tab = False
+        self._return_to_library_paper_id = None
         self._inner.setCurrentIndex(0)
-        self._refresh()
+        if prior_shell and self._app_shell is not None:
+            self._app_shell.go_back()
+            if paper_id and self._library_page is not None:
+                lib = self._library_page
+                QTimer.singleShot(0, lambda pid=paper_id, lp=lib: lp.show_paper_detail_by_id(pid))
 
     def _on_add(self) -> None:
         dlg = NewProjectDialog(self)
