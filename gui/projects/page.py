@@ -4,11 +4,12 @@ from collections import OrderedDict
 import traceback
 
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
 from PyQt6.QtGui import QCloseEvent, QFontMetrics
 
 from PyQt6.QtWidgets import (
     QDialog,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -83,6 +84,25 @@ _INPUT_STYLE = f"""
     }}
     QLineEdit:focus, QTextEdit:focus {{ border-color: {_ACCENT}; }}
 """
+
+
+# ── PDF metadata worker ───────────────────────────────────────────────────────
+
+class _PdfMetadataWorker(QThread):
+    finished = pyqtSignal(object, str)   # PaperMetadata, pdf_path
+    failed   = pyqtSignal(str)
+
+    def __init__(self, pdf_path: str) -> None:
+        super().__init__()
+        self._path = pdf_path
+
+    def run(self) -> None:
+        from sources.pdf_metadata import resolve_pdf_metadata
+        try:
+            meta = resolve_pdf_metadata(self._path)
+            self.finished.emit(meta, self._path)
+        except Exception as e:
+            self.failed.emit(str(e))
 
 
 # ── New-project dialog ────────────────────────────────────────────────────────
@@ -793,6 +813,12 @@ class ProjectDetailView(QWidget):
         super().__init__(parent)
         self.setStyleSheet(f"background: {_BG}; color: {_TEXT};")
         self._project = None
+        self._pdf_worker: _PdfMetadataWorker | None = None
+        self._pdf_queue:  list[str] = []
+        self._pdf_total  = 0
+        self._pdf_added  = 0
+        self._pdf_skipped = 0
+        self._pdf_failed  = 0
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(PAGE_MARGIN_H, 32, PAGE_MARGIN_H, 32)
@@ -870,8 +896,16 @@ class ProjectDetailView(QWidget):
         self._add_paper_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._add_paper_btn.setFixedHeight(BTN_H_LG)
         self._add_paper_btn.clicked.connect(self._on_add_paper)
+
+        self._import_pdf_btn = QPushButton("Import PDF")
+        self._import_pdf_btn.setStyleSheet(_BTN_MUTED_STYLE)
+        self._import_pdf_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._import_pdf_btn.setFixedHeight(BTN_H_LG)
+        self._import_pdf_btn.clicked.connect(self._on_import_pdf)
+
         papers_header.addWidget(self._papers_lbl)
         papers_header.addStretch()
+        papers_header.addWidget(self._import_pdf_btn)
         papers_header.addWidget(self._add_paper_btn)
         outer.addLayout(papers_header)
         outer.addSpacing(10)
@@ -939,6 +973,77 @@ class ProjectDetailView(QWidget):
         dlg = AddPaperDialog(self._project, self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._rebuild_papers()
+
+    def _on_import_pdf(self) -> None:
+        if self._project is None:
+            return
+        paths, _ = QFileDialog.getOpenFileNames(self, "Import PDFs", "", "PDF Files (*.pdf)")
+        if not paths:
+            return
+        self._pdf_queue   = list(paths)
+        self._pdf_total   = len(paths)
+        self._pdf_added   = 0
+        self._pdf_skipped = 0
+        self._pdf_failed  = 0
+        self._import_pdf_btn.setEnabled(False)
+        self._start_next_pdf()
+
+    def _start_next_pdf(self) -> None:
+        idx = self._pdf_total - len(self._pdf_queue) + 1
+        self._import_pdf_btn.setText(f"Resolving {idx}/{self._pdf_total}…")
+        path = self._pdf_queue[0]
+        self._pdf_worker = _PdfMetadataWorker(path)
+        self._pdf_worker.finished.connect(self._on_pdf_metadata_done)
+        self._pdf_worker.failed.connect(self._on_pdf_metadata_failed)
+        self._pdf_worker.start()
+
+    def _on_pdf_metadata_done(self, meta, path: str) -> None:
+        self._pdf_queue.pop(0)
+        if self._project is None:
+            if not self._pdf_queue:
+                self._finish_pdf_import()
+            else:
+                self._start_next_pdf()
+            return
+        from storage.db import get_paper, save_papers_metadata, set_has_pdf, set_pdf_path
+        existing = get_paper(meta.paper_id)
+        if existing is None:
+            save_papers_metadata([meta])
+            self._pdf_added += 1
+        else:
+            self._pdf_skipped += 1
+        set_pdf_path(meta.paper_id, path)
+        set_has_pdf(meta.paper_id, meta.version, True)
+        try:
+            self._project.add_paper(meta.paper_id)
+        except Exception:
+            pass
+        if self._pdf_queue:
+            self._start_next_pdf()
+        else:
+            self._rebuild_papers()
+            self._finish_pdf_import()
+
+    def _on_pdf_metadata_failed(self, _err: str) -> None:
+        self._pdf_queue.pop(0)
+        self._pdf_failed += 1
+        if self._pdf_queue:
+            self._start_next_pdf()
+        else:
+            self._finish_pdf_import()
+
+    def _finish_pdf_import(self) -> None:
+        self._import_pdf_btn.setEnabled(True)
+        self._import_pdf_btn.setText("Import PDF")
+        from PyQt6.QtWidgets import QMessageBox
+        parts = []
+        if self._pdf_added:
+            parts.append(f"Added {self._pdf_added} paper(s).")
+        if self._pdf_skipped:
+            parts.append(f"{self._pdf_skipped} already in library (added to project).")
+        if self._pdf_failed:
+            parts.append(f"{self._pdf_failed} failed to resolve.")
+        QMessageBox.information(self, "Import Complete", "  ".join(parts) or "Nothing imported.")
 
     def _on_archive(self) -> None:
         if self._project is None:

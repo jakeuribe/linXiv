@@ -328,3 +328,5 @@ Papers (blue circles) and authors (gold diamonds) form a force-directed network.
 linXiv owes a debt to [Qiqqa](https://github.com/jimmejardine/qiqqa-open-source), the open-source research management tool originally created by Jimme Jardine. Exploring the Qiqqa codebase (via a [personal fork](https://github.com/jakeuribe/qiqqa-open-source)) informed several design decisions in linXiv, particularly around library-oriented paper management, project organization, and the general approach of combining PDF handling with metadata storage in a desktop application.
 
 Qiqqa is licensed under the [GNU General Public License v3.0](https://www.gnu.org/licenses/gpl-3.0.html).
+
+PDF text and metadata extraction uses [pypdf](https://github.com/py-pdf/pypdf), a pure-Python PDF library maintained by the [py-pdf](https://github.com/py-pdf) organization. pypdf is licensed under the [BSD 3-Clause License](https://github.com/py-pdf/pypdf/blob/main/LICENSE).

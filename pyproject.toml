@@ -18,6 +18,7 @@ dependencies = [
     "pybtex",
     "python-dotenv",
     "uvicorn[standard]",
+    "pypdf>=6.10.2",
 ]
 
 [project.optional-dependencies]
@@ -41,4 +42,9 @@ include = [
     "gui",
     "sources",
     "storage",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
 ]
