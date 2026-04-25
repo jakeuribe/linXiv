@@ -1,6 +1,6 @@
 # linXiv
 
-<img src="assets/app_icon.png" width="80" alt="linXiv icon"/>
+<img src="assets/wide_logo.png" alt="linXiv logo"/>
 
 ## Table of Contents
 
