@@ -44,6 +44,8 @@ from gui.theme import (
 )
 
 _CARD_CACHE_MAX = 30
+# Long project descriptions as a single tall QLabel can blow layout/GPU on window resize (Windows D3D11).
+_PROJECT_DESC_VIEWPORT_MAX_H = 550
 
 _PRESET_COLORS: list[int] = [
     0x5b8dee,  # blue (default)
@@ -324,8 +326,7 @@ class _ElidedLabel(QLabel):
         self._full_text = text
         self.setWordWrap(False)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        if text:
-            self._relayout()
+        self._relayout()
 
     def setText(self, text: str) -> None:
         self._full_text = text
@@ -336,7 +337,11 @@ class _ElidedLabel(QLabel):
         self._relayout()
 
     def _relayout(self) -> None:
+        if not self._full_text:
+            super().setText("")
+            return
         w = self.width()
+        fm = self.fontMetrics()
         if w <= 0:
             super().setText(self._full_text)
             return
@@ -874,11 +879,21 @@ class ProjectDetailView(QWidget):
         outer.addLayout(header)
         outer.addSpacing(16)
 
-        # Meta (description + tags)
+        # Meta (description + tags): bounded height so huge text cannot stress layout on resize.
+        self._desc_scroll = QScrollArea()
+        self._desc_scroll.setWidgetResizable(True)
+        self._desc_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._desc_scroll.setMaximumHeight(_PROJECT_DESC_VIEWPORT_MAX_H)
+        self._desc_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._desc_scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+
         self._desc_lbl = QLabel()
         self._desc_lbl.setWordWrap(True)
+        self._desc_lbl.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self._desc_lbl.setStyleSheet(f"font-size: {FONT_BODY}px; color: {_MUTED}; background: transparent;")
         outer.addWidget(self._desc_lbl)
+        self._desc_scroll.setWidget(self._desc_lbl)
+        outer.addWidget(self._desc_scroll)
 
         self._tags_lbl = QLabel()
         self._tags_lbl.setStyleSheet(f"font-size: {FONT_SECONDARY}px; color: {_ACCENT}; background: transparent;")
@@ -1297,7 +1312,6 @@ class ProjectsPage(QWidget):
         self._project_detail_prior_shell_tab = False
         self._return_to_library_paper_id = None
         self._inner.setCurrentIndex(0)
-        self._refresh()
         if prior_shell and self._app_shell is not None:
             self._app_shell.go_back()
             if paper_id and self._library_page is not None:
