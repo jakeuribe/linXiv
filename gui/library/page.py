@@ -26,6 +26,7 @@ from formats.csv_fmt import CSVFormat
 from formats.json_fmt import JSONFormat
 from formats.markdown import MarkdownFormat, ObsidianFormat
 from storage.db import list_papers, save_papers_metadata, set_has_pdf, set_pdf_path
+from gui.shell import AppShell
 
 _bibtex_fmt   = BibTeXFormat()
 _csv_fmt      = CSVFormat()
@@ -397,7 +398,7 @@ class PaperDetailView(QWidget):
         outer.setSpacing(0)
 
         # Back button
-        back_btn = QPushButton("← Back to Library")
+        back_btn = QPushButton("← Back")
         back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         back_btn.setStyleSheet(f"""
             QPushButton {{ background: transparent; border: none;
@@ -582,6 +583,11 @@ class PaperDetailView(QWidget):
 
         self._body_layout.addStretch()
 
+    def get_current_paper_id(self) -> str | None:
+        if self._current_row is None:
+            return None
+        return self._current_row["paper_id"]
+
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     @staticmethod
@@ -681,9 +687,11 @@ class LibraryPage(QWidget):
 
         # ── Page 1: detail ────────────────────────────────────────────────────
         self._detail_view = PaperDetailView()
-        self._back_override = None
+        self._app_shell: AppShell | None = None
+        self._paper_detail_back_goes_to_prior_shell_tab = False
+        self._paper_id_for_project_return: str | None = None
         self._detail_view.back_requested.connect(self._on_back_requested)
-        self._detail_view.navigate_to_project.connect(self.navigate_to_project)
+        self._detail_view.navigate_to_project.connect(self._on_detail_navigate_to_project)
         self._stack.addWidget(self._detail_view)
 
         # ── Inner (scrollable area + header + filter) ─────────────────────────
@@ -862,33 +870,67 @@ class LibraryPage(QWidget):
             if row["paper_id"] in self._selected:
                 card.set_selected(True)
             card.selection_toggled.connect(self._on_card_toggle)
-            card.clicked.connect(self._open_detail)
+            card.clicked.connect(self._on_paper_card_clicked)
             self._cards_layout.insertWidget(self._cards_layout.count() - 1, card)
             self._cards.append(card)
 
     # ── Selection ─────────────────────────────────────────────────────────────
 
-    def open_paper(self, paper_id: str, on_back=None) -> None:
-        """Navigate directly to the detail view for a given paper_id.
+    def attach_app_shell(self, shell: AppShell) -> None:
+        """Shell reference for cross-tab Back after open_paper() from another page."""
+        self._app_shell = shell
 
-        on_back: optional callable invoked when the back button is pressed
-                 instead of returning to the library list.
+    def take_paper_id_for_project_return(self) -> str | None:
+        """Consume paper id saved when jumping Library detail → Projects (for restoring detail)."""
+        pid = self._paper_id_for_project_return
+        self._paper_id_for_project_return = None
+        return pid
+
+    def _on_detail_navigate_to_project(self, project) -> None:
+        self._paper_id_for_project_return = self._detail_view.get_current_paper_id()
+        self.navigate_to_project.emit(project)
+
+    def show_paper_detail_by_id(self, paper_id: str) -> None:
+        """Re-open paper detail (e.g. after Back from Projects).
+
+        Does not change cross-tab Back: if the user opened this paper via ``open_paper``
+        from another tab (e.g. Graph), that return path stays active.
         """
         from storage.db import get_paper
         row = get_paper(paper_id)
+        if row is None:
+            return
+        self._open_detail(row)
+
+    def show_library_list(self) -> None:
+        """Show the paper list (not detail). Used when switching back to the Library tab.
+
+        Does not clear ``_paper_detail_back_goes_to_prior_shell_tab``: tab switches run
+        before programmatic detail restore (e.g. Back from Projects), and clearing here
+        would drop a Graph→Library ``open_paper`` handoff.
+        """
+        self._stack.setCurrentIndex(0)
+
+    def open_paper(self, paper_id: str) -> None:
+        """Open the detail view for a paper (e.g. from Graph). Back returns to prior shell tab."""
+        from storage.db import get_paper
+        row = get_paper(paper_id)
         if row is not None:
-            self._back_override = on_back
+            self._paper_detail_back_goes_to_prior_shell_tab = True
             self._open_detail(row)
 
     def _on_back_requested(self) -> None:
-        if self._back_override is not None:
-            cb, self._back_override = self._back_override, None
-            cb()
-        else:
-            self._stack.setCurrentIndex(0)
+        shell_handoff = self._paper_detail_back_goes_to_prior_shell_tab
+        self._paper_detail_back_goes_to_prior_shell_tab = False
+        self._stack.setCurrentIndex(0)
+        if shell_handoff and self._app_shell is not None:
+            self._app_shell.go_back()
+
+    def _on_paper_card_clicked(self, row) -> None:
+        self._paper_detail_back_goes_to_prior_shell_tab = False
+        self._open_detail(row)
 
     def _open_detail(self, row) -> None:
-        self._back_override = None
         self._detail_view.load(row)
         self._stack.setCurrentIndex(1)
 
