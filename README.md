@@ -1,5 +1,30 @@
 # linXiv
-#todo: create table of contents
+
+<img src="assets/wide_logo.png" alt="linXiv logo"/>
+A local-first, Python application for discovering, managing, and visualizing academic papers from arXiv, and more sources. Combines a local SQLite database, OPTIONAL AI-powered tagging, Obsidian vault integration, and an interactive D3.js network graph, wrapped in a PyQt6 GUI.
+
+Upload your pdfs, create projects, manage notes, tags, and more to organize your files. All locally without ever sending out your data intermediately. This project aims to be a one-stop-shop for researchers who look to manage their literature, with the near-term goal of extending this to research groups who seek to share their knowledge and literature with each other, without going to the web.
+
+## Table of Contents
+
+- [Features](#features)
+- [Project Structure](#project-structure)
+- [Setup](#setup)
+  - [Prerequisites](#prerequisites)
+  - [Install dependencies](#install-dependencies)
+  - [Environment variables](#environment-variables)
+  - [Run](#run)
+- [App Shell](#app-shell)
+- [Usage](#usage)
+  - [Projects](#projects)
+  - [Notes](#notes)
+  - [Search and save papers](#search-and-save-papers)
+  - [Add by DOI](#add-by-doi)
+  - [AI tools](#ai-tools)
+  - [Download PDFs](#download-pdfs)
+  - [Database queries](#database-queries)
+- [Graph Visualization](#graph-visualization)
+- [Acknowledgements](#acknowledgements)
 
 A Python application for discovering, managing, and visualizing academic papers from arXiv. Combines a local SQLite database, OPTIONAL AI-powered tagging, Obsidian vault integration, and an interactive D3.js network graph, wrapped in a PyQt6 GUI.
 
@@ -82,12 +107,14 @@ linXiv/
 ### Install dependencies
 
 ```bash
-uv sync --extra gui   # recommended (uses uv); includes PyQt6 for the desktop app
+uv sync   # recommended (uses uv); includes PyQt6 via the default `gui` group
+# headless / CI (CLI + API only, no Qt):
+uv sync --no-group gui
 # or
 pip install -r requirements.txt
 ```
 
-> **Note:** `uv sync` without `--extra gui` installs only the base dependencies (CLI + API) and will raise `ModuleNotFoundError: No module named 'PyQt6'` if you try to run the GUI. Add `--extra mcp` as well if you need the MCP server.
+> **Note:** Add `--extra mcp` if you need the MCP server (`mcp[cli]`). Plain `pip install -e .` does not install dependency groups; use `uv sync` or `pip install -r requirements.txt` if you need the desktop stack.
 
 ### Environment variables
 
@@ -102,7 +129,7 @@ GENAI_API_KEY_TAG_GEN=your_google_gemini_api_key
 **Desktop (PyQt6)**
 
 ```bash
-linxiv-gui            # after uv pip install -e ".[gui]"
+linxiv-gui            # after uv sync (includes `gui` group by default)
 # or without installing:
 python main_shell.py
 ```

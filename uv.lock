@@ -687,10 +687,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-gui = [
-    { name = "pyqt6" },
-    { name = "pyqt6-webengine" },
-]
 mcp = [
     { name = "mcp", extra = ["cli"] },
 ]
@@ -698,6 +694,10 @@ mcp = [
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
+]
+gui = [
+    { name = "pyqt6" },
+    { name = "pyqt6-webengine" },
 ]
 
 [package.metadata]
@@ -712,15 +712,17 @@ requires-dist = [
     { name = "pybtex" },
     { name = "pydantic" },
     { name = "pypdf", specifier = ">=6.10.2" },
-    { name = "pyqt6", marker = "extra == 'gui'" },
-    { name = "pyqt6-webengine", marker = "extra == 'gui'" },
     { name = "python-dotenv" },
     { name = "uvicorn", extras = ["standard"] },
 ]
-provides-extras = ["gui", "mcp"]
+provides-extras = ["mcp"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=9.0.3" }]
+gui = [
+    { name = "pyqt6" },
+    { name = "pyqt6-webengine" },
+]
 
 [[package]]
 name = "markdown"
