@@ -22,7 +22,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-gui = ["PyQt6", "PyQt6-WebEngine"]
 mcp = ["mcp[cli]"]
 
 [project.scripts]
@@ -48,3 +47,10 @@ include = [
 dev = [
     "pytest>=9.0.3",
 ]
+gui = [
+    "PyQt6",
+    "PyQt6-WebEngine",
+]
+
+[tool.uv]
+default-groups = ["dev", "gui"]

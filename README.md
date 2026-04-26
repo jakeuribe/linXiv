@@ -107,12 +107,14 @@ linXiv/
 ### Install dependencies
 
 ```bash
-uv sync --extra gui   # recommended (uses uv); includes PyQt6 for the desktop app
+uv sync   # recommended (uses uv); includes PyQt6 via the default `gui` group
+# headless / CI (CLI + API only, no Qt):
+uv sync --no-group gui
 # or
 pip install -r requirements.txt
 ```
 
-> **Note:** `uv sync` without `--extra gui` installs only the base dependencies (CLI + API) and will raise `ModuleNotFoundError: No module named 'PyQt6'` if you try to run the GUI. Add `--extra mcp` as well if you need the MCP server.
+> **Note:** Add `--extra mcp` if you need the MCP server (`mcp[cli]`). Plain `pip install -e .` does not install dependency groups; use `uv sync` or `pip install -r requirements.txt` if you need the desktop stack.
 
 ### Environment variables
 
@@ -127,7 +129,7 @@ GENAI_API_KEY_TAG_GEN=your_google_gemini_api_key
 **Desktop (PyQt6)**
 
 ```bash
-linxiv-gui            # after uv pip install -e ".[gui]"
+linxiv-gui            # after uv sync (includes `gui` group by default)
 # or without installing:
 python main_shell.py
 ```
