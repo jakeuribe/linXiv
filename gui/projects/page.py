@@ -1311,6 +1311,7 @@ class ProjectsPage(QWidget):
         paper_id = self._return_to_library_paper_id
         self._project_detail_prior_shell_tab = False
         self._return_to_library_paper_id = None
+        self._refresh()
         self._inner.setCurrentIndex(0)
         if prior_shell and self._app_shell is not None:
             self._app_shell.go_back()
