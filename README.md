@@ -26,8 +26,6 @@ Upload your pdfs, create projects, manage notes, tags, and more to organize your
 - [Graph Visualization](#graph-visualization)
 - [Acknowledgements](#acknowledgements)
 
-A Python application for discovering, managing, and visualizing academic papers from arXiv. Combines a local SQLite database, OPTIONAL AI-powered tagging, Obsidian vault integration, and an interactive D3.js network graph, wrapped in a PyQt6 GUI.
-
 ## Features
 
 - **Paper search** — Search arXiv by keyword, fetch by ID, or look up by DOI; results saved to a local SQLite DB with version tracking
