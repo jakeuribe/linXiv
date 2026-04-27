@@ -316,6 +316,55 @@ class _ClickableCard(QFrame):
         super().mousePressEvent(event)
 
 
+class _NoBarHorizontalScrollArea(QScrollArea):
+    """Horizontal scroll area without visible scrollbars; supports wheel + drag."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._dragging = False
+        self._drag_last_x = 0
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setCursor(Qt.CursorShape.OpenHandCursor)
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._dragging = True
+            self._drag_last_x = int(event.position().x())
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._dragging:
+            x = int(event.position().x())
+            dx = x - self._drag_last_x
+            self._drag_last_x = x
+            bar = self.horizontalScrollBar()
+            bar.setValue(bar.value() - dx)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self._dragging:
+            self._dragging = False
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def wheelEvent(self, event) -> None:
+        bar = self.horizontalScrollBar()
+        delta = event.angleDelta().x() or event.angleDelta().y()
+        if delta:
+            bar.setValue(bar.value() - int(delta / 2))
+            event.accept()
+            return
+        super().wheelEvent(event)
+
+
 # ── Word-wrapped label capped at N lines with trailing ellipsis ───────────────
 
 class _ElidedLabel(QLabel):
@@ -843,13 +892,26 @@ class ProjectDetailView(QWidget):
         self._color_stripe = QWidget()
         self._color_stripe.setFixedSize(6, 36)
         self._color_stripe.setStyleSheet(f"background: {_ACCENT}; border-radius: 3px;")
-        header.addWidget(self._color_stripe)
+        header.addWidget(self._color_stripe, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         self._title_lbl = QLabel()
         self._title_lbl.setStyleSheet(
             f"font-size: 28px; font-weight: bold; color: {_TEXT}; background: transparent;"
         )
-        header.addWidget(self._title_lbl, stretch=1)
+        self._title_lbl.setWordWrap(False)
+        self._title_lbl.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        self._title_lbl.setMinimumWidth(0)
+
+        # Keep long titles accessible in narrow windows via horizontal scrolling.
+        self._title_scroll = _NoBarHorizontalScrollArea()
+        self._title_scroll.setWidget(self._title_lbl)
+        self._title_scroll.setWidgetResizable(False)
+        self._title_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._title_scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        self._title_scroll.setMinimumWidth(0)
+        self._title_scroll.setFixedHeight(max(self._title_lbl.sizeHint().height(), 36))
+        self._title_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        header.addWidget(self._title_scroll, stretch=1, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         self._archive_btn = QPushButton("Archive")
         self._archive_btn.setStyleSheet(_BTN_MUTED_STYLE)
@@ -956,6 +1018,8 @@ class ProjectDetailView(QWidget):
         hex_color = color_to_hex(project.color) if project.color is not None else _ACCENT
         self._color_stripe.setStyleSheet(f"background: {hex_color}; border-radius: 3px;")
         self._title_lbl.setText(project.name)
+        self._title_lbl.adjustSize()
+        self._title_scroll.horizontalScrollBar().setValue(0)
         self._desc_lbl.setText(project.description)
         self._desc_lbl.setVisible(bool(project.description))
         self._tags_lbl.setText("  ".join(f"#{t}" for t in project.project_tags))
