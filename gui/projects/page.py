@@ -342,7 +342,8 @@ class _NoBarHorizontalScrollArea(QScrollArea):
             dx = x - self._drag_last_x
             self._drag_last_x = x
             bar = self.horizontalScrollBar()
-            bar.setValue(bar.value() - dx)
+            if bar is not None:
+                bar.setValue(bar.value() - dx)
             event.accept()
             return
         super().mouseMoveEvent(event)
@@ -358,7 +359,7 @@ class _NoBarHorizontalScrollArea(QScrollArea):
     def wheelEvent(self, event) -> None:
         bar = self.horizontalScrollBar()
         delta = event.angleDelta().x() or event.angleDelta().y()
-        if delta:
+        if delta and bar is not None:
             bar.setValue(bar.value() - int(delta / 2))
             event.accept()
             return
@@ -1019,7 +1020,9 @@ class ProjectDetailView(QWidget):
         self._color_stripe.setStyleSheet(f"background: {hex_color}; border-radius: 3px;")
         self._title_lbl.setText(project.name)
         self._title_lbl.adjustSize()
-        self._title_scroll.horizontalScrollBar().setValue(0)
+        hbar = self._title_scroll.horizontalScrollBar()
+        if hbar is not None:
+            hbar.setValue(0)
         self._desc_lbl.setText(project.description)
         self._desc_lbl.setVisible(bool(project.description))
         self._tags_lbl.setText("  ".join(f"#{t}" for t in project.project_tags))
