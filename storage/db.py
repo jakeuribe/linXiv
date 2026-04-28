@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 import sqlite3
 from typing import Optional, TYPE_CHECKING
-
+from .paths import old_pdf_dir, pdf_dir
 import arxiv
 
 if TYPE_CHECKING:
@@ -208,6 +208,28 @@ def init_db() -> None:
         if row and row[0] and "content=''" in row[0]:
             conn.execute("DROP TABLE IF EXISTS papers_fts")
             conn.execute("CREATE VIRTUAL TABLE papers_fts USING fts5(paper_id, full_text)")
+
+        wrong_path_rows = _get_deprecated_path_rows()
+        if wrong_path_rows: 
+            for rows in wrong_path_rows:
+                try:    
+                    curr_path = rows["PDF_PATH"]
+                    if Path(curr_path).is_file() and Path(curr_path).rename(curr_path.replace(str(old_pdf_dir), str(pdf_dir))).exists():
+                        print(f"File [ {curr_path} ] moved and verified!")
+                    else:
+                        print(f"File [ {curr_path} ] could not be moved")
+                except Exception as e:
+                    print(f"An error occured while trying to parse file {rows["PDF_PATH"]}:\n{e}")
+
+                    
+
+
+def _get_deprecated_path_rows() -> list[sqlite3.Row] | None:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM papers WHERE PDF_PATH LIKE '%/gui/%';"
+        ).fetchall()
+    return rows
 
 
 def parse_entry_id(entry_id: str) -> tuple[str, int]:
