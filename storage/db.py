@@ -214,7 +214,16 @@ def init_db() -> None:
             for rows in wrong_path_rows:
                 try:    
                     curr_path = rows["PDF_PATH"]
-                    if Path(curr_path).is_file() and Path(curr_path).rename(curr_path.replace(str(old_pdf_dir), str(pdf_dir))).exists():
+
+                    # new_path = Path(curr_path).rename(destination)
+    
+                    # # Verify the move
+                    # if new_path.exists():
+                    #     print(f"Verified: File is now at {new_path.absolute()}")
+                    # else:
+                    #     print("Move failed: Destination does not exist.")
+
+                    if Path(curr_path).is_file() and Path(curr_path).rename(curr_path.replace(str(old_pdf_dir()), str(pdf_dir()))).exists():
                         print(f"File [ {curr_path} ] moved and verified!")
                     else:
                         print(f"File [ {curr_path} ] could not be moved")
@@ -227,7 +236,7 @@ def init_db() -> None:
 def _get_deprecated_path_rows() -> list[sqlite3.Row] | None:
     with _connect() as conn:
         rows = conn.execute(
-            "SELECT * FROM papers WHERE PDF_PATH LIKE '%/gui/%';"
+            f"SELECT * FROM papers WHERE PDF_PATH LIKE '%{str(old_pdf_dir())}%';"
         ).fetchall()
     return rows
 
