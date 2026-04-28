@@ -90,6 +90,17 @@ class PdfWindow(QMainWindow):
         self._page_label.setText(f"Page {page + 1} / {total}" if total else "")
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        # Release OS file handle when viewer window is closed (Windows lock fix).
-        self._doc.close()
+        # Windows-specific note:
+        # QPdfView can keep internal references to the currently loaded
+        # QPdfDocument during teardown. If we only close the window, the PDF
+        # file handle may remain locked and later delete attempts can fail.
+        old_doc = self._doc
+        # Rebind the view to a fresh document first so the view no longer points
+        # at old_doc, then close old_doc to release its OS file handle.
+        # deleteLater() defers final destruction to a safe point in Qt's event
+        # loop, avoiding teardown-order issues with QObject ownership/signals.
+        self._doc = QPdfDocument(self)
+        self._view.setDocument(self._doc)
+        old_doc.close()
+        old_doc.deleteLater()
         super().closeEvent(event)
