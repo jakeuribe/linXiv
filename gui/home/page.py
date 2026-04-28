@@ -95,6 +95,9 @@ class HomePage(QWidget):
 
     # ── Data ──────────────────────────────────────────────────────────────────
 
+    def refresh(self) -> None:
+        self._load()
+
     def _load(self) -> None:
         papers   = list_papers(latest_only=True)
         tags     = get_tags()
