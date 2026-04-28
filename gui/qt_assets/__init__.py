@@ -1,3 +1,3 @@
-from .paper_card import PaperCard
+from .paper_card import PaperCard, ElidedLabel
 
-__all__ = ["PaperCard"]
+__all__ = ["PaperCard", "ElidedLabel"]

@@ -69,7 +69,7 @@ class _DownloadWorker(QThread):
 
 # ── Elided label (row / compact modes) ───────────────────────────────────────
 
-class _ElidedLabel(QLabel):
+class ElidedLabel(QLabel):
     _MAX_LINES = 3
 
     def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
@@ -138,6 +138,7 @@ class PaperCard(QFrame):
 
     selection_toggled = pyqtSignal(str, bool)   # paper_id, is_selected — card mode only
     clicked           = pyqtSignal(object)       # emits DB row — all modes
+    double_clicked    = pyqtSignal(object)       # emits DB row — row and compact modes
 
     _base_style = f"""
         QFrame#paperCard {{
@@ -165,9 +166,10 @@ class PaperCard(QFrame):
         self._pdf_window = pdf_window
         self._project_id = project_id
         self._worker: _DownloadWorker | None = None
-        self._selected   = False
-        self._card_mode  = pdf_window is not None
-        self._row_mode   = not self._card_mode and project_id is not None
+        self._pdf_btn:  QPushButton | None = None
+        self._selected  = False
+        self._row_mode  = project_id is not None
+        self._card_mode = not self._row_mode and pdf_window is not None
 
         self.setObjectName("paperCard")
         self.setStyleSheet(self._base_style)
@@ -253,7 +255,7 @@ class PaperCard(QFrame):
         outer.addWidget(self._pdf_btn, alignment=Qt.AlignmentFlag.AlignVCenter)
 
     def _build_row(self, outer: QHBoxLayout, row) -> None:
-        title_lbl = _ElidedLabel(row["title"] or "(untitled)")
+        title_lbl = ElidedLabel(row["title"] or "(untitled)")
         title_lbl.setStyleSheet(f"font-size: {FONT_BODY}px; color: {_TEXT};")
         outer.addWidget(title_lbl, stretch=1)
 
@@ -269,12 +271,20 @@ class PaperCard(QFrame):
         self._note_btn.clicked.connect(self._on_open_notes)
         outer.addWidget(self._note_btn)
 
+        if self._pdf_window is not None:
+            self._pdf_btn = QPushButton()
+            self._pdf_btn.setFixedSize(116, BTN_H_SM)
+            self._pdf_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            self._refresh_pdf_btn()
+            self._pdf_btn.clicked.connect(self._on_pdf_action)
+            outer.addWidget(self._pdf_btn, alignment=Qt.AlignmentFlag.AlignVCenter)
+
     def _build_compact(self, outer: QHBoxLayout, row) -> None:
         body = QVBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(SPACE_XS)
 
-        title_lbl = _ElidedLabel(row["title"] or "(untitled)")
+        title_lbl = ElidedLabel(row["title"] or "(untitled)")
         title_lbl.setStyleSheet(f"font-size: {FONT_BODY}px; font-weight: 600; color: {_TEXT};")
         body.addWidget(title_lbl)
 
@@ -308,6 +318,11 @@ class PaperCard(QFrame):
         self.setStyleSheet(self._sel_style if checked else self._base_style)
         self.selection_toggled.emit(self._row["paper_id"], checked)
 
+    def mouseDoubleClickEvent(self, event) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and not self._card_mode:
+            self.double_clicked.emit(self._row)
+        super().mouseDoubleClickEvent(event)
+
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             if self._card_mode and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
@@ -336,6 +351,8 @@ class PaperCard(QFrame):
         return str(std) if std.is_file() else None
 
     def _refresh_pdf_btn(self) -> None:
+        if self._pdf_btn is None:
+            return
         path = self.local_pdf_path()
         if path:
             self._pdf_btn.setText("Open PDF")
@@ -377,6 +394,8 @@ class PaperCard(QFrame):
         self._start_download()
 
     def _start_download(self) -> None:
+        if self._pdf_btn is None:
+            return
         self._pdf_btn.setText("Downloading…")
         self._pdf_btn.setEnabled(False)
         pid, ver = self._row["paper_id"], self._row["version"]
@@ -388,12 +407,15 @@ class PaperCard(QFrame):
     def _on_download_done(self, paper_id: str, version: int, path: str) -> None:
         set_pdf_path(paper_id, path)
         set_has_pdf(paper_id, version, True)
-        self._pdf_btn.setEnabled(True)
+        if self._pdf_btn is not None:
+            self._pdf_btn.setEnabled(True)
         self._refresh_pdf_btn()
         if self._pdf_window is not None:
             self._pdf_window.load_pdf(path)
 
     def _on_download_failed(self, _pid: str, _ver: int, _err: str) -> None:
+        if self._pdf_btn is None:
+            return
         self._pdf_btn.setEnabled(True)
         self._pdf_btn.setText("Failed — retry?")
         self._pdf_btn.setStyleSheet(f"""
