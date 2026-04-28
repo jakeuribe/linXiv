@@ -219,7 +219,7 @@ def init_db() -> None:
                     else:
                         print(f"File [ {curr_path} ] could not be moved")
                 except Exception as e:
-                    print(f"An error occured while trying to parse file {rows["PDF_PATH"]}:\n{e}")
+                    print(f"An error occured while trying to parse file {rows['PDF_PATH']}:\n{e}")
         if old_pdf_dir().is_dir():
             _remove_gui_pdf_dir(old_pdf_dir())
 
