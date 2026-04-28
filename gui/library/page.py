@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -10,6 +11,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMenu,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QStackedWidget,
@@ -22,8 +24,8 @@ from formats.bibtex import BibTeXFormat
 from formats.csv_fmt import CSVFormat
 from formats.json_fmt import JSONFormat
 from formats.markdown import MarkdownFormat, ObsidianFormat
-from storage.db import list_papers, save_papers_metadata, set_has_pdf, set_pdf_path
-from gui.qt_assets import PaperCard
+from storage.db import delete_paper, list_papers, save_papers_metadata, set_has_pdf, set_pdf_path
+from gui.qt_assets import PaperCard, SelectionBar
 from gui.shell import AppShell
 
 _bibtex_fmt   = BibTeXFormat()
@@ -36,7 +38,7 @@ from gui.theme import ACCENT as _ACCENT, TEXT as _TEXT, MUTED as _MUTED
 from gui.theme import (
     FONT_TITLE, FONT_SUBHEADING, FONT_BODY, FONT_SECONDARY, FONT_TERTIARY,
     SPACE_XL, SPACE_LG, SPACE_MD, SPACE_SM, SPACE_XS,
-    RADIUS_LG, RADIUS_MD,
+    RADIUS_LG, RADIUS_MD, RADIUS_SM,
     BTN_H_MD, BTN_H_SM,
     PAGE_MARGIN_H, PAGE_MARGIN_V, CARD_PAD_H, CARD_PAD_V, DIALOG_PAD,
     NOTE_HEIGHT, ABSTRACT_HEIGHT,
@@ -69,71 +71,6 @@ class _PdfMetadataWorker(QThread):
             self.finished.emit(meta, self._path)
         except Exception as e:
             self.failed.emit(str(e))
-
-
-# ── Action bar (shown when papers are selected) ───────────────────────────────
-
-class _ActionBar(QFrame):
-    download_requested     = pyqtSignal()
-    add_to_project_requested = pyqtSignal()
-    clear_requested        = pyqtSignal()
-    select_all_requested   = pyqtSignal()
-
-    def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setStyleSheet(f"""
-            QFrame {{ background: #1e1e36; border-top: 1px solid {_BORDER}; }}
-            QLabel {{ background: transparent; border: none; }}
-        """)
-        self.setFixedHeight(52)  # TODO: Make more customizable
-
-        row = QHBoxLayout(self)
-        row.setContentsMargins(24, 0, 24, 0)
-        row.setSpacing(SPACE_MD)
-
-        self._count_lbl = QLabel()
-        self._count_lbl.setStyleSheet(f"font-size: {FONT_BODY}px; font-weight: 600; color: {_TEXT};")
-        row.addWidget(self._count_lbl)
-        row.addSpacing(SPACE_SM)
-
-        self._dl_btn = self._btn("Download PDFs", _BLUE)
-        self._dl_btn.clicked.connect(self.download_requested)
-        row.addWidget(self._dl_btn)
-
-        self._proj_btn = self._btn("Add to Project", _ACCENT)
-        self._proj_btn.clicked.connect(self.add_to_project_requested)
-        row.addWidget(self._proj_btn)
-
-        row.addStretch()
-
-        sel_all = QPushButton("Select All")
-        sel_all.setFixedHeight(BTN_H_MD)
-        sel_all.setCursor(Qt.CursorShape.PointingHandCursor)
-        sel_all.setStyleSheet(_BTN)
-        sel_all.clicked.connect(self.select_all_requested)
-        row.addWidget(sel_all)
-
-        clr = QPushButton("Clear")
-        clr.setFixedHeight(BTN_H_MD)
-        clr.setCursor(Qt.CursorShape.PointingHandCursor)
-        clr.setStyleSheet(_BTN)
-        clr.clicked.connect(self.clear_requested)
-        row.addWidget(clr)
-
-    def set_count(self, n: int) -> None:
-        self._count_lbl.setText(f"{n} selected")
-
-    @staticmethod
-    def _btn(label: str, color: str) -> QPushButton:
-        b = QPushButton(label)
-        b.setFixedHeight(BTN_H_MD)
-        b.setCursor(Qt.CursorShape.PointingHandCursor)
-        b.setStyleSheet(f"""
-            QPushButton {{ background: transparent; border: 1px solid {color};
-                border-radius: {RADIUS_MD}px; color: {color}; font-size: {FONT_SECONDARY}px; padding: 4px 14px; }}
-            QPushButton:hover {{ background: rgba(91,141,238,0.08); }}
-        """)
-        return b
 
 
 # ── Paper detail view ────────────────────────────────────────────────────────
@@ -542,10 +479,16 @@ class LibraryPage(QWidget):
         outer.addWidget(inner_widget, stretch=1)
 
         # ── Action bar (pinned to bottom, hidden when nothing selected) ───────
-        self._action_bar = _ActionBar(self)
-        self._action_bar.setVisible(False)
+        self._action_bar = SelectionBar(
+            show_select_all=True,
+            show_remove_pdfs=True,
+            show_remove_from_library=True,
+            parent=self,
+        )
         self._action_bar.download_requested.connect(self._on_bulk_download)
+        self._action_bar.remove_pdfs_requested.connect(self._on_remove_pdfs)
         self._action_bar.add_to_project_requested.connect(self._on_add_to_project)
+        self._action_bar.remove_from_library_requested.connect(self._on_remove_from_library)
         self._action_bar.clear_requested.connect(self._clear_selection)
         self._action_bar.select_all_requested.connect(self._select_all)
         outer.addWidget(self._action_bar)
@@ -708,9 +651,7 @@ class LibraryPage(QWidget):
         self._sync_action_bar()
 
     def _sync_action_bar(self) -> None:
-        n = len(self._selected)
-        self._action_bar.setVisible(n > 0)
-        self._action_bar.set_count(n)
+        self._action_bar.set_count(len(self._selected))
 
     # ── Bulk actions ──────────────────────────────────────────────────────────
 
@@ -968,3 +909,49 @@ class LibraryPage(QWidget):
                 project.add_paper(pid)
             except Exception:
                 pass
+
+    def _on_remove_pdfs(self) -> None:
+        if not self._selected:
+            return
+        affected = [c for c in self._cards if c.paper_id() in self._selected and c.local_pdf_path()]
+        if not affected:
+            return
+        n = len(affected)
+        reply = QMessageBox.question(
+            self,
+            "Remove PDFs",
+            f"Remove local PDFs for {n} paper(s)?\n\nPDFs downloaded by linXiv will be deleted from disk. Externally linked PDFs will be unlinked only.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        linxiv_pdf_dir = (Path(__file__).parent.parent / "pdfs").resolve()
+        for card in affected:
+            path = card.local_pdf_path()
+            if path and os.path.isfile(path):
+                try:
+                    if Path(path).resolve().is_relative_to(linxiv_pdf_dir):
+                        os.remove(path)
+                except OSError:
+                    pass
+            set_pdf_path(card.paper_id(), "")
+            set_has_pdf(card.paper_id(), card._row["version"], False)
+        self.refresh()
+
+    def _on_remove_from_library(self) -> None:
+        if not self._selected:
+            return
+        n = len(self._selected)
+        reply = QMessageBox.question(
+            self,
+            "Remove from library",
+            f"Permanently delete {n} paper(s) from the library? This cannot be undone.\n\nLinked PDFs will not be deleted from disk; PDFs downloaded by linXiv will be.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        for pid in list(self._selected):
+            delete_paper(pid)
+        self._selected.clear()
+        self.refresh()

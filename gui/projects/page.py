@@ -28,7 +28,7 @@ from PyQt6.QtWidgets import (
 
 from storage.projects import color_to_hex
 
-from gui.qt_assets import PaperCard, ElidedLabel
+from gui.qt_assets import PaperCard, ElidedLabel, SelectionBar
 from gui.library.page import LibraryPage
 from gui.shell import AppShell
 from gui.views import PdfWindow
@@ -750,8 +750,15 @@ class ProjectDetailView(QWidget):
         self._pdf_failed  = 0
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(PAGE_MARGIN_H, 32, PAGE_MARGIN_H, 32)
+        outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
+
+        content = QWidget()
+        content.setStyleSheet(f"background: {_BG};")
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(PAGE_MARGIN_H, 32, PAGE_MARGIN_H, 32)
+        content_layout.setSpacing(0)
+        outer.addWidget(content, stretch=1)
 
         # Header
         header = QHBoxLayout()
@@ -813,8 +820,8 @@ class ProjectDetailView(QWidget):
         self._delete_confirming = False
         header.addWidget(self._delete_btn)
 
-        outer.addLayout(header)
-        outer.addSpacing(16)
+        content_layout.addLayout(header)
+        content_layout.addSpacing(16)
 
         # Meta (description + tags): bounded height so huge text cannot stress layout on resize.
         self._desc_scroll = QScrollArea()
@@ -828,14 +835,14 @@ class ProjectDetailView(QWidget):
         self._desc_lbl.setWordWrap(True)
         self._desc_lbl.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self._desc_lbl.setStyleSheet(f"font-size: {FONT_BODY}px; color: {_MUTED}; background: transparent;")
-        outer.addWidget(self._desc_lbl)
+        content_layout.addWidget(self._desc_lbl)
         self._desc_scroll.setWidget(self._desc_lbl)
-        outer.addWidget(self._desc_scroll)
+        content_layout.addWidget(self._desc_scroll)
 
         self._tags_lbl = QLabel()
         self._tags_lbl.setStyleSheet(f"font-size: {FONT_SECONDARY}px; color: {_ACCENT}; background: transparent;")
-        outer.addWidget(self._tags_lbl)
-        outer.addSpacing(SPACE_LG)
+        content_layout.addWidget(self._tags_lbl)
+        content_layout.addSpacing(SPACE_LG)
 
         # Papers section header
         papers_header = QHBoxLayout()
@@ -859,8 +866,8 @@ class ProjectDetailView(QWidget):
         papers_header.addStretch()
         papers_header.addWidget(self._import_pdf_btn)
         papers_header.addWidget(self._add_paper_btn)
-        outer.addLayout(papers_header)
-        outer.addSpacing(10)
+        content_layout.addLayout(papers_header)
+        content_layout.addSpacing(10)
 
         # Scrollable papers list
         scroll = QScrollArea()
@@ -876,51 +883,20 @@ class ProjectDetailView(QWidget):
         self._papers_layout.addStretch()
 
         scroll.setWidget(self._papers_widget)
-        outer.addWidget(scroll, stretch=1)
+        content_layout.addWidget(scroll, stretch=1)
 
         self._empty_papers_lbl = QLabel("No papers yet — add one to get started.")
         self._empty_papers_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._empty_papers_lbl.setStyleSheet(
             f"font-size: {FONT_BODY}px; color: {_MUTED}; background: transparent;"
         )
-        outer.addWidget(self._empty_papers_lbl)
+        content_layout.addWidget(self._empty_papers_lbl)
 
-        self._paper_action_bar = QFrame()
-        self._paper_action_bar.setStyleSheet(f"""
-            QFrame {{ background: #1e1e36; border-top: 1px solid {_BORDER}; }}
-            QLabel {{ background: transparent; border: none; }}
-        """)
-        self._paper_action_bar.setFixedHeight(52)
-        self._paper_action_bar.setVisible(False)
-        bar_row = QHBoxLayout(self._paper_action_bar)
-        bar_row.setContentsMargins(PAGE_MARGIN_H, 0, PAGE_MARGIN_H, 0)
-        bar_row.setSpacing(SPACE_MD)
-
-        self._paper_sel_lbl = QLabel()
-        self._paper_sel_lbl.setStyleSheet(f"font-size: {FONT_BODY}px; font-weight: 600; color: {_TEXT};")
-        bar_row.addWidget(self._paper_sel_lbl)
-        bar_row.addStretch()
-
-        remove_btn = QPushButton("Remove from project")
-        remove_btn.setFixedHeight(BTN_H_MD)
-        remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        remove_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent; border: 1px solid #e05c5c;
-                border-radius: {RADIUS_MD}px; color: #e05c5c; font-size: {FONT_SECONDARY}px; padding: 4px 14px;
-            }}
-            QPushButton:hover {{ background: #2a1a1a; }}
-        """)
-        remove_btn.clicked.connect(self._remove_selected_papers)
-        bar_row.addWidget(remove_btn)
-
-        clear_btn = QPushButton("Clear")
-        clear_btn.setFixedHeight(BTN_H_MD)
-        clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        clear_btn.setStyleSheet(_BTN_MUTED_STYLE)
-        clear_btn.clicked.connect(self._clear_paper_selection)
-        bar_row.addWidget(clear_btn)
-
+        self._paper_action_bar = SelectionBar(show_remove=True, parent=self)
+        self._paper_action_bar.download_requested.connect(self._on_bulk_download)
+        self._paper_action_bar.add_to_project_requested.connect(self._on_add_to_project)
+        self._paper_action_bar.remove_from_project_requested.connect(self._remove_selected_papers)
+        self._paper_action_bar.clear_requested.connect(self._clear_paper_selection)
         outer.addWidget(self._paper_action_bar)
 
     def load(self, project) -> None:
@@ -944,7 +920,7 @@ class ProjectDetailView(QWidget):
 
     def _rebuild_papers(self) -> None:
         self._selected_pids.clear()
-        self._paper_action_bar.setVisible(False)
+        self._paper_action_bar.set_count(0)
 
         while self._papers_layout.count() > 1:
             item = self._papers_layout.takeAt(0)
@@ -977,9 +953,7 @@ class ProjectDetailView(QWidget):
             self._selected_pids.add(paper_id)
         else:
             self._selected_pids.discard(paper_id)
-        n = len(self._selected_pids)
-        self._paper_action_bar.setVisible(n > 0)
-        self._paper_sel_lbl.setText(f"{n} selected")
+        self._paper_action_bar.set_count(len(self._selected_pids))
 
     def _clear_paper_selection(self) -> None:
         self._selected_pids.clear()
@@ -990,7 +964,7 @@ class ProjectDetailView(QWidget):
             w = item.widget()
             if isinstance(w, PaperCard):
                 w.set_selected(False)
-        self._paper_action_bar.setVisible(False)
+        self._paper_action_bar.set_count(0)
 
     def _remove_selected_papers(self) -> None:
         if self._project is None or not self._selected_pids:
@@ -998,6 +972,60 @@ class ProjectDetailView(QWidget):
         for pid in list(self._selected_pids):
             self._project.remove_paper(pid)
         self._rebuild_papers()
+
+    def _on_bulk_download(self) -> None:
+        for i in range(self._papers_layout.count() - 1):
+            item = self._papers_layout.itemAt(i)
+            if item is None:
+                continue
+            w = item.widget()
+            if isinstance(w, PaperCard) and w.paper_id() in self._selected_pids:
+                w.start_download_if_needed()
+
+    def _on_add_to_project(self) -> None:
+        if not self._selected_pids:
+            return
+        from PyQt6.QtWidgets import QComboBox, QDialogButtonBox, QMessageBox
+        from storage.projects import filter_projects, Q
+
+        projects = filter_projects(Q("status = 'active'"))
+        if not projects:
+            QMessageBox.information(self, "No Projects", "Create a project first.")
+            return
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Add to Project")
+        dlg.setStyleSheet(f"background: {_BG}; color: {_TEXT};")
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(DIALOG_PAD, CARD_PAD_V, DIALOG_PAD, CARD_PAD_V)
+        lay.setSpacing(SPACE_MD)
+
+        lay.addWidget(QLabel(f"Add {len(self._selected_pids)} paper(s) to:"))
+        combo = QComboBox()
+        combo.setStyleSheet(f"""
+            QComboBox {{ background: {_PANEL}; border: 1px solid {_BORDER};
+                border-radius: {RADIUS_SM}px; color: {_TEXT}; padding: 4px 8px; font-size: {FONT_BODY}px; }}
+        """)
+        for p in projects:
+            combo.addItem(p.name, userData=p)
+        lay.addWidget(combo)
+
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        lay.addWidget(btns)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        project = combo.currentData()
+        for pid in self._selected_pids:
+            try:
+                project.add_paper(pid)
+            except Exception:
+                pass
 
     def _on_add_paper(self) -> None:
         if self._project is None:
@@ -1249,8 +1277,16 @@ class ProjectsPage(QWidget):
         add_btn.setStyleSheet(_BTN_STYLE)
         add_btn.clicked.connect(self._on_add)
 
+        refresh_btn = QPushButton("Refresh")
+        refresh_btn.setFixedHeight(40)
+        refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        refresh_btn.setStyleSheet(_BTN_MUTED_STYLE)
+        refresh_btn.clicked.connect(self._refresh)
+
         header.addLayout(col)
         header.addStretch()
+        header.addWidget(refresh_btn, alignment=Qt.AlignmentFlag.AlignBottom)
+        header.addSpacing(SPACE_SM)
         header.addWidget(add_btn, alignment=Qt.AlignmentFlag.AlignBottom)
         outer.addLayout(header)
         outer.addSpacing(SPACE_XL)

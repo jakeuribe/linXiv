@@ -45,8 +45,11 @@ CAT_COLORS: dict[str, str] = {
 # ── Download worker ───────────────────────────────────────────────────────────
 
 class _DownloadWorker(QThread):
-    finished = pyqtSignal(str, int, str)   # paper_id, version, local_path
-    failed   = pyqtSignal(str, int, str)   # paper_id, version, error
+    finished     = pyqtSignal(str, int, str)  # paper_id, version, local_path
+    failed       = pyqtSignal(str, int, str)  # paper_id, version, error
+    rate_limited = pyqtSignal(str, int)       # paper_id, version — emitted before each retry sleep
+
+    _RETRY_DELAYS = (5, 15, 30)  # seconds before each retry on HTTP 429
 
     def __init__(self, paper_id: str, version: int) -> None:
         super().__init__()
@@ -54,17 +57,33 @@ class _DownloadWorker(QThread):
         self.version  = version
 
     def run(self) -> None:
+        import time
+        import urllib.error
         import urllib.request
+        from sources.fetch_paper_metadata import _check_ratelimit, _record_ratelimit
         _PDF_DIR.mkdir(parents=True, exist_ok=True)
         dest = _PDF_DIR / f"{self.paper_id}v{self.version}.pdf"
         url  = f"https://arxiv.org/pdf/{self.paper_id}v{self.version}"
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "linXiv/1.0"})
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                dest.write_bytes(resp.read())
-            self.finished.emit(self.paper_id, self.version, str(dest))
-        except Exception as e:
-            self.failed.emit(self.paper_id, self.version, str(e))
+        req  = urllib.request.Request(url, headers={"User-Agent": "linXiv/1.0"})
+        _check_ratelimit()  # wait out any rate limit recorded by prior API calls
+        for delay in (None, *self._RETRY_DELAYS):
+            if delay is not None:
+                self.rate_limited.emit(self.paper_id, self.version)
+                time.sleep(delay)
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    dest.write_bytes(resp.read())
+                self.finished.emit(self.paper_id, self.version, str(dest))
+                return
+            except urllib.error.HTTPError as e:
+                if e.code != 429:
+                    self.failed.emit(self.paper_id, self.version, str(e))
+                    return
+                _record_ratelimit()  # inform API calls that arXiv is rate limiting
+            except Exception as e:
+                self.failed.emit(self.paper_id, self.version, str(e))
+                return
+        self.failed.emit(self.paper_id, self.version, "rate limited")
 
 
 # ── Elided label (row / compact modes) ───────────────────────────────────────
@@ -403,6 +422,7 @@ class PaperCard(QFrame):
         self._worker = _DownloadWorker(pid, ver)
         self._worker.finished.connect(self._on_download_done)
         self._worker.failed.connect(self._on_download_failed)
+        self._worker.rate_limited.connect(self._on_download_rate_limited)
         self._worker.start()
 
     def _on_download_done(self, paper_id: str, version: int, path: str) -> None:
@@ -414,11 +434,15 @@ class PaperCard(QFrame):
         if self._pdf_window is not None:
             self._pdf_window.load_pdf(path)
 
-    def _on_download_failed(self, _pid: str, _ver: int, _err: str) -> None:
+    def _on_download_rate_limited(self, _pid: str, _ver: int) -> None:
+        if self._pdf_btn is not None:
+            self._pdf_btn.setText("Rate limited — retrying…")
+
+    def _on_download_failed(self, _pid: str, _ver: int, err: str) -> None:
         if self._pdf_btn is None:
             return
         self._pdf_btn.setEnabled(True)
-        self._pdf_btn.setText("Failed — retry?")
+        self._pdf_btn.setText("Rate limited — retry?" if err == "rate limited" else "Failed — retry?")
         self._pdf_btn.setStyleSheet(f"""
             QPushButton {{ background: transparent; border: 1px solid {_RED};
                 border-radius: {RADIUS_SM}px; color: {_RED}; font-size: {FONT_TERTIARY}px; }}
