@@ -928,23 +928,25 @@ class ProjectDetailView(QWidget):
                 item.widget().deleteLater()  # pyright: ignore[reportOptionalMemberAccess]
 
         paper_ids = self._project.paper_ids if self._project else []
-        count = len(paper_ids)
-        self._papers_lbl.setText(f"Papers  ({count})")
+        self._papers_lbl.setText(f"Papers  ({len(paper_ids)})")
 
         if paper_ids:
             assert self._project is not None  # paper_ids is non-empty only when _project is set
             self._empty_papers_lbl.setVisible(False)
             from storage.db import get_paper
+            rendered_count = 0
             for pid in paper_ids:
                 row = get_paper(pid)
                 if row is None:
                     continue
+                rendered_count += 1
                 card = PaperCard(row, pdf_window=self._pdf_window, project_id=self._project.id)
                 card.double_clicked.connect(
                     lambda r: self.navigate_to_paper.emit(r["paper_id"])
                 )
                 card.selection_toggled.connect(self._on_card_selection_toggled)
                 self._papers_layout.insertWidget(self._papers_layout.count() - 1, card)
+            self._papers_lbl.setText(f"Papers  ({rendered_count})")
         else:
             self._empty_papers_lbl.setVisible(True)
 

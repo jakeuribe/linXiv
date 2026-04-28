@@ -25,6 +25,7 @@ from formats.csv_fmt import CSVFormat
 from formats.json_fmt import JSONFormat
 from formats.markdown import MarkdownFormat, ObsidianFormat
 from storage.db import delete_paper, list_papers, save_papers_metadata, set_has_pdf, set_pdf_path
+from storage.paths import pdf_dir
 from gui.qt_assets import PaperCard, SelectionBar
 from gui.shell import AppShell
 
@@ -925,14 +926,16 @@ class LibraryPage(QWidget):
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
-        linxiv_pdf_dir = (Path(__file__).parent.parent / "pdfs").resolve()
+        linxiv_pdf_dir = pdf_dir().resolve()
         for card in affected:
             path = card.local_pdf_path()
             if path and os.path.isfile(path):
                 try:
                     if Path(path).resolve().is_relative_to(linxiv_pdf_dir):
                         os.remove(path)
-                except OSError:
+                except OSError as e:
+                    print(f"Error removing PDF: {path}")
+                    print(f"Error: {e}")
                     pass
             set_pdf_path(card.paper_id(), "")
             set_has_pdf(card.paper_id(), card._row["version"], False)

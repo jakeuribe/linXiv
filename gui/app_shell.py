@@ -75,5 +75,5 @@ def run_shell() -> None:
     shell.register_on_close(search_page.cleanup_pdfs)
     app.aboutToQuit.connect(search_page.cleanup_pdfs)
 
-    shell.show()
+    shell.showMaximized()
     sys.exit(app.exec())

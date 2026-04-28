@@ -1,12 +1,11 @@
-from pathlib import Path
-
 from PyQt6.QtCore import QThread, pyqtSignal
 import arxiv
+from storage.paths import pdf_dir
 from sources import search_papers
 from sources import ArxivSource, OpenAlexSource
 from sources.arxiv_downloads import download_pdf
 
-_PDF_DIR = Path(__file__).parent.parent.parent / "pdfs"
+_PDF_DIR = pdf_dir()
 
 
 class _SearchWorker(QThread):

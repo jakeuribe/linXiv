@@ -27,12 +27,13 @@ from gui.theme import (
     SPACE_MD, SPACE_XS,
 )
 from storage.db import set_has_pdf, set_pdf_path
+from storage.paths import pdf_dir
 
 _GREEN = "#4caf7d"
 _BLUE  = "#5b8dee"
 _RED   = "#e05c5c"
 
-_PDF_DIR = Path(__file__).parent.parent / "pdfs"
+_PDF_DIR = pdf_dir()
 
 # TODO: differentiate physics sub-categories; add more non-CS fields
 CAT_COLORS: dict[str, str] = {

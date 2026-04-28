@@ -1,5 +1,6 @@
 import os
 
+from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import QMainWindow, QToolBar, QLabel, QPushButton, QWidget
 from PyQt6.QtPdfWidgets import QPdfView
 from PyQt6.QtPdf import QPdfDocument
@@ -87,3 +88,8 @@ class PdfWindow(QMainWindow):
     def _update_page_label(self, page: int) -> None:
         total = self._doc.pageCount()
         self._page_label.setText(f"Page {page + 1} / {total}" if total else "")
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        # Release OS file handle when viewer window is closed (Windows lock fix).
+        self._doc.close()
+        super().closeEvent(event)
