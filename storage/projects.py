@@ -231,6 +231,7 @@ class Project:
                      self.project_tags, self.paper_ids, self.status),
                 )
                 self.id = cur.lastrowid
+                assert self.id is not None
                 _sync_project_papers(conn, self.id, self.paper_ids)
         else:
             with _connect() as conn:
@@ -245,6 +246,7 @@ class Project:
                      self.updated_at, self.archived_at,
                      self.project_tags, self.paper_ids, self.status, self.id),
                 )
+                assert self.id is not None
                 _sync_project_papers(conn, self.id, self.paper_ids)
 
     def delete(self) -> None:
