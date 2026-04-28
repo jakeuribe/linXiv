@@ -48,6 +48,14 @@ def _projects_tables_exist() -> bool:
     return row is not None
 
 
+def _project_papers_table_exists() -> bool:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='project_papers'"
+        ).fetchone()
+    return row is not None
+
+
 def ensure_projects_db() -> None:
     """Initialise the projects tables only if they don't exist yet, then migrate."""
     if not _projects_tables_exist():
@@ -78,6 +86,8 @@ def _migrate_projects_db() -> None:
                     "UPDATE projects SET color = ? WHERE id = ?",
                     (int(raw.lstrip("#"), 16), row["id"]),
                 )
+    _ensure_project_membership_table()
+    _backfill_project_memberships()
 
 
 def init_projects_db() -> None:
@@ -96,6 +106,57 @@ def init_projects_db() -> None:
             ("paper_ids",    list),            # ordered; source of truth for membership & order
             ("status",       str,              "NOT NULL DEFAULT 'active'"),
         ],
+    )
+    _ensure_project_membership_table()
+
+
+def _ensure_project_membership_table() -> None:
+    with _connect() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS project_papers (
+                project_id INTEGER NOT NULL,
+                paper_id   TEXT    NOT NULL,
+                position   INTEGER NOT NULL,
+                PRIMARY KEY (project_id, paper_id),
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+                FOREIGN KEY (paper_id) REFERENCES paper_roots(paper_id) ON DELETE CASCADE
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_project_papers_project_pos ON project_papers(project_id, position)"
+        )
+
+
+def _backfill_project_memberships() -> None:
+    if not _project_papers_table_exists():
+        return
+    with _connect() as conn:
+        has_data = conn.execute("SELECT 1 FROM project_papers LIMIT 1").fetchone() is not None
+        if has_data:
+            return
+        rows = conn.execute("SELECT id, paper_ids FROM projects").fetchall()
+        for row in rows:
+            project_id = row["id"]
+            paper_ids = row["paper_ids"] or []
+            _sync_project_papers(conn, project_id, paper_ids)
+
+
+def _load_project_papers(conn, project_id: int) -> list[str]:
+    rows = conn.execute(
+        "SELECT paper_id FROM project_papers WHERE project_id = ? ORDER BY position ASC",
+        (project_id,),
+    ).fetchall()
+    return [row["paper_id"] for row in rows]
+
+
+def _sync_project_papers(conn, project_id: int, paper_ids: list[str]) -> None:
+    deduped = list(dict.fromkeys(paper_ids))
+    for pid in deduped:
+        conn.execute("INSERT OR IGNORE INTO paper_roots(paper_id) VALUES (?)", (pid,))
+    conn.execute("DELETE FROM project_papers WHERE project_id = ?", (project_id,))
+    conn.executemany(
+        "INSERT INTO project_papers(project_id, paper_id, position) VALUES (?, ?, ?)",
+        [(project_id, pid, idx) for idx, pid in enumerate(deduped)],
     )
 
 
@@ -131,13 +192,18 @@ class Project:
     @classmethod
     def from_row(cls, row) -> Project:
         """Construct a Project from a sqlite3.Row returned by a projects query."""
+        paper_ids = row["paper_ids"] or []
+        if row["id"] is not None and _project_papers_table_exists():
+            with _connect() as conn:
+                joined_ids = _load_project_papers(conn, row["id"])
+            paper_ids = joined_ids
         return cls(
             id           = row["id"],
             name         = row["name"],
             description  = row["description"] or "",
             color        = int(row["color"]) if row["color"] is not None else None,
             project_tags = row["project_tags"] or [],
-            paper_ids    = row["paper_ids"] or [],
+            paper_ids    = paper_ids,
             status       = Status(row["status"]),
             created_at   = row["created_at"],
             updated_at   = row["updated_at"],
@@ -165,6 +231,7 @@ class Project:
                      self.project_tags, self.paper_ids, self.status),
                 )
                 self.id = cur.lastrowid
+                _sync_project_papers(conn, self.id, self.paper_ids)
         else:
             with _connect() as conn:
                 conn.execute(
@@ -178,6 +245,7 @@ class Project:
                      self.updated_at, self.archived_at,
                      self.project_tags, self.paper_ids, self.status, self.id),
                 )
+                _sync_project_papers(conn, self.id, self.paper_ids)
 
     def delete(self) -> None:
         """
