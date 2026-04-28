@@ -26,8 +26,9 @@ def run_shell() -> None:
 
     shell = AppShell()
     shell.setWindowIcon(_icon)
-    shell.add_page("Home", HomePage())
+    home_page     = HomePage()
     library_page  = LibraryPage()
+    shell.add_page("Home", home_page)
     projects_page = ProjectsPage()
     graph_page    = GraphPage()
     shell.add_page("Library", library_page)
@@ -50,11 +51,14 @@ def run_shell() -> None:
 
     library_page.navigate_to_project.connect(_on_navigate_to_project)
 
-    def _on_paper_right_clicked(paper_id: str) -> None:
+    def _on_navigate_to_paper(paper_id: str) -> None:
         shell.go_to_widget(library_page)
         library_page.open_paper(paper_id)
 
-    graph_page.paper_right_clicked.connect(_on_paper_right_clicked)
+    # Home double-click, Projects double-click, Graph right-click all open Library detail.
+    home_page.navigate_to_paper.connect(_on_navigate_to_paper)
+    projects_page.navigate_to_paper.connect(_on_navigate_to_paper)
+    graph_page.paper_right_clicked.connect(_on_navigate_to_paper)
 
     library_page.attach_app_shell(shell)
     projects_page.attach_app_shell(shell)
