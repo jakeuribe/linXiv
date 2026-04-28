@@ -301,12 +301,13 @@ class PaperCard(QFrame):
     # ── Selection (card mode) ─────────────────────────────────────────────────
 
     def set_selected(self, selected: bool) -> None:
-        if not self._card_mode or self._selected == selected:
+        if self._selected == selected:
             return
         self._selected = selected
-        self._chk.blockSignals(True)
-        self._chk.setChecked(selected)
-        self._chk.blockSignals(False)
+        if self._card_mode:
+            self._chk.blockSignals(True)
+            self._chk.setChecked(selected)
+            self._chk.blockSignals(False)
         self.setStyleSheet(self._sel_style if selected else self._base_style)
 
     def is_selected(self) -> bool:
@@ -325,7 +326,7 @@ class PaperCard(QFrame):
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
-            if self._card_mode and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
                 self.set_selected(not self._selected)
                 self.selection_toggled.emit(self._row["paper_id"], self._selected)
                 return

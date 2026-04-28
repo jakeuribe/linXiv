@@ -31,6 +31,7 @@ from storage.projects import color_to_hex
 from gui.qt_assets import PaperCard, ElidedLabel
 from gui.library.page import LibraryPage
 from gui.shell import AppShell
+from gui.views import PdfWindow
 from gui.theme import BG as _BG, PANEL as _PANEL, BORDER as _BORDER
 from gui.theme import ACCENT as _ACCENT, TEXT as _TEXT, MUTED as _MUTED
 from gui.theme import (
@@ -739,8 +740,8 @@ class ProjectDetailView(QWidget):
         super().__init__(parent)
         self.setStyleSheet(f"background: {_BG}; color: {_TEXT};")
         self._project = None
+        self._selected_pids: set[str] = set()
         self._pdf_worker: _PdfMetadataWorker | None = None
-        from gui.views import PdfWindow
         self._pdf_window = PdfWindow(self)
         self._pdf_queue:  list[str] = []
         self._pdf_total  = 0
@@ -884,6 +885,44 @@ class ProjectDetailView(QWidget):
         )
         outer.addWidget(self._empty_papers_lbl)
 
+        self._paper_action_bar = QFrame()
+        self._paper_action_bar.setStyleSheet(f"""
+            QFrame {{ background: #1e1e36; border-top: 1px solid {_BORDER}; }}
+            QLabel {{ background: transparent; border: none; }}
+        """)
+        self._paper_action_bar.setFixedHeight(52)
+        self._paper_action_bar.setVisible(False)
+        bar_row = QHBoxLayout(self._paper_action_bar)
+        bar_row.setContentsMargins(PAGE_MARGIN_H, 0, PAGE_MARGIN_H, 0)
+        bar_row.setSpacing(SPACE_MD)
+
+        self._paper_sel_lbl = QLabel()
+        self._paper_sel_lbl.setStyleSheet(f"font-size: {FONT_BODY}px; font-weight: 600; color: {_TEXT};")
+        bar_row.addWidget(self._paper_sel_lbl)
+        bar_row.addStretch()
+
+        remove_btn = QPushButton("Remove from project")
+        remove_btn.setFixedHeight(BTN_H_MD)
+        remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        remove_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; border: 1px solid #e05c5c;
+                border-radius: {RADIUS_MD}px; color: #e05c5c; font-size: {FONT_SECONDARY}px; padding: 4px 14px;
+            }}
+            QPushButton:hover {{ background: #2a1a1a; }}
+        """)
+        remove_btn.clicked.connect(self._remove_selected_papers)
+        bar_row.addWidget(remove_btn)
+
+        clear_btn = QPushButton("Clear")
+        clear_btn.setFixedHeight(BTN_H_MD)
+        clear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        clear_btn.setStyleSheet(_BTN_MUTED_STYLE)
+        clear_btn.clicked.connect(self._clear_paper_selection)
+        bar_row.addWidget(clear_btn)
+
+        outer.addWidget(self._paper_action_bar)
+
     def load(self, project) -> None:
         self._project = project
         self._delete_confirming = False
@@ -904,6 +943,9 @@ class ProjectDetailView(QWidget):
         self._rebuild_papers()
 
     def _rebuild_papers(self) -> None:
+        self._selected_pids.clear()
+        self._paper_action_bar.setVisible(False)
+
         while self._papers_layout.count() > 1:
             item = self._papers_layout.takeAt(0)
             if item.widget():  # pyright: ignore[reportOptionalMemberAccess] — technically fixable but awkward with current setup
@@ -925,9 +967,37 @@ class ProjectDetailView(QWidget):
                 card.double_clicked.connect(
                     lambda r: self.navigate_to_paper.emit(r["paper_id"])
                 )
+                card.selection_toggled.connect(self._on_card_selection_toggled)
                 self._papers_layout.insertWidget(self._papers_layout.count() - 1, card)
         else:
             self._empty_papers_lbl.setVisible(True)
+
+    def _on_card_selection_toggled(self, paper_id: str, selected: bool) -> None:
+        if selected:
+            self._selected_pids.add(paper_id)
+        else:
+            self._selected_pids.discard(paper_id)
+        n = len(self._selected_pids)
+        self._paper_action_bar.setVisible(n > 0)
+        self._paper_sel_lbl.setText(f"{n} selected")
+
+    def _clear_paper_selection(self) -> None:
+        self._selected_pids.clear()
+        for i in range(self._papers_layout.count() - 1):
+            item = self._papers_layout.itemAt(i)
+            if item is None:
+                continue
+            w = item.widget()
+            if isinstance(w, PaperCard):
+                w.set_selected(False)
+        self._paper_action_bar.setVisible(False)
+
+    def _remove_selected_papers(self) -> None:
+        if self._project is None or not self._selected_pids:
+            return
+        for pid in list(self._selected_pids):
+            self._project.remove_paper(pid)
+        self._rebuild_papers()
 
     def _on_add_paper(self) -> None:
         if self._project is None:
