@@ -214,23 +214,19 @@ def init_db() -> None:
             for rows in wrong_path_rows:
                 try:    
                     curr_path = rows["PDF_PATH"]
-
-                    # new_path = Path(curr_path).rename(destination)
-    
-                    # # Verify the move
-                    # if new_path.exists():
-                    #     print(f"Verified: File is now at {new_path.absolute()}")
-                    # else:
-                    #     print("Move failed: Destination does not exist.")
-
                     if Path(curr_path).is_file() and Path(curr_path).rename(curr_path.replace(str(old_pdf_dir()), str(pdf_dir()))).exists():
                         print(f"File [ {curr_path} ] moved and verified!")
                     else:
                         print(f"File [ {curr_path} ] could not be moved")
                 except Exception as e:
                     print(f"An error occured while trying to parse file {rows["PDF_PATH"]}:\n{e}")
+        if old_pdf_dir().is_dir():
+            _remove_gui_pdf_dir(old_pdf_dir())
 
-                    
+def _remove_gui_pdf_dir(path: Path):
+    for child in path.iterdir():
+        child.unlink()
+    path.rmdir()
 
 
 def _get_deprecated_path_rows() -> list[sqlite3.Row] | None:
@@ -242,7 +238,7 @@ def _get_deprecated_path_rows() -> list[sqlite3.Row] | None:
 
 
 def parse_entry_id(entry_id: str) -> tuple[str, int]:
-    """Split 'http://arxiv.org/abs/2204.12985v4' into ('2204.12985', 4)."""
+    """EX:Split 'http://arxiv.org/abs/2204.12985v4' into ('2204.12985', 4)."""
     raw = entry_id.split('/')[-1]
     match = re.match(r'^(.+?)(?:v(\d+))?$', raw)
     assert match is not None
