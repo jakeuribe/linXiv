@@ -34,11 +34,15 @@ _RED   = "#e05c5c"
 
 _PDF_DIR = Path(__file__).parent.parent / "pdfs"
 
-# TODO: differentiate physics sub-categories; add more non-CS fields
 CAT_COLORS: dict[str, str] = {
-    "cs.LG": "#5b8dee", "cs.AI": "#7b6dee", "cs.CV": "#4db8c0",
-    "cs.CL": "#ee8d5b", "cs.NE": "#5bbf8a", "physics": "#bf8a5b",
-    "math":  "#bf5b8a", "stat":  "#8abf5b",
+    "cs":      "#4a7add",
+    "physics": "#bf8a5b",
+    "math":    "#bf5b8a",
+    "stat":    "#8abf5b",
+    "eess":    "#9b6de0",
+    "econ":    "#a0b05b",
+    "q-bio":   "#5ba080",
+    "q-fin":   "#b0905b",
 }
 
 
