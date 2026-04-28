@@ -65,6 +65,8 @@ def run_shell() -> None:
     projects_page.attach_library_page(library_page)
 
     def _on_shell_page_changed(idx: int) -> None:
+        if idx == shell._stack.indexOf(home_page):
+            home_page.refresh()
         if idx == shell._stack.indexOf(library_page):
             library_page.show_library_list()
         if idx == shell._stack.indexOf(projects_page):
