@@ -13,3 +13,7 @@ def db_path() -> Path:
 
 def pdf_dir() -> Path:
     return project_root() / "pdfs"
+
+# Deprecated pdf directory for migrating pdfs
+def old_pdf_dir() -> Path:
+    return project_root() / "gui" / "pdfs"

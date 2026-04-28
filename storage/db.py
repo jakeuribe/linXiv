@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 import sqlite3
 from typing import Optional, TYPE_CHECKING
-
+from .paths import old_pdf_dir, pdf_dir
 import arxiv
 
 if TYPE_CHECKING:
@@ -209,9 +209,36 @@ def init_db() -> None:
             conn.execute("DROP TABLE IF EXISTS papers_fts")
             conn.execute("CREATE VIRTUAL TABLE papers_fts USING fts5(paper_id, full_text)")
 
+    wrong_path_rows = _get_deprecated_path_rows()
+    if wrong_path_rows:
+        for rows in wrong_path_rows:
+            try:
+                curr_path = rows["PDF_PATH"]
+                if Path(curr_path).is_file() and Path(curr_path).rename(curr_path.replace(str(old_pdf_dir()), str(pdf_dir()))).exists():
+                    print(f"File [ {curr_path} ] moved and verified!")
+                else:
+                    print(f"File [ {curr_path} ] could not be moved")
+            except Exception as e:
+                print(f"An error occured while trying to parse file {rows['PDF_PATH']}:\n{e}")
+    if old_pdf_dir().is_dir():
+        _remove_gui_pdf_dir(old_pdf_dir())
+
+def _remove_gui_pdf_dir(path: Path):
+    for child in path.iterdir():
+        child.unlink()
+    path.rmdir()
+
+
+def _get_deprecated_path_rows() -> list[sqlite3.Row] | None:
+    with _connect() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM papers WHERE PDF_PATH LIKE '%{str(old_pdf_dir())}%';"
+        ).fetchall()
+    return rows
+
 
 def parse_entry_id(entry_id: str) -> tuple[str, int]:
-    """Split 'http://arxiv.org/abs/2204.12985v4' into ('2204.12985', 4)."""
+    """EX:Split 'http://arxiv.org/abs/2204.12985v4' into ('2204.12985', 4)."""
     raw = entry_id.split('/')[-1]
     match = re.match(r'^(.+?)(?:v(\d+))?$', raw)
     assert match is not None
