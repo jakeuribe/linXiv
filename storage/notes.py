@@ -26,7 +26,7 @@ def init_notes_db() -> None:
         "notes",
         [
             ("id",         int, "PRIMARY KEY AUTOINCREMENT"),
-            ("paper_id",   str, "NOT NULL"),
+            ("paper_id",   str, "NOT NULL REFERENCES paper_roots(paper_id) ON DELETE CASCADE"),
             ("project_id", int, "REFERENCES projects(id) ON DELETE SET NULL"),
             ("title",      str),
             ("content",    str),
@@ -43,20 +43,23 @@ def init_notes_db() -> None:
 
 
 def _migrate_notes_db() -> None:
-    """Add FK constraint and indexes to an existing notes table if absent."""
+    """Add FK constraints and indexes to an existing notes table if absent."""
     with _connect() as conn:
         fk_rows = conn.execute("PRAGMA foreign_key_list(notes)").fetchall()
-        has_fk = any(
-            row["table"] == "projects" and row["to"] == "id"
-            for row in fk_rows
-        )
-        if has_fk:
-            # Ensure indexes exist even if a prior rebuild was skipped.
+        has_project_fk = any(row["table"] == "projects"    and row["to"] == "id"       for row in fk_rows)
+        has_paper_fk   = any(row["table"] == "paper_roots" and row["to"] == "paper_id" for row in fk_rows)
+        if has_project_fk and has_paper_fk:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_notes_paper_id   ON notes(paper_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_notes_project_id ON notes(project_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_notes_created_at ON notes(created_at)")
             return
 
+        # Seed paper_roots for any notes whose paper_id isn't there yet
+        # so the rebuild doesn't fail on orphaned rows.
+        conn.execute("""
+            INSERT OR IGNORE INTO paper_roots(paper_id)
+            SELECT DISTINCT paper_id FROM notes WHERE paper_id IS NOT NULL
+        """)
         conn.executescript(
             (_MIGRATIONS_DIR / "notes_add_project_fk.sql").read_text()
         )
@@ -98,6 +101,10 @@ class Note:
         if self.id is None:
             self.created_at = now
             with _connect() as conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO paper_roots(paper_id) VALUES (?)",
+                    (self.paper_id,),
+                )
                 cur = conn.execute(
                     """
                     INSERT INTO notes (paper_id, project_id, title, content, created_at, updated_at)

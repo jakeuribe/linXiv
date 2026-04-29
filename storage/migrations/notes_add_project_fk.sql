@@ -1,11 +1,11 @@
--- Migration: add project_id FK constraint to notes table
+-- Migration: add paper_roots and project_id FK constraints to notes table
 -- Rebuilds the table atomically. Safe to run on any existing notes DB.
 
 PRAGMA foreign_keys = OFF;
 
 CREATE TABLE notes_new (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    paper_id   TEXT    NOT NULL,
+    paper_id   TEXT    NOT NULL REFERENCES paper_roots(paper_id) ON DELETE CASCADE,
     project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
     title      TEXT,
     content    TEXT,
