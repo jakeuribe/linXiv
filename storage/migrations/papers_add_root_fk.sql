@@ -1,5 +1,5 @@
 -- Migration: rebuild papers table to add paper_roots FK constraint
-CREATE TABLE papers_new (
+CREATE TABLE papers_intermediate (
     paper_id    TEXT    NOT NULL,
     version     INTEGER NOT NULL,
     title       TEXT    NOT NULL,

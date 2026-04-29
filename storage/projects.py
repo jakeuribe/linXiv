@@ -100,11 +100,11 @@ def _migrate_projects_db() -> None:
             )
             old_cols = {row[1] for row in conn.execute("PRAGMA table_info(projects)")}
             keep_cols = ", ".join(
-                row[1] for row in conn.execute("PRAGMA table_info(projects_new)")
+                row[1] for row in conn.execute("PRAGMA table_info(projects_intermediate)")
                 if row[1] in old_cols
             )
             conn.execute(
-                f"INSERT INTO projects_new ({keep_cols}) SELECT {keep_cols} FROM projects"
+                f"INSERT INTO projects_intermediate ({keep_cols}) SELECT {keep_cols} FROM projects"
             )
             conn.executescript(
                 (_MIGRATIONS_DIR / "projects_rebuild_swap.sql").read_text()
@@ -134,12 +134,12 @@ def _ensure_project_membership_table() -> None:
     with _connect() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS project_papers (
-                project_id INTEGER NOT NULL,
-                paper_id   TEXT    NOT NULL,
-                position   INTEGER NOT NULL,
-                PRIMARY KEY (project_id, paper_id),
-                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
-                FOREIGN KEY (paper_id) REFERENCES paper_roots(paper_id) ON DELETE CASCADE
+                project_id INTEGER   NOT NULL REFERENCES projects(id)          ON DELETE CASCADE,
+                paper_id   TEXT      NOT NULL REFERENCES paper_roots(paper_id) ON DELETE CASCADE,
+                position   INTEGER,
+                added_at   TIMESTAMP,
+                note       TEXT,
+                PRIMARY KEY (project_id, paper_id)
             )
         """)
         conn.execute(
@@ -151,6 +151,30 @@ def _ensure_project_membership_table() -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_project_papers_paper_id ON project_papers(paper_id)"
         )
+
+        fks = {row["table"] for row in conn.execute("PRAGMA foreign_key_list(project_papers)")}
+        if "paper_roots" not in fks:
+            conn.execute("""
+                DELETE FROM project_papers
+                WHERE paper_id NOT IN (SELECT paper_id FROM paper_roots)
+            """)
+            conn.execute(
+                (_MIGRATIONS_DIR / "project_papers_add_fk.sql").read_text()
+            )
+            old_cols = {row[1] for row in conn.execute("PRAGMA table_info(project_papers)")}
+            keep_cols = ", ".join(
+                row[1] for row in conn.execute("PRAGMA table_info(project_papers_intermediate)")
+                if row[1] in old_cols
+            )
+            conn.execute(
+                f"INSERT INTO project_papers_intermediate ({keep_cols}) SELECT {keep_cols} FROM project_papers"
+            )
+            conn.executescript("""
+                DROP TABLE project_papers;
+                ALTER TABLE project_papers_intermediate RENAME TO project_papers;
+                CREATE INDEX IF NOT EXISTS idx_project_papers_project_pos ON project_papers(project_id, position);
+                CREATE INDEX IF NOT EXISTS idx_project_papers_paper_id ON project_papers(paper_id);
+            """)
 
 
 def _backfill_project_memberships() -> None:

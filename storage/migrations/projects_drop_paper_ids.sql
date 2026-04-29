@@ -5,7 +5,7 @@
 -- generated from PRAGMA table_info(projects) so that any columns added
 -- by future migrations are preserved.
 
-CREATE TABLE projects_new (
+CREATE TABLE projects_intermediate (
     id           INTEGER   PRIMARY KEY AUTOINCREMENT,
     name         TEXT      NOT NULL,
     description  TEXT,

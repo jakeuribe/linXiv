@@ -3,7 +3,7 @@
 
 PRAGMA foreign_keys = OFF;
 
-CREATE TABLE notes_new (
+CREATE TABLE notes_intermediate (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     paper_id   TEXT    NOT NULL REFERENCES paper_roots(paper_id) ON DELETE CASCADE,
     project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
@@ -13,12 +13,12 @@ CREATE TABLE notes_new (
     updated_at TIMESTAMP
 );
 
-INSERT INTO notes_new (id, paper_id, project_id, title, content, created_at, updated_at)
+INSERT INTO notes_intermediate (id, paper_id, project_id, title, content, created_at, updated_at)
     SELECT id, paper_id, project_id, title, content, created_at, updated_at FROM notes;
 
 DROP TABLE notes;
 
-ALTER TABLE notes_new RENAME TO notes;
+ALTER TABLE notes_intermediate RENAME TO notes;
 
 CREATE INDEX IF NOT EXISTS idx_notes_paper_id   ON notes(paper_id);
 CREATE INDEX IF NOT EXISTS idx_notes_project_id ON notes(project_id);

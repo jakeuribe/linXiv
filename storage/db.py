@@ -114,14 +114,14 @@ def _rebuild_papers_with_root_fk(conn: sqlite3.Connection) -> None:
     conn.execute((_MIGRATIONS_DIR / "papers_add_root_fk.sql").read_text())
     old_cols = {row[1] for row in conn.execute("PRAGMA table_info(papers)")}
     col_list = ", ".join(
-        row[1] for row in conn.execute("PRAGMA table_info(papers_new)")
+        row[1] for row in conn.execute("PRAGMA table_info(papers_intermediate)")
         if row[1] in old_cols
     )
-    conn.execute(f"INSERT INTO papers_new ({col_list}) SELECT {col_list} FROM papers")
+    conn.execute(f"INSERT INTO papers_intermediate ({col_list}) SELECT {col_list} FROM papers")
     conn.executescript("""
         DROP VIEW IF EXISTS latest_papers;
         DROP TABLE papers;
-        ALTER TABLE papers_new RENAME TO papers;
+        ALTER TABLE papers_intermediate RENAME TO papers;
 
         CREATE VIEW latest_papers AS
         SELECT * FROM papers p
