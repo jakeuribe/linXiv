@@ -181,23 +181,6 @@ def _backfill_project_memberships() -> None:
             _sync_project_papers(conn, project_id, paper_ids)
 
 
-def _load_paper_ids(project_id: int) -> list[str]:
-    with _connect() as conn:
-        rows = conn.execute(
-            "SELECT paper_id FROM project_papers WHERE project_id = ? ORDER BY position ASC",
-            (project_id,),
-        ).fetchall()
-    return [row["paper_id"] for row in rows]
-
-
-def _save_paper_ids(conn, project_id: int, paper_ids: list[str]) -> None:
-    conn.execute("DELETE FROM project_papers WHERE project_id = ?", (project_id,))
-    conn.executemany(
-        "INSERT INTO project_papers(project_id, paper_id, position) VALUES (?, ?, ?)",
-        [(project_id, pid, idx) for idx, pid in enumerate(paper_ids)],
-    )
-
-
 def _sync_project_papers(conn, project_id: int, paper_ids: list[str]) -> None:
     deduped = list(dict.fromkeys(paper_ids))
     for pid in deduped:
@@ -373,7 +356,7 @@ class Project:
 
     def reorder_paper(self, paper_id: str, new_position: int) -> None:
         """Move a paper to a new index within the ordered list."""
-        if paper_id not in self.paper_ids:
+        if self.id is None or paper_id not in self.paper_ids:
             return
         self.paper_ids.remove(paper_id)
         self.paper_ids.insert(new_position, paper_id)
