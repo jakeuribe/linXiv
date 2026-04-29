@@ -71,12 +71,6 @@
                     <label><input type="checkbox" id="filterHasPdf"> Has PDF only</label>
                 </div>
 
-                <div class="section-title">Projects</div>
-                <div class="chip-row" id="project-chips"></div>
-
-                <div class="section-title">Project Tags</div>
-                <div class="chip-row" id="project-tag-chips"></div>
-
                 <div class="section-title">Date range</div>
                 <div class="filter-row">
                     <label>From</label>
@@ -108,6 +102,22 @@
                 <button class="panel-toggle" data-target="tag-filter-body">▼</button>
             </div>
             <div class="panel-body" id="tag-filter-body">
+
+                <div class="section-title">Projects</div>
+                <div class="filter-row">
+                    <label>Project</label>
+                    <input type="text" id="filterProject" list="projectList" placeholder="type to filter…">
+                    <datalist id="projectList"></datalist>
+                </div>
+
+                <div class="section-title">Project Tags</div>
+                <div class="filter-row">
+                    <label>Tag</label>
+                    <input type="text" id="filterProjectTag" list="projectTagList" placeholder="type to filter…">
+                    <datalist id="projectTagList"></datalist>
+                </div>
+
+                <div class="section-title">Paper Tags</div>
                 <div class="tag-input-row">
                     <input type="text" id="tagFilterInput" list="tagList"
                            placeholder="type a tag…" autocomplete="off">

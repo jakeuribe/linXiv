@@ -22,10 +22,7 @@ let _filterIsolate    = false;
 // Tag logic builder state: [{op: 'AND'|'OR', tag: string}]
 let _tagRows = [];
 
-// Chip toggle state
-let _activeProjectIds = new Set();
-let _activeProjTagIds = new Set();
-let _projectMap       = new Map();  // id → {name, color, tags[]}
+let _projectMap = new Map();  // id → {name, color, tags[]}
 
 const $ = id => document.getElementById(id);
 
@@ -157,7 +154,7 @@ $('relayout-btn').addEventListener('click', () => {
 // ── Filter wiring ────────────────────────────────────────────────────────────
 
 const _textFilterIds  = ['filterCategory', 'filterDateFrom', 'filterDateTo',
-                         'filterTitle', 'filterAuthor'];
+                         'filterTitle', 'filterAuthor', 'filterProject', 'filterProjectTag'];
 const _checkFilterIds = ['showPapers', 'showAuthors', 'showTags', 'filterHasPdf'];
 
 _textFilterIds.forEach(id => {
@@ -177,6 +174,20 @@ $('isolate-btn').addEventListener('click', () => {
 $('select-all-btn').addEventListener('click', () => selectAllPapers());
 $('clear-selection-btn').addEventListener('click', () => clearSelection());
 
+function _projectIdsFromInput() {
+    const name = $('filterProject').value.trim().toLowerCase();
+    if (!name) return null;
+    const ids = [..._projectMap.values()]
+        .filter(p => p.name.toLowerCase().includes(name))
+        .map(p => p.id);
+    return ids.length > 0 ? ids : [-1]; // -1 ensures no match when name typed but not found
+}
+
+function _projTagFromInput() {
+    const tag = $('filterProjectTag').value.trim();
+    return tag ? [tag] : null;
+}
+
 function _scheduleFilter() {
     clearTimeout(_debounce);
     _debounce = setTimeout(_applyFilter, 280);
@@ -194,20 +205,12 @@ function _applyFilter() {
         highlight:    $('filterTitle').value.trim()    || null,
         authorFilter: $('filterAuthor').value.trim()   || null,
         isolate:      $('isolate-btn').classList.contains('active'),
-        projectIds:   _activeProjectIds.size > 0 ? [..._activeProjectIds] : null,
-        projTagIds:   _activeProjTagIds.size > 0 ? [..._activeProjTagIds] : null,
+        projectIds:   _projectIdsFromInput(),
+        projTagIds:   _projTagFromInput(),
     });
 }
 
-// ── Called from Python to populate filter chips & datalists ──────────────────
-
-function _makeChip(label, color) {
-    const chip = document.createElement('button');
-    chip.className = 'chip';
-    chip.textContent = label;
-    chip.style.setProperty('--chip-color', color);
-    return chip;
-}
+// ── Called from Python to populate filter datalists ──────────────────────────
 
 function setFilterOptions(categories, tags, projects) {
     // Category datalist
@@ -216,39 +219,19 @@ function setFilterOptions(categories, tags, projects) {
     // Tag datalist for the logic builder input
     $('tagList').innerHTML = tags.map(t => `<option value="${t}">`).join('');
 
-    // Project chips + project-tag collection
-    _activeProjectIds.clear();
-    _activeProjTagIds.clear();
+    // Project datalist + project-tag datalist
     _projectMap.clear();
-    const projChips    = $('project-chips');
-    const projTagChips = $('project-tag-chips');
-    projChips.innerHTML    = '';
-    projTagChips.innerHTML = '';
-
     const allProjTags = new Set();
     (projects || []).forEach(proj => {
         _projectMap.set(proj.id, proj);
         (proj.tags || []).forEach(t => allProjTags.add(t));
-        const chip = _makeChip(proj.name, proj.color || '#5b8dee');
-        chip.addEventListener('click', () => {
-            chip.classList.toggle('active');
-            if (chip.classList.contains('active')) _activeProjectIds.add(proj.id);
-            else _activeProjectIds.delete(proj.id);
-            _applyFilter();
-        });
-        projChips.appendChild(chip);
     });
-
-    [...allProjTags].sort().forEach(tag => {
-        const chip = _makeChip(tag, '#9b59b6');
-        chip.addEventListener('click', () => {
-            chip.classList.toggle('active');
-            if (chip.classList.contains('active')) _activeProjTagIds.add(tag);
-            else _activeProjTagIds.delete(tag);
-            _applyFilter();
-        });
-        projTagChips.appendChild(chip);
-    });
+    $('projectList').innerHTML = [..._projectMap.values()]
+        .map(p => `<option value="${p.name.replace(/"/g, '&quot;')}">`)
+        .join('');
+    $('projectTagList').innerHTML = [...allProjTags].sort()
+        .map(t => `<option value="${t.replace(/"/g, '&quot;')}">`)
+        .join('');
 }
 
 // ── Called from Python toolbar "Clear filters" ───────────────────────────────
@@ -259,9 +242,6 @@ function clearFilters() {
     $('isolate-btn').classList.remove('active');
     _tagRows.length = 0;
     _renderTagRows();
-    _activeProjectIds.clear();
-    _activeProjTagIds.clear();
-    document.querySelectorAll('.chip.active').forEach(c => c.classList.remove('active'));
     _applyFilter();
 }
 
@@ -276,12 +256,6 @@ function loadGraph(data) {
     _visiblePaperIds  = null;
     _visibleAuthorIds = null;
     _visibleTagIds    = null;
-    _filterIsolate    = false;
-    _tagRows.length = 0;
-    _renderTagRows();
-    _activeProjectIds.clear();
-    _activeProjTagIds.clear();
-    document.querySelectorAll('.chip.active').forEach(c => c.classList.remove('active'));
 
     const simNodes = nodes.map(n => ({
         id: n.id,
