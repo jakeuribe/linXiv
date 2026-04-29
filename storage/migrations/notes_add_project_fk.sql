@@ -5,12 +5,14 @@ PRAGMA foreign_keys = OFF;
 
 CREATE TABLE notes_intermediate (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    paper_id   TEXT    NOT NULL REFERENCES paper_roots(paper_id) ON DELETE CASCADE,
-    project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+    paper_id   TEXT    NOT NULL,
+    project_id INTEGER,
     title      TEXT,
     content    TEXT,
     created_at TIMESTAMP,
-    updated_at TIMESTAMP
+    updated_at TIMESTAMP,
+    FOREIGN KEY (paper_id)   REFERENCES paper_roots(paper_id) ON DELETE CASCADE,
+    FOREIGN KEY (project_id) REFERENCES projects(id)          ON DELETE SET NULL
 );
 
 INSERT INTO notes_intermediate (id, paper_id, project_id, title, content, created_at, updated_at)
