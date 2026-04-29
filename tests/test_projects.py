@@ -1,4 +1,5 @@
 """Tests for projects.py — pure functions, Q predicates, and DB round-trips."""
+import sqlite3
 import sys
 import os
 
@@ -232,3 +233,41 @@ class TestProjectAddPaper:
         assert p.paper_count == 1
         p.add_paper("2301.00001")
         assert p.paper_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Project membership source-of-truth test (cross-cutting)
+# ---------------------------------------------------------------------------
+
+class TestProjectMembershipSourceOfTruth:
+    def test_add_paper_in_memory_and_db(self, tmp_db):
+        """
+        After add_paper(), the paper_id must appear both in the in-memory
+        paper_ids list AND in the persisted paper_ids JSON column in the DB.
+
+        Note: Projects store membership as a JSON LIST column (paper_ids) on
+        the projects row — there is no separate bridge table. The DB-side check
+        queries that column directly via json_each().
+        """
+        p = Project(name="Source of Truth Test")
+        p.save()
+        p.add_paper("2204.12985")
+
+        # In-memory check
+        assert "2204.12985" in p.paper_ids
+
+        # DB-side check: query paper_ids JSON column via sqlite3 directly
+        conn = sqlite3.connect(tmp_db)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            """
+            SELECT je.value AS paper_id
+            FROM projects, json_each(projects.paper_ids) je
+            WHERE projects.id = ?
+            """,
+            (p.id,),
+        ).fetchone()
+        conn.close()
+
+        assert row is not None
+        assert row["paper_id"] == "2204.12985"

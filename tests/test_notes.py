@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from storage.notes import (
@@ -321,3 +323,31 @@ class TestCountPaperNotes:
         assert count_paper_notes("Y") == 1
         n.delete()
         assert count_paper_notes("Y") == 0
+
+
+# ---------------------------------------------------------------------------
+# FK enforcement test (cross-cutting)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "notes.project_id has no FOREIGN KEY constraint and _connect() does not "
+        "enable PRAGMA foreign_keys, so IntegrityError is not raised. "
+        "This test documents the expected (but not yet implemented) behavior."
+    ),
+)
+@pytest.mark.usefixtures("tmp_db")
+def test_note_with_nonexistent_project_id_raises_integrity_error():
+    """
+    Inserting a note that references a project_id not present in the projects
+    table should raise sqlite3.IntegrityError.
+
+    NOTE: Currently xfail — the schema has no FK declaration and SQLite FK
+    enforcement is off by default. Once the schema and/or _connect are updated
+    to enforce this constraint, remove the xfail marker.
+    """
+    # No projects exist in the DB (we use tmp_db, not note_projects)
+    n = Note(paper_id="2204.12985", project_id=9999)
+    with pytest.raises(sqlite3.IntegrityError):
+        n.save()
