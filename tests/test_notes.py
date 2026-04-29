@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from storage.notes import (
@@ -324,3 +326,16 @@ class TestCountPaperNotes:
         assert count_paper_notes("Y") == 1
         n.delete()
         assert count_paper_notes("Y") == 0
+
+
+# ---------------------------------------------------------------------------
+# FK enforcement test (cross-cutting)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.usefixtures("tmp_db")
+def test_note_with_nonexistent_project_id_raises_integrity_error():
+    """notes.project_id has a FK → projects(id); inserting with a non-existent
+    project_id must raise sqlite3.IntegrityError."""
+    n = Note(paper_id="2204.12985", project_id=9999)
+    with pytest.raises(sqlite3.IntegrityError):
+        n.save()

@@ -1,4 +1,5 @@
 """Tests for projects.py — pure functions, Q predicates, and DB round-trips."""
+import sqlite3
 import sys
 import os
 
@@ -232,3 +233,29 @@ class TestProjectAddPaper:
         assert p.paper_count == 1
         p.add_paper("2301.00001")
         assert p.paper_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Project membership source-of-truth test (cross-cutting)
+# ---------------------------------------------------------------------------
+
+class TestProjectMembershipSourceOfTruth:
+    def test_add_paper_in_memory_and_db(self, tmp_db):
+        """After add_paper(), the paper_id must appear both in the in-memory
+        paper_ids list AND in the project_papers bridge table (single source of truth)."""
+        p = Project(name="Source of Truth Test")
+        p.save()
+        p.add_paper("2204.12985")
+
+        assert "2204.12985" in p.paper_ids
+
+        conn = sqlite3.connect(tmp_db)
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT paper_id FROM project_papers WHERE project_id = ? AND paper_id = ?",
+            (p.id, "2204.12985"),
+        ).fetchone()
+        conn.close()
+
+        assert row is not None
+        assert row["paper_id"] == "2204.12985"
