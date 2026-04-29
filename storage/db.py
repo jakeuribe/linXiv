@@ -205,6 +205,7 @@ def init_db() -> None:
             try:
                 curr_path = rows["PDF_PATH"]
                 if Path(curr_path).is_file() and Path(curr_path).rename(curr_path.replace(str(old_pdf_dir()), str(pdf_dir()))).exists():
+                    set_pdf_path(rows["paper_id"], curr_path.replace(str(old_pdf_dir()), str(pdf_dir())))
                     print(f"File [ {curr_path} ] moved and verified!")
                 else:
                     print(f"File [ {curr_path} ] could not be moved")
@@ -334,8 +335,11 @@ def set_has_pdf(paper_id: str, version: int, has: bool) -> None:
 
 def set_pdf_path(paper_id: str, path: str) -> None:
     """Set the pdf_path for a paper (all versions)."""
-    with _connect() as conn:
-        conn.execute("UPDATE papers SET pdf_path = ? WHERE paper_id = ?", (path, paper_id))
+    try:
+        with _connect() as conn:
+            conn.execute("UPDATE papers SET pdf_path = ? WHERE paper_id = ?", (path, paper_id))
+    except Exception as e:
+        print(f"Exception, [{e}] occured while changing pdf path of [{paper_id}] to [{path}]")
 
 
 def delete_paper(paper_id: str) -> None:
