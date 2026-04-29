@@ -92,15 +92,9 @@ def _migrate_projects_db() -> None:
         # If paper_ids JSON column still exists: migrate its data into project_papers,
         # then rebuild the projects table without that column.
         if "paper_ids" in existing:
-            old_rows = conn.execute("SELECT id, paper_ids FROM projects").fetchall()
-            for proj_row in old_rows:
-                proj_id = proj_row["id"]
-                paper_ids = proj_row["paper_ids"] or []
-                for pos, pid in enumerate(paper_ids):
-                    conn.execute(
-                        "INSERT OR IGNORE INTO project_papers (project_id, paper_id, position) VALUES (?, ?, ?)",
-                        (proj_id, pid, pos),
-                    )
+            conn.execute(
+                (_MIGRATIONS_DIR / "projects_migrate_paper_ids.sql").read_text()
+            )
             conn.execute(
                 (_MIGRATIONS_DIR / "projects_drop_paper_ids.sql").read_text()
             )
@@ -112,10 +106,8 @@ def _migrate_projects_db() -> None:
             conn.execute(
                 f"INSERT INTO projects_new ({keep_cols}) SELECT {keep_cols} FROM projects"
             )
-            conn.execute("DROP TABLE projects")
-            conn.execute("ALTER TABLE projects_new RENAME TO projects")
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status)"
+            conn.executescript(
+                (_MIGRATIONS_DIR / "projects_rebuild_swap.sql").read_text()
             )
 
 
