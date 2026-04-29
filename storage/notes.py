@@ -17,24 +17,77 @@ def _notes_table_exists() -> bool:
     return row is not None
 
 
-def ensure_notes_db() -> None:
-    if not _notes_table_exists():
-        init_notes_db()
-
-
 def init_notes_db() -> None:
     init_table(
         "notes",
         [
             ("id",         int, "PRIMARY KEY AUTOINCREMENT"),
             ("paper_id",   str, "NOT NULL"),
-            ("project_id", int),
+            ("project_id", int, "REFERENCES projects(id) ON DELETE SET NULL"),
             ("title",      str),
             ("content",    str),
             ("created_at", datetime.datetime),
             ("updated_at", datetime.datetime),
         ],
     )
+    with _connect() as conn:
+        conn.executescript("""
+            CREATE INDEX IF NOT EXISTS idx_notes_paper_id   ON notes(paper_id);
+            CREATE INDEX IF NOT EXISTS idx_notes_project_id ON notes(project_id);
+            CREATE INDEX IF NOT EXISTS idx_notes_created_at ON notes(created_at);
+        """)
+
+
+def _migrate_notes_db() -> None:
+    """Add FK constraint and indexes to an existing notes table if absent."""
+    with _connect() as conn:
+        fk_rows = conn.execute("PRAGMA foreign_key_list(notes)").fetchall()
+        has_fk = any(
+            row["table"] == "projects" and row["to"] == "id"
+            for row in fk_rows
+        )
+        if has_fk:
+            # Ensure indexes exist even if a prior rebuild was skipped.
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_notes_paper_id   ON notes(paper_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_notes_project_id ON notes(project_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_notes_created_at ON notes(created_at)")
+            return
+
+        # Rebuild the table to add the FK constraint.
+        # executescript issues an implicit COMMIT before running, so use it
+        # here to ensure the multi-step rebuild is atomic.
+        conn.executescript("""
+            PRAGMA foreign_keys = OFF;
+
+            CREATE TABLE notes_new (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                paper_id   TEXT    NOT NULL,
+                project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+                title      TEXT,
+                content    TEXT,
+                created_at TIMESTAMP,
+                updated_at TIMESTAMP
+            );
+
+            INSERT INTO notes_new (id, paper_id, project_id, title, content, created_at, updated_at)
+                SELECT id, paper_id, project_id, title, content, created_at, updated_at FROM notes;
+
+            DROP TABLE notes;
+
+            ALTER TABLE notes_new RENAME TO notes;
+
+            CREATE INDEX IF NOT EXISTS idx_notes_paper_id   ON notes(paper_id);
+            CREATE INDEX IF NOT EXISTS idx_notes_project_id ON notes(project_id);
+            CREATE INDEX IF NOT EXISTS idx_notes_created_at ON notes(created_at);
+
+            PRAGMA foreign_keys = ON;
+        """)
+
+
+def ensure_notes_db() -> None:
+    if not _notes_table_exists():
+        init_notes_db()
+    _migrate_notes_db()
 
 
 # ── Data model ────────────────────────────────────────────────────────────────
