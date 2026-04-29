@@ -86,13 +86,38 @@ def _connect(db_path: str = DB_PATH) -> sqlite3.Connection:
     return conn
 
 
+def _migration_v1(conn: sqlite3.Connection) -> None:
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(papers)")}
+    for col, typedef in [
+        ("updated",           "DATE"),
+        ("categories",        "LIST"),
+        ("journal_ref",       "TEXT"),
+        ("comment",           "TEXT"),
+        ("tags",              "LIST"),
+        ("has_pdf",           "BOOL NOT NULL DEFAULT 0"),
+        ("source",            "TEXT DEFAULT 'arxiv'"),
+        ("pdf_path",          "TEXT DEFAULT NULL"),
+        ("full_text",         "TEXT"),
+        ("downloaded_source", "BOOL DEFAULT 0"),
+    ]:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE papers ADD COLUMN {col} {typedef}")
+
+
+_MIGRATIONS: list[tuple[int, object]] = [
+    (1, _migration_v1),
+]
+
+
 def _papers_has_root_fk(conn: sqlite3.Connection) -> bool:
     rows = conn.execute("PRAGMA foreign_key_list(papers)").fetchall()
     return any(row["table"] == "paper_roots" and row["from"] == "paper_id" for row in rows)
 
 
 def _rebuild_papers_with_root_fk(conn: sqlite3.Connection) -> None:
-    conn.executescript("""
+    cols = [row[1] for row in conn.execute("PRAGMA table_info(papers)")]
+    col_list = ", ".join(cols)
+    conn.executescript(f"""
         CREATE TABLE papers_new (
             paper_id    TEXT    NOT NULL,
             version     INTEGER NOT NULL,
@@ -117,16 +142,8 @@ def _rebuild_papers_with_root_fk(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (paper_id) REFERENCES paper_roots(paper_id) ON DELETE CASCADE
         );
 
-        INSERT INTO papers_new (
-            paper_id, version, title, url, published, updated,
-            category, categories, doi, journal_ref, comment, summary,
-            authors, tags, has_pdf, source, pdf_path, full_text, downloaded_source
-        )
-        SELECT
-            paper_id, version, title, url, published, updated,
-            category, categories, doi, journal_ref, comment, summary,
-            authors, tags, has_pdf, source, pdf_path, full_text, downloaded_source
-        FROM papers;
+        INSERT INTO papers_new ({col_list})
+        SELECT {col_list} FROM papers;
 
         DROP VIEW IF EXISTS latest_papers;
         DROP TABLE papers;
@@ -172,27 +189,26 @@ def init_db() -> None:
             WHERE version = (
                 SELECT MAX(version) FROM papers WHERE paper_id = p.paper_id
             );
+
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version     INTEGER PRIMARY KEY,
+                applied_at  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
         """)
         conn.execute("""
             INSERT OR IGNORE INTO paper_roots(paper_id)
             SELECT DISTINCT paper_id FROM papers
         """)
-        # Migrate existing DBs that are missing columns
-        existing = {row[1] for row in conn.execute("PRAGMA table_info(papers)")}
-        for col, typedef in [
-            ("updated",     "DATE"),
-            ("categories",  "LIST"),
-            ("journal_ref", "TEXT"),
-            ("comment",     "TEXT"),
-            ("tags",        "LIST"),
-            ("has_pdf",     "BOOL NOT NULL DEFAULT 0"),
-            ("source",      "TEXT DEFAULT 'arxiv'"),
-            ("pdf_path",    "TEXT DEFAULT NULL"),
-            ("full_text",   "TEXT"),
-            ("downloaded_source", "BOOL DEFAULT 0"),
-        ]:
-            if col not in existing:
-                conn.execute(f"ALTER TABLE papers ADD COLUMN {col} {typedef}")
+        current_version: int = conn.execute("PRAGMA user_version").fetchone()[0]
+        for version, fn in _MIGRATIONS:
+            if version > current_version:
+                fn(conn)  # type: ignore[call-arg]
+                conn.execute(
+                    "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)",
+                    (version,),
+                )
+                conn.execute(f"PRAGMA user_version = {version}")
+                current_version = version
         if not _papers_has_root_fk(conn):
             _rebuild_papers_with_root_fk(conn)
 
@@ -254,24 +270,26 @@ def _insert(conn: sqlite3.Connection, paper: arxiv.Result, tags: list[str] | Non
         INSERT OR REPLACE INTO papers
             (paper_id, version, title, url, published, updated,
              category, categories, doi, journal_ref, comment, summary, authors, tags, source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        paper_id,
-        version,
-        paper.title,
-        paper.pdf_url,
-        paper.published.date(),
-        paper.updated.date(),
-        paper.primary_category,
-        paper.categories,
-        paper.doi,
-        paper.journal_ref,
-        paper.comment,
-        paper.summary,
-        [a.name for a in paper.authors],
-        tags,
-        "arxiv",
-    ))
+        VALUES
+            (:paper_id, :version, :title, :url, :published, :updated,
+             :category, :categories, :doi, :journal_ref, :comment, :summary, :authors, :tags, :source)
+    """, {
+        "paper_id":    paper_id,
+        "version":     version,
+        "title":       paper.title,
+        "url":         paper.pdf_url,
+        "published":   paper.published.date(),
+        "updated":     paper.updated.date(),
+        "category":    paper.primary_category,
+        "categories":  paper.categories,
+        "doi":         paper.doi,
+        "journal_ref": paper.journal_ref,
+        "comment":     paper.comment,
+        "summary":     paper.summary,
+        "authors":     [a.name for a in paper.authors],
+        "tags":        tags,
+        "source":      "arxiv",
+    })
     return paper_id, version
 
 
@@ -281,29 +299,30 @@ def _insert_metadata(conn: sqlite3.Connection, meta: PaperMetadata, tags: list[s
     if tags:
         merged_tags = list(set((merged_tags or []) + tags))
     conn.execute("INSERT OR IGNORE INTO paper_roots(paper_id) VALUES (?)", (meta.paper_id,))
-    conn.execute(
-    """
+    conn.execute("""
         INSERT OR REPLACE INTO papers
             (paper_id, version, title, url, published, updated,
              category, categories, doi, journal_ref, comment, summary, authors, tags, source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        meta.paper_id,
-        meta.version,
-        meta.title,
-        meta.url,
-        meta.published,
-        meta.updated,
-        meta.category,
-        meta.categories,
-        meta.doi,
-        meta.journal_ref,
-        meta.comment,
-        meta.summary,
-        meta.authors,
-        merged_tags,
-        meta.source,
-    ))
+        VALUES
+            (:paper_id, :version, :title, :url, :published, :updated,
+             :category, :categories, :doi, :journal_ref, :comment, :summary, :authors, :tags, :source)
+    """, {
+        "paper_id":    meta.paper_id,
+        "version":     meta.version,
+        "title":       meta.title,
+        "url":         meta.url,
+        "published":   meta.published,
+        "updated":     meta.updated,
+        "category":    meta.category,
+        "categories":  meta.categories,
+        "doi":         meta.doi,
+        "journal_ref": meta.journal_ref,
+        "comment":     meta.comment,
+        "summary":     meta.summary,
+        "authors":     meta.authors,
+        "tags":        merged_tags,
+        "source":      meta.source,
+    })
     return meta.paper_id, meta.version
 
 
