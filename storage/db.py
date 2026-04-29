@@ -516,7 +516,7 @@ def search_full_text(query: str, limit: int = 20) -> list[sqlite3.Row]:
         return conn.execute("""
             SELECT p.* FROM papers p
             JOIN papers_fts fts ON p.paper_id = fts.paper_id
-            WHERE fts MATCH ?
+            WHERE papers_fts MATCH ?
             ORDER BY rank
             LIMIT ?
         """, (query, limit)).fetchall()
