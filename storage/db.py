@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import re
 import sqlite3
+from collections.abc import Callable
 from typing import Optional, TYPE_CHECKING
 from .paths import old_pdf_dir, pdf_dir
 import arxiv
@@ -104,7 +105,7 @@ def _migration_v1(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE papers ADD COLUMN {col} {typedef}")
 
 
-_MIGRATIONS: list[tuple[int, object]] = [
+_MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
     (1, _migration_v1),
 ]
 
@@ -202,7 +203,7 @@ def init_db() -> None:
         current_version: int = conn.execute("PRAGMA user_version").fetchone()[0]
         for version, fn in _MIGRATIONS:
             if version > current_version:
-                fn(conn)  # type: ignore[call-arg]
+                fn(conn)
                 conn.execute(
                     "INSERT OR IGNORE INTO schema_migrations (version) VALUES (?)",
                     (version,),
@@ -263,7 +264,7 @@ def parse_entry_id(entry_id: str) -> tuple[str, int]:
     return paper_id, version
 
 
-def _insert(conn: sqlite3.Connection, paper: arxiv.Result, tags: list[str] | None = None) -> tuple[str, int]:
+def _insert_arxiv(conn: sqlite3.Connection, paper: arxiv.Result, tags: list[str] | None = None) -> tuple[str, int]:
     paper_id, version = parse_entry_id(paper.entry_id)
     conn.execute("INSERT OR IGNORE INTO paper_roots(paper_id) VALUES (?)", (paper_id,))
     conn.execute("""
@@ -329,13 +330,13 @@ def _insert_metadata(conn: sqlite3.Connection, meta: PaperMetadata, tags: list[s
 def save_paper(paper: arxiv.Result, tags: list[str] | None = None) -> tuple[str, int]:
     """Insert or replace a single arxiv paper. Returns (paper_id, version)."""
     with _connect() as conn:
-        return _insert(conn, paper, tags)
+        return _insert_arxiv(conn, paper, tags)
 
 
 def save_papers(papers: list[arxiv.Result], tags: list[str] | None = None) -> list[tuple[str, int]]:
     """Batch insert/replace arxiv papers in a single transaction. Returns list of (paper_id, version)."""
     with _connect() as conn:
-        return [_insert(conn, paper, tags) for paper in papers]
+        return [_insert_arxiv(conn, paper, tags) for paper in papers]
 
 
 def save_paper_metadata(meta: PaperMetadata, tags: list[str] | None = None) -> tuple[str, int]:

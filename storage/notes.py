@@ -4,7 +4,11 @@ import datetime
 from dataclasses import dataclass
 from typing import Optional
 
+from pathlib import Path
+
 from .db import _connect, init_table
+
+_MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 
 # ── DB schema ─────────────────────────────────────────────────────────────────
@@ -53,35 +57,9 @@ def _migrate_notes_db() -> None:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_notes_created_at ON notes(created_at)")
             return
 
-        # Rebuild the table to add the FK constraint.
-        # executescript issues an implicit COMMIT before running, so use it
-        # here to ensure the multi-step rebuild is atomic.
-        conn.executescript("""
-            PRAGMA foreign_keys = OFF;
-
-            CREATE TABLE notes_new (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                paper_id   TEXT    NOT NULL,
-                project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
-                title      TEXT,
-                content    TEXT,
-                created_at TIMESTAMP,
-                updated_at TIMESTAMP
-            );
-
-            INSERT INTO notes_new (id, paper_id, project_id, title, content, created_at, updated_at)
-                SELECT id, paper_id, project_id, title, content, created_at, updated_at FROM notes;
-
-            DROP TABLE notes;
-
-            ALTER TABLE notes_new RENAME TO notes;
-
-            CREATE INDEX IF NOT EXISTS idx_notes_paper_id   ON notes(paper_id);
-            CREATE INDEX IF NOT EXISTS idx_notes_project_id ON notes(project_id);
-            CREATE INDEX IF NOT EXISTS idx_notes_created_at ON notes(created_at);
-
-            PRAGMA foreign_keys = ON;
-        """)
+        conn.executescript(
+            (_MIGRATIONS_DIR / "notes_add_project_fk.sql").read_text()
+        )
 
 
 def ensure_notes_db() -> None:

@@ -5,7 +5,11 @@ import enum
 from dataclasses import dataclass, field
 from typing import Optional
 
+from pathlib import Path
+
 from storage.db import _connect, init_table
+
+_MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 
 # ── Query builder
@@ -97,27 +101,16 @@ def _migrate_projects_db() -> None:
                         "INSERT OR IGNORE INTO project_papers (project_id, paper_id, position) VALUES (?, ?, ?)",
                         (proj_id, pid, pos),
                     )
-            conn.execute("""
-                CREATE TABLE projects_new (
-                    id           INTEGER   PRIMARY KEY AUTOINCREMENT,
-                    name         TEXT      NOT NULL,
-                    description  TEXT,
-                    color        INTEGER,
-                    created_at   TIMESTAMP,
-                    updated_at   TIMESTAMP,
-                    archived_at  TIMESTAMP,
-                    project_tags LIST,
-                    status       TEXT      NOT NULL DEFAULT 'active'
-                )
-            """)
-            conn.execute("""
-                INSERT INTO projects_new
-                    (id, name, description, color, created_at, updated_at,
-                     archived_at, project_tags, status)
-                SELECT id, name, description, color, created_at, updated_at,
-                       archived_at, project_tags, status
-                FROM projects
-            """)
+            conn.execute(
+                (_MIGRATIONS_DIR / "projects_drop_paper_ids.sql").read_text()
+            )
+            keep_cols = ", ".join(
+                row[1] for row in conn.execute("PRAGMA table_info(projects)")
+                if row[1] != "paper_ids"
+            )
+            conn.execute(
+                f"INSERT INTO projects_new ({keep_cols}) SELECT {keep_cols} FROM projects"
+            )
             conn.execute("DROP TABLE projects")
             conn.execute("ALTER TABLE projects_new RENAME TO projects")
             conn.execute(
