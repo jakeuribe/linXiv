@@ -114,6 +114,20 @@ $('tagFilterInput').addEventListener('keydown', e => {
     if (e.key === 'Enter') { e.preventDefault(); _addTag(); }
 });
 
+$('addProjectBtn').addEventListener('click', () =>
+    _addToFilterList('filterProject', _projectFilterNames, 'project-filter-rows', 'project-filter-empty'));
+$('filterProject').addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault();
+        _addToFilterList('filterProject', _projectFilterNames, 'project-filter-rows', 'project-filter-empty'); }
+});
+
+$('addProjTagBtn').addEventListener('click', () =>
+    _addToFilterList('filterProjectTag', _projTagFilterNames, 'proj-tag-filter-rows', 'proj-tag-filter-empty'));
+$('filterProjectTag').addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault();
+        _addToFilterList('filterProjectTag', _projTagFilterNames, 'proj-tag-filter-rows', 'proj-tag-filter-empty'); }
+});
+
 // ── Layout sliders ───────────────────────────────────────────────────────────
 
 function bindSlider(id, valId, onInput) {
@@ -154,7 +168,10 @@ $('relayout-btn').addEventListener('click', () => {
 // ── Filter wiring ────────────────────────────────────────────────────────────
 
 const _textFilterIds  = ['filterCategory', 'filterDateFrom', 'filterDateTo',
-                         'filterTitle', 'filterAuthor', 'filterProject', 'filterProjectTag'];
+                         'filterTitle', 'filterAuthor'];
+
+let _projectFilterNames = [];
+let _projTagFilterNames = [];
 const _checkFilterIds = ['showPapers', 'showAuthors', 'showTags', 'filterHasPdf'];
 
 _textFilterIds.forEach(id => {
@@ -174,18 +191,58 @@ $('isolate-btn').addEventListener('click', () => {
 $('select-all-btn').addEventListener('click', () => selectAllPapers());
 $('clear-selection-btn').addEventListener('click', () => clearSelection());
 
+function _renderFilterList(rows, containerId, emptyId) {
+    const container = $(containerId);
+    container.innerHTML = '';
+    $(emptyId).style.display = rows.length === 0 ? '' : 'none';
+    rows.forEach((name, i) => {
+        const div = document.createElement('div');
+        div.className = 'tag-filter-row';
+        const sp = document.createElement('span');
+        sp.style.cssText = 'min-width:34px; flex-shrink:0;';
+        div.appendChild(sp);
+        const lbl = document.createElement('span');
+        lbl.className = 'tag-filter-label';
+        lbl.textContent = name;
+        div.appendChild(lbl);
+        const rm = document.createElement('button');
+        rm.className = 'tag-filter-remove';
+        rm.textContent = '×';
+        rm.title = 'Remove';
+        rm.addEventListener('click', () => {
+            rows.splice(i, 1);
+            _renderFilterList(rows, containerId, emptyId);
+            _applyFilter();
+        });
+        div.appendChild(rm);
+        container.appendChild(div);
+    });
+}
+
+function _addToFilterList(inputId, rows, containerId, emptyId) {
+    const input = $(inputId);
+    const val = input.value.trim();
+    if (!val || rows.includes(val)) { input.value = ''; return; }
+    rows.push(val);
+    input.value = '';
+    _renderFilterList(rows, containerId, emptyId);
+    _applyFilter();
+}
+
 function _projectIdsFromInput() {
-    const name = $('filterProject').value.trim().toLowerCase();
-    if (!name) return null;
-    const ids = [..._projectMap.values()]
-        .filter(p => p.name.toLowerCase().includes(name))
-        .map(p => p.id);
-    return ids.length > 0 ? ids : [-1]; // -1 ensures no match when name typed but not found
+    if (_projectFilterNames.length === 0) return null;
+    const ids = [];
+    _projectFilterNames.forEach(name => {
+        const lower = name.toLowerCase();
+        [..._projectMap.values()]
+            .filter(p => p.name.toLowerCase().includes(lower))
+            .forEach(p => ids.push(p.id));
+    });
+    return ids.length > 0 ? ids : [-1];
 }
 
 function _projTagFromInput() {
-    const tag = $('filterProjectTag').value.trim();
-    return tag ? [tag] : null;
+    return _projTagFilterNames.length > 0 ? _projTagFilterNames : null;
 }
 
 function _scheduleFilter() {
@@ -238,10 +295,16 @@ function setFilterOptions(categories, tags, projects) {
 
 function clearFilters() {
     _textFilterIds.forEach(id => { $(id).value = ''; });
+    $('filterProject').value = '';
+    $('filterProjectTag').value = '';
     _checkFilterIds.forEach(id => { $(id).checked = id !== 'filterHasPdf'; });
     $('isolate-btn').classList.remove('active');
     _tagRows.length = 0;
     _renderTagRows();
+    _projectFilterNames.length = 0;
+    _renderFilterList(_projectFilterNames, 'project-filter-rows', 'project-filter-empty');
+    _projTagFilterNames.length = 0;
+    _renderFilterList(_projTagFilterNames, 'proj-tag-filter-rows', 'proj-tag-filter-empty');
     _applyFilter();
 }
 

@@ -159,7 +159,7 @@ body {
     outline: none;
     border-color: #5b8dee;
 }
-#addTagBtn {
+.add-filter-btn {
     background: #2a2a4a;
     border: 1px solid #3e3e70;
     border-radius: 4px;
@@ -170,7 +170,7 @@ body {
     padding: 2px 8px;
     flex-shrink: 0;
 }
-#addTagBtn:hover { background: #3a3a5a; }
+.add-filter-btn:hover { background: #3a3a5a; }
 
 .tag-filter-row {
     display: flex;
