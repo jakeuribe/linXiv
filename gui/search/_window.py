@@ -17,8 +17,8 @@ from sources.base import PaperMetadata
 from sources.arxiv_downloads import cleanup_pdfs as _cleanup_pdfs, saved_pdfs_size
 from gui.views import TexView, PdfWindow
 from gui.theme import FONT_TERTIARY, SPACE_XS, SPACE_SM, SPACE_MD
-from gui.search._workers import _SearchWorker, _SourceSearchWorker, _PdfWorker, _PDF_DIR
-from gui.search._widgets import _ClauseRow, _ResultList, _ResultRow
+from ._workers import _SearchWorker, _SourceSearchWorker, _PdfWorker, _PDF_DIR
+from ._widgets import _ClauseRow, _ResultList, _ResultRow
 
 _SORT_BY_OPTIONS = [
     ("Relevance",     arxiv.SortCriterion.Relevance),
@@ -347,6 +347,8 @@ class SearchPage(QWidget):
     # --- search ---
 
     def _on_search(self) -> None:
+        if not self._search_btn.isEnabled():
+            return
         query = self._search_box.text().strip()
         if not query:
             return
@@ -366,12 +368,14 @@ class SearchPage(QWidget):
             sort_order  = _SORT_ORDER_OPTIONS[self._order_combo.currentIndex()][1]
             self._worker = _SearchWorker(query, max_results, sort_by, sort_order)
             self._worker.done.connect(self._on_done)
+            self._worker.error.connect(self._on_search_error)
             self._worker.start()
         else:
             self._source_worker = _SourceSearchWorker(
                 self._active_source, query, max_results
             )
             self._source_worker.done.connect(self._on_source_done)
+            self._source_worker.error.connect(self._on_search_error)
             self._source_worker.start()
 
     def _on_done(self, results: list) -> None:
@@ -381,7 +385,7 @@ class SearchPage(QWidget):
             paper_id, _ = parse_entry_id(paper.entry_id)
             row_widget.set_checked(get_paper(paper_id) is not None)
             row_widget._checkbox.stateChanged.connect(
-                lambda state, rw=row_widget, p=paper: self._on_checkbox_changed(rw, p, state)
+                lambda state, p=paper: self._on_checkbox_changed(p, state)
             )
             self._row_widgets.append(row_widget)
             item = QListWidgetItem()
@@ -397,7 +401,7 @@ class SearchPage(QWidget):
             row_widget = _ResultRow(paper.title, source=paper.source)
             row_widget.set_checked(get_paper(paper.paper_id) is not None)
             row_widget._checkbox.stateChanged.connect(
-                lambda state, rw=row_widget, p=paper: self._on_meta_checkbox_changed(rw, p, state)
+                lambda state, p=paper: self._on_meta_checkbox_changed(p, state)
             )
             self._row_widgets.append(row_widget)
             item = QListWidgetItem()
@@ -406,6 +410,15 @@ class SearchPage(QWidget):
             self._list.setItemWidget(item, row_widget)
         self._set_busy(False)
         self._status.setText(f"{len(results)} results from {self._active_source}")
+
+    def _on_search_error(self, msg: str) -> None:
+        self._set_busy(False)
+        self._status.setText(f"Search failed: {msg}")
+
+    def _on_pdf_error(self, msg: str) -> None:
+        self._pdf_btn.setEnabled(True)
+        self._pdf_btn.setText("View PDF")
+        self._status.setText(f"PDF download failed: {msg}")
 
     def _on_local_search(self, query: str, limit: int) -> None:
         try:
@@ -429,9 +442,7 @@ class SearchPage(QWidget):
         self._set_busy(False)
         self._status.setText(f"{len(self._local_results)} results from local source")
 
-    def _on_meta_checkbox_changed(
-        self, _row_widget: _ResultRow, paper: PaperMetadata, state: int
-    ) -> None:
+    def _on_meta_checkbox_changed(self, paper: PaperMetadata, state: int) -> None:
         if state == Qt.CheckState.Checked.value:
             tags = self._parse_tags()
             save_paper_metadata(paper, tags=tags if tags else None)
@@ -444,7 +455,7 @@ class SearchPage(QWidget):
             return []
         return [t.strip() for t in raw.split(",") if t.strip()]
 
-    def _on_checkbox_changed(self, _row_widget: _ResultRow, paper: arxiv.Result, state: int) -> None:
+    def _on_checkbox_changed(self, paper: arxiv.Result, state: int) -> None:
         if state == Qt.CheckState.Checked.value:
             tags = self._parse_tags()
             save_paper(paper, tags=tags if tags else None)
@@ -553,6 +564,7 @@ class SearchPage(QWidget):
         self._pdf_btn.setText("Downloading…")
         self._pdf_worker = _PdfWorker(self._results[row])
         self._pdf_worker.done.connect(lambda path, k=key: self._on_pdf_ready(path, k))
+        self._pdf_worker.error.connect(self._on_pdf_error)
         self._pdf_worker.start()
 
     def _on_pdf_ready(self, path: str, key: tuple[str, int] | None = None) -> None:
