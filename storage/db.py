@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from sources.base import PaperMetadata
 
 DB_PATH = str(Path(__file__).parent.parent / "papers.db")
+_MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 # --- adapters: Python → SQLite storage ---
 sqlite3.register_adapter(list,              lambda v: json.dumps(v))
@@ -89,20 +90,14 @@ def _connect(db_path: str = DB_PATH) -> sqlite3.Connection:
 
 def _migration_v1(conn: sqlite3.Connection) -> None:
     existing = {row[1] for row in conn.execute("PRAGMA table_info(papers)")}
-    for col, typedef in [
-        ("updated",           "DATE"),
-        ("categories",        "LIST"),
-        ("journal_ref",       "TEXT"),
-        ("comment",           "TEXT"),
-        ("tags",              "LIST"),
-        ("has_pdf",           "BOOL NOT NULL DEFAULT 0"),
-        ("source",            "TEXT DEFAULT 'arxiv'"),
-        ("pdf_path",          "TEXT DEFAULT NULL"),
-        ("full_text",         "TEXT"),
-        ("downloaded_source", "BOOL DEFAULT 0"),
-    ]:
-        if col not in existing:
-            conn.execute(f"ALTER TABLE papers ADD COLUMN {col} {typedef}")
+    sql = (_MIGRATIONS_DIR / "papers_v1.sql").read_text()
+    for statement in sql.splitlines():
+        statement = statement.strip()
+        if not statement or statement.startswith("--"):
+            continue
+        col_name = statement.split()[5]
+        if col_name not in existing:
+            conn.execute(statement)
 
 
 _MIGRATIONS: list[tuple[int, Callable[[sqlite3.Connection], None]]] = [
@@ -116,36 +111,14 @@ def _papers_has_root_fk(conn: sqlite3.Connection) -> bool:
 
 
 def _rebuild_papers_with_root_fk(conn: sqlite3.Connection) -> None:
-    cols = [row[1] for row in conn.execute("PRAGMA table_info(papers)")]
-    col_list = ", ".join(cols)
-    conn.executescript(f"""
-        CREATE TABLE papers_new (
-            paper_id    TEXT    NOT NULL,
-            version     INTEGER NOT NULL,
-            title       TEXT    NOT NULL,
-            url         TEXT,
-            published   DATE,
-            updated     DATE,
-            category    TEXT,
-            categories  LIST,
-            doi         TEXT,
-            journal_ref TEXT,
-            comment     TEXT,
-            summary     TEXT,
-            authors     LIST,
-            tags        LIST,
-            has_pdf     BOOL NOT NULL DEFAULT 0,
-            source      TEXT DEFAULT 'arxiv',
-            pdf_path    TEXT DEFAULT NULL,
-            full_text   TEXT,
-            downloaded_source BOOL DEFAULT 0,
-            PRIMARY KEY (paper_id, version),
-            FOREIGN KEY (paper_id) REFERENCES paper_roots(paper_id) ON DELETE CASCADE
-        );
-
-        INSERT INTO papers_new ({col_list})
-        SELECT {col_list} FROM papers;
-
+    conn.execute((_MIGRATIONS_DIR / "papers_add_root_fk.sql").read_text())
+    old_cols = {row[1] for row in conn.execute("PRAGMA table_info(papers)")}
+    col_list = ", ".join(
+        row[1] for row in conn.execute("PRAGMA table_info(papers_new)")
+        if row[1] in old_cols
+    )
+    conn.execute(f"INSERT INTO papers_new ({col_list}) SELECT {col_list} FROM papers")
+    conn.executescript("""
         DROP VIEW IF EXISTS latest_papers;
         DROP TABLE papers;
         ALTER TABLE papers_new RENAME TO papers;

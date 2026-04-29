@@ -104,9 +104,10 @@ def _migrate_projects_db() -> None:
             conn.execute(
                 (_MIGRATIONS_DIR / "projects_drop_paper_ids.sql").read_text()
             )
+            old_cols = {row[1] for row in conn.execute("PRAGMA table_info(projects)")}
             keep_cols = ", ".join(
-                row[1] for row in conn.execute("PRAGMA table_info(projects)")
-                if row[1] != "paper_ids"
+                row[1] for row in conn.execute("PRAGMA table_info(projects_new)")
+                if row[1] in old_cols
             )
             conn.execute(
                 f"INSERT INTO projects_new ({keep_cols}) SELECT {keep_cols} FROM projects"
