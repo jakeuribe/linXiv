@@ -18,7 +18,12 @@ def init_db(db_path:str|None = None)->None:
     #Building Views
     exec_paths(glob.glob(os.path.join(path_base,'/views/*')), conn)
     #Making_Indicies
-
+    with open(os.path.join(path_base, 'INDICIES.SQL'), 'w') as file:
+        SQL =file.read().split(";")
+        IX_ER = set(map(lambda SQL: exec_str(SQL, conn), filter(lambda x: x.strip(' ') != '', SQL)))
+        if(len(IX_ER)!= 1):
+            for i in IX_ER:
+                print(i)
     conn.close()
     return 
 def exec_paths(paths:Iterable[str], conn:Connection)->None:
