@@ -1325,7 +1325,9 @@ class ProjectsPage(QWidget):
 
         try:
             from storage.projects import filter_projects, ensure_projects_db, Q, Status
+            from storage.notes import ensure_notes_db
             ensure_projects_db()
+            ensure_notes_db()
             projects = filter_projects(Q("status = ?", Status.ACTIVE))
         except Exception:
             projects = []
