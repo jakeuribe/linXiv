@@ -30,6 +30,7 @@ class _SearchWorker(QThread):
             )
             self.done.emit(results)
         except Exception as e:
+            print(f"[search] {e}")
             msg = "arXiv rate limit — wait ~60 s and retry." if "429" in str(e) else str(e)
             self.error.emit(msg)
 
@@ -54,6 +55,7 @@ class _SourceSearchWorker(QThread):
             results = source.search(self.query, max_results=self.max_results)
             self.done.emit(results)
         except Exception as e:
+            print(f"[search] {e}")
             msg = "arXiv rate limit — wait ~60 s and retry." if "429" in str(e) else str(e)
             self.error.emit(msg)
 
@@ -72,5 +74,6 @@ class _PdfWorker(QThread):
             path = download_pdf(self.paper, dirpath=str(_PDF_DIR))
             self.done.emit(path)
         except Exception as e:
+            print(f"[pdf] {e}")
             msg = "arXiv rate limit — wait ~60 s and retry." if "429" in str(e) else str(e)
             self.error.emit(msg)

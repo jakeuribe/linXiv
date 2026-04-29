@@ -59,6 +59,7 @@ class ArxivSource(PaperSource):
         try:
             results = list(self._client.results(search))
         except Exception as e:
+            print(f"[arxiv] search error: {e}")
             if "429" in str(e):
                 _record_ratelimit()
             raise ValueError(f"arXiv search failed: {e}") from e
@@ -72,6 +73,7 @@ class ArxivSource(PaperSource):
         except StopIteration:
             raise ValueError(f"Paper '{paper_id}' not found on arXiv.")
         except Exception as e:
+            print(f"[arxiv] fetch error: {e}")
             if "429" in str(e):
                 _record_ratelimit()
             raise ValueError(f"arXiv fetch failed for '{paper_id}': {e}") from e

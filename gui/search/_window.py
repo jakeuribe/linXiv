@@ -17,8 +17,8 @@ from sources.base import PaperMetadata
 from sources.arxiv_downloads import cleanup_pdfs as _cleanup_pdfs, saved_pdfs_size
 from gui.views import TexView, PdfWindow
 from gui.theme import FONT_TERTIARY, SPACE_XS, SPACE_SM, SPACE_MD
-from gui.search._workers import _SearchWorker, _SourceSearchWorker, _PdfWorker, _PDF_DIR
-from gui.search._widgets import _ClauseRow, _ResultList, _ResultRow
+from ._workers import _SearchWorker, _SourceSearchWorker, _PdfWorker, _PDF_DIR
+from ._widgets import _ClauseRow, _ResultList, _ResultRow
 
 _SORT_BY_OPTIONS = [
     ("Relevance",     arxiv.SortCriterion.Relevance),
@@ -385,7 +385,7 @@ class SearchPage(QWidget):
             paper_id, _ = parse_entry_id(paper.entry_id)
             row_widget.set_checked(get_paper(paper_id) is not None)
             row_widget._checkbox.stateChanged.connect(
-                lambda state, rw=row_widget, p=paper: self._on_checkbox_changed(rw, p, state)
+                lambda state, p=paper: self._on_checkbox_changed(p, state)
             )
             self._row_widgets.append(row_widget)
             item = QListWidgetItem()
@@ -401,7 +401,7 @@ class SearchPage(QWidget):
             row_widget = _ResultRow(paper.title, source=paper.source)
             row_widget.set_checked(get_paper(paper.paper_id) is not None)
             row_widget._checkbox.stateChanged.connect(
-                lambda state, rw=row_widget, p=paper: self._on_meta_checkbox_changed(rw, p, state)
+                lambda state, p=paper: self._on_meta_checkbox_changed(p, state)
             )
             self._row_widgets.append(row_widget)
             item = QListWidgetItem()
@@ -442,9 +442,7 @@ class SearchPage(QWidget):
         self._set_busy(False)
         self._status.setText(f"{len(self._local_results)} results from local source")
 
-    def _on_meta_checkbox_changed(
-        self, _row_widget: _ResultRow, paper: PaperMetadata, state: int
-    ) -> None:
+    def _on_meta_checkbox_changed(self, paper: PaperMetadata, state: int) -> None:
         if state == Qt.CheckState.Checked.value:
             tags = self._parse_tags()
             save_paper_metadata(paper, tags=tags if tags else None)
@@ -457,7 +455,7 @@ class SearchPage(QWidget):
             return []
         return [t.strip() for t in raw.split(",") if t.strip()]
 
-    def _on_checkbox_changed(self, _row_widget: _ResultRow, paper: arxiv.Result, state: int) -> None:
+    def _on_checkbox_changed(self, paper: arxiv.Result, state: int) -> None:
         if state == Qt.CheckState.Checked.value:
             tags = self._parse_tags()
             save_paper(paper, tags=tags if tags else None)
