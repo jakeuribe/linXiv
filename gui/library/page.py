@@ -5,6 +5,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
+    QDialog,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -24,9 +25,9 @@ from formats.bibtex import BibTeXFormat
 from formats.csv_fmt import CSVFormat
 from formats.json_fmt import JSONFormat
 from formats.markdown import MarkdownFormat, ObsidianFormat
-from storage.db import delete_paper, list_papers, save_papers_metadata, set_has_pdf, set_pdf_path
+from storage.db import delete_paper, list_papers, repair_paper, save_paper_metadata, save_papers_metadata, set_has_pdf, set_pdf_path
 from storage.paths import pdf_dir
-from gui.qt_assets import PaperCard, SelectionBar
+from gui.qt_assets import PaperCard, SelectionBar, AddPaperManuallyDialog
 from gui.shell import AppShell
 
 _bibtex_fmt   = BibTeXFormat()
@@ -99,9 +100,24 @@ class PaperDetailView(QWidget):
         """)
         back_btn.setFixedHeight(BTN_H_SM)
         back_btn.clicked.connect(self.back_requested)
-        outer.addWidget(back_btn, alignment=Qt.AlignmentFlag.AlignLeft)
-        outer.addSpacing(SPACE_LG)
+        REPAIR_BTN = f"""
+        QPushButton {{
+            background: {_ACCENT}; border: none; border-radius: {RADIUS_MD}px;
+            color: #fff; font-size: {FONT_BODY}px; font-weight: 600; padding: {SPACE_SM}px 20px;
+    }}"""
+        repair = QPushButton("Edit Paper Details")
+        repair.setCursor(Qt.CursorShape.PointingHandCursor)
+        repair.setStyleSheet(REPAIR_BTN)
+        repair.setFixedHeight(BTN_H_SM)
+        repair.clicked.connect(self._on_repair)
 
+        nav_row = QHBoxLayout()
+        nav_row.setContentsMargins(0, 0, 0, 0)
+        nav_row.addWidget(back_btn)
+        nav_row.addStretch()
+        nav_row.addWidget(repair)
+        outer.addLayout(nav_row)
+        outer.addSpacing(SPACE_LG)
         # Scroll area holds everything below the back button
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -274,6 +290,26 @@ class PaperDetailView(QWidget):
                 self._body_layout.addSpacing(SPACE_SM)
 
         self._body_layout.addStretch()
+
+    def _on_repair(self) -> None:
+        if self._current_row is None:
+            return
+        dlg = AddPaperManuallyDialog(self)
+        dlg.setWindowTitle("Repair Paper")
+        dlg.load_from_row(self._current_row)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        old_paper_id = self._current_row["paper_id"]
+        try:
+            meta = dlg.get_metadata(old_paper_id)
+            new_paper_id = repair_paper(old_paper_id, meta)
+            from storage.db import get_paper
+            new_row = get_paper(new_paper_id)
+            if new_row is not None:
+                self.load(new_row)
+        except Exception as e:
+            print(f"[repair] {e}")
+            QMessageBox.critical(self, "Repair Failed", str(e))
 
     def get_current_paper_id(self) -> str | None:
         if self._current_row is None:
@@ -672,8 +708,9 @@ class LibraryPage(QWidget):
         menu.addAction("Markdown file…",         self._import_markdown_file)
         menu.addAction("Obsidian file…",         self._import_obsidian_file)
         menu.addSeparator()
-        menu.addAction("PDF…",    self._import_pdf)
-        menu.addAction("Folder…", self._import_not_implemented)
+        menu.addAction("PDF…",              self._import_pdf)
+        menu.addAction("Folder…",           self._import_not_implemented)
+        menu.addAction("Manual entry…",     self._import_manual)
         menu.exec(self._import_btn.mapToGlobal(self._import_btn.rect().bottomLeft()))
 
     def _import_bibtex_file(self) -> None:
@@ -841,6 +878,26 @@ class LibraryPage(QWidget):
         if self._pdf_failed:
             parts.append(f"{self._pdf_failed} failed to resolve.")
         QMessageBox.information(self, "Import Complete", "  ".join(parts) or "Nothing imported.")
+
+    def _import_manual(self) -> None:
+        dlg = AddPaperManuallyDialog(self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            meta = dlg.get_metadata()
+            from storage.db import get_paper
+            if get_paper(meta.paper_id) is not None:
+                QMessageBox.warning(
+                    self, "Already in Library",
+                    f"A paper with ID '{meta.paper_id}' is already in the library.\n"
+                    "Edit it using the Repair button on its detail page.",
+                )
+                return
+            save_paper_metadata(meta)
+            self.refresh()
+        except Exception as e:
+            print(f"[import_manual] {e}")
+            QMessageBox.critical(self, "Import Failed", str(e))
 
     def _import_not_implemented(self) -> None:
         from PyQt6.QtGui import QAction
