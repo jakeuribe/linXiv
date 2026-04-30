@@ -153,7 +153,7 @@ Then run from anywhere:
 ```bash
 linxiv --version
 linxiv search "attention is all you need" --max 5
-linxiv search "diffusion models" --source openalex --max 10
+linxiv search "neutron star mergers" --source openalex --max 10
 linxiv fetch 2204.12985
 linxiv fetch W3123456789 --source openalex
 linxiv list --limit 20 --category cs.LG
@@ -236,12 +236,12 @@ shell.add_launcher("Settings", open_settings) # opens a floating window
 from storage import Project, filter_projects, Q, Status
 
 # Create and save a project
-p = Project(name="Diffusion Models", color=0x5b8dee, project_tags=["generative"])
+p = Project(name="Gravitational Waves", color=0x5b8dee, project_tags=["astrophysics"])
 p.save()
 
 # Add papers
-p.add_paper("2006.11239")
-p.add_papers(["2010.02502", "2112.10752"])
+p.add_paper("1602.03837")
+p.add_papers(["2010.02502", "1711.10561"])
 
 # Query with composable predicates
 active = filter_projects(Q("status = ?", Status.ACTIVE))
@@ -261,12 +261,12 @@ from storage import Note, get_notes, count_paper_notes, ensure_notes_db
 ensure_notes_db()
 
 # Add a project-scoped note on a paper
-note = Note(paper_id="2006.11239", project_id=p.id, title="Key insight", content="...")
+note = Note(paper_id="1602.03837", project_id=p.id, title="Key insight", content="...")
 note.save()
 
 # Retrieve
-project_notes = get_notes("2006.11239", project_id=p.id)
-count = count_paper_notes("2006.11239", project_id=p.id)
+project_notes = get_notes("1602.03837", project_id=p.id)
+count = count_paper_notes("1602.03837", project_id=p.id)
 ```
 
 ### Search and save papers
