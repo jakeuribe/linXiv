@@ -14,24 +14,14 @@ from gui.theme import (
 _BLUE = "#5b8dee"
 _RED  = "#e05c5c"
 
-_BTN = f"""
-    QPushButton {{
-        background: transparent; border: 1px solid {BORDER};
-        border-radius: {RADIUS_MD}px; color: {TEXT}; font-size: {FONT_SECONDARY}px; padding: 4px 14px;
-    }}
-    QPushButton:hover {{ background: #2a2a4a; }}
-"""
+from gui.qt_assets.styles import BTN_OUTLINE as _BTN, btn_colored_outline as _colored_outline
 
 
 def _action_btn(label: str, color: str) -> QPushButton:
     b = QPushButton(label)
     b.setFixedHeight(BTN_H_MD)
     b.setCursor(Qt.CursorShape.PointingHandCursor)
-    b.setStyleSheet(f"""
-        QPushButton {{ background: transparent; border: 1px solid {color};
-            border-radius: {RADIUS_MD}px; color: {color}; font-size: {FONT_SECONDARY}px; padding: 4px 14px; }}
-        QPushButton:hover {{ background: rgba(91,141,238,0.08); }}
-    """)
+    b.setStyleSheet(_colored_outline(color))
     return b
 
 
