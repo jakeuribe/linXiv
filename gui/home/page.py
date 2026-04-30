@@ -13,12 +13,13 @@ from PyQt6.QtWidgets import (
 
 from storage.db import get_tags, list_papers
 from gui.qt_assets import PaperCard
+from gui.qt_assets.styles import BTN_PANEL_SM as _BTN_PANEL_SM
 from gui.theme import BG as _BG, PANEL as _PANEL, BORDER as _BORDER
 from gui.theme import ACCENT as _ACCENT, TEXT as _TEXT, MUTED as _MUTED
 from gui.theme import (
-    FONT_TITLE, FONT_SUBHEADING, FONT_BODY, FONT_SECONDARY, FONT_TERTIARY,
+    FONT_TITLE, FONT_SUBHEADING, FONT_BODY, FONT_TERTIARY,
     SPACE_XL, SPACE_SM, SPACE_XS,
-    RADIUS_SM, RADIUS_LG,
+    RADIUS_LG,
     PAGE_MARGIN_H, PAGE_MARGIN_V,
     CARD_PAD_H, CARD_PAD_V,
     DIALOG_PAD,
@@ -63,13 +64,7 @@ class HomePage(QWidget):
         )
         refresh_btn = QPushButton("Refresh")
         refresh_btn.setFixedWidth(80)
-        refresh_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {_PANEL}; border: 1px solid {_BORDER};
-                border-radius: {RADIUS_SM}px; color: {_TEXT}; font-size: {FONT_SECONDARY}px; padding: {SPACE_XS}px {SPACE_SM}px;
-            }}
-            QPushButton:hover {{ background: #2a2a4a; }}
-        """)
+        refresh_btn.setStyleSheet(_BTN_PANEL_SM)
         refresh_btn.clicked.connect(self._load)
         recent_hdr.addWidget(recent_lbl)
         recent_hdr.addStretch()

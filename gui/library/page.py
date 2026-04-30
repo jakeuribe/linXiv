@@ -51,7 +51,10 @@ _BLUE  = "#5b8dee"
 _GREEN = "#4caf7d"
 _RED   = "#e05c5c"
 
-from gui.qt_assets.styles import BTN_PANEL as _BTN
+from gui.qt_assets.styles import (
+    BTN_PANEL as _BTN, BTN_PRIMARY, BTN_LINK, BTN_GHOST, BTN_DANGER, BTN_FILTER_ACTIVE,
+    btn_colored_outline,
+)
 
 
 class _PdfMetadataWorker(QThread):
@@ -92,21 +95,12 @@ class PaperDetailView(QWidget):
         # Back button
         back_btn = QPushButton("← Back")
         back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        back_btn.setStyleSheet(f"""
-            QPushButton {{ background: transparent; border: none;
-                color: {_ACCENT}; font-size: {FONT_BODY}px; padding: 0; }}
-            QPushButton:hover {{ color: #7aa3f5; }}
-        """)
+        back_btn.setStyleSheet(BTN_LINK)
         back_btn.setFixedHeight(BTN_H_SM)
         back_btn.clicked.connect(self.back_requested)
-        REPAIR_BTN = f"""
-        QPushButton {{
-            background: {_ACCENT}; border: none; border-radius: {RADIUS_MD}px;
-            color: #fff; font-size: {FONT_BODY}px; font-weight: 600; padding: {SPACE_SM}px 20px;
-    }}"""
         repair = QPushButton("Edit")
         repair.setCursor(Qt.CursorShape.PointingHandCursor)
-        repair.setStyleSheet(REPAIR_BTN)
+        repair.setStyleSheet(BTN_PRIMARY)
         repair.setFixedHeight(BTN_H_SM)
         repair.clicked.connect(self._on_repair)
 
@@ -360,11 +354,7 @@ class PaperDetailView(QWidget):
         path = self._local_pdf_path()
         if path:
             self._pdf_btn.setText("Open PDF")
-            self._pdf_btn.setStyleSheet(f"""
-                QPushButton {{ background: transparent; border: 1px solid {_GREEN};
-                    border-radius: {RADIUS_MD}px; color: {_GREEN}; font-size: {FONT_SECONDARY}px; padding: 4px 14px; }}
-                QPushButton:hover {{ background: #1a2e1f; }}
-            """)
+            self._pdf_btn.setStyleSheet(btn_colored_outline("#4caf7d", hover_bg="#1a2e1f"))
         elif self._is_arxiv():
             self._pdf_btn.setText("Download PDF")
             self._pdf_btn.setStyleSheet(_BTN)
@@ -412,10 +402,7 @@ class PaperDetailView(QWidget):
             return
         self._pdf_btn.setEnabled(True)
         self._pdf_btn.setText("Rate limited — retry?" if err == "rate limited" else "Failed — retry?")
-        self._pdf_btn.setStyleSheet(f"""
-            QPushButton {{ background: transparent; border: 1px solid {_RED};
-                border-radius: {RADIUS_MD}px; color: {_RED}; font-size: {FONT_SECONDARY}px; padding: 4px 14px; }}
-        """)
+        self._pdf_btn.setStyleSheet(BTN_DANGER)
 
     def _link_pdf(self) -> None:
         if self._current_row is None:
@@ -474,9 +461,8 @@ class PaperDetailView(QWidget):
             date_lbl.setStyleSheet(f"font-size: {FONT_TERTIARY}px; color: {_MUTED};")
             hdr.addWidget(date_lbl)
 
-        _ghost = f"QPushButton {{ background: transparent; border: none; font-size: {FONT_TERTIARY}px; padding: 0 {SPACE_XS}px; }}"
         edit_btn = QPushButton("Edit")
-        edit_btn.setStyleSheet(_ghost + f" QPushButton {{ color: {_MUTED}; }} QPushButton:hover {{ color: {_TEXT}; }}")
+        edit_btn.setStyleSheet(BTN_GHOST)
         edit_btn.clicked.connect(lambda _, n=note: self._edit_note(n))
         hdr.addWidget(edit_btn)
         col.addLayout(hdr)
@@ -673,10 +659,7 @@ class LibraryPage(QWidget):
             (self._btn_nopdf,  "no_pdf"),
         ]:
             if mode == self._filter_mode:
-                btn.setStyleSheet(f"""
-                    QPushButton {{ background: {_ACCENT}; border: none;
-                        border-radius: {RADIUS_MD}px; color: #fff; font-size: {FONT_SECONDARY}px; padding: 4px 14px; }}
-                """)
+                btn.setStyleSheet(BTN_FILTER_ACTIVE)
             else:
                 btn.setStyleSheet(_BTN)
 

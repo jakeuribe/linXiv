@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from gui.theme import ACCENT, BORDER, MUTED, PANEL, TEXT
 from gui.theme import FONT_BODY, FONT_SECONDARY, FONT_TERTIARY
-from gui.theme import RADIUS_MD, RADIUS_SM, SPACE_SM
+from gui.theme import RADIUS_MD, RADIUS_SM, SPACE_SM, SPACE_XS
 
 # ── Primary / dialog buttons ──────────────────────────────────────────────────
 
@@ -119,6 +119,33 @@ BTN_NOTE_DELETE = f"""
         color: #e05c5c; font-size: {FONT_TERTIARY}px; padding: 2px 8px;
     }}
     QPushButton:hover {{ border-color: #ff7070; color: #ff7070; }}
+"""
+
+# ── Compact / contextual buttons ─────────────────────────────────────────────
+
+BTN_PANEL_SM = f"""
+    QPushButton {{
+        background: {PANEL}; border: 1px solid {BORDER};
+        border-radius: {RADIUS_SM}px; color: {TEXT}; font-size: {FONT_SECONDARY}px; padding: {SPACE_XS}px {SPACE_SM}px;
+    }}
+    QPushButton:hover {{ background: #2a2a4a; }}
+"""
+
+BTN_FILTER_ACTIVE = f"""
+    QPushButton {{
+        background: {ACCENT}; border: none;
+        border-radius: {RADIUS_MD}px; color: #fff; font-size: {FONT_SECONDARY}px; padding: 4px 14px;
+    }}
+"""
+
+BTN_LINK = f"""
+    QPushButton {{ background: transparent; border: none; color: {ACCENT}; font-size: {FONT_BODY}px; padding: 0; }}
+    QPushButton:hover {{ color: #7aa3f5; }}
+"""
+
+BTN_GHOST = f"""
+    QPushButton {{ background: transparent; border: none; font-size: {FONT_TERTIARY}px; padding: 0 {SPACE_XS}px; color: {MUTED}; }}
+    QPushButton:hover {{ color: {TEXT}; }}
 """
 
 # ── Helper for dynamically colored outline buttons ────────────────────────────
