@@ -14,24 +14,14 @@ from gui.theme import (
 _BLUE = "#5b8dee"
 _RED  = "#e05c5c"
 
-_BTN = f"""
-    QPushButton {{
-        background: transparent; border: 1px solid {BORDER};
-        border-radius: {RADIUS_MD}px; color: {TEXT}; font-size: {FONT_SECONDARY}px; padding: 4px 14px;
-    }}
-    QPushButton:hover {{ background: #2a2a4a; }}
-"""
+from gui.qt_assets.styles import BTN_OUTLINE as _BTN, BTN_DANGER as _BTN_DANGER, btn_colored_outline as _colored_outline
 
 
 def _action_btn(label: str, color: str) -> QPushButton:
     b = QPushButton(label)
     b.setFixedHeight(BTN_H_MD)
     b.setCursor(Qt.CursorShape.PointingHandCursor)
-    b.setStyleSheet(f"""
-        QPushButton {{ background: transparent; border: 1px solid {color};
-            border-radius: {RADIUS_MD}px; color: {color}; font-size: {FONT_SECONDARY}px; padding: 4px 14px; }}
-        QPushButton:hover {{ background: rgba(91,141,238,0.08); }}
-    """)
+    b.setStyleSheet(_colored_outline(color))
     return b
 
 
@@ -78,13 +68,7 @@ class SelectionBar(QFrame):
             rm_pdf_btn = QPushButton("Remove PDFs")
             rm_pdf_btn.setFixedHeight(BTN_H_MD)
             rm_pdf_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            rm_pdf_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: transparent; border: 1px solid {_RED};
-                    border-radius: {RADIUS_MD}px; color: {_RED}; font-size: {FONT_SECONDARY}px; padding: 4px 14px;
-                }}
-                QPushButton:hover {{ background: #2a1a1a; }}
-            """)
+            rm_pdf_btn.setStyleSheet(_BTN_DANGER)
             rm_pdf_btn.clicked.connect(self.remove_pdfs_requested)
             row.addWidget(rm_pdf_btn)
 
@@ -96,13 +80,7 @@ class SelectionBar(QFrame):
             rm_btn = QPushButton("Remove from project")
             rm_btn.setFixedHeight(BTN_H_MD)
             rm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            rm_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: transparent; border: 1px solid {_RED};
-                    border-radius: {RADIUS_MD}px; color: {_RED}; font-size: {FONT_SECONDARY}px; padding: 4px 14px;
-                }}
-                QPushButton:hover {{ background: #2a1a1a; }}
-            """)
+            rm_btn.setStyleSheet(_BTN_DANGER)
             rm_btn.clicked.connect(self.remove_from_project_requested)
             row.addWidget(rm_btn)
 
@@ -110,13 +88,7 @@ class SelectionBar(QFrame):
             rm_lib_btn = QPushButton("Remove from library")
             rm_lib_btn.setFixedHeight(BTN_H_MD)
             rm_lib_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            rm_lib_btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: transparent; border: 1px solid {_RED};
-                    border-radius: {RADIUS_MD}px; color: {_RED}; font-size: {FONT_SECONDARY}px; padding: 4px 14px;
-                }}
-                QPushButton:hover {{ background: #2a1a1a; }}
-            """)
+            rm_lib_btn.setStyleSheet(_BTN_DANGER)
             rm_lib_btn.clicked.connect(self.remove_from_library_requested)
             row.addWidget(rm_lib_btn)
 

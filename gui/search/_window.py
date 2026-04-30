@@ -1,5 +1,6 @@
 import os
 
+import user_settings
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QLineEdit, QPushButton, QListWidgetItem,
@@ -96,8 +97,7 @@ class SearchPage(QWidget):
         self._saved_papers: set[tuple[str, int]] = set()          # (paper_id, version) marked to keep
         self._paper_pdf_paths: dict[tuple[str, int], str] = {}    # (paper_id, version) → local pdf path
         self._current_paper_key: tuple[str, int] | None = None
-        # TODO: Make configurable in user specific settings
-        self._save_limit_bytes: int = 1 * 1024 ** 3               # 1 GB cap on saved PDFs
+        self._save_limit_bytes: int = user_settings.get("pdf_save_limit_mb") * 1024 ** 2
 
         self._build_ui()
 

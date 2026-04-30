@@ -325,6 +325,47 @@ def save_papers_metadata(papers: list[PaperMetadata], tags: list[str] | None = N
         return [_insert_metadata(conn, meta, tags) for meta in papers]
 
 
+def repair_paper(old_paper_id: str, meta: PaperMetadata) -> str:
+    """In-place repair of a paper's metadata, migrating all FK references if paper_id changes.
+
+    If old_paper_id != meta.paper_id the new ID is inserted into paper_roots, all child
+    rows (papers, notes, project_papers, papers_fts) are renamed, and the old root is
+    deleted.  The latest version's editable fields are then updated in-place so that
+    version history, pdf_path, has_pdf, full_text, and source are all preserved.
+    Returns the final paper_id.
+    """
+    new_id = meta.paper_id
+    with _connect() as conn:
+        if new_id != old_paper_id:
+            conn.execute("INSERT OR IGNORE INTO paper_roots(paper_id) VALUES (?)", (new_id,))
+            conn.execute("UPDATE papers         SET paper_id = ? WHERE paper_id = ?", (new_id, old_paper_id))
+            conn.execute("UPDATE notes          SET paper_id = ? WHERE paper_id = ?", (new_id, old_paper_id))
+            conn.execute("UPDATE project_papers SET paper_id = ? WHERE paper_id = ?", (new_id, old_paper_id))
+            fts_row = conn.execute(
+                "SELECT full_text FROM papers_fts WHERE paper_id = ?", (old_paper_id,)
+            ).fetchone()
+            if fts_row is not None:
+                conn.execute("DELETE FROM papers_fts WHERE paper_id = ?", (old_paper_id,))
+                conn.execute(
+                    "INSERT INTO papers_fts(paper_id, full_text) VALUES (?, ?)",
+                    (new_id, fts_row["full_text"]),
+                )
+            conn.execute("DELETE FROM paper_roots WHERE paper_id = ?", (old_paper_id,))
+        # Update only the latest version's editable fields; preserve version, source, pdf_path, etc.
+        conn.execute("""
+            UPDATE papers SET
+                title = ?, authors = ?, published = ?,
+                category = ?, doi = ?, url = ?, summary = ?, tags = ?
+            WHERE paper_id = ?
+              AND version = (SELECT MAX(version) FROM papers WHERE paper_id = ?)
+        """, (
+            meta.title, meta.authors, meta.published,
+            meta.category, meta.doi, meta.url, meta.summary, meta.tags,
+            new_id, new_id,
+        ))
+    return new_id
+
+
 def set_has_pdf(paper_id: str, version: int, has: bool) -> None:
     """Set the has_pdf flag for a specific paper version."""
     with _connect() as conn:

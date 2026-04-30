@@ -56,22 +56,10 @@ _PRESET_COLORS: list[int] = [
     0x1abc9c,  # teal
 ]
 
-_BTN_STYLE = f"""
-    QPushButton {{
-        background: {_ACCENT}; border: none; border-radius: {RADIUS_MD}px;
-        color: #fff; font-size: {FONT_BODY}px; font-weight: 600; padding: {SPACE_SM}px 20px;
-    }}
-    QPushButton:hover   {{ background: #7aa3f5; }}
-    QPushButton:pressed {{ background: #4a7add; }}
-    QPushButton:disabled {{ background: #2a2a4a; color: {_MUTED}; }}
-"""
-_BTN_MUTED_STYLE = f"""
-    QPushButton {{
-        background: transparent; border: 1px solid {_BORDER}; border-radius: {RADIUS_MD}px;
-        color: {_MUTED}; font-size: {FONT_BODY}px; padding: {SPACE_SM}px 20px;
-    }}
-    QPushButton:hover {{ border-color: {_TEXT}; color: {_TEXT}; }}
-"""
+from gui.qt_assets.styles import (
+    BTN_PRIMARY as _BTN_STYLE, BTN_MUTED as _BTN_MUTED_STYLE,
+    BTN_DANGER as _BTN_DANGER, BTN_NOTE_EDIT as _BTN_NOTE_EDIT, BTN_NOTE_DELETE as _BTN_NOTE_DELETE,
+)
 _INPUT_STYLE = f"""
     QLineEdit, QTextEdit {{
         background: {_BG}; border: 1px solid {_BORDER}; border-radius: {RADIUS_MD}px;
@@ -663,20 +651,13 @@ class NotesDialog(QDialog):
 
         top_row.addStretch()
 
-        _btn_base = f"""
-            QPushButton {{
-                background: transparent; border: 1px solid;
-                border-radius: {RADIUS_SM}px;
-                font-size: {FONT_TERTIARY}px; padding: 2px 8px;
-            }}
-        """
         edit_btn = QPushButton("Edit")
-        edit_btn.setStyleSheet(_btn_base + f"QPushButton {{ border-color: {_BORDER}; color: {_MUTED}; }} QPushButton:hover {{ border-color: {_ACCENT}; color: {_ACCENT}; }}")
+        edit_btn.setStyleSheet(_BTN_NOTE_EDIT)
         edit_btn.clicked.connect(lambda _, n=note: self._edit_note(n))
         top_row.addWidget(edit_btn)
 
         del_btn = QPushButton("Delete")
-        del_btn.setStyleSheet(_btn_base + "QPushButton { border-color: #e05c5c; color: #e05c5c; } QPushButton:hover { border-color: #ff7070; color: #ff7070; }")
+        del_btn.setStyleSheet(_BTN_NOTE_DELETE)
         del_btn.clicked.connect(lambda _, n=note: self._delete_note(n))
         top_row.addWidget(del_btn)
         col.addLayout(top_row)
@@ -803,17 +784,7 @@ class ProjectDetailView(QWidget):
         header.addWidget(self._archive_btn)
 
         self._delete_btn = QPushButton("Delete")
-        self._delete_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent;
-                border: 1px solid #e05c5c;
-                border-radius: {RADIUS_MD}px;
-                color: #e05c5c;
-                font-size: {FONT_SECONDARY}px;
-                padding: 4px 14px;
-            }}
-            QPushButton:hover {{ background: #2a1a1a; }}
-        """)
+        self._delete_btn.setStyleSheet(_BTN_DANGER)
         self._delete_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._delete_btn.setFixedHeight(BTN_H_MD)
         self._delete_btn.clicked.connect(self._on_delete)

@@ -53,22 +53,7 @@ _COMBO_STYLE = f"""
         background: {_PANEL}; color: {_TEXT}; selection-background-color: {_ACCENT};
     }}
 """
-_BTN_STYLE = f"""
-    QPushButton {{
-        background: {_ACCENT}; border: none; border-radius: {RADIUS_MD}px;
-        color: #fff; font-size: {FONT_BODY}px; font-weight: 600; padding: {SPACE_SM}px 20px;
-    }}
-    QPushButton:hover   {{ background: #7aa3f5; }}
-    QPushButton:pressed {{ background: #4a7add; }}
-    QPushButton:disabled {{ background: #2a2a4a; color: {_MUTED}; }}
-"""
-_BTN_MUTED_STYLE = f"""
-    QPushButton {{
-        background: transparent; border: 1px solid {_BORDER}; border-radius: {RADIUS_MD}px;
-        color: {_MUTED}; font-size: {FONT_BODY}px; padding: {SPACE_SM}px 20px;
-    }}
-    QPushButton:hover {{ border-color: {_TEXT}; color: {_TEXT}; }}
-"""
+from gui.qt_assets.styles import BTN_PRIMARY as _BTN_STYLE, BTN_MUTED as _BTN_MUTED_STYLE
 
 
 def _env_present() -> bool:

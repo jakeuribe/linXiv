@@ -20,19 +20,19 @@ from PyQt6.QtWidgets import (
 
 from gui.theme import ACCENT as _ACCENT, BORDER as _BORDER, MUTED as _MUTED
 from gui.theme import PANEL as _PANEL, TEXT as _TEXT
+from gui.qt_assets.styles import (
+    BTN_PDF_OPEN, BTN_PDF_DOWNLOAD, BTN_PDF_LINK, BTN_PDF_ERROR, BTN_NOTE_OPEN,
+)
 from gui.theme import (
     BTN_H_SM,
     CARD_PAD_H, CARD_PAD_V,
     FONT_BODY, FONT_TERTIARY,
-    RADIUS_LG, RADIUS_SM,
+    RADIUS_LG,
     SPACE_MD, SPACE_XS,
 )
 from storage.db import set_has_pdf, set_pdf_path
 from storage.paths import pdf_dir
 
-_GREEN = "#4caf7d"
-_BLUE  = "#5b8dee"
-_RED   = "#e05c5c"
 _ACCENT_HOVER = "#7ba3f5"
 
 # White checkmark on transparent (drawn over filled indicator when checked).
@@ -328,13 +328,7 @@ class PaperCard(QFrame):
 
         self._note_btn = QPushButton(self._note_label())
         self._note_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._note_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: transparent; border: 1px solid {_BORDER}; border-radius: {RADIUS_SM}px;
-                color: {_MUTED}; font-size: {FONT_TERTIARY}px; padding: 3px 10px;
-            }}
-            QPushButton:hover {{ border-color: {_ACCENT}; color: {_ACCENT}; }}
-        """)
+        self._note_btn.setStyleSheet(BTN_NOTE_OPEN)
         self._note_btn.clicked.connect(self._on_open_notes)
         outer.addWidget(self._note_btn)
 
@@ -424,25 +418,13 @@ class PaperCard(QFrame):
         path = self.local_pdf_path()
         if path:
             self._pdf_btn.setText("Open PDF")
-            self._pdf_btn.setStyleSheet(f"""
-                QPushButton {{ background: transparent; border: 1px solid {_GREEN};
-                    border-radius: {RADIUS_SM}px; color: {_GREEN}; font-size: {FONT_TERTIARY}px; }}
-                QPushButton:hover {{ background: #1a2e1f; }}
-            """)
+            self._pdf_btn.setStyleSheet(BTN_PDF_OPEN)
         elif self.is_arxiv():
             self._pdf_btn.setText("Download PDF")
-            self._pdf_btn.setStyleSheet(f"""
-                QPushButton {{ background: transparent; border: 1px solid {_BLUE};
-                    border-radius: {RADIUS_SM}px; color: {_BLUE}; font-size: {FONT_TERTIARY}px; }}
-                QPushButton:hover {{ background: #1a1f2e; }}
-            """)
+            self._pdf_btn.setStyleSheet(BTN_PDF_DOWNLOAD)
         else:
             self._pdf_btn.setText("Link PDF")
-            self._pdf_btn.setStyleSheet(f"""
-                QPushButton {{ background: transparent; border: 1px solid {_BORDER};
-                    border-radius: {RADIUS_SM}px; color: {_MUTED}; font-size: {FONT_TERTIARY}px; }}
-                QPushButton:hover {{ background: #1a1a2a; }}
-            """)
+            self._pdf_btn.setStyleSheet(BTN_PDF_LINK)
 
     def _on_pdf_action(self) -> None:
         if self._pdf_window is None:
@@ -491,10 +473,7 @@ class PaperCard(QFrame):
             return
         self._pdf_btn.setEnabled(True)
         self._pdf_btn.setText("Rate limited — retry?" if err == "rate limited" else "Failed — retry?")
-        self._pdf_btn.setStyleSheet(f"""
-            QPushButton {{ background: transparent; border: 1px solid {_RED};
-                border-radius: {RADIUS_SM}px; color: {_RED}; font-size: {FONT_TERTIARY}px; }}
-        """)
+        self._pdf_btn.setStyleSheet(BTN_PDF_ERROR)
 
     def _link_pdf(self) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Link PDF", "", "PDF Files (*.pdf)")
