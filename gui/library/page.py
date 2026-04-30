@@ -48,13 +48,7 @@ from gui.theme import (
 _BLUE = "#5b8dee"
 _RED  = "#e05c5c"
 
-_BTN = f"""
-    QPushButton {{
-        background: {_PANEL}; border: 1px solid {_BORDER};
-        border-radius: {RADIUS_MD}px; color: {_TEXT}; font-size: {FONT_SECONDARY}px; padding: 4px 14px;
-    }}
-    QPushButton:hover {{ background: #2a2a4a; }}
-"""
+from gui.qt_assets.styles import BTN_PANEL as _BTN
 
 
 class _PdfMetadataWorker(QThread):
