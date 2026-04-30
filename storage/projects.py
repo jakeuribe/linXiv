@@ -5,7 +5,11 @@ import enum
 from dataclasses import dataclass, field
 from typing import Optional
 
+from pathlib import Path
+
 from storage.db import _connect, init_table
+
+_MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 
 # ── Query builder
@@ -48,6 +52,14 @@ def _projects_tables_exist() -> bool:
     return row is not None
 
 
+def _project_papers_table_exists() -> bool:
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='project_papers'"
+        ).fetchone()
+    return row is not None
+
+
 def ensure_projects_db() -> None:
     """Initialise the projects tables only if they don't exist yet, then migrate."""
     if not _projects_tables_exist():
@@ -56,18 +68,16 @@ def ensure_projects_db() -> None:
 
 
 def _migrate_projects_db() -> None:
-    """Add missing columns and convert data from older schemas."""
+    """Add missing columns, convert data from older schemas, and drop obsolete columns."""
+    _ensure_project_membership_table()
     with _connect() as conn:
         existing = {row[1] for row in conn.execute("PRAGMA table_info(projects)")}
-        for col, typedef in [
-            ("paper_ids",    "LIST"),
-            ("project_tags", "LIST"),
-        ]:
-            if col not in existing:
-                conn.execute(f"ALTER TABLE projects ADD COLUMN {col} {typedef}")
+
+        # Add project_tags if missing (old schema without it)
+        if "project_tags" not in existing:
+            conn.execute("ALTER TABLE projects ADD COLUMN project_tags LIST")
 
         # Migrate color: TEXT hex strings like "#5b8dee" → INTEGER
-        # Only rows where color is stored as a text hex string need converting.
         rows = conn.execute(
             "SELECT id, color FROM projects WHERE typeof(color) = 'text'"
         ).fetchall()
@@ -79,9 +89,30 @@ def _migrate_projects_db() -> None:
                     (int(raw.lstrip("#"), 16), row["id"]),
                 )
 
+        # If paper_ids JSON column still exists: migrate its data into project_papers,
+        # then rebuild the projects table without that column.
+        if "paper_ids" in existing:
+            conn.execute(
+                (_MIGRATIONS_DIR / "projects_migrate_paper_ids.sql").read_text()
+            )
+            conn.execute(
+                (_MIGRATIONS_DIR / "projects_drop_paper_ids.sql").read_text()
+            )
+            old_cols = {row[1] for row in conn.execute("PRAGMA table_info(projects)")}
+            keep_cols = ", ".join(
+                row[1] for row in conn.execute("PRAGMA table_info(projects_intermediate)")
+                if row[1] in old_cols
+            )
+            conn.execute(
+                f"INSERT INTO projects_intermediate ({keep_cols}) SELECT {keep_cols} FROM projects"
+            )
+            conn.executescript(
+                (_MIGRATIONS_DIR / "projects_rebuild_swap.sql").read_text()
+            )
+
 
 def init_projects_db() -> None:
-    """Create the projects table if it doesn't exist."""
+    """Create the projects and project_papers tables if they don't exist."""
     init_table(
         "projects",
         [
@@ -93,10 +124,78 @@ def init_projects_db() -> None:
             ("updated_at",   datetime.datetime),
             ("archived_at",  datetime.datetime),
             ("project_tags", list),
-            ("paper_ids",    list),            # ordered; source of truth for membership & order
             ("status",       str,              "NOT NULL DEFAULT 'active'"),
         ],
     )
+    _ensure_project_membership_table()
+
+
+def _ensure_project_membership_table() -> None:
+    with _connect() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS project_papers (
+                project_id INTEGER   NOT NULL REFERENCES projects(id)          ON DELETE CASCADE,
+                paper_id   TEXT      NOT NULL REFERENCES paper_roots(paper_id) ON DELETE CASCADE,
+                position   INTEGER,
+                added_at   TIMESTAMP,
+                note       TEXT,
+                PRIMARY KEY (project_id, paper_id)
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_project_papers_project_pos ON project_papers(project_id, position)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_project_papers_paper_id ON project_papers(paper_id)"
+        )
+
+        fks = {row["table"] for row in conn.execute("PRAGMA foreign_key_list(project_papers)")}
+        if "paper_roots" not in fks:
+            conn.execute("""
+                DELETE FROM project_papers
+                WHERE paper_id NOT IN (SELECT paper_id FROM paper_roots)
+            """)
+            conn.execute(
+                (_MIGRATIONS_DIR / "project_papers_add_fk.sql").read_text()
+            )
+            old_cols = {row[1] for row in conn.execute("PRAGMA table_info(project_papers)")}
+            keep_cols = ", ".join(
+                row[1] for row in conn.execute("PRAGMA table_info(project_papers_intermediate)")
+                if row[1] in old_cols
+            )
+            conn.execute(
+                f"INSERT INTO project_papers_intermediate ({keep_cols}) SELECT {keep_cols} FROM project_papers"
+            )
+            conn.executescript("""
+                DROP TABLE project_papers;
+                ALTER TABLE project_papers_intermediate RENAME TO project_papers;
+                CREATE INDEX IF NOT EXISTS idx_project_papers_project_pos ON project_papers(project_id, position);
+                CREATE INDEX IF NOT EXISTS idx_project_papers_paper_id ON project_papers(paper_id);
+            """)
+
+
+def _backfill_project_memberships() -> None:
+    if not _project_papers_table_exists():
+        return
+    with _connect() as conn:
+        has_data = conn.execute("SELECT 1 FROM project_papers LIMIT 1").fetchone() is not None
+        if has_data:
+            return
+        rows = conn.execute("SELECT id, paper_ids FROM projects").fetchall()
+        for row in rows:
+            project_id = row["id"]
+            paper_ids = row["paper_ids"] or []
+            _sync_project_papers(conn, project_id, paper_ids)
+
+
+def _sync_project_papers(conn, project_id: int, paper_ids: list[str]) -> None:
+    deduped = list(dict.fromkeys(paper_ids))
+    for pid in deduped:
+        conn.execute("INSERT OR IGNORE INTO paper_roots(paper_id) VALUES (?)", (pid,))
+    _save_paper_ids(conn, project_id, deduped)
 
 
 # ── Colour helpers ────────────────────────────────────────────────────────────
@@ -111,7 +210,29 @@ def color_from_hex(hex_str: str) -> int:
     return int(hex_str.lstrip("#"), 16)
 
 
-# ── Data model 
+# ── Internal helpers ──────────────────────────────────────────────────────────
+
+def _load_paper_ids(project_id: int) -> list[str]:
+    """Return the ordered list of paper_ids for a project from the bridge table."""
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT paper_id FROM project_papers WHERE project_id = ? ORDER BY position",
+            (project_id,),
+        ).fetchall()
+    return [row["paper_id"] for row in rows]
+
+
+def _save_paper_ids(conn, project_id: int, paper_ids: list[str]) -> None:
+    conn.execute("DELETE FROM project_papers WHERE project_id = ?", (project_id,))
+    for pos, pid in enumerate(paper_ids):
+        conn.execute("INSERT OR IGNORE INTO paper_roots(paper_id) VALUES (?)", (pid,))
+        conn.execute(
+            "INSERT INTO project_papers (project_id, paper_id, position) VALUES (?, ?, ?)",
+            (project_id, pid, pos),
+        )
+
+
+# ── Data model
 
 @dataclass
 class Project:
@@ -119,32 +240,34 @@ class Project:
     description:  str                         = ""
     color:        Optional[int]               = None   # packed RGB, e.g. 0x5b8dee
     project_tags: list[str]                   = field(default_factory=list)
-    paper_ids:    list[str]                   = field(default_factory=list)  # ordered; persisted in DB
+    paper_ids:    list[str]                   = field(default_factory=list)  # in-memory; sourced from project_papers
     status:       Status                      = Status.ACTIVE
     id:           Optional[int]               = None
     created_at:   Optional[datetime.datetime] = None
     updated_at:   Optional[datetime.datetime] = None
     archived_at:  Optional[datetime.datetime] = None
 
-    # ── Construction 
+    # ── Construction
 
     @classmethod
     def from_row(cls, row) -> Project:
         """Construct a Project from a sqlite3.Row returned by a projects query."""
+        proj_id = row["id"]
+        paper_ids = _load_paper_ids(proj_id) if proj_id is not None else []
         return cls(
-            id           = row["id"],
+            id           = proj_id,
             name         = row["name"],
             description  = row["description"] or "",
             color        = int(row["color"]) if row["color"] is not None else None,
             project_tags = row["project_tags"] or [],
-            paper_ids    = row["paper_ids"] or [],
+            paper_ids    = paper_ids,
             status       = Status(row["status"]),
             created_at   = row["created_at"],
             updated_at   = row["updated_at"],
             archived_at  = row["archived_at"],
         )
 
-    # ── Persistence 
+    # ── Persistence
 
     def save(self) -> None:
         """Insert (if new) or update (if existing) the project row."""
@@ -157,27 +280,31 @@ class Project:
                     """
                     INSERT INTO projects
                         (name, description, color, created_at, updated_at, archived_at,
-                         project_tags, paper_ids, status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         project_tags, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (self.name, self.description, self.color,
                      self.created_at, self.updated_at, self.archived_at,
-                     self.project_tags, self.paper_ids, self.status),
+                     self.project_tags, self.status),
                 )
                 self.id = cur.lastrowid
+                assert self.id is not None
+                _save_paper_ids(conn, self.id, self.paper_ids)
         else:
             with _connect() as conn:
                 conn.execute(
                     """
                     UPDATE projects
                     SET name = ?, description = ?, color = ?, updated_at = ?,
-                        archived_at = ?, project_tags = ?, paper_ids = ?, status = ?
+                        archived_at = ?, project_tags = ?, status = ?
                     WHERE id = ?
                     """,
                     (self.name, self.description, self.color,
                      self.updated_at, self.archived_at,
-                     self.project_tags, self.paper_ids, self.status, self.id),
+                     self.project_tags, self.status, self.id),
                 )
+                assert self.id is not None
+                _save_paper_ids(conn, self.id, self.paper_ids)
 
     def delete(self) -> None:
         """
@@ -213,7 +340,8 @@ class Project:
             self.paper_ids.append(paper_id)
         else:
             self.paper_ids.insert(position, paper_id)
-        self.save()
+        with _connect() as conn:
+            _save_paper_ids(conn, self.id, self.paper_ids)
 
     def add_papers(self, paper_ids: list[str]) -> None:
         """Bulk-add papers, appended in order. Skips duplicates."""
@@ -223,7 +351,8 @@ class Project:
         if not new_ids:
             return
         self.paper_ids.extend(new_ids)
-        self.save()
+        with _connect() as conn:
+            _save_paper_ids(conn, self.id, self.paper_ids)
 
     def remove_paper(self, paper_id: str) -> None:
         """Remove a paper from this project."""
@@ -232,15 +361,17 @@ class Project:
         if paper_id not in self.paper_ids:
             return
         self.paper_ids.remove(paper_id)
-        self.save()
+        with _connect() as conn:
+            _save_paper_ids(conn, self.id, self.paper_ids)
 
     def reorder_paper(self, paper_id: str, new_position: int) -> None:
         """Move a paper to a new index within the ordered list."""
-        if paper_id not in self.paper_ids:
+        if self.id is None or paper_id not in self.paper_ids:
             return
         self.paper_ids.remove(paper_id)
         self.paper_ids.insert(new_position, paper_id)
-        self.save()
+        with _connect() as conn:
+            _save_paper_ids(conn, self.id, self.paper_ids)
 
     def load_papers(self) -> list[str]:
         """Return paper_ids (already loaded from the DB row on construction)."""

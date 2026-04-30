@@ -16,9 +16,20 @@ from storage.db import (
 from sources.base import PaperMetadata
 from sources.arxiv_downloads import cleanup_pdfs as _cleanup_pdfs, saved_pdfs_size
 from gui.views import TexView, PdfWindow
-from gui.theme import FONT_TERTIARY, SPACE_XS, SPACE_SM, SPACE_MD
-from gui.search._workers import _SearchWorker, _SourceSearchWorker, _PdfWorker, _PDF_DIR
-from gui.search._widgets import _ClauseRow, _ResultList, _ResultRow
+from gui.theme import (
+    BG,
+    PANEL,
+    BORDER,
+    ACCENT,
+    TEXT,
+    MUTED,
+    FONT_TERTIARY,
+    SPACE_XS,
+    SPACE_SM,
+    SPACE_MD,
+)
+from ._workers import _SearchWorker, _SourceSearchWorker, _PdfWorker, _PDF_DIR
+from ._widgets import _ClauseRow, _ResultList, _ResultRow
 
 _SORT_BY_OPTIONS = [
     ("Relevance",     arxiv.SortCriterion.Relevance),
@@ -41,39 +52,39 @@ _SOURCE_OPTIONS = [
 class SearchPage(QWidget):
     def __init__(self):
         super().__init__()
-        self.setStyleSheet("""
-            background: #ffffff; color: #111111;
-            QLineEdit, QComboBox, QSpinBox {
-                border: 1px solid #cccccc;
+        self.setStyleSheet(f"""
+            background: {BG}; color: {TEXT};
+            QLineEdit, QComboBox, QSpinBox {{
+                border: 1px solid {BORDER};
                 border-radius: 4px;
                 padding: 2px 4px;
-                background: #ffffff;
-                color: #111111;
-            }
-            QListWidget {
-                border: 1px solid #cccccc;
-                background: #ffffff;
-                color: #111111;
-            }
-            QListWidget::item:selected {
-                background: #5b8dee;
+                background: {PANEL};
+                color: {TEXT};
+            }}
+            QListWidget {{
+                border: 1px solid {BORDER};
+                background: {PANEL};
+                color: {TEXT};
+            }}
+            QListWidget::item:selected {{
+                background: {ACCENT};
                 color: #ffffff;
-            }
-            QListWidget::item:hover {
-                background: #eef2fd;
-            }
-            QPushButton {
-                background: #f0f0f0;
-                color: #111111;
-                border: 1px solid #cccccc;
+            }}
+            QListWidget::item:hover {{
+                background: #2a2a4a;
+            }}
+            QPushButton {{
+                background: {PANEL};
+                color: {TEXT};
+                border: 1px solid {BORDER};
                 border-radius: 4px;
                 padding: 2px 8px;
-            }
-            QPushButton:hover { background: #e0e0e0; }
-            QPushButton:disabled { color: #999999; }
-            QCheckBox { color: #111111; }
-            QLabel { color: #111111; }
-            QFrame[frameShape="1"] { border: 1px solid #cccccc; }
+            }}
+            QPushButton:hover {{ background: #2a2a4a; }}
+            QPushButton:disabled {{ color: {MUTED}; }}
+            QCheckBox {{ color: {TEXT}; }}
+            QLabel {{ color: {TEXT}; }}
+            QFrame[frameShape="1"] {{ border: 1px solid {BORDER}; }}
         """)
         self._results: list[arxiv.Result] = []
         self._meta_results: list[PaperMetadata] = []  # unified results from any source
@@ -143,7 +154,7 @@ class SearchPage(QWidget):
         # Preview + insert row
         preview_row = QHBoxLayout()
         self._preview_label = QLabel()
-        self._preview_label.setStyleSheet("color: grey; font-family: monospace;")
+        self._preview_label.setStyleSheet(f"color: {MUTED}; font-family: monospace;")
         self._preview_label.setWordWrap(True)
         preview_row.addWidget(self._preview_label, stretch=1)
 
@@ -206,14 +217,14 @@ class SearchPage(QWidget):
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(SPACE_XS)
         self._list = _ResultList()
-        self._list.setStyleSheet("""
-            QListWidget { background: #ffffff; border: 1px solid #cccccc; }
-            QListWidget::item:selected { background: #5b8dee; color: #ffffff; }
-            QListWidget::item:hover { background: #eef2fd; color: #111111; }
+        self._list.setStyleSheet(f"""
+            QListWidget {{ background: {PANEL}; border: 1px solid {BORDER}; }}
+            QListWidget::item:selected {{ background: {ACCENT}; color: #ffffff; }}
+            QListWidget::item:hover {{ background: #2a2a4a; color: {TEXT}; }}
         """)
         self._list.currentRowChanged.connect(self._on_select)
         self._status = QLabel("")
-        self._status.setStyleSheet("color: grey;")
+        self._status.setStyleSheet(f"color: {MUTED};")
         left_layout.addWidget(self._list)
         left_layout.addWidget(self._status)
         top.addWidget(left)
@@ -223,9 +234,9 @@ class SearchPage(QWidget):
         meta_layout.setContentsMargins(SPACE_SM, 0, 0, 0)
         meta_layout.setSpacing(SPACE_XS)
 
-        self._sidebar_title = TexView(color="#111111", bg="#ffffff")
+        self._sidebar_title = TexView(color=TEXT, bg=PANEL)
         self._sidebar_title.setFixedHeight(70)  # TODO: Make more customizable
-        self._sidebar_meta = TexView(color="#111111", bg="#ffffff")
+        self._sidebar_meta = TexView(color=TEXT, bg=PANEL)
         self._sidebar_meta.setFixedHeight(40)  # TODO: Make more customizable
 
         tag_row = QHBoxLayout()
@@ -267,7 +278,7 @@ class SearchPage(QWidget):
         top.setSizes([400, 600])  # TODO: Make more customizable
         outer.addWidget(top)
 
-        self._sidebar_abstract = TexView(color="#111111", bg="#ffffff")
+        self._sidebar_abstract = TexView(color=TEXT, bg=PANEL)
         outer.addWidget(self._sidebar_abstract)
         outer.setSizes([300, 300])  # TODO: Make more customizable
 
@@ -347,6 +358,8 @@ class SearchPage(QWidget):
     # --- search ---
 
     def _on_search(self) -> None:
+        if not self._search_btn.isEnabled():
+            return
         query = self._search_box.text().strip()
         if not query:
             return
@@ -366,12 +379,14 @@ class SearchPage(QWidget):
             sort_order  = _SORT_ORDER_OPTIONS[self._order_combo.currentIndex()][1]
             self._worker = _SearchWorker(query, max_results, sort_by, sort_order)
             self._worker.done.connect(self._on_done)
+            self._worker.error.connect(self._on_search_error)
             self._worker.start()
         else:
             self._source_worker = _SourceSearchWorker(
                 self._active_source, query, max_results
             )
             self._source_worker.done.connect(self._on_source_done)
+            self._source_worker.error.connect(self._on_search_error)
             self._source_worker.start()
 
     def _on_done(self, results: list) -> None:
@@ -381,7 +396,7 @@ class SearchPage(QWidget):
             paper_id, _ = parse_entry_id(paper.entry_id)
             row_widget.set_checked(get_paper(paper_id) is not None)
             row_widget._checkbox.stateChanged.connect(
-                lambda state, rw=row_widget, p=paper: self._on_checkbox_changed(rw, p, state)
+                lambda state, p=paper: self._on_checkbox_changed(p, state)
             )
             self._row_widgets.append(row_widget)
             item = QListWidgetItem()
@@ -397,7 +412,7 @@ class SearchPage(QWidget):
             row_widget = _ResultRow(paper.title, source=paper.source)
             row_widget.set_checked(get_paper(paper.paper_id) is not None)
             row_widget._checkbox.stateChanged.connect(
-                lambda state, rw=row_widget, p=paper: self._on_meta_checkbox_changed(rw, p, state)
+                lambda state, p=paper: self._on_meta_checkbox_changed(p, state)
             )
             self._row_widgets.append(row_widget)
             item = QListWidgetItem()
@@ -406,6 +421,15 @@ class SearchPage(QWidget):
             self._list.setItemWidget(item, row_widget)
         self._set_busy(False)
         self._status.setText(f"{len(results)} results from {self._active_source}")
+
+    def _on_search_error(self, msg: str) -> None:
+        self._set_busy(False)
+        self._status.setText(f"Search failed: {msg}")
+
+    def _on_pdf_error(self, msg: str) -> None:
+        self._pdf_btn.setEnabled(True)
+        self._pdf_btn.setText("View PDF")
+        self._status.setText(f"PDF download failed: {msg}")
 
     def _on_local_search(self, query: str, limit: int) -> None:
         try:
@@ -429,9 +453,7 @@ class SearchPage(QWidget):
         self._set_busy(False)
         self._status.setText(f"{len(self._local_results)} results from local source")
 
-    def _on_meta_checkbox_changed(
-        self, _row_widget: _ResultRow, paper: PaperMetadata, state: int
-    ) -> None:
+    def _on_meta_checkbox_changed(self, paper: PaperMetadata, state: int) -> None:
         if state == Qt.CheckState.Checked.value:
             tags = self._parse_tags()
             save_paper_metadata(paper, tags=tags if tags else None)
@@ -444,7 +466,7 @@ class SearchPage(QWidget):
             return []
         return [t.strip() for t in raw.split(",") if t.strip()]
 
-    def _on_checkbox_changed(self, _row_widget: _ResultRow, paper: arxiv.Result, state: int) -> None:
+    def _on_checkbox_changed(self, paper: arxiv.Result, state: int) -> None:
         if state == Qt.CheckState.Checked.value:
             tags = self._parse_tags()
             save_paper(paper, tags=tags if tags else None)
@@ -553,6 +575,7 @@ class SearchPage(QWidget):
         self._pdf_btn.setText("Downloading…")
         self._pdf_worker = _PdfWorker(self._results[row])
         self._pdf_worker.done.connect(lambda path, k=key: self._on_pdf_ready(path, k))
+        self._pdf_worker.error.connect(self._on_pdf_error)
         self._pdf_worker.start()
 
     def _on_pdf_ready(self, path: str, key: tuple[str, int] | None = None) -> None:

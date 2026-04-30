@@ -50,9 +50,9 @@
         <div class="panel" id="filters">
             <div class="panel-header">
                 <span>Filters</span>
-                <button class="panel-toggle" data-target="filters-body">▼</button>
+                <button class="panel-toggle" data-target="filters-body">▶</button>
             </div>
-            <div class="panel-body" id="filters-body">
+            <div class="panel-body" id="filters-body" style="display:none">
 
                 <div class="section-title">Visibility</div>
                 <div class="check-row">
@@ -70,12 +70,6 @@
                 <div class="check-row">
                     <label><input type="checkbox" id="filterHasPdf"> Has PDF only</label>
                 </div>
-
-                <div class="section-title">Projects</div>
-                <div class="chip-row" id="project-chips"></div>
-
-                <div class="section-title">Project Tags</div>
-                <div class="chip-row" id="project-tag-chips"></div>
 
                 <div class="section-title">Date range</div>
                 <div class="filter-row">
@@ -105,14 +99,34 @@
         <div class="panel" id="tag-filter-panel">
             <div class="panel-header">
                 <span>Tag Filter</span>
-                <button class="panel-toggle" data-target="tag-filter-body">▼</button>
+                <button class="panel-toggle" data-target="tag-filter-body">▶</button>
             </div>
-            <div class="panel-body" id="tag-filter-body">
+            <div class="panel-body" id="tag-filter-body" style="display:none">
+
+                <div class="section-title">Projects</div>
+                <div class="tag-input-row">
+                    <input type="text" id="filterProject" list="projectList" placeholder="type a project…" autocomplete="off">
+                    <datalist id="projectList"></datalist>
+                    <button id="addProjectBtn" class="add-filter-btn" title="Add project filter">+</button>
+                </div>
+                <div id="project-filter-rows"></div>
+                <div id="project-filter-empty" style="font-size:11px; color:#3e3e60; font-style:italic; margin-top:4px;">No project filters active.</div>
+
+                <div class="section-title">Project Tags</div>
+                <div class="tag-input-row">
+                    <input type="text" id="filterProjectTag" list="projectTagList" placeholder="type a tag…" autocomplete="off">
+                    <datalist id="projectTagList"></datalist>
+                    <button id="addProjTagBtn" class="add-filter-btn" title="Add project tag filter">+</button>
+                </div>
+                <div id="proj-tag-filter-rows"></div>
+                <div id="proj-tag-filter-empty" style="font-size:11px; color:#3e3e60; font-style:italic; margin-top:4px;">No project tag filters active.</div>
+
+                <div class="section-title">Paper Tags</div>
                 <div class="tag-input-row">
                     <input type="text" id="tagFilterInput" list="tagList"
                            placeholder="type a tag…" autocomplete="off">
                     <datalist id="tagList"></datalist>
-                    <button id="addTagBtn" title="Add tag">+</button>
+                    <button id="addTagBtn" class="add-filter-btn" title="Add tag">+</button>
                 </div>
                 <div id="tag-filter-rows"></div>
                 <div id="tag-filter-empty" style="font-size:11px; color:#3e3e60; font-style:italic; margin-top:4px;">
@@ -125,9 +139,9 @@
         <div class="panel" id="selection-panel">
             <div class="panel-header">
                 <span>Selection <span id="selectionCount" style="color:#7777aa; font-weight:400;">(0)</span></span>
-                <button class="panel-toggle" data-target="selection-body">▼</button>
+                <button class="panel-toggle" data-target="selection-body">▶</button>
             </div>
-            <div class="panel-body" id="selection-body">
+            <div class="panel-body" id="selection-body" style="display:none">
                 <div class="check-row" style="margin-bottom:8px;">
                     <span style="font-size:12px; color:#aaaacc;">Click to select · Ctrl+click to add</span>
                 </div>

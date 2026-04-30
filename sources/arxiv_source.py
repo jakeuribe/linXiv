@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import arxiv
 from sources.base import PaperMetadata, PaperSource
+from .fetch_paper_metadata import _check_ratelimit, _record_ratelimit
 
 
 def _parse_arxiv_id(entry_id: str) -> tuple[str, int]:
@@ -54,18 +55,26 @@ class ArxivSource(PaperSource):
             sort_by=arxiv.SortCriterion.Relevance,
             sort_order=arxiv.SortOrder.Descending,
         )
+        _check_ratelimit()
         try:
             results = list(self._client.results(search))
         except Exception as e:
+            print(f"[arxiv] search error: {e}")
+            if "429" in str(e):
+                _record_ratelimit()
             raise ValueError(f"arXiv search failed: {e}") from e
         return [_result_to_metadata(r) for r in results]
 
     def fetch_by_id(self, paper_id: str) -> PaperMetadata:
         search = arxiv.Search(id_list=[paper_id])
+        _check_ratelimit()
         try:
             result = next(self._client.results(search))
         except StopIteration:
             raise ValueError(f"Paper '{paper_id}' not found on arXiv.")
         except Exception as e:
+            print(f"[arxiv] fetch error: {e}")
+            if "429" in str(e):
+                _record_ratelimit()
             raise ValueError(f"arXiv fetch failed for '{paper_id}': {e}") from e
         return _result_to_metadata(result)
