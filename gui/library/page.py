@@ -463,7 +463,7 @@ class LibraryPage(QWidget):
         self._cards_widget.setStyleSheet("background: transparent;")
         self._cards_layout = QVBoxLayout(self._cards_widget)
         self._cards_layout.setContentsMargins(0, 0, 0, 0)
-        self._cards_layout.setSpacing(SPACE_SM)
+        self._cards_layout.setSpacing(SPACE_MD)
         self._cards_layout.addStretch()
 
         scroll.setWidget(self._cards_widget)

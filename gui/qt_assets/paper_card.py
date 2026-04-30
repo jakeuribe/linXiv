@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import urllib.parse
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
@@ -32,6 +33,50 @@ from storage.paths import pdf_dir
 _GREEN = "#4caf7d"
 _BLUE  = "#5b8dee"
 _RED   = "#e05c5c"
+_ACCENT_HOVER = "#7ba3f5"
+
+# White checkmark on transparent (drawn over filled indicator when checked).
+_MD_CHECK_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+    '<path fill="#ffffff" d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>'
+)
+_MD_CHECK_DATA_URL = "data:image/svg+xml;charset=utf-8," + urllib.parse.quote(_MD_CHECK_SVG)
+
+
+def _material_checkbox_qss() -> str:
+    """Outlined / filled indicator — visible on dark panels, Material-adjacent."""
+    return f"""
+        QCheckBox {{
+            background: transparent;
+            spacing: 0px;
+        }}
+        QCheckBox::indicator {{
+            width: 20px;
+            height: 20px;
+            border-radius: 3px;
+            border: 2px solid #9aa3c7;
+            background-color: transparent;
+        }}
+        QCheckBox::indicator:hover {{
+            border-color: {_ACCENT};
+            background-color: #252540;
+        }}
+        QCheckBox::indicator:checked {{
+            border: 2px solid {_ACCENT};
+            background-color: {_ACCENT};
+            image: url("{_MD_CHECK_DATA_URL}");
+        }}
+        QCheckBox::indicator:checked:hover {{
+            border: 2px solid {_ACCENT_HOVER};
+            background-color: {_ACCENT_HOVER};
+            image: url("{_MD_CHECK_DATA_URL}");
+        }}
+        QCheckBox::indicator:disabled {{
+            border: 2px solid {_BORDER};
+            background-color: transparent;
+            image: none;
+        }}
+    """
 
 _PDF_DIR = pdf_dir()
 
@@ -162,13 +207,17 @@ class PaperCard(QFrame):
 
     _base_style = f"""
         QFrame#paperCard {{
-            background: {_PANEL}; border: 1px solid {_BORDER}; border-radius: {RADIUS_LG}px;
+            background: {_PANEL};
+            border: 1px solid {_BORDER};
+            border-radius: {RADIUS_LG}px;
         }}
         QLabel {{ border: none; background: transparent; }}
     """
     _sel_style = f"""
         QFrame#paperCard {{
-            background: {_PANEL}; border: 1px solid {_ACCENT}; border-radius: {RADIUS_LG}px;
+            background: {_PANEL};
+            border: 2px solid {_ACCENT};
+            border-radius: {RADIUS_LG}px;
         }}
         QLabel {{ border: none; background: transparent; }}
     """
@@ -218,13 +267,11 @@ class PaperCard(QFrame):
         outer.addSpacing(CARD_PAD_H)
 
         self._chk = QCheckBox()
-        self._chk.setFixedSize(44, 44)
-        self._chk.setStyleSheet(
-            "QCheckBox { background: transparent; }"
-            " QCheckBox::indicator { width: 14px; height: 14px; }"
-        )
+        self._chk.setFixedSize(48, 48)
+        self._chk.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._chk.setStyleSheet(_material_checkbox_qss())
         self._chk.stateChanged.connect(self._on_checkbox)
-        outer.addWidget(self._chk)
+        outer.addWidget(self._chk, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         cat   = (row["category"] or "").split(".")[0] if row["category"] else ""
         color = CAT_COLORS.get(row["category"] or "", CAT_COLORS.get(cat, _ACCENT))
