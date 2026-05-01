@@ -32,12 +32,12 @@ def exec_paths(paths:Iterable[str], conn:Connection)->None:
         for er in tab_ers:
             print(er)
     pass
-def exec_at_path(path:str, conn:Connection)->str:
+def exec_at_path(path:str, conn:Connection)->str|None:
     with open(path, 'r') as file:
         SQL = file.read()
     return exec_str(SQL, conn)
 
-def exec_str(sql:str, conn:Connection)->str:
+def exec_str(sql:str, conn:Connection)->str|None:
     er = None
     try:
         conn.execute(sql)
