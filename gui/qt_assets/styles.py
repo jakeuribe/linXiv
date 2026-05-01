@@ -121,6 +121,15 @@ BTN_NOTE_DELETE = f"""
     QPushButton:hover {{ border-color: #ff7070; color: #ff7070; }}
 """
 
+BTN_NOTE_ACCENT = f"""
+    QPushButton {{
+        background: {ACCENT}; border: none; border-radius: {RADIUS_SM}px;
+        color: #fff; font-size: {FONT_TERTIARY}px; font-weight: 600; padding: 2px 8px;
+    }}
+    QPushButton:hover   {{ background: #7aa3f5; }}
+    QPushButton:pressed {{ background: #4a7add; }}
+"""
+
 # ── Compact / contextual buttons ─────────────────────────────────────────────
 
 BTN_PANEL_SM = f"""
