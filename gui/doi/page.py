@@ -25,6 +25,7 @@ from gui.theme import (
     PAGE_MARGIN_H, PAGE_MARGIN_V,
     CARD_PAD_H, DIALOG_PAD,
 )
+from gui.qt_assets.styles import BTN_PRIMARY as _BTN_PRIMARY, BTN_SUCCESS as _BTN_SUCCESS
 
 _GREEN  = "#4caf7d"
 _RED    = "#e05c5c"
@@ -92,15 +93,7 @@ class DoiPage(QWidget):
         self._lookup_btn = QPushButton("Look up")
         self._lookup_btn.setFixedSize(96, BTN_H_LG)  # TODO: Make more customizable (width)
         self._lookup_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._lookup_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {_ACCENT}; border: none; border-radius: {RADIUS_MD}px;
-                color: #fff; font-size: {FONT_BODY}px; font-weight: 600;
-            }}
-            QPushButton:hover   {{ background: #7aa3f5; }}
-            QPushButton:pressed {{ background: #4a7add; }}
-            QPushButton:disabled {{ background: #2a2a4a; color: {_MUTED}; }}
-        """)
+        self._lookup_btn.setStyleSheet(_BTN_PRIMARY)
         self._lookup_btn.clicked.connect(self._on_lookup)
 
         input_row.addWidget(self._doi_input)
@@ -152,15 +145,7 @@ class DoiPage(QWidget):
 
         self._save_btn = QPushButton("Save to library")
         self._save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._save_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {_GREEN}; border: none; border-radius: {RADIUS_MD}px;
-                color: #fff; font-size: {FONT_BODY}px; font-weight: 600; padding: 8px 18px;
-            }}
-            QPushButton:hover   {{ background: #5dcc8f; }}
-            QPushButton:pressed {{ background: #3a9e60; }}
-            QPushButton:disabled {{ background: #2a2a4a; color: {_MUTED}; }}
-        """)
+        self._save_btn.setStyleSheet(_BTN_SUCCESS)
         self._save_btn.clicked.connect(self._on_save)
 
         self._source_lbl = QLabel()

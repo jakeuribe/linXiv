@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from storage.notes import (
@@ -12,6 +14,7 @@ from storage.notes import (
     get_notes,
     get_project_notes,
 )
+from storage.projects import Project
 
 
 # ---------------------------------------------------------------------------
@@ -48,12 +51,14 @@ class TestNoteSaveCreate:
         assert fetched.content == "Body text"
 
     def test_save_persists_project_id(self):
-        n = Note(paper_id="2204.12985", project_id=42)
+        p = Project(name="Test Project")
+        p.save()
+        n = Note(paper_id="2204.12985", project_id=p.id)
         n.save()
         assert n.id is not None
         fetched = get_note(n.id)
         assert fetched is not None
-        assert fetched.project_id == 42
+        assert fetched.project_id == p.id
 
     def test_save_null_project_id(self):
         n = Note(paper_id="2204.12985", project_id=None)
@@ -192,7 +197,7 @@ class TestGetNote:
 # get_notes
 # ---------------------------------------------------------------------------
 
-@pytest.mark.usefixtures("tmp_db")
+@pytest.mark.usefixtures("note_projects")
 class TestGetNotes:
     def test_empty_db_returns_empty_list(self):
         assert get_notes("2204.12985") == []
@@ -243,7 +248,7 @@ class TestGetNotes:
 # get_project_notes
 # ---------------------------------------------------------------------------
 
-@pytest.mark.usefixtures("tmp_db")
+@pytest.mark.usefixtures("note_projects")
 class TestGetProjectNotes:
     def test_empty_returns_empty_list(self):
         assert get_project_notes(99) == []
@@ -270,7 +275,7 @@ class TestGetProjectNotes:
 # count_project_notes
 # ---------------------------------------------------------------------------
 
-@pytest.mark.usefixtures("tmp_db")
+@pytest.mark.usefixtures("note_projects")
 class TestCountProjectNotes:
     def test_zero_for_empty(self):
         assert count_project_notes(1) == 0
@@ -294,7 +299,7 @@ class TestCountProjectNotes:
 # count_paper_notes
 # ---------------------------------------------------------------------------
 
-@pytest.mark.usefixtures("tmp_db")
+@pytest.mark.usefixtures("note_projects")
 class TestCountPaperNotes:
     def test_zero_for_empty(self):
         assert count_paper_notes("2204.12985") == 0
@@ -321,3 +326,16 @@ class TestCountPaperNotes:
         assert count_paper_notes("Y") == 1
         n.delete()
         assert count_paper_notes("Y") == 0
+
+
+# ---------------------------------------------------------------------------
+# FK enforcement test (cross-cutting)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.usefixtures("tmp_db")
+def test_note_with_nonexistent_project_id_raises_integrity_error():
+    """notes.project_id has a FK → projects(id); inserting with a non-existent
+    project_id must raise sqlite3.IntegrityError."""
+    n = Note(paper_id="2204.12985", project_id=9999)
+    with pytest.raises(sqlite3.IntegrityError):
+        n.save()

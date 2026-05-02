@@ -8,11 +8,15 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QProgressBar,
     QScrollArea,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
+import user_settings as _user_settings
+from storage.paths import pdf_dir as _pdf_dir
 from gui.theme import BG as _BG, PANEL as _PANEL, BORDER as _BORDER
 from gui.theme import TEXT as _TEXT, MUTED as _MUTED
 from gui.theme import (
@@ -130,6 +134,91 @@ class SettingsPage(QWidget):
                 "Your email for CrossRef's polite pool — faster, more reliable metadata responses.",
                 mailto_field,
             )
+        ]))
+
+        inner.addSpacing(SPACE_XL)
+
+        # ── Storage section ───────────────────────────────────────────────────
+        inner.addWidget(_section_label("Storage"))
+        inner.addSpacing(SPACE_SM)
+
+        def _pdf_used_mb() -> float:
+            d = _pdf_dir()
+            if not d.is_dir():
+                return 0.0
+            return sum(
+                os.path.getsize(d / f)
+                for f in os.listdir(d)
+                if f.lower().endswith(".pdf") and os.path.isfile(d / f)
+            ) / 1024 ** 2
+
+        limit_spin = QSpinBox()
+        limit_spin.setRange(100, 100_000)
+        limit_spin.setSingleStep(100)
+        limit_spin.setSuffix(" MB")
+        limit_spin.setValue(_user_settings.get("pdf_save_limit_mb"))
+        limit_spin.setFixedWidth(130)
+        limit_spin.setStyleSheet(
+            f"background: {_PANEL}; border: 1px solid {_BORDER}; "
+            f"border-radius: 6px; color: {_TEXT}; font-size: {FONT_BODY}px; "
+            f"padding: 4px 10px;"
+        )
+
+        used_mb = _pdf_used_mb()
+        limit_mb_init = _user_settings.get("pdf_save_limit_mb")
+        pct_init = min(100, int(used_mb / limit_mb_init * 100)) if limit_mb_init else 0
+
+        usage_bar = QProgressBar()
+        usage_bar.setRange(0, 100)
+        usage_bar.setValue(pct_init)
+        usage_bar.setTextVisible(False)
+        usage_bar.setFixedWidth(100)
+        usage_bar.setFixedHeight(8)
+        usage_bar.setStyleSheet(
+            f"QProgressBar {{ background: {_BORDER}; border-radius: 4px; border: none; }}"
+            f"QProgressBar::chunk {{ background: {'#c0392b' if pct_init >= 90 else _MUTED}; border-radius: 4px; }}"
+        )
+
+        usage_label = QLabel(f"{used_mb:.1f} / {limit_mb_init} MB  ({pct_init}%)")
+        usage_label.setStyleSheet(f"color: {_MUTED}; font-size: {FONT_SECONDARY}px;")
+
+        usage_widget = QWidget()
+        usage_widget.setStyleSheet("background: transparent;")
+        usage_row = QHBoxLayout(usage_widget)
+        usage_row.setContentsMargins(0, 0, 0, 0)
+        usage_row.setSpacing(SPACE_SM)
+        usage_row.addWidget(usage_bar)
+        usage_row.addWidget(usage_label)
+
+        def _refresh_usage() -> None:
+            mb = _pdf_used_mb()
+            lim = limit_spin.value()
+            pct = min(100, int(mb / lim * 100)) if lim else 0
+            usage_bar.setValue(pct)
+            usage_label.setText(f"{mb:.1f} / {lim} MB  ({pct}%)")
+            color = "#c0392b" if pct >= 90 else _MUTED
+            usage_bar.setStyleSheet(
+                f"QProgressBar {{ background: {_BORDER}; border-radius: 4px; border: none; }}"
+                f"QProgressBar::chunk {{ background: {color}; border-radius: 4px; }}"
+            )
+
+        def _save_pdf_limit() -> None:
+            _user_settings.set("pdf_save_limit_mb", limit_spin.value())
+
+        limit_spin.editingFinished.connect(_save_pdf_limit)
+        limit_spin.valueChanged.connect(_refresh_usage)
+
+        inner.addWidget(_Card([
+            _SettingRow(
+                "PDF save limit",
+                "Maximum total size of PDFs kept on disk across all sessions.",
+                limit_spin,
+            ),
+            _SettingRow(
+                "PDF storage used",
+                "Current size of all PDFs in the local downloads folder.",
+                usage_widget,
+            ),
         ]))
 
         inner.addStretch()

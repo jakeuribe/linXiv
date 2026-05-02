@@ -39,3 +39,14 @@ def tmp_db(tmp_path, monkeypatch):
     notes.init_notes_db()
 
     return db_file
+
+
+@pytest.fixture()
+def note_projects(tmp_db):
+    """Extend tmp_db with 10 pre-created projects so notes.project_id FK
+    constraints (REFERENCES projects(id)) are satisfied when tests use
+    hard-coded project IDs like 1, 2, 5, 7, 8."""
+    from storage.projects import Project
+    for i in range(10):
+        Project(name=f"Dummy {i + 1}").save()
+    return tmp_db
