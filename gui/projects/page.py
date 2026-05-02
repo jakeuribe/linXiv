@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from collections import OrderedDict
-
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
 from PyQt6.QtGui import QCloseEvent
 
@@ -29,6 +27,7 @@ from PyQt6.QtWidgets import (
 from storage.projects import color_to_hex
 
 from gui.qt_assets import PaperCard, ElidedLabel, SelectionBar
+from gui.qt_assets.note_card import note_card
 from gui.library.page import LibraryPage
 from gui.shell import AppShell
 from gui.views import PdfWindow
@@ -43,7 +42,6 @@ from gui.theme import (
     NOTE_HEIGHT,
 )
 
-_CARD_CACHE_MAX = 30
 # Long project descriptions as a single tall QLabel can blow layout/GPU on window resize (Windows D3D11).
 _PROJECT_DESC_VIEWPORT_MAX_H = 550
 
@@ -58,7 +56,7 @@ _PRESET_COLORS: list[int] = [
 
 from gui.qt_assets.styles import (
     BTN_PRIMARY as _BTN_STYLE, BTN_MUTED as _BTN_MUTED_STYLE,
-    BTN_DANGER as _BTN_DANGER, BTN_NOTE_EDIT as _BTN_NOTE_EDIT, BTN_NOTE_DELETE as _BTN_NOTE_DELETE,
+    BTN_DANGER as _BTN_DANGER,
 )
 _INPUT_STYLE = f"""
     QLineEdit, QTextEdit {{
@@ -491,7 +489,6 @@ class NotesDialog(QDialog):
         self._paper_id   = paper_id
         self._project_id = project_id
         self._cards: dict[int, QFrame] = {}
-        self._md_cache: OrderedDict = OrderedDict()
         self._retired_cards: list[QWidget] = []
         self.setWindowTitle("Notes")
         self.setFixedSize(560, 520)
@@ -554,7 +551,6 @@ class NotesDialog(QDialog):
             if w is not None:
                 self._retire_card(w)
         self._cards.clear()
-        self._md_cache.clear()
 
         from storage.notes import get_notes, ensure_notes_db
         ensure_notes_db()
@@ -563,11 +559,10 @@ class NotesDialog(QDialog):
         if notes:
             self._empty_lbl.setVisible(False)
             for note in notes:
-                card, md_view = self._make_note_card(note)
+                card = note_card(self, note, {}, on_delete=lambda n=note: self._delete_note(n))
                 self._notes_layout.insertWidget(self._notes_layout.count() - 1, card)
                 if note.id is not None:
                     self._cards[note.id] = card
-                    self._md_cache_put(note.id, md_view)
         else:
             self._empty_lbl.setVisible(True)
 
@@ -589,105 +584,30 @@ class NotesDialog(QDialog):
             card.deleteLater()
         self._retired_cards.clear()
         self._cards.clear()
-        self._md_cache.clear()
         super().closeEvent(event)
 
-    def _md_cache_put(self, note_id: int, md_view) -> None:
-        if note_id in self._md_cache:
-            self._md_cache.move_to_end(note_id)
-            self._md_cache[note_id] = md_view
-            return
-        if len(self._md_cache) >= _CARD_CACHE_MAX:
-            self._md_cache.popitem(last=False)  # evict LRU; Qt still holds it via card layout
-        self._md_cache[note_id] = md_view
-
-    def _get_md_view(self, note_id: int):
-        """Return the QTextBrowser preview for note_id, recovering it from the card on cache miss."""
-        if note_id in self._md_cache:
-            self._md_cache.move_to_end(note_id)
-            return self._md_cache[note_id]
-        card = self._cards.get(note_id)
-        if card is None:
-            return None
-        pv = card.findChild(QTextBrowser)
-        if pv is not None:
-            self._md_cache_put(note_id, pv)
-        return pv
-
     def _pop_and_recreate(self, note) -> None:
-        """Remove and recreate a single card in-place (last resort for a corrupt/missing card)."""
         note_id = note.id
         old_card = self._cards.pop(note_id, None) if note_id is not None else None
-        if note_id is not None:
-            self._md_cache.pop(note_id, None)
         if old_card is not None:
             idx = self._notes_layout.indexOf(old_card)
             self._retire_card(old_card)
         else:
             idx = self._notes_layout.count() - 1
-        card, md_view = self._make_note_card(note)
+        card = note_card(self, note, {}, on_delete=lambda n=note: self._delete_note(n))
         self._notes_layout.insertWidget(idx, card)
         if note_id is not None:
             self._cards[note_id] = card
-            self._md_cache_put(note_id, md_view)
-
-    def _make_note_card(self, note) -> tuple[QFrame, object]:
-        card = _ClickableCard(lambda n=note: self._edit_note(n))
-        card.setStyleSheet(f"""
-            QFrame {{ background: {_BG}; border: 1px solid {_BORDER}; border-radius: {RADIUS_MD}px; }}
-            QFrame:hover {{ border: 2px solid {_ACCENT}; background: #1a1a2e; }}
-            QLabel {{ border: none; background: transparent; }}
-        """)
-        col = QVBoxLayout(card)
-        col.setContentsMargins(14, 10, 14, 10)
-        col.setSpacing(SPACE_XS)
-
-        top_row = QHBoxLayout()
-
-        if note.created_at:
-            date_lbl = QLabel(note.created_at.strftime("%Y-%m-%d"))
-            date_lbl.setStyleSheet(f"font-size: {FONT_TERTIARY}px; color: {_MUTED};")
-            top_row.addWidget(date_lbl)
-
-        top_row.addStretch()
-
-        edit_btn = QPushButton("Edit")
-        edit_btn.setStyleSheet(_BTN_NOTE_EDIT)
-        edit_btn.clicked.connect(lambda _, n=note: self._edit_note(n))
-        top_row.addWidget(edit_btn)
-
-        del_btn = QPushButton("Delete")
-        del_btn.setStyleSheet(_BTN_NOTE_DELETE)
-        del_btn.clicked.connect(lambda _, n=note: self._delete_note(n))
-        top_row.addWidget(del_btn)
-        col.addLayout(top_row)
-
-        md_view = _make_notes_qtext_preview(card)
-        md_view.setMarkdown(_note_card_markdown(note.title or "", note.content or ""))
-        md_view.setFixedHeight(NOTE_HEIGHT)
-        col.addWidget(md_view)
-
-        return card, md_view
 
     def _edit_note(self, note) -> None:
         dlg = NoteEditorDialog(note=note, parent=self.window() or self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            note_id = note.id
-            if note_id is not None:
-                pv = self._get_md_view(note_id)
-                if pv is not None:
-                    pv.setMarkdown(
-                        _note_card_markdown(note.title or "", note.content or "")
-                    )
-                    return
             self._pop_and_recreate(note)
 
     def _delete_note(self, note) -> None:
         note_id = note.id
         note.delete()
         card = self._cards.pop(note_id, None) if note_id is not None else None
-        if note_id is not None:
-            self._md_cache.pop(note_id, None)
         if card is not None:
             self._retire_card(card)
             if self._notes_layout.count() <= 1:
@@ -704,11 +624,10 @@ class NotesDialog(QDialog):
             new_notes = [n for n in notes if n.id not in self._cards]
             self._empty_lbl.setVisible(False)
             for note in new_notes:
-                card, md_view = self._make_note_card(note)
+                card = note_card(self, note, {}, on_delete=lambda n=note: self._delete_note(n))
                 self._notes_layout.insertWidget(self._notes_layout.count() - 1, card)
                 if note.id is not None:
                     self._cards[note.id] = card
-                    self._md_cache_put(note.id, md_view)
 
 
 # ── Project detail view ───────────────────────────────────────────────────────
