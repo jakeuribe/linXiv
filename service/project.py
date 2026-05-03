@@ -32,11 +32,23 @@ class ProjectDetails(ProjectClass):
     project_tags: list[str]       = field(default_factory=list)
     paper_ids:    list[str]       = field(default_factory=list)
     status:       Status          = Status.ACTIVE
-    id:           Optional[int]   = None
     created_at:   Optional[datetime] = None
     updated_at:   Optional[datetime] = None
     archived_at:  Optional[datetime] = None
 
+
+@dataclass
+class ProjectUpdate(ProjectClass):
+    name:         str
+    description:  str             = ""
+    color:        Optional[int]   = None
+    project_tags: list[str]       = field(default_factory=list)
+    paper_ids:    list[str]       = field(default_factory=list)
+    status:       Status          = Status.ACTIVE
+    id:           Optional[int]   = None
+    created_at:   Optional[datetime] = None
+    updated_at:   Optional[datetime] = None
+    archived_at:  Optional[datetime] = None
 
 def get_projects(status: Status = Status.ACTIVE) -> ProjectPage:
     projects = _filter_projects(Q("status = ?", status))
@@ -53,15 +65,21 @@ def get_project_details(project_id: int) -> Optional[ProjectDetails]:
     project = _get_project(project_id)
     if project is None:
         return None
-    return ProjectDetails(
-        name         = project.name,
-        id           = project.id,
-        description  = project.description,
-        color        = project.color,
-        project_tags = project.project_tags,
-        paper_ids    = project.paper_ids,
-        status       = project.status,
-        created_at   = project.created_at,
-        updated_at   = project.updated_at,
-        archived_at  = project.archived_at,
-    )
+    else:
+        if project.id is None or project.id != project_id:
+            print("ID fetched doesn't match ID received, returning none")
+            return None
+        return ProjectDetails(
+            name         = project.name,
+            id           = project.id,
+            description  = project.description,
+            color        = project.color,
+            project_tags = project.project_tags,
+            paper_ids    = project.paper_ids,
+            status       = project.status,
+            created_at   = project.created_at,
+            updated_at   = project.updated_at,
+            archived_at  = project.archived_at,
+        )
+
+
