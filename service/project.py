@@ -45,7 +45,7 @@ def get_projects(status: Status = Status.ACTIVE) -> ProjectPage:
         project_names = [p.name for p in projects],
         project_ids   = [p.id for p in projects],  
         paper_counts  = [p.paper_count for p in projects],
-        note_counts   = [0] * len(projects),
+        note_counts   = [0] * len(projects), # TODO:Fine for now but need to update
     )
 
 
