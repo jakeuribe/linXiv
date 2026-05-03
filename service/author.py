@@ -5,7 +5,7 @@ from typing import Optional
 @dataclass
 class Author:
     author_id:  int
-    orcid:      Optional[str] 
+    orcid:      Optional[str]
 
 
 @dataclass
@@ -23,4 +23,4 @@ class BasicAuthorDetails(Author):
 
 @dataclass
 class FullAuthorDetails(BasicAuthorDetails):
-    paper_ids:  Optional[list[int|None]] = None
+    paper_ids:  Optional[list[int]] = None

@@ -144,7 +144,7 @@ def get_note(note_id: int) -> Optional[Note]:
 
 def get_notes(
     paper_id: str,
-    project_id: Optional[int] = None,
+    project_id: Optional[int] = None, #TODO: change standalone notes to be project 0
     *,
     all_projects: bool = False,
 ) -> list[Note]:
