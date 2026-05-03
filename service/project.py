@@ -26,6 +26,11 @@ class ProjectClass:
 
 @dataclass
 class ProjectDetails(ProjectClass):
+    """
+    Data class for passing the data of a project back to the front end, should 
+    never be passed with no values, besides project id number, ProjectClass is 
+    used for requesting data
+    """
     name:         str
     description:  str             = ""
     color:        Optional[int]   = None
@@ -36,16 +41,21 @@ class ProjectDetails(ProjectClass):
     updated_at:   Optional[datetime] = None
     archived_at:  Optional[datetime] = None
 
-
+ 
 @dataclass
 class ProjectUpdate(ProjectClass):
-    name:         str
-    description:  str             = ""
-    color:        Optional[int]   = None
-    project_tags: list[str]       = field(default_factory=list)
-    paper_ids:    list[str]       = field(default_factory=list)
-    status:       Status          = Status.ACTIVE
-    id:           Optional[int]   = None
+    """
+    Data class for updating the data of a project, should never be passed with no 
+    values, besides project id number, ProjectClass should be used for calling 
+    for updates
+    """
+    name:         str|None
+    description:  str|None           = ""
+    color:        Optional[int]|None = None
+    project_tags: list[str]|None     = field(default_factory=list)
+    paper_ids:    list[str]|None     = field(default_factory=list)
+    status:       Status|None       = Status.ACTIVE
+    id:           Optional[int]      = None
     created_at:   Optional[datetime] = None
     updated_at:   Optional[datetime] = None
     archived_at:  Optional[datetime] = None
