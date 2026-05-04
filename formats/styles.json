@@ -1,0 +1,39 @@
+{
+  "BTN_PRIMARY": "\n    QPushButton {{\n        background: {ACCENT}; border: none; border-radius: {RADIUS_MD}px;\n        color: #fff; font-size: {FONT_BODY}px; font-weight: 600; padding: {SPACE_SM}px 20px;\n    }}\n    QPushButton:hover   {{ background: #7aa3f5; }}\n    QPushButton:pressed {{ background: #4a7add; }}\n    QPushButton:disabled {{ background: #2a2a4a; color: {MUTED}; }}\n",
+
+  "BTN_MUTED": "\n    QPushButton {{\n        background: transparent; border: 1px solid {BORDER}; border-radius: {RADIUS_MD}px;\n        color: {MUTED}; font-size: {FONT_BODY}px; padding: {SPACE_SM}px 20px;\n    }}\n    QPushButton:hover {{ border-color: {TEXT}; color: {TEXT}; }}\n",
+
+  "BTN_SUCCESS": "\n    QPushButton {{\n        background: #4caf7d; border: none; border-radius: {RADIUS_MD}px;\n        color: #fff; font-size: {FONT_BODY}px; font-weight: 600; padding: {SPACE_SM}px 20px;\n    }}\n    QPushButton:hover   {{ background: #5dcc8f; }}\n    QPushButton:pressed {{ background: #3a9e60; }}\n    QPushButton:disabled {{ background: #2a2a4a; color: {MUTED}; }}\n",
+
+  "BTN_PANEL": "\n    QPushButton {{\n        background: {PANEL}; border: 1px solid {BORDER};\n        border-radius: {RADIUS_MD}px; color: {TEXT}; font-size: {FONT_SECONDARY}px; padding: 4px 14px;\n    }}\n    QPushButton:hover {{ background: #2a2a4a; }}\n",
+
+  "BTN_OUTLINE": "\n    QPushButton {{\n        background: transparent; border: 1px solid {BORDER};\n        border-radius: {RADIUS_MD}px; color: {TEXT}; font-size: {FONT_SECONDARY}px; padding: 4px 14px;\n    }}\n    QPushButton:hover {{ background: #2a2a4a; }}\n",
+
+  "BTN_DANGER": "\n    QPushButton {{\n        background: transparent; border: 1px solid #e05c5c;\n        border-radius: {RADIUS_MD}px; color: #e05c5c; font-size: {FONT_SECONDARY}px; padding: 4px 14px;\n    }}\n    QPushButton:hover {{ background: #2a1a1a; }}\n",
+
+  "BTN_PDF_OPEN": "\n    QPushButton {{ background: transparent; border: 1px solid #4caf7d;\n        border-radius: {RADIUS_SM}px; color: #4caf7d; font-size: {FONT_TERTIARY}px; }}\n    QPushButton:hover {{ background: #1a2e1f; }}\n",
+
+  "BTN_PDF_DOWNLOAD": "\n    QPushButton {{ background: transparent; border: 1px solid #5b8dee;\n        border-radius: {RADIUS_SM}px; color: #5b8dee; font-size: {FONT_TERTIARY}px; }}\n    QPushButton:hover {{ background: #1a1f2e; }}\n",
+
+  "BTN_PDF_LINK": "\n    QPushButton {{ background: transparent; border: 1px solid {BORDER};\n        border-radius: {RADIUS_SM}px; color: {MUTED}; font-size: {FONT_TERTIARY}px; }}\n    QPushButton:hover {{ background: #1a1a2a; }}\n",
+
+  "BTN_PDF_ERROR": "\n    QPushButton {{ background: transparent; border: 1px solid #e05c5c;\n        border-radius: {RADIUS_SM}px; color: #e05c5c; font-size: {FONT_TERTIARY}px; }}\n",
+
+  "BTN_NOTE_OPEN": "\n    QPushButton {{\n        background: transparent; border: 1px solid {BORDER}; border-radius: {RADIUS_SM}px;\n        color: {MUTED}; font-size: {FONT_TERTIARY}px; padding: 3px 10px;\n    }}\n    QPushButton:hover {{ border-color: {ACCENT}; color: {ACCENT}; }}\n",
+
+  "BTN_NOTE_EDIT": "\n    QPushButton {{\n        background: transparent; border: 1px solid {BORDER}; border-radius: {RADIUS_SM}px;\n        color: {MUTED}; font-size: {FONT_TERTIARY}px; padding: 2px 8px;\n    }}\n    QPushButton:hover {{ border-color: {ACCENT}; color: {ACCENT}; }}\n",
+
+  "BTN_NOTE_DELETE": "\n    QPushButton {{\n        background: transparent; border: 1px solid #e05c5c; border-radius: {RADIUS_SM}px;\n        color: #e05c5c; font-size: {FONT_TERTIARY}px; padding: 2px 8px;\n    }}\n    QPushButton:hover {{ border-color: #ff7070; color: #ff7070; }}\n",
+
+  "BTN_NOTE_ACCENT": "\n    QPushButton {{\n        background: {ACCENT}; border: none; border-radius: {RADIUS_SM}px;\n        color: #fff; font-size: {FONT_TERTIARY}px; font-weight: 600; padding: 2px 8px;\n    }}\n    QPushButton:hover   {{ background: #7aa3f5; }}\n    QPushButton:pressed {{ background: #4a7add; }}\n",
+
+  "BTN_PANEL_SM": "\n    QPushButton {{\n        background: {PANEL}; border: 1px solid {BORDER};\n        border-radius: {RADIUS_SM}px; color: {TEXT}; font-size: {FONT_SECONDARY}px; padding: {SPACE_XS}px {SPACE_SM}px;\n    }}\n    QPushButton:hover {{ background: #2a2a4a; }}\n",
+
+  "BTN_FILTER_ACTIVE": "\n    QPushButton {{\n        background: {ACCENT}; border: none;\n        border-radius: {RADIUS_MD}px; color: #fff; font-size: {FONT_SECONDARY}px; padding: 4px 14px;\n    }}\n",
+
+  "BTN_LINK": "\n    QPushButton {{ background: transparent; border: none; color: {ACCENT}; font-size: {FONT_BODY}px; padding: 0; }}\n    QPushButton:hover {{ color: #7aa3f5; }}\n",
+
+  "BTN_GHOST": "\n    QPushButton {{ background: transparent; border: none; font-size: {FONT_TERTIARY}px; padding: 0 {SPACE_XS}px; color: {MUTED}; }}\n    QPushButton:hover {{ color: {TEXT}; }}\n",
+
+  "btn_colored_outline": "\n        QPushButton {{ background: transparent; border: 1px solid __color__;\n            border-radius: {RADIUS_MD}px; color: __color__; font-size: {FONT_SECONDARY}px; padding: 4px 14px; }}\n        QPushButton:hover {{ background: __hover_bg__; }}\n    "
+}
