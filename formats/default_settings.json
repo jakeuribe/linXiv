@@ -1,4 +1,5 @@
 {
-  "pdf_save_limit_mb": 1024
+  "pdf_save_limit_mb": 1024,
+  "cat_color_overrides": {}
 }
 

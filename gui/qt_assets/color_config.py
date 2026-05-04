@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+import user_settings as _user_settings
+
 PHYSICS_CATEGORIES: set[str] = {
 "physics.acc-ph", "physics.ao-ph", "physics.app-ph", "physics.atm-clus", "physics.atom-ph", "physics.bio-ph", "physics.chem-ph", "physics.class-ph", "physics.comp-ph", "physics.data-an", "physics.ed-ph", "physics.flu-dyn", "physics.gen-ph", "physics.geo-ph", "physics.hist-ph", "physics.ins-det", "physics.med-ph", "physics.optics", "physics.plasm-ph", "physics.pop-ph", "physics.soc-ph", "physics.space-ph", "astro-ph", "cond-mat", "gr-qc", "hep-ex", "hep-lat", "hep-ph", "hep-th", "math-ph", "nlin", "nucl-ex", "nucl-th", "quant-ph"
 }
@@ -101,16 +105,7 @@ DEFULT_PHYSICS_COLORS: dict[str, str] = {
 }
 
 
-# ---------------------------------------------------------------------------
 # Research cluster colors
-# ---------------------------------------------------------------------------
-# Each cluster represents a popular cross-cutting research theme that spans
-# multiple arXiv categories. Categories may appear in more than one cluster
-# where there is natural overlap (e.g. cs.IT in both Cryptography and
-# Information Theory). Clusters cover only the category universe defined
-# above; notably q-bio and stat are absent from that universe, making
-# "Computational Biology" thin — only physics.bio-ph and cs.CE are available.
-#
 # Color intent:
 #   HEP      → deep crimson/maroon (high energy tradition)
 #   QIS      → blue-violet (quantum)
@@ -236,15 +231,33 @@ RESEARCH_CLUSTER_CATEGORIES: dict[str, list[str]] = {
 }
 
 
-CAT_COLOR: dict[str, str] = {
-    "cs.AI":"#5b9247","cs.AR":"#5b9250","cs.CC":"#5b9261","cs.CE":"#5b9263",
-    "cs.CG":"#5b9265","cs.CL":"#5b926a","cs.CR":"#5b9270","cs.CV":"#5b9274",
-    "cs.CY":"#5b9277","cs.DB":"#5b9270","cs.DC":"#5b9271","cs.DL":"#5b927a",
-    "cs.DM":"#5b927b","cs.DS":"#5b9281","cs.ET":"#5b9292","cs.FL":"#5b929a",
-    "cs.GL":"#5b92aa","cs.GR":"#5b92b0","cs.GT":"#5b92b2","cs.HC":"#5b92b1",
-    "cs.IR":"#5b92d0","cs.IT":"#5b92d2","cs.LG":"#5b92f5","cs.LO":"#5b92fd",
-    "cs.MA":"#5b92ff","cs.MM":"#5b930b","cs.MS":"#5b9311","cs.NA":"#5b930f",
-    "cs.NE":"#5b9313","cs.NI":"#5b9317","cs.OH":"#5b9326","cs.OS":"#5b9331",
-    "cs.PF":"#5b9334","cs.PL":"#5b933a","cs.RO":"#5b935d","cs.SC":"#5b9361",
-    "cs.SD":"#5b9362","cs.SE":"#5b9363","cs.SI":"#5b9367","cs.SY":"#5b9377"
-}
+def _build_cat_color() -> dict[str, str]:
+    overrides: dict[str, str] = _user_settings.get("cat_color_overrides") or {}
+    return {
+        **DEFULT_PHYSICS_COLORS,
+        **DEFULT_MATH_COLORS,
+        **DEFAULT_CS_COLORS,
+        **overrides,
+    }
+
+
+# Single lookup table: physics → math → cs precedence, saved overrides win.
+# Mutated in-place by set_color_override / remove_color_override so existing
+# references stay valid after an override change.
+CAT_COLOR: dict[str, str] = _build_cat_color()
+
+
+def set_color_override(category: str, color: str) -> None:
+    overrides: dict[str, str] = _user_settings.get("cat_color_overrides") or {}
+    overrides[category] = color
+    _user_settings.set("cat_color_overrides", overrides)
+    CAT_COLOR.clear()
+    CAT_COLOR.update(_build_cat_color())
+
+
+def remove_color_override(category: str) -> None:
+    overrides: dict[str, str] = _user_settings.get("cat_color_overrides") or {}
+    overrides.pop(category, None)
+    _user_settings.set("cat_color_overrides", overrides)
+    CAT_COLOR.clear()
+    CAT_COLOR.update(_build_cat_color())
