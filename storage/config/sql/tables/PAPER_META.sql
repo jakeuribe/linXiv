@@ -1,12 +1,20 @@
-CREATE TABLE PAPER_META(
-    PAPER_META_SK INTEGER,
-    PAPER_SK INTEGER,
-    `URL` VARCHAR(500),
-    PUBLISHED_DATE DATETIME,
-    `UPDATE_DATE` DATETIME,
-    JOURNAL_REF VARCHAR(255),
-    USER_COMMENT varchar(1000),
-    SUMMARY varchar(500),
-    PRIMARY KEY PAPER_SK
-    FOREIGN KEY (PAPER_SK) REFERENCES PAPER(PAPER_SK)
+CREATE TABLE IF NOT EXISTS PAPER_META(
+    paper_id    TEXT    NOT NULL,
+    version     INTEGER NOT NULL,
+    url         TEXT,
+    published   DATE,
+    updated     DATE,
+    categories  LIST,
+    doi         TEXT,
+    journal_ref TEXT,
+    comment     TEXT,
+    summary     TEXT,
+    source      TEXT DEFAULT 'arxiv',
+    pdf_path    TEXT,
+    full_text   TEXT,
+    downloaded_source BOOL DEFAULT 0,
+    authors     LIST,
+    tags        LIST,
+    PRIMARY KEY (paper_id, version),
+    FOREIGN KEY (paper_id, version) REFERENCES PAPER(paper_id, version) ON DELETE CASCADE
 );

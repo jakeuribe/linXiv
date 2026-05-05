@@ -1,47 +1,76 @@
-from sqlite3 import connect, Connection
-import os, glob
-from typing import Iterable
-from pathlib import Path
-DB_PATH = str(Path(__file__).parent.parent.parent / "papers.db")
-def init_db(db_path:str|None = None)->None:
-    global DB_PATH
-    if(db_path is not None):
-        DB_PATH = db_path
-    path_base = os.path.join(
-        '/'.join(os.path.abspath(__file__).split('/')[:-1]),
-        '/sql/'
-    )
-    
-    conn = connect(DB_PATH)
-    #Building Tables
-    exec_paths(glob.glob(os.path.join(path_base,'/tables/*')), conn)
-    #Building Views
-    exec_paths(glob.glob(os.path.join(path_base,'/views/*')), conn)
-    #Making_Indicies
-    with open(os.path.join(path_base, 'INDICIES.SQL'), 'w') as file:
-        SQL =file.read().split(";")
-        IX_ER = set(map(lambda SQL: exec_str(SQL, conn), filter(lambda x: x.strip(' ') != '', SQL)))
-        if(len(IX_ER)!= 1):
-            for i in IX_ER:
-                print(i)
-    conn.close()
-    return 
-def exec_paths(paths:Iterable[str], conn:Connection)->None:
-    tab_ers = set(map(lambda path: exec_at_path(path=path, conn = conn), paths))
-    if(len(tab_ers) != 1):
-        for er in tab_ers:
-            print(er)
-    pass
-def exec_at_path(path:str, conn:Connection)->str|None:
-    with open(path, 'r') as file:
-        SQL = file.read()
-    return exec_str(SQL, conn)
+from __future__ import annotations
 
-def exec_str(sql:str, conn:Connection)->str|None:
-    er = None
+import sqlite3
+from pathlib import Path
+
+_SQL_DIR = Path(__file__).resolve().parent / "sql"
+_TABLES_DIR = _SQL_DIR / "tables"
+_VIEWS_DIR = _SQL_DIR / "views"
+
+# Apply in dependency order (FK-safe). Versioned rows: ``PAPER`` + ``PAPER_META``; root id in ``paper_roots``.
+_TABLE_DDL_ORDER: tuple[str, ...] = (
+    "AUTHOR.sql",
+    "TAG.SQL",
+    "PROJECT.sql",
+    "CONTENT.SQL",
+    "paper_roots.sql",
+    "PAPER.sql",
+    "PAPER_META.sql",
+    "PAPER_TO_AUTHOR.sql",
+    "PAPER_TO_TAG.sql",
+    "PROJECT_TO_PAPER.sql",
+    "PROJECT_TO_TAG.SQL",
+    "NOTES.SQL",
+    "papers_fts.sql",
+)
+
+DB_PATH = str(Path(__file__).resolve().parent.parent.parent / "papers.db")
+
+
+def _ordered_table_paths() -> list[Path]:
+    paths: list[Path] = []
+    for name in _TABLE_DDL_ORDER:
+        p = _TABLES_DIR / name
+        if p.is_file():
+            paths.append(p)
+    return paths
+
+
+def _apply_views(conn: sqlite3.Connection) -> None:
+    if not _VIEWS_DIR.is_dir():
+        return
+    candidates = sorted(_VIEWS_DIR.glob("*.sql")) + sorted(_VIEWS_DIR.glob("*.SQL"))
+    for path in candidates:
+        script = path.read_text(encoding="utf-8").strip()
+        if script:
+            conn.executescript(script)
+
+
+def _apply_indices(conn: sqlite3.Connection) -> None:
+    path = _SQL_DIR / "INDICIES.SQL"
+    if not path.is_file():
+        return
+    script = path.read_text(encoding="utf-8").strip()
+    if script:
+        conn.executescript(script)
+
+
+def apply_sql_schema(conn: sqlite3.Connection) -> None:
+    """Create bundled tables (and optional views/indexes) from ``sql/tables``."""
+    conn.execute("PRAGMA foreign_keys = ON")
+    for path in _ordered_table_paths():
+        script = path.read_text(encoding="utf-8").strip()
+        if script:
+            conn.executescript(script)
+    _apply_views(conn)
+    _apply_indices(conn)
+
+
+def init_db(db_path: str | None = None) -> None:
+    """Standalone initializer: open ``papers.db`` (or ``db_path``) and apply SQL."""
+    path = db_path if db_path is not None else DB_PATH
+    conn = sqlite3.connect(path)
     try:
-        conn.execute(sql)
-    except Exception as e:
-        er = str(e)
-    conn.commit()
-    return er
+        apply_sql_schema(conn)
+    finally:
+        conn.close()
