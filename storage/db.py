@@ -90,7 +90,7 @@ def _author_fk_for_name(conn: sqlite3.Connection, full_name: str) -> int:
     return int(cur.lastrowid)
 
 
-def _tag_fk_for_label(conn: sqlite3.Connection, label: str) -> int:
+def _tag_fk_for_label(conn: sqlite3.Connection, label: str) -> int|None:
     row = conn.execute(
         "SELECT TAG_FK FROM TAG WHERE TAG = ? COLLATE NOCASE LIMIT 1",
         (label,),
@@ -98,7 +98,10 @@ def _tag_fk_for_label(conn: sqlite3.Connection, label: str) -> int:
     if row is not None:
         return int(row[0])
     cur = conn.execute("INSERT INTO TAG (TAG) VALUES (?)", (label,))
-    return int(cur.lastrowid)
+    if cur.lastrowid:
+        return int(cur.lastrowid)
+    else:
+        return
 
 
 def _sync_paper_authors(
@@ -130,18 +133,23 @@ def _sync_paper_tags(
     version: int,
     tags: list[str] | None,
 ) -> None:
+    existing_tags = conn.execute("SELECT TAG_FK FROM PAPER_TO_TAG WHERE paper_id = ? AND version = ?", (paper_id, version)).fetchall()
     conn.execute(
         "DELETE FROM PAPER_TO_TAG WHERE paper_id = ? AND version = ?",
         (paper_id, version),
     )
-    if not tags:
+    if tags:
+        for label in tags:
+            if label:
+                tid = _tag_fk_for_label(conn, label)
+                row = conn.execute(
+                    "INSERT INTO PAPER_TO_TAG (paper_id, version, TAG_FK) VALUES (?, ?, ?)",
+                    (paper_id, version, tid),
+                )
+                if not row:
+                    print(f"Label [{label}], failed to be added")
+    else:
         return
-    for label in tags:
-        tid = _tag_fk_for_label(conn, label)
-        conn.execute(
-            "INSERT INTO PAPER_TO_TAG (paper_id, version, TAG_FK) VALUES (?, ?, ?)",
-            (paper_id, version, tid),
-        )
 
 
 def _write_paper_version(
