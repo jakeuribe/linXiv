@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from storage.projects import Project, ensure_projects_db
@@ -14,6 +16,7 @@ from storage.notes import (
     get_project_notes,
     note_counts_by_paper_for_project,
 )
+from storage.projects import Project
 
 
 # ---------------------------------------------------------------------------
@@ -50,12 +53,14 @@ class TestNoteSaveCreate:
         assert fetched.content == "Body text"
 
     def test_save_persists_project_id(self):
-        n = Note(paper_id="2204.12985", project_id=42)
+        p = Project(name="Test Project")
+        p.save()
+        n = Note(paper_id="2204.12985", project_id=p.id)
         n.save()
         assert n.id is not None
         fetched = get_note(n.id)
         assert fetched is not None
-        assert fetched.project_id == 42
+        assert fetched.project_id == p.id
 
     def test_save_null_project_id(self):
         n = Note(paper_id="2204.12985", project_id=None)
@@ -194,7 +199,7 @@ class TestGetNote:
 # get_notes
 # ---------------------------------------------------------------------------
 
-@pytest.mark.usefixtures("tmp_db")
+@pytest.mark.usefixtures("note_projects")
 class TestGetNotes:
     def test_empty_db_returns_empty_list(self):
         assert get_notes("2204.12985") == []
@@ -245,7 +250,7 @@ class TestGetNotes:
 # get_project_notes
 # ---------------------------------------------------------------------------
 
-@pytest.mark.usefixtures("tmp_db")
+@pytest.mark.usefixtures("note_projects")
 class TestGetProjectNotes:
     def test_empty_returns_empty_list(self):
         assert get_project_notes(99) == []
@@ -272,7 +277,7 @@ class TestGetProjectNotes:
 # count_project_notes
 # ---------------------------------------------------------------------------
 
-@pytest.mark.usefixtures("tmp_db")
+@pytest.mark.usefixtures("note_projects")
 class TestCountProjectNotes:
     def test_zero_for_empty(self):
         assert count_project_notes(1) == 0
@@ -296,7 +301,7 @@ class TestCountProjectNotes:
 # count_paper_notes
 # ---------------------------------------------------------------------------
 
-@pytest.mark.usefixtures("tmp_db")
+@pytest.mark.usefixtures("note_projects")
 class TestCountPaperNotes:
     def test_zero_for_empty(self):
         assert count_paper_notes("2204.12985") == 0

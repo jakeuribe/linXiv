@@ -4,14 +4,16 @@ import json
 from pathlib import Path
 import re
 import sqlite3
+from collections.abc import Callable
 from typing import Optional, TYPE_CHECKING
-
+from .paths import old_pdf_dir, pdf_dir
 import arxiv
 
 if TYPE_CHECKING:
     from sources.base import PaperMetadata
 
 DB_PATH = str(Path(__file__).parent.parent / "papers.db")
+_MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 # --- adapters: Python → SQLite storage ---
 sqlite3.register_adapter(list,              lambda v: json.dumps(v))
@@ -215,9 +217,37 @@ def init_db() -> None:
     with _connect() as conn:
         apply_sql_schema(conn)
 
+    wrong_path_rows = _get_deprecated_path_rows()
+    if wrong_path_rows:
+        for rows in wrong_path_rows:
+            try:
+                curr_path = rows["PDF_PATH"]
+                if Path(curr_path).is_file() and Path(curr_path).rename(curr_path.replace(str(old_pdf_dir()), str(pdf_dir()))).exists():
+                    set_pdf_path(rows["paper_id"], curr_path.replace(str(old_pdf_dir()), str(pdf_dir())))
+                    print(f"File [ {curr_path} ] moved and verified!")
+                else:
+                    print(f"File [ {curr_path} ] could not be moved")
+            except Exception as e:
+                print(f"An error occured while trying to parse file {rows['PDF_PATH']}:\n{e}")
+    if old_pdf_dir().is_dir():
+        _remove_gui_pdf_dir(old_pdf_dir())
+
+def _remove_gui_pdf_dir(path: Path):
+    for child in path.iterdir():
+        child.unlink()
+    path.rmdir()
+
+
+def _get_deprecated_path_rows() -> list[sqlite3.Row] | None:
+    with _connect() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM papers WHERE PDF_PATH LIKE '%{str(old_pdf_dir())}%';"
+        ).fetchall()
+    return rows
+
 
 def parse_entry_id(entry_id: str) -> tuple[str, int]:
-    """Split 'http://arxiv.org/abs/2204.12985v4' into ('2204.12985', 4)."""
+    """EX:Split 'http://arxiv.org/abs/2204.12985v4' into ('2204.12985', 4)."""
     raw = entry_id.split('/')[-1]
     match = re.match(r'^(.+?)(?:v(\d+))?$', raw)
     assert match is not None
@@ -226,7 +256,7 @@ def parse_entry_id(entry_id: str) -> tuple[str, int]:
     return paper_id, version
 
 
-def _insert(conn: sqlite3.Connection, paper: arxiv.Result, tags: list[str] | None = None) -> tuple[str, int]:
+def _insert_arxiv(conn: sqlite3.Connection, paper: arxiv.Result, tags: list[str] | None = None) -> tuple[str, int]:
     paper_id, version = parse_entry_id(paper.entry_id)
     _write_paper_version(
         conn,
@@ -286,13 +316,13 @@ def _insert_metadata(conn: sqlite3.Connection, meta: PaperMetadata, tags: list[s
 def save_paper(paper: arxiv.Result, tags: list[str] | None = None) -> tuple[str, int]:
     """Insert a single arxiv paper. Returns (paper_id, version)."""
     with _connect() as conn:
-        return _insert(conn, paper, tags)
+        return _insert_arxiv(conn, paper, tags)
 
 
 def save_papers(papers: list[arxiv.Result], tags: list[str] | None = None) -> list[tuple[str, int]]:
     """Batch insert arxiv papers in a single transaction. Returns list of (paper_id, version)."""
     with _connect() as conn:
-        return [_insert(conn, paper, tags) for paper in papers]
+        return [_insert_arxiv(conn, paper, tags) for paper in papers]
 
 
 def save_paper_metadata(meta: PaperMetadata, tags: list[str] | None = None) -> tuple[str, int]:
@@ -305,6 +335,47 @@ def save_papers_metadata(papers: list[PaperMetadata], tags: list[str] | None = N
     """Batch insert papers from any source. Returns list of (paper_id, version)."""
     with _connect() as conn:
         return [_insert_metadata(conn, meta, tags) for meta in papers]
+
+
+def repair_paper(old_paper_id: str, meta: PaperMetadata) -> str:
+    """In-place repair of a paper's metadata, migrating all FK references if paper_id changes.
+
+    If old_paper_id != meta.paper_id the new ID is inserted into paper_roots, all child
+    rows (papers, notes, project_papers, papers_fts) are renamed, and the old root is
+    deleted.  The latest version's editable fields are then updated in-place so that
+    version history, pdf_path, has_pdf, full_text, and source are all preserved.
+    Returns the final paper_id.
+    """
+    new_id = meta.paper_id
+    with _connect() as conn:
+        if new_id != old_paper_id:
+            conn.execute("INSERT OR IGNORE INTO paper_roots(paper_id) VALUES (?)", (new_id,))
+            conn.execute("UPDATE papers         SET paper_id = ? WHERE paper_id = ?", (new_id, old_paper_id))
+            conn.execute("UPDATE notes          SET paper_id = ? WHERE paper_id = ?", (new_id, old_paper_id))
+            conn.execute("UPDATE project_papers SET paper_id = ? WHERE paper_id = ?", (new_id, old_paper_id))
+            fts_row = conn.execute(
+                "SELECT full_text FROM papers_fts WHERE paper_id = ?", (old_paper_id,)
+            ).fetchone()
+            if fts_row is not None:
+                conn.execute("DELETE FROM papers_fts WHERE paper_id = ?", (old_paper_id,))
+                conn.execute(
+                    "INSERT INTO papers_fts(paper_id, full_text) VALUES (?, ?)",
+                    (new_id, fts_row["full_text"]),
+                )
+            conn.execute("DELETE FROM paper_roots WHERE paper_id = ?", (old_paper_id,))
+        # Update only the latest version's editable fields; preserve version, source, pdf_path, etc.
+        conn.execute("""
+            UPDATE papers SET
+                title = ?, authors = ?, published = ?,
+                category = ?, doi = ?, url = ?, summary = ?, tags = ?
+            WHERE paper_id = ?
+              AND version = (SELECT MAX(version) FROM papers WHERE paper_id = ?)
+        """, (
+            meta.title, meta.authors, meta.published,
+            meta.category, meta.doi, meta.url, meta.summary, meta.tags,
+            new_id, new_id,
+        ))
+    return new_id
 
 
 def set_has_pdf(paper_id: str, version: int, has: bool) -> None:
@@ -496,7 +567,7 @@ def search_full_text(query: str, limit: int = 20) -> list[sqlite3.Row]:
         return conn.execute("""
             SELECT p.* FROM papers p
             JOIN papers_fts fts ON p.paper_id = fts.paper_id
-            WHERE fts MATCH ?
+            WHERE papers_fts MATCH ?
             ORDER BY rank
             LIMIT ?
         """, (query, limit)).fetchall()

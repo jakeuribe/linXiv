@@ -72,8 +72,13 @@ def cleanup_pdfs(
             continue
         full = os.path.join(dirpath, fname)
         if os.path.abspath(full) not in keep_abs:
-            os.remove(full)
-            deleted.append(full)
+            try:
+                os.remove(full)
+                deleted.append(full)
+            except PermissionError:
+                # On Windows, files can remain locked briefly by a viewer process.
+                # Skip locked files so app shutdown/cleanup does not crash.
+                continue
     return deleted
 
 

@@ -1,24 +1,25 @@
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
-    QListWidget,
-    QListWidgetItem,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
 from storage.db import get_tags, list_papers
+from gui.qt_assets import PaperCard
+from gui.qt_assets.styles import BTN_PANEL_SM as _BTN_PANEL_SM
 from gui.theme import BG as _BG, PANEL as _PANEL, BORDER as _BORDER
 from gui.theme import ACCENT as _ACCENT, TEXT as _TEXT, MUTED as _MUTED
 from gui.theme import (
-    FONT_TITLE, FONT_SUBHEADING, FONT_BODY, FONT_SECONDARY, FONT_TERTIARY,
+    FONT_TITLE, FONT_SUBHEADING, FONT_BODY, FONT_TERTIARY,
     SPACE_XL, SPACE_SM, SPACE_XS,
-    RADIUS_SM, RADIUS_LG,
+    RADIUS_LG,
     PAGE_MARGIN_H, PAGE_MARGIN_V,
     CARD_PAD_H, CARD_PAD_V,
     DIALOG_PAD,
@@ -28,6 +29,8 @@ _RECENT_N = 10
 
 class HomePage(QWidget):
     """Landing page: stat cards + recent papers list."""
+
+    navigate_to_paper = pyqtSignal(str)   # paper_id
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -61,41 +64,34 @@ class HomePage(QWidget):
         )
         refresh_btn = QPushButton("Refresh")
         refresh_btn.setFixedWidth(80)
-        refresh_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {_PANEL}; border: 1px solid {_BORDER};
-                border-radius: {RADIUS_SM}px; color: {_TEXT}; font-size: {FONT_SECONDARY}px; padding: {SPACE_XS}px {SPACE_SM}px;
-            }}
-            QPushButton:hover {{ background: #2a2a4a; }}
-        """)
+        refresh_btn.setStyleSheet(_BTN_PANEL_SM)
         refresh_btn.clicked.connect(self._load)
         recent_hdr.addWidget(recent_lbl)
         recent_hdr.addStretch()
         recent_hdr.addWidget(refresh_btn)
         outer.addLayout(recent_hdr)
 
-        self._recent_list = QListWidget()
-        self._recent_list.setStyleSheet(f"""
-            QListWidget {{
-                background: {_PANEL}; border: 1px solid {_BORDER};
-                border-radius: {RADIUS_LG}px; color: {_TEXT}; font-size: {FONT_BODY}px;
-            }}
-            QListWidget::item {{
-                padding: 7px 12px;
-                border-bottom: 1px solid {_BORDER};
-            }}
-            QListWidget::item:selected {{
-                background: #2a2a4a;
-            }}
-            QListWidget::item:last-child {{
-                border-bottom: none;
-            }}
-        """)
-        outer.addWidget(self._recent_list, stretch=1)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("background: transparent;")
+
+        self._recent_widget = QWidget()
+        self._recent_widget.setStyleSheet("background: transparent;")
+        self._recent_layout = QVBoxLayout(self._recent_widget)
+        self._recent_layout.setContentsMargins(0, 0, 0, 0)
+        self._recent_layout.setSpacing(SPACE_SM)
+        self._recent_layout.addStretch()
+
+        scroll.setWidget(self._recent_widget)
+        outer.addWidget(scroll, stretch=1)
 
         self._load()
 
     # ── Data ──────────────────────────────────────────────────────────────────
+
+    def refresh(self) -> None:
+        self._load()
 
     def _load(self) -> None:
         papers   = list_papers(latest_only=True)
@@ -108,7 +104,7 @@ class HomePage(QWidget):
         # Rebuild stat cards
         while self._stats_row.count():
             item = self._stats_row.takeAt(0)
-            if item.widget():  # pyright: ignore[reportOptionalMemberAccess] — technically fixable but awkward with current setup
+            if item.widget():  # pyright: ignore[reportOptionalMemberAccess]
                 item.widget().deleteLater()  # pyright: ignore[reportOptionalMemberAccess]
 
         for value, label in (
@@ -119,26 +115,18 @@ class HomePage(QWidget):
         ):
             self._stats_row.addWidget(self._make_card(value, label))
 
-        # Rebuild recent list
-        self._recent_list.clear()
+        # Rebuild recent papers
+        while self._recent_layout.count() > 1:
+            item = self._recent_layout.takeAt(0)
+            if item.widget():  # pyright: ignore[reportOptionalMemberAccess]
+                item.widget().deleteLater()  # pyright: ignore[reportOptionalMemberAccess]
+
         for p in papers[:_RECENT_N]:
-            date = p["published"].isoformat() if p["published"] else ""
-            cat  = p["category"] or ""
-            txt  = p["title"] or "(untitled)"
-            linked = p["pdf_path"] if "pdf_path" in p.keys() else None
-            if linked:
-                txt = f"[PDF] {txt}"
-            meta = "  ·  ".join(filter(None, [cat, date]))
-            item = QListWidgetItem(txt)
-            item.setToolTip(f"Linked: {linked}\n{meta}" if linked else meta)
-            # Show metadata as a second line via the display role trick
-            item.setData(Qt.ItemDataRole.UserRole, meta)
-            self._recent_list.addItem(item)
-            # Append a dim meta label via a second item indented
-            meta_item = QListWidgetItem(f"    {meta}")
-            meta_item.setForeground(self._muted_color())
-            meta_item.setFlags(Qt.ItemFlag.NoItemFlags)
-            self._recent_list.addItem(meta_item)
+            card = PaperCard(p, parent=self._recent_widget)
+            card.double_clicked.connect(
+                lambda _row, pid=p["paper_id"]: self.navigate_to_paper.emit(pid)
+            )
+            self._recent_layout.insertWidget(self._recent_layout.count() - 1, card)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -157,7 +145,7 @@ class HomePage(QWidget):
         lay.setSpacing(SPACE_XS)
 
         num = QLabel(value)
-        num.setStyleSheet(f"font-size: 30px; font-weight: bold; color: {_ACCENT};")  # TODO: Make more customizable
+        num.setStyleSheet(f"font-size: 30px; font-weight: bold; color: {_ACCENT};")
         num.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         lbl = QLabel(label)
@@ -167,7 +155,3 @@ class HomePage(QWidget):
         lay.addWidget(num)
         lay.addWidget(lbl)
         return card
-
-    def _muted_color(self):
-        from PyQt6.QtGui import QColor
-        return QColor(_MUTED)
