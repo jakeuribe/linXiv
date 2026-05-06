@@ -1,7 +1,7 @@
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Optional
 
+from service.models.note import NoteDetails
 from storage.notes import (
     get_note as _get_note,
     get_notes as _get_notes,
@@ -16,47 +16,24 @@ class Note:
 
 @dataclass
 class Notes:
-    paper_id:   int | None = None
+    source_fk:  int | None = None  # filter by paper across all versions
+    paper_id:   int | None = None  # filter by specific version
     project_id: int | None = None
 
 
-@dataclass
-class NoteDetails:
-    note_id:    int | None
-    paper_id:   int
-    project_id: int | None
-    title:      str
-    content:    str
-    created_at: datetime | None
-    updated_at: datetime | None
-
-
-def _to_details(n) -> NoteDetails:
-    return NoteDetails(
-        note_id    = n.id,
-        paper_id   = n.paper_id,
-        project_id = n.project_id,
-        title      = n.title,
-        content    = n.content,
-        created_at = n.created_at,
-        updated_at = n.updated_at,
-    )
-
-
 def get_note_details(note: Note) -> Optional[NoteDetails]:
-    n = _get_note(note.note_id)
-    return _to_details(n) if n is not None else None
+    return _get_note(note.note_id)
 
 
 def get_notes(notes: Notes) -> list[NoteDetails]:
-    if notes.paper_id is not None:
-        ns = _get_notes(
-            notes.paper_id,
+    if notes.source_fk is not None:
+        return _get_notes(
+            notes.source_fk,
             project_id   = notes.project_id,
             all_projects = notes.project_id is None,
         )
+    elif notes.paper_id is not None:
+        return []  # TODO: storage needs a get_notes_by_paper_id(paper_id: int) function
     elif notes.project_id is not None:
-        ns = _get_project_notes(notes.project_id)
-    else:
-        return []
-    return [_to_details(n) for n in ns]
+        return _get_project_notes(notes.project_id)
+    return []

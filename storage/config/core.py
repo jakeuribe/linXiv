@@ -13,7 +13,7 @@ _TABLE_DDL_ORDER: tuple[str, ...] = (
     "TAG.SQL",
     "PROJECT.sql",
     "CONTENT.SQL",
-    "paper_roots.sql",
+    "PAPER_ROOTS.sql",
     "PAPER.sql",
     "PAPER_META.sql",
     "PAPER_TO_AUTHOR.sql",

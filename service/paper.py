@@ -14,8 +14,9 @@ def _get_paper(paper_id: int, version: int | None = None) -> None:
 
 @dataclass
 class Paper:
-    paper_id:                       int
-    source_id_version_pair:         dict[str, int]| None
+    paper_id:  int
+    source_id: str | None = None
+    version:   int | None = None  # always None when source_id is None; provide both or neither
 
 
 @dataclass
@@ -35,7 +36,7 @@ class PaperDetails(Paper):
 
 def get_paper_details(paper: Paper) -> Optional[PaperDetails]:
 
-    row = _get_paper(paper.paper_id, paper.source_version) #TODO: UPDATE BEFORE USING
+    row = _get_paper(paper.paper_id, paper.version) #TODO: UPDATE BEFORE USING
     if row is None:
         return None
     notes = _get_notes(paper.paper_id, all_projects=True)
@@ -61,8 +62,8 @@ def get_papers(papers: Papers) -> list[PaperDetails]:
     return [
         PaperDetails(
             paper_id          = row["paper_id"],
-            source_id         = row["source"],
-            source_version    = row["version"],
+            source_id         = row["source_id"],
+            version           = row["version"],
             abstract          = row["summary"],
             released          = row["published"],
             updated_at_source = row["updated"],

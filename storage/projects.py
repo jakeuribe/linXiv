@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import datetime
-import enum
 from dataclasses import dataclass, field
 from typing import Optional
 
 from pathlib import Path
 
 from storage.db import _connect, init_table
+from service.models.project import Status
 
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
@@ -29,16 +29,6 @@ class Q:
     def __invert__(self) -> Q:
         return Q(f"(NOT {self.sql})", *self.params)
 
-
-# ── Status enum ───────────────────────────────────────────────────────────────
-
-class Status(str, enum.Enum):
-    ACTIVE   = "active"
-    ARCHIVED = "archived"
-    DELETED  = "deleted"
-    # ACTIVE   — visible and in use
-    # ARCHIVED — hidden from default views, data preserved
-    # DELETED  — same behaviour as archived for now; distinct so intent is clear
 
 
 # ── DB schema ─────────────────────────────────────────────────────────────────
@@ -195,7 +185,7 @@ def _sync_project_papers(conn, project_id: int, paper_ids: list[str]) -> None:
     deduped = list(dict.fromkeys(paper_ids))
     for pid in deduped:
         conn.execute("INSERT OR IGNORE INTO paper_roots(paper_id) VALUES (?)", (pid,))
-    _save_paper_ids(conn, project_id, deduped)
+    _save_source_fks(conn, project_id, deduped)  # type: ignore[arg-type]  # migration: old str ids
 
 
 # ── Colour helpers ────────────────────────────────────────────────────────────
@@ -212,23 +202,22 @@ def color_from_hex(hex_str: str) -> int:
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
-def _load_paper_ids(project_id: int) -> list[str]:
-    """Return the ordered list of paper_ids for a project from the bridge table."""
+def _load_source_fks(project_id: int) -> list[int]:
+    """Return the ordered list of source_fks for a project from the bridge table."""
     with _connect() as conn:
         rows = conn.execute(
             "SELECT paper_id FROM project_papers WHERE project_id = ? ORDER BY position",
             (project_id,),
         ).fetchall()
-    return [row["paper_id"] for row in rows]
+    return [int(row["paper_id"]) for row in rows]
 
 
-def _save_paper_ids(conn, project_id: int, paper_ids: list[str]) -> None:
+def _save_source_fks(conn, project_id: int, source_fks: list[int]) -> None:
     conn.execute("DELETE FROM project_papers WHERE project_id = ?", (project_id,))
-    for pos, pid in enumerate(paper_ids):
-        conn.execute("INSERT OR IGNORE INTO paper_roots(paper_id) VALUES (?)", (pid,))
+    for pos, sfk in enumerate(source_fks):
         conn.execute(
             "INSERT INTO project_papers (project_id, paper_id, position) VALUES (?, ?, ?)",
-            (project_id, pid, pos),
+            (project_id, sfk, pos),
         )
 
 
@@ -240,7 +229,7 @@ class Project:
     description:  str                         = ""
     color:        Optional[int]               = None   # packed RGB, e.g. 0x5b8dee
     project_tags: list[str]                   = field(default_factory=list)
-    paper_ids:    list[str]                   = field(default_factory=list)  # in-memory; sourced from project_papers
+    source_fks:   list[int]                   = field(default_factory=list)  # in-memory; sourced from project_papers
     status:       Status                      = Status.ACTIVE
     id:           Optional[int]               = None
     created_at:   Optional[datetime.datetime] = None
@@ -253,14 +242,14 @@ class Project:
     def from_row(cls, row) -> Project:
         """Construct a Project from a sqlite3.Row returned by a projects query."""
         proj_id = row["id"]
-        paper_ids = _load_paper_ids(proj_id) if proj_id is not None else []
+        source_fks = _load_source_fks(proj_id) if proj_id is not None else []
         return cls(
             id           = proj_id,
             name         = row["name"],
             description  = row["description"] or "",
             color        = int(row["color"]) if row["color"] is not None else None,
             project_tags = row["project_tags"] or [],
-            paper_ids    = paper_ids,
+            source_fks   = source_fks,
             status       = Status(row["status"]),
             created_at   = row["created_at"],
             updated_at   = row["updated_at"],
@@ -289,7 +278,7 @@ class Project:
                 )
                 self.id = cur.lastrowid
                 assert self.id is not None
-                _save_paper_ids(conn, self.id, self.paper_ids)
+                _save_source_fks(conn, self.id, self.source_fks)
         else:
             with _connect() as conn:
                 conn.execute(
@@ -304,7 +293,7 @@ class Project:
                      self.project_tags, self.status, self.id),
                 )
                 assert self.id is not None
-                _save_paper_ids(conn, self.id, self.paper_ids)
+                _save_source_fks(conn, self.id, self.source_fks)
 
     def delete(self) -> None:
         """
@@ -330,56 +319,56 @@ class Project:
 
     # ── Paper membership ──────────────────────────────────────────────────────
 
-    def add_paper(self, paper_id: str, position: Optional[int] = None) -> None:
+    def add_paper(self, source_fk: int, position: Optional[int] = None) -> None:
         """Associate a paper with this project. No-op if already a member."""
         if self.id is None:
             raise ValueError("Project must be saved before papers can be added.")
-        if paper_id in self.paper_ids:
+        if source_fk in self.source_fks:
             return
         if position is None:
-            self.paper_ids.append(paper_id)
+            self.source_fks.append(source_fk)
         else:
-            self.paper_ids.insert(position, paper_id)
+            self.source_fks.insert(position, source_fk)
         with _connect() as conn:
-            _save_paper_ids(conn, self.id, self.paper_ids)
+            _save_source_fks(conn, self.id, self.source_fks)
 
-    def add_papers(self, paper_ids: list[str]) -> None:
+    def add_papers(self, source_fks: list[int]) -> None:
         """Bulk-add papers, appended in order. Skips duplicates."""
         if self.id is None:
             raise ValueError("Project must be saved before papers can be added.")
-        new_ids = [pid for pid in paper_ids if pid not in self.paper_ids]
-        if not new_ids:
+        new_fks = [sfk for sfk in source_fks if sfk not in self.source_fks]
+        if not new_fks:
             return
-        self.paper_ids.extend(new_ids)
+        self.source_fks.extend(new_fks)
         with _connect() as conn:
-            _save_paper_ids(conn, self.id, self.paper_ids)
+            _save_source_fks(conn, self.id, self.source_fks)
 
-    def remove_paper(self, paper_id: str) -> None:
+    def remove_paper(self, source_fk: int) -> None:
         """Remove a paper from this project."""
         if self.id is None:
             return
-        if paper_id not in self.paper_ids:
+        if source_fk not in self.source_fks:
             return
-        self.paper_ids.remove(paper_id)
+        self.source_fks.remove(source_fk)
         with _connect() as conn:
-            _save_paper_ids(conn, self.id, self.paper_ids)
+            _save_source_fks(conn, self.id, self.source_fks)
 
-    def reorder_paper(self, paper_id: str, new_position: int) -> None:
+    def reorder_paper(self, source_fk: int, new_position: int) -> None:
         """Move a paper to a new index within the ordered list."""
-        if self.id is None or paper_id not in self.paper_ids:
+        if self.id is None or source_fk not in self.source_fks:
             return
-        self.paper_ids.remove(paper_id)
-        self.paper_ids.insert(new_position, paper_id)
+        self.source_fks.remove(source_fk)
+        self.source_fks.insert(new_position, source_fk)
         with _connect() as conn:
-            _save_paper_ids(conn, self.id, self.paper_ids)
+            _save_source_fks(conn, self.id, self.source_fks)
 
-    def load_papers(self) -> list[str]:
-        """Return paper_ids (already loaded from the DB row on construction)."""
-        return self.paper_ids
+    def load_papers(self) -> list[int]:
+        """Return source_fks (already loaded from the DB row on construction)."""
+        return self.source_fks
 
     @property
     def paper_count(self) -> int:
-        return len(self.paper_ids)
+        return len(self.source_fks)
 
     # ── Representation ────────────────────────────────────────────────────────
 
