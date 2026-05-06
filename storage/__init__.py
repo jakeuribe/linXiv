@@ -42,6 +42,7 @@ from .notes import (
     get_project_notes,
     count_project_notes,
     count_paper_notes,
+    note_counts_by_paper_for_project,
 )
 
 __all__ = [
@@ -58,4 +59,5 @@ __all__ = [
     "Note", "ensure_notes_db", "init_notes_db",
     "get_note", "get_notes", "get_project_notes",
     "count_project_notes", "count_paper_notes",
+    "note_counts_by_paper_for_project",
 ]

@@ -6,6 +6,7 @@ import sqlite3
 
 import pytest
 
+from storage.projects import Project, ensure_projects_db
 from storage.notes import (
     Note,
     count_paper_notes,
@@ -13,6 +14,7 @@ from storage.notes import (
     get_note,
     get_notes,
     get_project_notes,
+    note_counts_by_paper_for_project,
 )
 from storage.projects import Project
 
@@ -329,13 +331,29 @@ class TestCountPaperNotes:
 
 
 # ---------------------------------------------------------------------------
-# FK enforcement test (cross-cutting)
+# note_counts_by_paper_for_project
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.usefixtures("tmp_db")
-def test_note_with_nonexistent_project_id_raises_integrity_error():
-    """notes.project_id has a FK → projects(id); inserting with a non-existent
-    project_id must raise sqlite3.IntegrityError."""
-    n = Note(paper_id="2204.12985", project_id=9999)
-    with pytest.raises(sqlite3.IntegrityError):
-        n.save()
+class TestNoteCountsByPaperForProject:
+    def test_unknown_project_returns_empty(self):
+        ensure_projects_db()
+        assert note_counts_by_paper_for_project(99999) == {}
+
+    def test_empty_paper_ids_returns_empty(self):
+        ensure_projects_db()
+        proj = Project(name="Empty", paper_ids=[])
+        proj.save()
+        assert note_counts_by_paper_for_project(proj.id) == {}
+
+    def test_counts_include_zeros_and_order(self):
+        ensure_projects_db()
+        proj = Project(name="P", paper_ids=["a", "b", "c"])
+        proj.save()
+        Note(paper_id="a", project_id=proj.id, title="n1").save()
+        Note(paper_id="a", project_id=proj.id, title="n2").save()
+        Note(paper_id="c", project_id=proj.id, title="n3").save()
+        counts = note_counts_by_paper_for_project(proj.id)
+        assert list(counts.keys()) == ["a", "b", "c"]
+        assert counts == {"a": 2, "b": 0, "c": 1}

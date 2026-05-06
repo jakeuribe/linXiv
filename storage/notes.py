@@ -7,6 +7,7 @@ from typing import Optional
 from pathlib import Path
 
 from .db import _connect, init_table
+from .projects import ensure_projects_db
 
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
@@ -19,6 +20,20 @@ def _notes_table_exists() -> bool:
             "SELECT name FROM sqlite_master WHERE type='table' AND name='notes'"
         ).fetchone()
     return row is not None
+
+
+def ensure_notes_db() -> None:
+    if not _notes_table_exists():
+        init_notes_db()
+    _ensure_notes_indices()
+
+
+def _ensure_notes_indices() -> None:
+    with _connect() as conn:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_notes_project_paper "
+            "ON notes(project_id, paper_id)"
+        )
 
 
 def init_notes_db() -> None:
@@ -196,3 +211,34 @@ def count_paper_notes(paper_id: str, project_id: Optional[int] = None) -> int:
                 (paper_id, project_id),
             ).fetchone()
     return row[0] if row else 0
+
+
+def note_counts_by_paper_for_project(project_id: int) -> dict[str, int]:
+    """
+    Return note counts for each paper listed on the project (``projects.paper_ids``).
+
+    Papers with no notes appear with count ``0``. Order of keys follows
+    ``paper_ids`` order. Missing or unknown ``project_id`` yields an empty dict.
+    """
+    ensure_notes_db()
+    ensure_projects_db()
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT m.paper_id AS paper_id, COALESCE(n.cnt, 0) AS note_count
+            FROM (
+                SELECT je.value AS paper_id, CAST(je.key AS INTEGER) AS ord
+                FROM projects p, json_each(p.paper_ids) AS je
+                WHERE p.id = ?
+            ) AS m
+            LEFT JOIN (
+                SELECT paper_id, COUNT(*) AS cnt
+                FROM notes
+                WHERE project_id = ?
+                GROUP BY paper_id
+            ) AS n ON n.paper_id = m.paper_id
+            ORDER BY m.ord
+            """,
+            (project_id, project_id),
+        ).fetchall()
+    return {str(row["paper_id"]): int(row["note_count"]) for row in rows}
