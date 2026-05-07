@@ -22,3 +22,7 @@ class ProjectDetails:
     created_at:   Optional[datetime] = None
     updated_at:   Optional[datetime] = None
     archived_at:  Optional[datetime] = None
+
+
+
+from storage.projects import Q, Project  # noqa: E402

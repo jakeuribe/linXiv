@@ -12,3 +12,7 @@ class NoteDetails:
     content:     str
     created_at:  datetime | None
     updated_at:  datetime | None
+
+
+
+from storage.notes import Note  # noqa: E402
