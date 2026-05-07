@@ -81,7 +81,7 @@ def _ensure_paper_root_row(conn: sqlite3.Connection, source_id: str) -> int:
     return int(row[0])
 
 
-def _author_fk_for_name(conn: sqlite3.Connection, full_name: str) -> int:
+def _author_fk_for_name(conn: sqlite3.Connection, full_name: str) -> int | None:
     row = conn.execute(
         "SELECT AUTHOR_FK FROM AUTHOR WHERE AUTHOR_FULL_NAME = ? COLLATE NOCASE LIMIT 1",
         (full_name,),
@@ -92,7 +92,7 @@ def _author_fk_for_name(conn: sqlite3.Connection, full_name: str) -> int:
         "INSERT INTO AUTHOR (AUTHOR_FULL_NAME) VALUES (?)",
         (full_name,),
     )
-    return int(cur.lastrowid)
+    return cur.lastrowid
 
 
 def _tag_fk_for_label(conn: sqlite3.Connection, label: str) -> int|None:
@@ -174,6 +174,8 @@ def _write_paper_version(
         "INSERT INTO PAPER (SOURCE_ID, VERSION, TITLE, CATEGORY, HAS_PDF, SOURCE_FK) VALUES (?, ?, ?, ?, ?, ?)",
         (source_id, version, title, category, has_pdf, source_fk),
     )
+    if cur.lastrowid is None:
+        return
     paper_id = int(cur.lastrowid)
     conn.execute(
         """
@@ -287,7 +289,7 @@ def _insert_metadata(conn: sqlite3.Connection, meta: PaperMetadata, tags: list[s
         summary=meta.summary,
         authors=meta.authors,
         tags=merged_tags,
-        source=meta.source,
+        source=meta.source or "",
         pdf_path=None,
         full_text=None,
         downloaded_source=None,
@@ -399,6 +401,34 @@ def get_paper(source_id: str, version: Optional[int] = None) -> Optional[sqlite3
             ).fetchone()
         return conn.execute(
             "SELECT * FROM latest_papers WHERE source_id = ?",
+            (source_id,),
+        ).fetchone()
+
+
+def get_paper_by_id(paper_id: int) -> Optional[sqlite3.Row]:
+    """Fetch a paper version by its PAPER primary key."""
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT * FROM papers WHERE paper_id = ?",
+            (paper_id,),
+        ).fetchone()
+
+
+def get_paper_by_source_fk(source_fk: int) -> Optional[sqlite3.Row]:
+    """Fetch the latest version for a PAPER_ROOTS row by SOURCE_FK."""
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT * FROM latest_papers WHERE source_id = ("
+            "SELECT SOURCE_ID FROM PAPER_ROOTS WHERE SOURCE_FK = ?)",
+            (source_fk,),
+        ).fetchone()
+
+
+def get_paper_root(source_id: str) -> Optional[sqlite3.Row]:
+    """Return the PAPER_ROOTS row for a given source_id."""
+    with _connect() as conn:
+        return conn.execute(
+            "SELECT * FROM PAPER_ROOTS WHERE SOURCE_ID = ?",
             (source_id,),
         ).fetchone()
 

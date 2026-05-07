@@ -1,6 +1,5 @@
 DROP VIEW IF EXISTS latest_papers;
 DROP VIEW IF EXISTS papers;
-DROP TABLE IF EXISTS papers;
 
 CREATE VIEW papers AS
 SELECT

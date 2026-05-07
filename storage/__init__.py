@@ -11,6 +11,9 @@ from .db import (
     save_paper_metadata,
     save_papers_metadata,
     get_paper,
+    get_paper_by_id,
+    get_paper_by_source_fk,
+    get_paper_root,
     get_all_versions,
     delete_paper,
     list_papers,
@@ -49,7 +52,8 @@ __all__ = [
     # db
     "DB_PATH", "_connect", "init_db", "init_table", "parse_entry_id",
     "save_paper", "save_papers", "save_paper_metadata", "save_papers_metadata",
-    "get_paper", "get_all_versions", "delete_paper", "list_papers",
+    "get_paper", "get_paper_by_id", "get_paper_by_source_fk", "get_paper_root",
+    "get_all_versions", "delete_paper", "list_papers",
     "get_categories", "get_tags", "get_graph_data",
     "set_has_pdf", "set_pdf_path", "set_full_text", "search_full_text",
     # projects

@@ -22,19 +22,6 @@ def _notes_table_exists() -> bool:
     return row is not None
 
 
-def ensure_notes_db() -> None:
-    if not _notes_table_exists():
-        init_notes_db()
-    _ensure_notes_indices()
-
-
-def _ensure_notes_indices() -> None:
-    with _connect() as conn:
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_notes_project_paper "
-            "ON notes(project_id, paper_id)"
-        )
-
 
 def init_notes_db() -> None:
     init_table(
@@ -223,6 +210,15 @@ def count_paper_notes(source_fk: int, project_id: Optional[int] = None) -> int:
                 (source_fk, project_id),
             ).fetchone()
     return row[0] if row else 0
+
+
+def get_notes_by_paper_id(paper_id: int) -> list[NoteDetails]:
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM LIBRARY_NOTE WHERE PAPER_ID_FK = ? ORDER BY CREATED_AT ASC",
+            (paper_id,),
+        ).fetchall()
+    return [Note.from_row(row).to_details() for row in rows]
 
 
 def note_counts_by_paper_for_project(project_id: int) -> dict[int, int]:
