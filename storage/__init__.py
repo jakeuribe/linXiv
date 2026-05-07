@@ -39,7 +39,6 @@ from .projects import (
 from .notes import (
     Note,
     ensure_notes_db,
-    init_notes_db,
     get_note,
     get_notes,
     get_project_notes,
@@ -60,7 +59,7 @@ __all__ = [
     "Q", "Status", "Project", "ensure_projects_db", "init_projects_db",
     "get_project", "filter_projects", "color_to_hex", "color_from_hex",
     # notes
-    "Note", "ensure_notes_db", "init_notes_db",
+    "Note", "ensure_notes_db",
     "get_note", "get_notes", "get_project_notes",
     "count_project_notes", "count_paper_notes",
     "note_counts_by_paper_for_project",

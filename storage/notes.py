@@ -4,12 +4,8 @@ import datetime
 from dataclasses import dataclass
 from typing import Optional
 
-from pathlib import Path
-
-from .db import _connect, init_table
+from .db import _connect
 from service.models.note import NoteDetails
-
-_MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 
 # ── DB schema ─────────────────────────────────────────────────────────────────
@@ -17,60 +13,14 @@ _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 def _notes_table_exists() -> bool:
     with _connect() as conn:
         row = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='notes'"
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='LIBRARY_NOTE'"
         ).fetchone()
     return row is not None
 
 
-
-def init_notes_db() -> None:
-    init_table(
-        "notes",
-        [
-            ("id",         int, "PRIMARY KEY AUTOINCREMENT"),
-            ("paper_id",   str, "NOT NULL REFERENCES paper_roots(paper_id) ON DELETE CASCADE"),
-            ("project_id", int, "REFERENCES projects(id) ON DELETE SET NULL"),
-            ("title",      str),
-            ("content",    str),
-            ("created_at", datetime.datetime),
-            ("updated_at", datetime.datetime),
-        ],
-    )
-    with _connect() as conn:
-        conn.executescript("""
-            CREATE INDEX IF NOT EXISTS idx_notes_paper_id   ON notes(paper_id);
-            CREATE INDEX IF NOT EXISTS idx_notes_project_id ON notes(project_id);
-            CREATE INDEX IF NOT EXISTS idx_notes_created_at ON notes(created_at);
-        """)
-
-
-def _migrate_notes_db() -> None:
-    """Add FK constraints and indexes to an existing notes table if absent."""
-    with _connect() as conn:
-        fk_rows = conn.execute("PRAGMA foreign_key_list(notes)").fetchall()
-        has_project_fk = any(row["table"] == "projects"    and row["to"] == "id"       for row in fk_rows)
-        has_paper_fk   = any(row["table"] == "paper_roots" and row["to"] == "paper_id" for row in fk_rows)
-        if has_project_fk and has_paper_fk:
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_notes_paper_id   ON notes(paper_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_notes_project_id ON notes(project_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_notes_created_at ON notes(created_at)")
-            return
-
-        # Seed paper_roots for any notes whose paper_id isn't there yet
-        # so the rebuild doesn't fail on orphaned rows.
-        conn.execute("""
-            INSERT OR IGNORE INTO paper_roots(paper_id)
-            SELECT DISTINCT paper_id FROM notes WHERE paper_id IS NOT NULL
-        """)
-        conn.executescript(
-            (_MIGRATIONS_DIR / "notes_add_project_fk.sql").read_text()
-        )
-
-
 def ensure_notes_db() -> None:
     if not _notes_table_exists():
-        init_notes_db()
-    _migrate_notes_db()
+        raise RuntimeError("LIBRARY_NOTE table not found — run apply_sql_schema first")
 
 
 # ── Data model ────────────────────────────────────────────────────────────────

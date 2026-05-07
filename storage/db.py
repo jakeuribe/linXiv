@@ -333,32 +333,39 @@ def repair_paper(old_paper_id: str, meta: PaperMetadata) -> str:
     new_id = meta.paper_id
     with _connect() as conn:
         if new_id != old_paper_id:
-            conn.execute("INSERT OR IGNORE INTO paper_roots(paper_id) VALUES (?)", (new_id,))
-            conn.execute("UPDATE papers         SET paper_id = ? WHERE paper_id = ?", (new_id, old_paper_id))
-            conn.execute("UPDATE notes          SET paper_id = ? WHERE paper_id = ?", (new_id, old_paper_id))
-            conn.execute("UPDATE project_papers SET paper_id = ? WHERE paper_id = ?", (new_id, old_paper_id))
-            fts_row = conn.execute(
-                "SELECT full_text FROM papers_fts WHERE paper_id = ?", (old_paper_id,)
-            ).fetchone()
-            if fts_row is not None:
-                conn.execute("DELETE FROM papers_fts WHERE paper_id = ?", (old_paper_id,))
-                conn.execute(
-                    "INSERT INTO papers_fts(paper_id, full_text) VALUES (?, ?)",
-                    (new_id, fts_row["full_text"]),
-                )
-            conn.execute("DELETE FROM paper_roots WHERE paper_id = ?", (old_paper_id,))
-        # Update only the latest version's editable fields; preserve version, source, pdf_path, etc.
-        conn.execute("""
-            UPDATE papers SET
-                title = ?, authors = ?, published = ?,
-                category = ?, doi = ?, url = ?, summary = ?, tags = ?
-            WHERE paper_id = ?
-              AND version = (SELECT MAX(version) FROM papers WHERE paper_id = ?)
-        """, (
-            meta.title, meta.authors, meta.published,
-            meta.category, meta.doi, meta.url, meta.summary, meta.tags,
-            new_id, new_id,
-        ))
+            conn.execute(
+                "UPDATE PAPER_ROOTS SET SOURCE_ID = ? WHERE SOURCE_ID = ?",
+                (new_id, old_paper_id),
+            )
+            conn.execute(
+                "UPDATE PAPER SET SOURCE_ID = ? WHERE SOURCE_ID = ?",
+                (new_id, old_paper_id),
+            )
+            conn.execute(
+                "UPDATE project_papers SET paper_id = ? WHERE paper_id = ?",
+                (new_id, old_paper_id),
+            )
+
+        row = conn.execute(
+            "SELECT PAPER_ID FROM PAPER WHERE SOURCE_ID = ? ORDER BY VERSION DESC LIMIT 1",
+            (new_id,),
+        ).fetchone()
+        if row is not None:
+            pid = row["PAPER_ID"]
+            conn.execute(
+                "UPDATE PAPER SET TITLE = ?, CATEGORY = ? WHERE PAPER_ID = ?",
+                (meta.title, meta.category, pid),
+            )
+            conn.execute(
+                """
+                UPDATE PAPER_META SET
+                    AUTHORS = ?, PUBLISHED = ?, DOI = ?, URL = ?,
+                    SUMMARY = ?, TAGS = ?, UPDATED_AT = date('now')
+                WHERE PAPER_ID = ?
+                """,
+                (meta.authors, meta.published, meta.doi, meta.url,
+                 meta.summary, meta.tags, pid),
+            )
     return new_id
 
 

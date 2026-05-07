@@ -56,27 +56,11 @@ def _get_author_papers(author_id: int) -> list[dict]:
 def get(author: Author) -> Optional[BasicAuthorDetails]:
     """Fetch a single author. Resolution order: author_id → orcid."""
     if author.author_id is not None:
-        row = _get_author(author.author_id)
-        if row is None:
-            return None
-        return BasicAuthorDetails(
-            author_id  = row["author_id"],
-            orcid      = row["orcid"],
-            full_name  = row["full_name"],
-            first_name = row["first_name"],
-            last_name  = row["last_name"],
-        )
+        return _get_author(author.author_id)
     if author.orcid is not None:
-        rows = _list_authors(name=None)
-        for row in rows:
-            if row["orcid"] == author.orcid:
-                return BasicAuthorDetails(
-                    author_id  = row["author_id"],
-                    orcid      = row["orcid"],
-                    full_name  = row["full_name"],
-                    first_name = row["first_name"],
-                    last_name  = row["last_name"],
-                )
+        for row in _list_authors():
+            if row.orcid == author.orcid:
+                return row
     return None
 
 
@@ -85,20 +69,12 @@ def get_many(authors: Authors) -> list[BasicAuthorDetails]:
     name_filter = authors.name[0] if authors.name and len(authors.name) == 1 else None
     rows = _list_authors(paper_id=authors.paper_id, name=name_filter)
     if authors.name and len(authors.name) > 1:
-        rows = [r for r in rows if r["full_name"] in authors.name]
+        name_set = set(authors.name)
+        rows = [r for r in rows if r.full_name in name_set]
     if authors.author_ids:
         id_set = set(authors.author_ids)
-        rows = [r for r in rows if r["author_id"] in id_set]
-    return [
-        BasicAuthorDetails(
-            author_id  = row["author_id"],
-            orcid      = row["orcid"],
-            full_name  = row["full_name"],
-            first_name = row["first_name"],
-            last_name  = row["last_name"],
-        )
-        for row in rows
-    ]
+        rows = [r for r in rows if r.author_id in id_set]
+    return rows
 
 
 def upsert(author: AuthorIn) -> int | None:
@@ -122,16 +98,7 @@ def delete(author: Author) -> None:
 def get_author_details(author: Author) -> Optional[BasicAuthorDetails]:
     if author.author_id is None:
         return None
-    row = _get_author(author.author_id)
-    if row is None:
-        return None
-    return BasicAuthorDetails(
-        author_id  = row["author_id"],
-        orcid      = row["orcid"],
-        full_name  = row["full_name"],
-        first_name = row["first_name"],
-        last_name  = row["last_name"],
-    )
+    return _get_author(author.author_id)
 
 
 def get_full_author_details(author: Author) -> Optional[FullAuthorDetails]:
@@ -142,11 +109,11 @@ def get_full_author_details(author: Author) -> Optional[FullAuthorDetails]:
         return None
     paper_ids = [p["paper_id"] for p in _get_author_papers(author.author_id)]
     return FullAuthorDetails(
-        author_id  = row["author_id"],
-        orcid      = row["orcid"],
-        full_name  = row["full_name"],
-        first_name = row["first_name"],
-        last_name  = row["last_name"],
+        author_id  = row.author_id,
+        orcid      = row.orcid,
+        full_name  = row.full_name,
+        first_name = row.first_name,
+        last_name  = row.last_name,
         paper_ids  = paper_ids,
     )
 
@@ -155,32 +122,14 @@ def get_authors(authors: Authors) -> list[BasicAuthorDetails]:
     name_filter = authors.name[0] if authors.name and len(authors.name) == 1 else None
     rows = _list_authors(paper_id=authors.paper_id, name=name_filter)
     if authors.name and len(authors.name) > 1:
-        rows = [r for r in rows if r["full_name"] in authors.name]
-    return [
-        BasicAuthorDetails(
-            author_id  = row["author_id"],
-            orcid      = row["orcid"],
-            full_name  = row["full_name"],
-            first_name = row["first_name"],
-            last_name  = row["last_name"],
-        )
-        for row in rows
-    ]
+        name_set = set(authors.name)
+        rows = [r for r in rows if r.full_name in name_set]
+    return rows
 
 
 def get_paper_authors(paper_id: int) -> list[BasicAuthorDetails]:
-    """Return authors for a specific paper version, ordered by AUTHOR_INDEX."""
-    rows = _get_author_papers(paper_id)
-    return [
-        BasicAuthorDetails(
-            author_id  = row["author_id"],
-            orcid      = row["orcid"],
-            full_name  = row["full_name"],
-            first_name = row["first_name"],
-            last_name  = row["last_name"],
-        )
-        for row in rows
-    ]
+    """Return authors for a paper version ordered by AUTHOR_INDEX."""
+    return _list_authors(paper_id=paper_id)
 
 
 # ---------------------------------------------------------------------------
