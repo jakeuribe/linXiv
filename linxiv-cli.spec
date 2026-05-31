@@ -75,6 +75,8 @@ a = Analysis(
         "fastapi", "uvicorn", "starlette",
         "matplotlib", "numpy", "pandas",
         "torch", "tensorflow",
+        # AI SDKs (only used by AI_tools, which the CLI does not import)
+        "openai", "google", "google.genai",
         "pytest",
     ],
     noarchive=False,

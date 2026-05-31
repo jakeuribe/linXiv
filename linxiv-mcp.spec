@@ -32,7 +32,6 @@ a = Analysis(
         # our packages
         "config",
         "user_settings",
-        "AI_tools",
         "service",
         "service.paper",
         "service.project",
@@ -77,6 +76,8 @@ a = Analysis(
         "fastapi", "uvicorn",
         "matplotlib", "numpy", "pandas",
         "torch", "tensorflow",
+        # AI SDKs (only used by AI_tools, which the MCP server does not import)
+        "openai", "google", "google.genai",
         "pytest",
     ],
     noarchive=False,

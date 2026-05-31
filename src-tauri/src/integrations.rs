@@ -400,15 +400,30 @@ fn write_mcp_config(path: &Path, value: &serde_json::Value) -> Result<(), String
 /// Return `true` when a client application appears to be present on this machine.
 ///
 /// Most clients are detected by checking whether their config directory exists.
-/// Claude Code is detected by looking for the `claude` binary on PATH, because
-/// its config file lives directly in `~` (which always exists).
+///
+/// Claude Code is detected by checking for its config paths in the home dir
+/// (`~/.claude.json` or the `~/.claude/` state dir), NOT by probing PATH for the
+/// `claude` binary. The PATH probe was unreliable: a GUI launched from the
+/// desktop (GNOME/systemd) inherits a minimal PATH (`/usr/bin:/bin:…`) that omits
+/// `~/.local/bin` where `claude` is installed, so `which claude` failed and the
+/// client was wrongly reported as unavailable even though it was installed and
+/// linxiv was registered. The home-dir config paths are PATH-independent and so
+/// behave identically whether the app is launched from a terminal or the desktop.
 fn is_client_available(client_id: &str) -> bool {
     if client_id == "claude-code" {
-        #[cfg(target_os = "windows")]
-        let result = std::process::Command::new("where").arg("claude").output();
-        #[cfg(not(target_os = "windows"))]
-        let result = std::process::Command::new("which").arg("claude").output();
-        return matches!(result, Ok(o) if o.status.success());
+        // Claude Code creates `~/.claude.json` (config) and `~/.claude/` (state)
+        // on first run; either is sufficient evidence it is present. We do NOT
+        // fall back to `which claude`: it cannot fix the desktop-launch bug
+        // (minimal PATH fails the probe regardless) and would only ever matter in
+        // the narrow terminal-launched-but-never-run window — which is exactly
+        // when there is no config and nothing to manage, so "unavailable" is the
+        // correct answer there anyway. Not worth a cfg-gated process spawn.
+        let Some(home) = dirs_home() else {
+            return false;
+        };
+        // `~/.claude.json` is a file → `exists()`; `~/.claude` is definitionally a
+        // directory → `is_dir()` (also rejects a stray non-dir file of that name).
+        return home.join(".claude.json").exists() || home.join(".claude").is_dir();
     }
     mcp_config_dir(client_id)
         .map(|d| d.exists())
