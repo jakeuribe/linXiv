@@ -2,8 +2,20 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { applyTheme, VALID_HEX } from "../lib/theme";
 import type { ColorAlphas, PresetName, ThemeColors, ThemeMode } from "../lib/theme";
+import { pushThemeToEditor, EDITOR_ORIGIN } from "../pages/editorConfig";
 
 const STORAGE_KEY = "linxiv-theme";
+
+// Set by EditorPage on mount/iframe-load (cleared on unmount) so the store can
+// push resolved theme colors to the embedded TeXbrain editor whenever the theme
+// changes — covers programmatic applyTheme callers outside React's render cycle.
+// No-op when no editor is mounted. The import graph stays acyclic: editorConfig
+// imports only ../api/client + ../lib/editorBridge, neither of which imports this
+// store.
+let editorFrame: Window | null = null;
+export function registerEditorFrame(frame: Window | null): void {
+  editorFrame = frame;
+}
 
 export interface CustomPalette {
   name: string;
@@ -46,6 +58,12 @@ export const useThemeStore = create<ThemeState>()(
         set(patch);
         const next = get();
         applyTheme(next.preset, next.mode, next.overrides, next.overrideAlphas);
+        pushThemeToEditor(editorFrame, EDITOR_ORIGIN, {
+          preset: next.preset,
+          mode: next.mode,
+          overrides: next.overrides,
+          overrideAlphas: next.overrideAlphas,
+        });
       }
 
       return {
