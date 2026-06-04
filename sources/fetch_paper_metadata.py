@@ -1,22 +1,34 @@
-import os
 import time
 import arxiv
 from datetime import datetime
 from pathlib import Path
 from typing import Sequence
 
+from config import data_dir, resources_dir
+
 _client = arxiv.Client(num_retries=1, delay_seconds=7.0)
 
-_ROOT = Path(__file__).parent.parent
-_RATELIMIT_FILE = str(_ROOT / ".arxiv_ratelimit")
-_VAULT_DIR      = _ROOT / "obsidian_vault" / "arXivVault"
 _RATELIMIT_WAIT = 60.0
 
 
+def _vault_dir() -> Path:
+    """Obsidian vault location — resolved off data_dir() so it tracks LINXIV_DATA_DIR
+    like the DB and PDFs, instead of being pinned to the source tree. Called per-use
+    (not cached at import) to avoid the import-time-frozen trap."""
+    return data_dir() / "obsidian_vault" / "arXivVault"
+
+
+def _ratelimit_file() -> Path:
+    """arXiv rate-limit timestamp file — lives in data_dir() so it tracks LINXIV_DATA_DIR
+    like the DB, PDFs, and vault. Resolved per-use (not cached at import)."""
+    return data_dir() / ".arxiv_ratelimit"
+
+
 def _check_ratelimit() -> None:
-    if not os.path.exists(_RATELIMIT_FILE):
+    path = _ratelimit_file()
+    if not path.exists():
         return
-    with open(_RATELIMIT_FILE) as f:
+    with open(path) as f:
         last = datetime.fromisoformat(f.read().strip())
     remaining = _RATELIMIT_WAIT - (datetime.now() - last).total_seconds()
     if remaining > 0:
@@ -25,7 +37,9 @@ def _check_ratelimit() -> None:
 
 
 def _record_ratelimit() -> None:
-    with open(_RATELIMIT_FILE, "w") as f:
+    path = _ratelimit_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
         f.write(datetime.now().isoformat())
 
 
@@ -92,11 +106,13 @@ def gen_md_file(paper: arxiv.Result, additional_tags: None | Sequence[str] = Non
             tags.append(s)
 
     date = paper.published.strftime('%Y-%m-%d')
-    filename = _VAULT_DIR / f"{bare_id}.md"
+    vault = _vault_dir()
+    vault.mkdir(parents=True, exist_ok=True)
+    filename = vault / f"{bare_id}.md"
 
     author_list = "\n".join([f'  - "[[{name}]]"' for name in authors])
     tag_list = "\n".join([f'- {tag}' for tag in tags])
-    with open(_ROOT / "formats" / "table_format.md", "r", encoding="utf-8") as f:
+    with open(resources_dir() / "formats" / "table_format.md", "r", encoding="utf-8") as f:
         template = f.read()
         final_content = template.format(
             title=title,

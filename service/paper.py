@@ -557,6 +557,10 @@ def set_has_pdf(source_id: str, version: int, has: bool) -> None:
 def set_pdf_path(source_id: str, path: str, version: int | None = None) -> None:
     db.set_pdf_path(source_id, path, version)
 
+def mark_pdf_saved(source_id: str, path: str, version: int) -> None:
+    """Atomically record PDF_PATH and set HAS_PDF=True for a specific version."""
+    db.mark_pdf_saved(source_id, path, version)
+
 
 def import_pdf(content: bytes, project_id: int | None = None) -> PaperImportResult:
     """Save a PDF to disk, extract its metadata, persist to DB, and optionally link to a project.

@@ -15,7 +15,7 @@ import httpx
 
 from dotenv import load_dotenv
 
-from config import ENV_PATH
+from config import ENV_PATH, init_data_dir
 load_dotenv(ENV_PATH)
 
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
@@ -125,6 +125,7 @@ def _resolve_local_pdf(paper: PaperDetails, version: int | None) -> str | None:
 
 @asynccontextmanager
 async def _lifespan(_: FastAPI):
+    init_data_dir()
     init_db()
     ensure_projects_db()
     _service_note.ensure_notes_db()

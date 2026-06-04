@@ -16,6 +16,7 @@ from storage.config.core import apply_sql_schema
 @pytest.fixture(autouse=True)
 def tmp_db(tmp_path, monkeypatch):
     """Redirect every storage call to a fresh temp DB; make init helpers no-ops."""
+    monkeypatch.setenv("LINXIV_DATA_DIR", str(tmp_path))
     db_file = str(tmp_path / "test.db")
 
     conn = sqlite3.connect(db_file, detect_types=sqlite3.PARSE_DECLTYPES)
@@ -38,13 +39,12 @@ def tmp_db(tmp_path, monkeypatch):
     monkeypatch.setattr("service.project.ensure_projects_db", lambda: None)
     monkeypatch.setattr("service.note.ensure_notes_db", lambda: None)
 
-    pdf_dir = tmp_path / "pdfs"
-    pdf_dir.mkdir()
-    monkeypatch.setattr("service.files._pdf_dir", lambda: pdf_dir)
-    # service.paper imports _pdf_dir directly from storage.paths (line 21), so
-    # patching service.files._pdf_dir alone leaves import_pdf writing to the
-    # real user data dir during tests.
-    monkeypatch.setattr("service.paper._pdf_dir", lambda: pdf_dir)
+    # LINXIV_DATA_DIR is pinned to tmp_path above, so storage.paths.pdf_dir()
+    # (imported as service.files._pdf_dir / service.paper._pdf_dir) resolves to
+    # tmp_path/"pdfs" dynamically on every call — no per-module patch needed.
+    # Pre-create it so tests that stat the dir without first downloading hit no
+    # missing directory.
+    (tmp_path / "pdfs").mkdir()
 
     yield db_file
 

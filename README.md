@@ -1,11 +1,15 @@
 # linXiv
 
-<img src="assets/wide_logo.png" alt="linXiv logo"/>
+<img src="assets/wide_logo.png" alt="linXiv logo" width="800" />
+
 A local-first desktop application for discovering, managing, and visualizing academic papers from arXiv and other sources. Combines a local SQLite database, optional AI-powered tagging, Obsidian vault integration, and an interactive D3.js network graph, wrapped in a Tauri desktop shell (React + TypeScript frontend, Python backend).
 
 Upload your PDFs, create projects, manage notes, tags, and more to organize your files — all locally, without sending your data anywhere. This project aims to be a one-stop-shop for researchers who want to manage their literature, with the near-term goal of extending to research groups who seek to share knowledge without going to the web.
 
-> **Development status:** The database schema and paper identifier format are actively changing. `source_id` values are being migrated to a namespaced format (`arxiv:2204.12985`, `doi:10.48550/…`, `openalex:W3123456789`, `local:{hash}`). Until that work lands, existing `papers.db` files will not be compatible with new builds — delete `papers.db` and let it rebuild on first run. No stable release has been cut yet. Migrations from version 0.1.0 to 0.1.1 will be accounted for.
+> **Development status:** The database schema and paper identifier format are actively changing. `source_id` values are being migrated to a namespaced format (`arxiv:2204.12985`, `doi:10.48550/…`, `openalex:W3123456789`, `local:{hash}`). Until that work lands, pre-v0.1.1 (current version) existing `papers.db` files will not be compatible with new builds — delete `papers.db` and let it rebuild on first run. No stable release has been cut yet. Migrations from version 0.1.0 to 0.1.1 will be accounted for.
+
+
+<img src="assets/carousel.gif" width="800" />
 
 ## Table of Contents
 

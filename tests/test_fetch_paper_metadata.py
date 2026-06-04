@@ -21,16 +21,19 @@ fpm: ModuleType = importlib.import_module("sources.fetch_paper_metadata")
 
 
 # ---------------------------------------------------------------------------
-# Fixture: redirect _RATELIMIT_FILE to a temp path for every test
+# Fixture: redirect the rate-limit file to a temp path for every test
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
 def temp_ratelimit(tmp_path, monkeypatch):
-    monkeypatch.setattr(fpm, "_RATELIMIT_FILE", str(tmp_path / ".arxiv_ratelimit"))
+    # The rate-limit file now lives in data_dir() (resolved per-use by
+    # fpm._ratelimit_file()). Pin data_dir() to tmp_path so each test gets an
+    # isolated path without touching the real user data dir.
+    monkeypatch.setenv("LINXIV_DATA_DIR", str(tmp_path))
 
 
 def _write_ratelimit(ts: real_datetime) -> None:
-    with open(fpm._RATELIMIT_FILE, "w") as f:
+    with open(fpm._ratelimit_file(), "w") as f:
         f.write(ts.isoformat())
 
 
@@ -59,7 +62,7 @@ class TestCheckRatelimitNoFile:
 
     def test_no_file_does_not_create_one(self):
         fpm._check_ratelimit()
-        assert not os.path.exists(fpm._RATELIMIT_FILE)
+        assert not os.path.exists(fpm._ratelimit_file())
 
 
 # ---------------------------------------------------------------------------
@@ -127,21 +130,21 @@ class TestCheckRatelimitFileAge:
 
 class TestCheckRatelimitMalformedFile:
     def test_empty_file_raises(self, monkeypatch):
-        with open(fpm._RATELIMIT_FILE, "w") as f:
+        with open(fpm._ratelimit_file(), "w") as f:
             f.write("")
         monkeypatch.setattr(fpm.time, "sleep", MagicMock())
         with pytest.raises(ValueError):
             fpm._check_ratelimit()
 
     def test_whitespace_only_raises(self, monkeypatch):
-        with open(fpm._RATELIMIT_FILE, "w") as f:
+        with open(fpm._ratelimit_file(), "w") as f:
             f.write("   \n  ")
         monkeypatch.setattr(fpm.time, "sleep", MagicMock())
         with pytest.raises(ValueError):
             fpm._check_ratelimit()
 
     def test_garbage_content_raises(self, monkeypatch):
-        with open(fpm._RATELIMIT_FILE, "w") as f:
+        with open(fpm._ratelimit_file(), "w") as f:
             f.write("not-a-datetime")
         monkeypatch.setattr(fpm.time, "sleep", MagicMock())
         with pytest.raises(ValueError):
@@ -154,13 +157,13 @@ class TestCheckRatelimitMalformedFile:
 
 class TestRecordRatelimit:
     def test_creates_file(self):
-        assert not os.path.exists(fpm._RATELIMIT_FILE)
+        assert not os.path.exists(fpm._ratelimit_file())
         fpm._record_ratelimit()
-        assert os.path.exists(fpm._RATELIMIT_FILE)
+        assert os.path.exists(fpm._ratelimit_file())
 
     def test_file_contains_valid_iso_datetime(self):
         fpm._record_ratelimit()
-        with open(fpm._RATELIMIT_FILE) as f:
+        with open(fpm._ratelimit_file()) as f:
             content = f.read().strip()
         parsed = real_datetime.fromisoformat(content)
         assert isinstance(parsed, real_datetime)
@@ -169,14 +172,14 @@ class TestRecordRatelimit:
         before = real_datetime.now()
         fpm._record_ratelimit()
         after = real_datetime.now()
-        with open(fpm._RATELIMIT_FILE) as f:
+        with open(fpm._ratelimit_file()) as f:
             recorded = real_datetime.fromisoformat(f.read().strip())
         assert before <= recorded <= after
 
     def test_overwrites_existing_file(self):
         _write_ratelimit(real_datetime(2000, 1, 1))
         fpm._record_ratelimit()
-        with open(fpm._RATELIMIT_FILE) as f:
+        with open(fpm._ratelimit_file()) as f:
             recorded = real_datetime.fromisoformat(f.read().strip())
         assert recorded.year >= 2024
 
@@ -312,7 +315,7 @@ class TestArxivCallRatelimitIntegration:
         with pytest.raises(RuntimeError):
             fpm._arxiv_call(lambda: (_ for _ in ()).throw(RuntimeError("429")))
 
-        assert os.path.exists(fpm._RATELIMIT_FILE)
+        assert os.path.exists(fpm._ratelimit_file())
 
         # Second call: file is very recent, so sleep should be called
         fpm._arxiv_call(lambda: "ok")

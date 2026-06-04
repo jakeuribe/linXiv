@@ -21,7 +21,6 @@ a = Analysis(
         # Bundled read-only resources accessed via resources_dir() / config.resources_dir()
         (str(ROOT / "formats"),                   "formats"),
         (str(ROOT / "storage" / "config" / "sql"), "storage/config/sql"),
-        (str(ROOT / "gui" / "graph" / "web"),      "gui/graph/web"),
     ],
     hiddenimports=[
         # uvicorn internals that PyInstaller misses
