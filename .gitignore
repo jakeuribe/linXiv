@@ -25,7 +25,6 @@ _package_docs/
 # OS/Temp_files
 .DS_Store
 Thumbs.db
-features.md
 pyrightconfig.json
 # docs: ignore everything except architecture decision records
 # (see gitignore(5): re-include a subtree by un-ignoring the dir, then ignoring its contents, then un-ignoring paths)
@@ -43,7 +42,6 @@ src-tauri/target/
 src-tauri/binaries/linxiv-api-*
 
 # Session state
-selected_papers.json
 user_settings.json
 .venv
 # env state
