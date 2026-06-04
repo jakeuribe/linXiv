@@ -177,8 +177,11 @@ def delete_author(author_id: int) -> None:
     _authors_storage.delete_author(author_id)
 
 
-def list_with_paper_count() -> list[AuthorWithCount]:
-    """Return all authors with their active paper count."""
+def list_with_paper_count(min_papers: int = 0) -> list[AuthorWithCount]:
+    """Return authors with their active paper count.
+
+    Pass ``min_papers=2`` to exclude single-paper authors.
+    """
     return [
         AuthorWithCount(
             author_id   = d["author_id"],
@@ -188,7 +191,7 @@ def list_with_paper_count() -> list[AuthorWithCount]:
             orcid       = d["orcid"],
             paper_count = d["paper_count"],
         )
-        for d in _authors_storage.list_authors_with_paper_count()
+        for d in _authors_storage.list_authors_with_paper_count(min_papers=min_papers)
     ]
 
 

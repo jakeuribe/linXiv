@@ -6,6 +6,7 @@ import type { AuthorUpdateBody } from "../api/authors";
 import { Spinner } from "../components/ui/spinner";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { useUiStore } from "../stores/ui";
 
 export default function AuthorPage() {
   const { id } = useParams<{ id?: string }>();
@@ -35,10 +36,12 @@ export default function AuthorPage() {
 function AuthorIndexView() {
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
+  const hideSingleAuthors = useUiStore((s) => s.hideSingleAuthors);
+  const setHideSingleAuthors = useUiStore((s) => s.setHideSingleAuthors);
 
   const { data: authors = [], isLoading, error } = useQuery({
-    queryKey: ["authors"],
-    queryFn: () => listAuthors(),
+    queryKey: ["authors", { hideSingleAuthors }],
+    queryFn: () => listAuthors(hideSingleAuthors),
   });
 
   const filtered = search.trim()
@@ -88,6 +91,18 @@ function AuthorIndexView() {
         onChange={(e) => setSearch(e.target.value)}
         className="w-full"
       />
+
+      <label
+        className="flex items-center gap-2 text-sm cursor-pointer select-none w-fit"
+        style={{ color: "var(--color-muted)" }}
+      >
+        <input
+          type="checkbox"
+          checked={hideSingleAuthors}
+          onChange={(e) => setHideSingleAuthors(e.target.checked)}
+        />
+        Hide single-paper authors
+      </label>
 
       {filtered.length === 0 ? (
         <p className="text-sm" style={{ color: "var(--color-muted)" }}>

@@ -841,8 +841,10 @@ window.addEventListener('message', function(e) {
     const isTauri = proto === 'tauri:';
     if (proto !== 'http:' && proto !== 'https:' && !isTauri) return;
     const base = isTauri ? 'http://127.0.0.1:8000' : window.location.origin;
+    const excludeSingleAuthors = new URLSearchParams(window.location.search).get('excludeSingleAuthors') === '1';
+    const graphUrl = base + '/api/graph' + (excludeSingleAuthors ? '?exclude_single_authors=true' : '');
     Promise.all([
-        fetch(base + '/api/graph').then(r => r.json()),
+        fetch(graphUrl).then(r => r.json()),
         fetch(base + '/api/categories').then(r => r.json()),
         fetch(base + '/api/tags').then(r => r.json()),
         fetch(base + '/api/graph/project-options').then(r => r.json()),

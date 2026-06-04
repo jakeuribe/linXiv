@@ -33,6 +33,8 @@ interface UiState {
   setExportMethod: (format: ExportFormatKey, enabled: boolean) => void;
   zoom: number;
   setZoom: (zoom: number) => void;
+  hideSingleAuthors: boolean;
+  setHideSingleAuthors: (hide: boolean) => void;
 }
 
 export const useUiStore = create<UiState>()(
@@ -42,6 +44,7 @@ export const useUiStore = create<UiState>()(
       sidebarPages: DEFAULT_SIDEBAR_PAGES,
       exportMethods: DEFAULT_EXPORT_METHODS,
       zoom: DEFAULT_ZOOM,
+      hideSingleAuthors: false,
 
       toggleSidebar() {
         set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed }));
@@ -64,10 +67,14 @@ export const useUiStore = create<UiState>()(
         set({ zoom: next });
         applyZoom(next);
       },
+
+      setHideSingleAuthors(hide) {
+        set({ hideSingleAuthors: hide });
+      },
     }),
     {
       name: "linxiv-ui",
-      version: 3,
+      version: 4,
       migrate(persisted, fromVersion) {
         const state = (persisted ?? {}) as Partial<UiState>;
         if (fromVersion < 1) {
@@ -78,6 +85,9 @@ export const useUiStore = create<UiState>()(
         }
         if (fromVersion < 3) {
           state.zoom = DEFAULT_ZOOM;
+        }
+        if (fromVersion < 4) {
+          state.hideSingleAuthors = false;
         }
         return state;
       },
