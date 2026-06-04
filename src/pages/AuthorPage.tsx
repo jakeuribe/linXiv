@@ -81,7 +81,8 @@ function AuthorIndexView() {
           Authors
         </h1>
         <p className="text-sm mt-1" style={{ color: "var(--color-muted)" }}>
-          {authors.length} author{authors.length !== 1 ? "s" : ""} in your library
+          {authors.length} author{authors.length !== 1 ? "s" : ""}
+          {hideSingleAuthors ? " with multiple papers" : " in your library"}
         </p>
       </div>
 
@@ -106,7 +107,11 @@ function AuthorIndexView() {
 
       {filtered.length === 0 ? (
         <p className="text-sm" style={{ color: "var(--color-muted)" }}>
-          {search ? "No authors match your filter." : "No authors yet."}
+          {search
+            ? "No authors match your filter."
+            : hideSingleAuthors
+            ? "No authors with more than one paper — uncheck “Hide single-paper authors” to show the rest."
+            : "No authors yet."}
         </p>
       ) : (
         <div className="flex flex-col divide-y" style={{ borderColor: "var(--color-border)" }}>

@@ -724,11 +724,16 @@ def get_graph_data(exclude_single_authors: bool = False) -> tuple[list[dict], li
               AND r.STATUS = 'active'
         """).fetchall()
 
-    # Distinct papers per author name; only needed when dropping single-paper
-    # authors. Note this counts each author *name string* from the latest
-    # version of each paper — distinct from the relational AUTHOR-table count
-    # used by the Authors page (see list_authors_with_paper_count). Both mean
-    # "appears on only one paper" within their own view's data model.
+    # Distinct papers per author name; only built when dropping single-paper
+    # authors. KNOWN INCONSISTENCY: this counts each raw author *name string*
+    # from the latest version of each paper only, whereas the Authors page
+    # (list_authors_with_paper_count / the author_paper_counts view) counts the
+    # relational AUTHOR_FK case-insensitively across all versions. The two can
+    # therefore disagree about who is "single-paper" for the same person — name
+    # case/whitespace variants, or an author who appears only on an older
+    # version. The relational count is the source of truth; this graph filter is
+    # meant to be brought in line with it (see TODO), so do NOT propagate this
+    # latest-version/name-string definition elsewhere.
     papers_per_author: dict[str, set] = {}
     if exclude_single_authors:
         for row in author_rows:
