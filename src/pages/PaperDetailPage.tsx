@@ -21,7 +21,7 @@ import { PaperMetadataEditor } from "../components/papers/PaperMetadataEditor";
 import { normalizeAuthors } from "../lib/papers";
 import { formatDate } from "../lib/date";
 import { TagBadge } from "../components/tags/TagBadge";
-import { openPath } from "@tauri-apps/plugin-opener";
+import { invoke } from "@tauri-apps/api/core";
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/build/pdf.worker.min.mjs",
@@ -234,14 +234,18 @@ export default function PaperDetailPage() {
       );
       if (controller.signal.aborted) return;
       if (typeof path !== "string" || !path) throw new Error("Invalid response from pdf-path endpoint");
-      await openPath(path);
+      await invoke("open_pdf_in_system", { path });
     } catch (err) {
-      if (err instanceof Error && err.name === "AbortError") return;
+      // The cleanup effect aborts this controller on unmount or version change.
+      // invoke() can't be cancelled mid-flight, so once the controller is
+      // aborted the component is gone — drop the result instead of setting
+      // state on it (this also covers apiFetch's AbortError).
+      if (controller.signal.aborted) return;
       setOpenNativeError(
         err instanceof Error ? err.message : "Failed to open PDF"
       );
     } finally {
-      setOpenNativeLoading(false);
+      if (!controller.signal.aborted) setOpenNativeLoading(false);
     }
   }
 

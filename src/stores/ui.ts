@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { applyZoom, clampZoom, DEFAULT_ZOOM } from "../lib/zoom";
 
 export type SidebarPageKey = "graph" | "search" | "doi" | "tags" | "notes";
 
@@ -30,6 +31,8 @@ interface UiState {
   setSidebarPage: (page: SidebarPageKey, enabled: boolean) => void;
   exportMethods: ExportMethods;
   setExportMethod: (format: ExportFormatKey, enabled: boolean) => void;
+  zoom: number;
+  setZoom: (zoom: number) => void;
 }
 
 export const useUiStore = create<UiState>()(
@@ -38,6 +41,7 @@ export const useUiStore = create<UiState>()(
       sidebarCollapsed: false,
       sidebarPages: DEFAULT_SIDEBAR_PAGES,
       exportMethods: DEFAULT_EXPORT_METHODS,
+      zoom: DEFAULT_ZOOM,
 
       toggleSidebar() {
         set((state) => ({ sidebarCollapsed: !state.sidebarCollapsed }));
@@ -54,10 +58,16 @@ export const useUiStore = create<UiState>()(
           exportMethods: { ...state.exportMethods, [format]: enabled },
         }));
       },
+
+      setZoom(zoom) {
+        const next = clampZoom(zoom);
+        set({ zoom: next });
+        applyZoom(next);
+      },
     }),
     {
       name: "linxiv-ui",
-      version: 2,
+      version: 3,
       migrate(persisted, fromVersion) {
         const state = (persisted ?? {}) as Partial<UiState>;
         if (fromVersion < 1) {
@@ -66,7 +76,19 @@ export const useUiStore = create<UiState>()(
         if (fromVersion < 2) {
           state.exportMethods = { ...DEFAULT_EXPORT_METHODS, ...state.exportMethods };
         }
+        if (fromVersion < 3) {
+          state.zoom = DEFAULT_ZOOM;
+        }
         return state;
+      },
+      // The webview starts every launch at 100%; re-apply the saved zoom once
+      // the persisted value is loaded (and normalize it in case the stored
+      // number is out of range or corrupt).
+      onRehydrateStorage: () => (state) => {
+        if (state) {
+          state.zoom = clampZoom(state.zoom);
+          applyZoom(state.zoom);
+        }
       },
     }
   )
