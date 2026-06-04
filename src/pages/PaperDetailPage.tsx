@@ -195,6 +195,10 @@ export default function PaperDetailPage() {
     queryClient.invalidateQueries({ queryKey: ["notes", paper?.source_id] });
     setShowAddNote(false);
     setEditingNoteId(null);
+    // A prior failed delete leaves deleteNoteMutation.isError true until it is
+    // reset; clear it once the user completes a different, successful note
+    // action so the stale "couldn't delete" banner doesn't linger.
+    deleteNoteMutation.reset();
   }
 
   function handleDeleteNote(note: Note) {
@@ -241,8 +245,16 @@ export default function PaperDetailPage() {
       // aborted the component is gone — drop the result instead of setting
       // state on it (this also covers apiFetch's AbortError).
       if (controller.signal.aborted) return;
+      // A failing #[tauri::command] returning Result<_, String> rejects invoke()
+      // with the raw string, not an Error — so handle that first to preserve the
+      // command's specific message ("PDF file not found on disk", etc.). The
+      // apiFetch path above still throws real Error/ApiError instances.
       setOpenNativeError(
-        err instanceof Error ? err.message : "Failed to open PDF"
+        typeof err === "string"
+          ? err
+          : err instanceof Error
+          ? err.message
+          : "Failed to open PDF"
       );
     } finally {
       if (!controller.signal.aborted) setOpenNativeLoading(false);
@@ -431,7 +443,10 @@ export default function PaperDetailPage() {
                 <Button
                   variant="muted"
                   size="sm"
-                  onClick={() => setShowAddNote(true)}
+                  onClick={() => {
+                    deleteNoteMutation.reset();
+                    setShowAddNote(true);
+                  }}
                 >
                   + Add note
                 </Button>
@@ -466,6 +481,17 @@ export default function PaperDetailPage() {
               </div>
             )}
 
+            {deleteNoteMutation.isError && (
+              <p
+                className="text-sm text-center"
+                style={{ color: "var(--color-danger)" }}
+              >
+                {deleteNoteMutation.error instanceof Error
+                  ? deleteNoteMutation.error.message
+                  : "Couldn't delete the note. Please try again."}
+              </p>
+            )}
+
             {notesLoading ? (
               <div className="flex justify-center py-6">
                 <Spinner size={20} />
@@ -485,6 +511,7 @@ export default function PaperDetailPage() {
                         note={note}
                         projects={paperProjects}
                         onEdit={(n) => {
+                          deleteNoteMutation.reset();
                           setEditingNoteId(n.id);
                           setShowAddNote(false);
                         }}

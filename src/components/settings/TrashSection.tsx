@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   listTrash,
@@ -14,6 +14,7 @@ import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
 import { Dialog } from "../ui/dialog";
 import { Section } from "./Section";
+import { useConfirmWithTimeout } from "../../hooks/useConfirmWithTimeout";
 
 type ProjectPrompt = {
   paperTitle: string;
@@ -61,28 +62,6 @@ function KeepInProjectsDialog({
       )}
     </Dialog>
   );
-}
-
-function useConfirmWithTimeout(timeoutMs = 3000) {
-  const [confirm, setConfirm] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => () => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-  }, []);
-
-  function arm() {
-    setConfirm(true);
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => setConfirm(false), timeoutMs);
-  }
-
-  function disarm() {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    setConfirm(false);
-  }
-
-  return { confirm, arm, disarm };
 }
 
 function TrashActions({
