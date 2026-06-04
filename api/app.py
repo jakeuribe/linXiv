@@ -397,8 +397,8 @@ def api_repair_paper(source_fk: int, body: PaperRepairBody) -> dict:
 
 
 @app.get("/api/graph")
-def api_graph() -> dict:
-    return get_augmented_graph_data()
+def api_graph(exclude_single_authors: bool = False) -> dict:
+    return get_augmented_graph_data(exclude_single_authors=exclude_single_authors)
 
 
 @app.get("/api/categories")
@@ -883,8 +883,8 @@ def _author_detail_response(author_id: int) -> dict:
 
 
 @app.get("/api/authors")
-def api_authors_list() -> dict:
-    authors = _service_author.list_with_paper_count()
+def api_authors_list(exclude_single: bool = False) -> dict:
+    authors = _service_author.list_with_paper_count(min_papers=2 if exclude_single else 0)
     return {
         "authors": [
             {

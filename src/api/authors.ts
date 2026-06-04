@@ -8,8 +8,9 @@ export interface AuthorUpdateBody {
   orcid?: string | null;
 }
 
-export async function listAuthors(): Promise<Author[]> {
-  const data = await apiFetch<{ authors: Author[] }>("/api/authors");
+export async function listAuthors(excludeSingle = false): Promise<Author[]> {
+  const query = excludeSingle ? "?exclude_single=true" : "";
+  const data = await apiFetch<{ authors: Author[] }>(`/api/authors${query}`);
   return data.authors;
 }
 
