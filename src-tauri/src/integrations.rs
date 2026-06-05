@@ -12,52 +12,117 @@ fn target_triple() -> Result<String, String> {
 
 /// Resolve the path to a bundled sidecar binary.
 ///
-/// In dev mode the binary lives under `<cwd>/src-tauri/binaries/`.
-/// In release mode it lives under `<resource_dir>/binaries/`.
+/// Tauri places sidecars next to the main executable with the target triple
+/// stripped (e.g. `/usr/bin/linxiv` in a deb/rpm install, `target/debug/linxiv`
+/// in dev) — the same rule `shell().sidecar()` uses. Resolve there first, and
+/// fall back to `src-tauri/binaries/<name>-<triple>` for dev runs from the
+/// project root where the staged copy is the only one present.
 ///
 /// On Windows the `.exe` extension is appended automatically.
 fn sidecar_path(app: &AppHandle, name: &str) -> Result<PathBuf, String> {
-    let triple = target_triple()?;
-    let filename = format!("{}-{}", name, triple);
+    let _ = app; // kept for signature stability; resolution is exe-relative
 
     #[cfg(target_os = "windows")]
-    let filename = format!("{}.exe", filename);
+    let filename = format!("{}.exe", name);
+    #[cfg(not(target_os = "windows"))]
+    let filename = name.to_string();
 
-    #[cfg(debug_assertions)]
-    {
-        let _ = app; // not needed in dev mode
-        let base = std::env::current_dir().map_err(|e| e.to_string())?;
-        Ok(base.join("src-tauri").join("binaries").join(&filename))
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe_dir = exe
+        .parent()
+        .ok_or("Executable has no parent directory")?;
+    let beside_exe = exe_dir.join(&filename);
+    if beside_exe.exists() {
+        eprintln!("[linxiv] sidecar '{}' resolved to {}", name, beside_exe.display());
+        return Ok(beside_exe);
     }
 
-    #[cfg(not(debug_assertions))]
-    {
-        let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
-        Ok(resource_dir.join("binaries").join(&filename))
+    // Dev fallback: staged binaries keep their target-triple suffix.
+    let triple = target_triple()?;
+    #[cfg(target_os = "windows")]
+    let staged_name = format!("{}-{}.exe", name, triple);
+    #[cfg(not(target_os = "windows"))]
+    let staged_name = format!("{}-{}", name, triple);
+
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    for base in [cwd.join("src-tauri"), cwd.clone()] {
+        let staged = base.join("binaries").join(&staged_name);
+        if staged.exists() {
+            eprintln!("[linxiv] sidecar '{}' resolved to staged {}", name, staged.display());
+            return Ok(staged);
+        }
     }
+
+    Err(format!(
+        "Sidecar binary '{}' not found: looked next to executable ({}) and in src-tauri/binaries/{}",
+        name,
+        beside_exe.display(),
+        staged_name
+    ))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CLI commands
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Check whether the `linxiv` CLI is available on PATH.
+/// Path of the CLI shim that `install_cli` manages.
+///
+/// This is the single source of truth for where the CLI integration lives:
+/// `is_cli_installed`, `install_cli`, and `uninstall_cli` all resolve through
+/// here so the check can never drift from what install/uninstall touch.
+///
+/// - Linux/macOS: symlink `~/.local/bin/linxiv`
+/// - Windows: shim `%LOCALAPPDATA%\Programs\linxiv\linxiv.bat`
+fn cli_shim_path() -> Result<PathBuf, String> {
+    #[cfg(not(target_os = "windows"))]
+    {
+        let home = dirs_home().ok_or("Could not determine home directory")?;
+        Ok(home.join(".local").join("bin").join("linxiv"))
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let local_app_data = std::env::var("LOCALAPPDATA")
+            .map_err(|_| "LOCALAPPDATA not set".to_string())?;
+        Ok(PathBuf::from(local_app_data)
+            .join("Programs")
+            .join("linxiv")
+            .join("linxiv.bat"))
+    }
+}
+
+/// Check whether the CLI shim installed by `install_cli` is present.
+///
+/// Deliberately does NOT consult PATH: a deb/rpm install ships
+/// `/usr/bin/linxiv` regardless, which made a PATH lookup report "installed"
+/// even when the shim was never created.
 #[tauri::command]
 pub fn is_cli_installed() -> bool {
-    #[cfg(target_os = "windows")]
-    let result = std::process::Command::new("where")
-        .arg("linxiv")
-        .output();
+    let shim = match cli_shim_path() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[linxiv] is_cli_installed: cannot resolve shim path: {e}");
+            return false;
+        }
+    };
 
-    #[cfg(not(target_os = "windows"))]
-    let result = std::process::Command::new("which")
-        .arg("linxiv")
-        .output();
-
-    match result {
-        Ok(output) => output.status.success(),
-        Err(_) => false,
+    // symlink_metadata also catches dangling symlinks on unix.
+    if shim.symlink_metadata().is_err() {
+        eprintln!("[linxiv] is_cli_installed: no shim at {}", shim.display());
+        return false;
     }
+
+    // A shim pointing at a binary that no longer exists counts as not installed.
+    if !shim.exists() {
+        eprintln!(
+            "[linxiv] is_cli_installed: shim at {} is dangling (target missing)",
+            shim.display()
+        );
+        return false;
+    }
+
+    eprintln!("[linxiv] is_cli_installed: shim present at {}", shim.display());
+    true
 }
 
 /// Install the bundled `linxiv` CLI sidecar so it is accessible as `linxiv`
@@ -68,38 +133,45 @@ pub fn is_cli_installed() -> bool {
 ///   adds that directory to the user's PATH registry key.
 #[tauri::command]
 pub fn install_cli(app: AppHandle) -> Result<(), String> {
+    eprintln!("[linxiv] install_cli: resolving bundled CLI binary…");
     let binary = sidecar_path(&app, "linxiv")?;
+    let shim = cli_shim_path()?;
+    eprintln!(
+        "[linxiv] install_cli: linking {} -> {}",
+        shim.display(),
+        binary.display()
+    );
+
+    let shim_dir = shim.parent().ok_or("Shim path has no parent directory")?;
+    std::fs::create_dir_all(shim_dir)
+        .map_err(|e| format!("Failed to create {}: {e}", shim_dir.display()))?;
+
+    // Remove stale shim/symlink first so we can re-link.
+    if shim.symlink_metadata().is_ok() {
+        eprintln!("[linxiv] install_cli: removing stale shim at {}", shim.display());
+        std::fs::remove_file(&shim)
+            .map_err(|e| format!("Failed to remove stale shim {}: {e}", shim.display()))?;
+    }
 
     #[cfg(not(target_os = "windows"))]
     {
-        let home = dirs_home().ok_or("Could not determine home directory")?;
-        let bin_dir = home.join(".local").join("bin");
-        std::fs::create_dir_all(&bin_dir).map_err(|e| e.to_string())?;
-        let link = bin_dir.join("linxiv");
-        // Remove stale symlink/file first so we can re-link.
-        if link.exists() || link.symlink_metadata().is_ok() {
-            std::fs::remove_file(&link).map_err(|e| e.to_string())?;
-        }
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&binary, &link).map_err(|e| e.to_string())?;
+        std::os::unix::fs::symlink(&binary, &shim)
+            .map_err(|e| format!("Failed to create symlink {}: {e}", shim.display()))?;
+        eprintln!("[linxiv] install_cli: symlink created at {}", shim.display());
         Ok(())
     }
 
     #[cfg(target_os = "windows")]
     {
-        let local_app_data = std::env::var("LOCALAPPDATA")
-            .map_err(|_| "LOCALAPPDATA not set".to_string())?;
-        let dir = PathBuf::from(local_app_data)
-            .join("Programs")
-            .join("linxiv");
-        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-
-        let bat = dir.join("linxiv.bat");
         let binary_str = binary.to_string_lossy();
         let content = format!("@echo off\n\"{binary_str}\" %*\n");
-        std::fs::write(&bat, content).map_err(|e| e.to_string())?;
+        std::fs::write(&shim, content)
+            .map_err(|e| format!("Failed to write shim {}: {e}", shim.display()))?;
+        eprintln!("[linxiv] install_cli: shim written to {}", shim.display());
 
-        windows_path_add(dir.to_string_lossy().as_ref())?;
+        let dir_str = shim_dir.to_string_lossy();
+        windows_path_add(dir_str.as_ref())?;
+        eprintln!("[linxiv] install_cli: ensured {} is on user PATH", dir_str);
         Ok(())
     }
 }
@@ -107,30 +179,29 @@ pub fn install_cli(app: AppHandle) -> Result<(), String> {
 /// Remove the `linxiv` CLI shim/symlink installed by `install_cli`.
 #[tauri::command]
 pub fn uninstall_cli() -> Result<(), String> {
-    #[cfg(not(target_os = "windows"))]
-    {
-        let home = dirs_home().ok_or("Could not determine home directory")?;
-        let link = home.join(".local").join("bin").join("linxiv");
-        if link.exists() || link.symlink_metadata().is_ok() {
-            std::fs::remove_file(&link).map_err(|e| e.to_string())?;
-        }
-        Ok(())
+    let shim = cli_shim_path()?;
+
+    if shim.symlink_metadata().is_ok() {
+        eprintln!("[linxiv] uninstall_cli: removing shim at {}", shim.display());
+        std::fs::remove_file(&shim)
+            .map_err(|e| format!("Failed to remove shim {}: {e}", shim.display()))?;
+    } else {
+        eprintln!(
+            "[linxiv] uninstall_cli: no shim at {} — nothing to remove",
+            shim.display()
+        );
     }
 
     #[cfg(target_os = "windows")]
     {
-        let local_app_data = std::env::var("LOCALAPPDATA")
-            .map_err(|_| "LOCALAPPDATA not set".to_string())?;
-        let dir = PathBuf::from(local_app_data)
-            .join("Programs")
-            .join("linxiv");
-        let bat = dir.join("linxiv.bat");
-        if bat.exists() {
-            std::fs::remove_file(&bat).map_err(|e| e.to_string())?;
-        }
-        windows_path_remove(dir.to_string_lossy().as_ref())?;
-        Ok(())
+        let dir = shim.parent().ok_or("Shim path has no parent directory")?;
+        let dir_str = dir.to_string_lossy();
+        windows_path_remove(dir_str.as_ref())?;
+        eprintln!("[linxiv] uninstall_cli: removed {} from user PATH", dir_str);
     }
+
+    eprintln!("[linxiv] uninstall_cli: done");
+    Ok(())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
