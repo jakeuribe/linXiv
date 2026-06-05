@@ -14,7 +14,7 @@ Previously `config.data_dir()` returned `$LINXIV_DATA_DIR` when set (Tauri sets 
 - The location was resolved inconsistently: some sites (`storage/db.py`, `storage/config/core.py`) froze `DB_PATH` once at import time; others resolved per call.
 - Not every path went through `data_dir()` at all. The Obsidian vault and the arXiv rate-limit file were pinned to `Path(__file__).parent.parent` (the source tree), so they did not follow `$LINXIV_DATA_DIR` even in a packaged build — notes and the rate-limit file were written next to the source instead of into the user's data dir.
 
-A full audit of every explicit and implicit hardcoding of the DB location preceded this decision (working note `DB_LOCATION_AUDIT.md` at the repo root).
+A full audit of every explicit and implicit hardcoding of the DB location preceded this decision (working note `PATHING_AUDIT.md` at the repo root).
 
 ## Decision
 
@@ -66,4 +66,3 @@ The alternative — keeping the repo-root dev fallback — was rejected because 
 - `linxiv_cli.py`, `linxiv_mcp.py`, `api/app.py`, `migrate_db.py` — `init_data_dir()` startup calls
 - `src-tauri/src/main.rs`, `src-tauri/src/integrations.rs` — `LINXIV_DATA_DIR` producer (`app_data_dir()`)
 - `tests/conftest.py`, `tests/test_fetch_paper_metadata.py` — env-pin test isolation
-- `DB_LOCATION_AUDIT.md` — preceding hardcoding audit

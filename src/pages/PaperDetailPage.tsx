@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { Document, Page, pdfjs } from "react-pdf";
 import type { PDFDocumentProxy } from "pdfjs-dist";
@@ -7,6 +7,7 @@ import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
 import { getPaperBySfk, getPaperVersions, getPaperPdfUrl } from "../api/papers";
 import { getNotes, deleteNote } from "../api/notes";
+import { listProjects } from "../api/projects";
 import { fetchArxiv } from "../api/search";
 import { apiFetch, BASE_URL, isTauri } from "../api/client";
 import type { Note, Paper } from "../types/api";
@@ -18,6 +19,7 @@ import { NoteCard } from "../components/notes/NoteCard";
 import { NoteEditor } from "../components/notes/NoteEditor";
 import { PaperMetadataEditor } from "../components/papers/PaperMetadataEditor";
 import { normalizeAuthors } from "../lib/papers";
+import { formatDate } from "../lib/date";
 import { TagBadge } from "../components/tags/TagBadge";
 import { openPath } from "@tauri-apps/plugin-opener";
 
@@ -28,29 +30,17 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
 
 const LATEST_VERSION_KEY = "latest" as const;
 
-
-function formatDate(dateStr: string | null): string {
-  if (!dateStr) return "";
-  // Slice to 10 chars to handle ISO 8601 timestamps ("2024-01-01T...").
-  const [y, m, d] = dateStr.slice(0, 10).split("-").map(Number);
-  if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return dateStr;
-  const date = new Date(y, m - 1, d);
-  // Detect invalid rollover (e.g. month 13 or day 99): JS silently wraps them.
-  if (date.getMonth() !== m - 1 || date.getDate() !== d) return dateStr;
-  return date.toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
-}
-
 export default function PaperDetailPage() {
   const { sfk } = useParams<{ sfk: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const queryClient = useQueryClient();
 
   const [showAddNote, setShowAddNote] = useState(false);
-  const [editingNote, setEditingNote] = useState<Note | null>(null);
+  // Store the id, not a Note snapshot: the editor derives its target from the
+  // live notes cache below, so it always reflects current data and closes
+  // itself if the note is deleted elsewhere.
+  const [editingNoteId, setEditingNoteId] = useState<number | null>(null);
   const [showEditor, setShowEditor] = useState(false);
   const [openNativeError, setOpenNativeError] = useState<string | null>(null);
   const [openNativeLoading, setOpenNativeLoading] = useState(false);
@@ -102,10 +92,20 @@ export default function PaperDetailPage() {
 
   const versions = versionsData?.versions ?? [];
 
+  // all_projects=true so project-scoped notes are visible alongside global
+  // ones; each note carries its own scope, shown as a badge on the card.
   const { data: notesData, isLoading: notesLoading } = useQuery({
-    queryKey: ["notes", paper?.source_id],
-    queryFn: () => getNotes(paper!.source_id),
+    // Variant in the key so an all-projects fetch can't collide with a future
+    // project-scoped fetch on the same source_id. Prefix invalidations of
+    // ["notes", source_id] still match this key.
+    queryKey: ["notes", paper?.source_id, { allProjects: true }],
+    queryFn: () => getNotes(paper!.source_id, undefined, true),
     enabled: !!paper?.source_id,
+  });
+
+  const { data: projectsData, isLoading: projectsLoading } = useQuery({
+    queryKey: ["projects"],
+    queryFn: () => listProjects(),
   });
 
   const isViewingLatest =
@@ -194,7 +194,7 @@ export default function PaperDetailPage() {
   function handleNotesSaved() {
     queryClient.invalidateQueries({ queryKey: ["notes", paper?.source_id] });
     setShowAddNote(false);
-    setEditingNote(null);
+    setEditingNoteId(null);
   }
 
   function handleDeleteNote(note: Note) {
@@ -265,7 +265,24 @@ export default function PaperDetailPage() {
 
   const authors = normalizeAuthors(paper.authors ?? []);
   const notes = notesData?.notes ?? [];
+  // Derive the editor's target from the live list so it never edits a stale
+  // snapshot; resolves to null (editor closed) if the note was deleted.
+  const editingNote =
+    editingNoteId != null ? notes.find((n) => n.id === editingNoteId) ?? null : null;
   const tags = paper.tags ?? [];
+
+  // Projects this paper belongs to populate the note scope picker.
+  const paperProjects = (projectsData?.projects ?? []).filter((p) =>
+    p.source_ids.includes(paper.source_id),
+  );
+  // Pre-select the project the user navigated from (ADR 0003), but only if the
+  // paper actually belongs to it; otherwise default to global (unscoped).
+  const fromProjectId =
+    (location.state as { fromProjectId?: number } | null)?.fromProjectId ?? null;
+  const defaultProjectId =
+    fromProjectId != null && paperProjects.some((p) => p.id === fromProjectId)
+      ? fromProjectId
+      : null;
   const versionedList = versions
     .filter((v) => v.version >= 1)
     .sort((a, b) => a.version - b.version);
@@ -421,6 +438,9 @@ export default function PaperDetailPage() {
               <div className="bg-panel rounded-lg border border-border p-4">
                 <NoteEditor
                   sourceId={paper.source_id}
+                  projects={paperProjects}
+                  projectsLoading={projectsLoading}
+                  defaultProjectId={defaultProjectId}
                   onSave={handleNotesSaved}
                   onCancel={() => setShowAddNote(false)}
                 />
@@ -429,11 +449,15 @@ export default function PaperDetailPage() {
 
             {editingNote && (
               <div className="bg-panel rounded-lg border border-border p-4">
+                {/* key by note id so switching edit targets remounts the editor
+                    with fresh field state instead of reusing the instance. */}
                 <NoteEditor
+                  key={editingNote.id}
                   sourceId={paper.source_id}
+                  projects={paperProjects}
                   initialNote={editingNote}
                   onSave={handleNotesSaved}
-                  onCancel={() => setEditingNote(null)}
+                  onCancel={() => setEditingNoteId(null)}
                 />
               </div>
             )}
@@ -455,8 +479,9 @@ export default function PaperDetailPage() {
                       <NoteCard
                         key={note.id}
                         note={note}
+                        projects={paperProjects}
                         onEdit={(n) => {
-                          setEditingNote(n);
+                          setEditingNoteId(n.id);
                           setShowAddNote(false);
                         }}
                         onDelete={handleDeleteNote}
