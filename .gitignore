@@ -42,7 +42,6 @@ src-tauri/target/
 src-tauri/binaries/linxiv-*
 
 # Session state
-selected_papers.json
 user_settings.json
 .venv
 # env state

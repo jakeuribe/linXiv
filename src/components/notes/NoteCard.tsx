@@ -2,6 +2,7 @@ import type { Note, Project } from "../../types/api";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
 import { formatDate } from "../../lib/date";
+import { useConfirmWithTimeout } from "../../hooks/useConfirmWithTimeout";
 
 interface NoteCardProps {
   note: Note;
@@ -12,6 +13,11 @@ interface NoteCardProps {
 }
 
 export function NoteCard({ note, projects = [], onEdit, onDelete }: NoteCardProps) {
+  // Deleting a note is an irreversible hard-delete (no trash/restore), so gate
+  // it behind the same arm-to-confirm step used for the app's other destructive
+  // actions rather than firing on a single click.
+  const { confirm: confirmDelete, arm, disarm } = useConfirmWithTimeout();
+
   // created_at and updated_at are equal at creation and diverge on PATCH.
   // Compare parsed instants rather than raw strings so timestamp-formatting
   // differences can't produce a false "edited" flag.
@@ -69,10 +75,22 @@ export function NoteCard({ note, projects = [], onEdit, onDelete }: NoteCardProp
         <Button
           variant="ghost"
           size="sm"
-          onClick={() => onDelete(note)}
-          className="hover:text-[var(--color-danger)]"
+          onClick={() => {
+            if (confirmDelete) {
+              disarm();
+              onDelete(note);
+            } else {
+              arm();
+            }
+          }}
+          onBlur={disarm}
+          className={
+            confirmDelete
+              ? "text-[var(--color-danger)]"
+              : "hover:text-[var(--color-danger)]"
+          }
         >
-          Delete
+          {confirmDelete ? "Confirm?" : "Delete"}
         </Button>
       </div>
     </div>

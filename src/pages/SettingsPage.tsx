@@ -8,6 +8,7 @@ import { SidebarSection } from "../components/settings/SidebarSection";
 import { ExportSection } from "../components/settings/ExportSection";
 import { IntegrationsSection } from "../components/settings/IntegrationsSection";
 import { TrashSection } from "../components/settings/TrashSection";
+import { AboutSection } from "../components/settings/AboutSection";
 
 function Divider() {
   return <div className="border-t border-border -mx-2 mb-4" />;
@@ -105,6 +106,9 @@ export default function SettingsPage() {
             </>
           )}
         </div>
+
+        <Divider />
+        <AboutSection />
       </div>
     </div>
   );

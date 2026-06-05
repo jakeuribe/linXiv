@@ -7,8 +7,11 @@ export function formatDate(dateStr: string | null): string {
   const [y, m, d] = dateStr.slice(0, 10).split("-").map(Number);
   if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return dateStr;
   const date = new Date(y, m - 1, d);
-  // Detect invalid rollover (e.g. month 13 or day 99): JS silently wraps them.
-  if (date.getMonth() !== m - 1 || date.getDate() !== d) return dateStr;
+  // Detect silent wrapping by round-tripping every component back out of the
+  // constructed Date. This catches month/day rollover (month 13, day 99) AND
+  // JS's two-digit-year remap, where new Date(1, 0, 1) becomes 1901 — so a
+  // missing-date sentinel like "0001-01-01" never renders as a real "1901" date.
+  if (date.getFullYear() !== y || date.getMonth() !== m - 1 || date.getDate() !== d) return dateStr;
   return date.toLocaleDateString(undefined, {
     year: "numeric",
     month: "short",

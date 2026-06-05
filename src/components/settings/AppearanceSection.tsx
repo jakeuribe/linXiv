@@ -6,6 +6,7 @@ import type { PresetName, ThemeColors, ThemeMode, ColorAlphas } from "../../lib/
 import { updateSettings } from "../../api/settings";
 import { Input } from "../ui/input";
 import { Section } from "./Section";
+import { ZoomControl } from "./ZoomControl";
 
 const PRESET_NAMES = Object.keys(PRESETS) as PresetName[];
 const BUILT_IN_LOWER = new Set(PRESET_NAMES.map((n) => n.toLowerCase()));
@@ -476,6 +477,10 @@ export function AppearanceSection() {
             }
           </button>
         ))}
+      </div>
+
+      <div className="mb-4 pt-2 border-t border-border">
+        <ZoomControl />
       </div>
 
       <button
