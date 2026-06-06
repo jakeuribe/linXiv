@@ -15,7 +15,7 @@ import httpx
 
 from dotenv import load_dotenv
 
-from config import ENV_PATH
+from config import ENV_PATH, init_data_dir
 load_dotenv(ENV_PATH)
 
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
@@ -128,6 +128,7 @@ def _resolve_local_pdf(paper: PaperDetails, version: int | None) -> str | None:
 
 @asynccontextmanager
 async def _lifespan(_: FastAPI):
+    init_data_dir()
     init_db()
     ensure_projects_db()
     _service_note.ensure_notes_db()
@@ -400,8 +401,8 @@ def api_repair_paper(source_fk: int, body: PaperRepairBody) -> dict:
 
 
 @app.get("/api/graph")
-def api_graph() -> dict:
-    return get_augmented_graph_data()
+def api_graph(exclude_single_authors: bool = False) -> dict:
+    return get_augmented_graph_data(exclude_single_authors=exclude_single_authors)
 
 
 @app.get("/api/categories")
@@ -954,8 +955,8 @@ def _author_detail_response(author_id: int) -> dict:
 
 
 @app.get("/api/authors")
-def api_authors_list() -> dict:
-    authors = _service_author.list_with_paper_count()
+def api_authors_list(exclude_single: bool = False) -> dict:
+    authors = _service_author.list_with_paper_count(min_papers=2 if exclude_single else 0)
     return {
         "authors": [
             {

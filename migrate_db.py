@@ -13,6 +13,7 @@ from pathlib import Path
 
 from storage.config.core import apply_sql_schema
 from storage.paths import db_path as _default_new_db_path
+from config import init_data_dir
 
 _MIGRATE_SQL = Path(__file__).resolve().parent / "storage" / "migrations" / "migrate_data.sql"
 
@@ -147,7 +148,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("old_db", help="Path to old SQLite DB")
     p.add_argument(
         "--new-db", default=None, dest="new_db",
-        help="Destination path for new DB (default: papers.db in project root)",
+        help="Destination path for new DB (default: $LINXIV_DATA_DIR/papers.db)",
     )
     p.add_argument(
         "--force", action="store_true", default=False,
@@ -157,6 +158,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
+    init_data_dir()
     parser = build_parser()
     args = parser.parse_args(argv)
     new_db = args.new_db or str(_default_new_db_path())

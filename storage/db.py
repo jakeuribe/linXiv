@@ -680,8 +680,13 @@ def get_all_versions(source_id: str) -> list[sqlite3.Row]:
         ).fetchall()
 
 
-def get_graph_data() -> tuple[list[dict], list[dict]]:
-    """Returns (nodes, edges) ready to pass to the graph view."""
+def get_graph_data(exclude_single_authors: bool = False) -> tuple[list[dict], list[dict]]:
+    """Returns (nodes, edges) ready to pass to the graph view.
+
+    When ``exclude_single_authors`` is True, author nodes linked to only one
+    paper (and their edges) are dropped from the result. This shrinks the node
+    set the graph has to lay out and render, which is the dominant cost.
+    """
     with _connect() as conn:
         paper_nodes = [
             {
@@ -719,11 +724,28 @@ def get_graph_data() -> tuple[list[dict], list[dict]]:
               AND r.STATUS = 'active'
         """).fetchall()
 
+    # Distinct papers per author name; only built when dropping single-paper
+    # authors. KNOWN INCONSISTENCY: this counts each raw author *name string*
+    # from the latest version of each paper only, whereas the Authors page
+    # (list_authors_with_paper_count / the author_paper_counts view) counts the
+    # relational AUTHOR_FK case-insensitively across all versions. The two can
+    # therefore disagree about who is "single-paper" for the same person — name
+    # case/whitespace variants, or an author who appears only on an older
+    # version. The relational count is the source of truth; this graph filter is
+    # meant to be brought in line with it (see TODO), so do NOT propagate this
+    # latest-version/name-string definition elsewhere.
+    papers_per_author: dict[str, set] = {}
+    if exclude_single_authors:
+        for row in author_rows:
+            papers_per_author.setdefault(row["author_name"], set()).add(row["source_fk"])
+
     seen_authors: set[str] = set()
     author_nodes: list[dict] = []
     edges: list[dict] = []
     for row in author_rows:
         name = row["author_name"]
+        if exclude_single_authors and len(papers_per_author[name]) < 2:
+            continue
         author_id = f"author::{name}"
         if author_id not in seen_authors:
             author_nodes.append({"id": author_id, "label": name, "type": "author"})

@@ -49,16 +49,17 @@ class _MockSource:
         return self._fetch
 
 
-def _make_meta(source_id=ARXIV_ID, title="Attention Is All You Need", source="arxiv"):
+def _make_meta(source_id=ARXIV_ID, title="Attention Is All You Need", source="arxiv", version=1, category=None):
     return PaperMetadata(
         source_id=source_id,
-        version=1,
+        version=version,
         title=title,
         authors=["Vaswani et al."],
         published=date(2017, 6, 12),
         updated=None,
         summary="A test abstract.",
         source=source,
+        category=category,
     )
 
 
@@ -229,6 +230,15 @@ class TestListCommand:
         _seed()  # category is None
         data = _stdout_json(capsys, ["list", "--category", "cs.AI"])
         assert data == []
+
+    def test_category_filter_returns_matching(self, capsys):
+        svc_paper.save_paper_metadata(
+            _make_meta(source_id="arxiv:2204.99998", title="Cat Paper", category="cs.AI"), None
+        )
+        _seed()  # second paper with no category
+        data = _stdout_json(capsys, ["list", "--category", "cs.AI"])
+        assert len(data) == 1
+        assert data[0]["source_id"] == "arxiv:2204.99998"
 
 
 # ---------------------------------------------------------------------------
@@ -458,6 +468,11 @@ class TestNoteCommands:
         err = _exit_err(capsys, ["note", "create", "2000.00001", "body"])
         assert "error" in err
 
+    def test_create_note_nonexistent_project_exits_nonzero(self, capsys):
+        _seed()
+        err = _exit_err(capsys, ["note", "create", ARXIV_ID, "body", "--project-id", "9999"])
+        assert "error" in err
+
     def test_get_note_by_id(self, capsys):
         _seed()
         create = _stdout_json(capsys, ["note", "create", ARXIV_ID, "body", "--title", "T"])
@@ -513,6 +528,12 @@ class TestPdfCommands:
         _seed()
         data = _stdout_json(capsys, ["pdf", "path", ARXIV_ID])
         assert data["path"] is None
+
+    def test_pdf_path_emits_canonical_source_id(self, capsys):
+        _seed()
+        bare_id = ARXIV_ID.replace("arxiv:", "")
+        data = _stdout_json(capsys, ["pdf", "path", bare_id])
+        assert data["source_id"] == ARXIV_ID
 
     def test_pdf_path_missing_paper_exits_nonzero(self, capsys):
         err = _exit_err(capsys, ["pdf", "path", "2000.00001"])
@@ -772,8 +793,9 @@ class TestProjectImportCommitCommand:
         assert calls == ["overwrite"]
 
     def test_commit_project_import_error_exits_nonzero(self, monkeypatch, capsys, tmp_path):
+        from service.export_import import ProjectImportError
         def _raise(p, on_conflict="merge"):
-            raise linxiv_cli.ProjectImportError("rollback happened")
+            raise ProjectImportError("rollback happened")
         monkeypatch.setattr(linxiv_cli.svc_ei, "commit_import", _raise)
         fake_zip = tmp_path / "archive.lxproj"
         fake_zip.touch()
@@ -878,3 +900,685 @@ class TestProjectExportImportRoundtrip:
         assert preview["project_name"] == "Preview Test"
         assert preview["paper_count"] == 1
         assert preview["has_pdfs"] is False
+
+
+# ---------------------------------------------------------------------------
+# note update
+# ---------------------------------------------------------------------------
+
+class TestNoteUpdateCommand:
+    def test_update_title(self, capsys):
+        _seed()
+        create = _stdout_json(capsys, ["note", "create", ARXIV_ID, "body", "--title", "Old"])
+        result = _stdout_json(capsys, ["note", "update", str(create["id"]), "--title", "New"])
+        assert result["updated"] is True
+        data = _stdout_json(capsys, ["note", "get", str(create["id"])])
+        assert data["title"] == "New"
+        assert data["content"] == "body"
+
+    def test_update_content(self, capsys):
+        _seed()
+        create = _stdout_json(capsys, ["note", "create", ARXIV_ID, "original"])
+        result = _stdout_json(capsys, ["note", "update", str(create["id"]), "--content", "updated"])
+        assert result["updated"] is True
+        data = _stdout_json(capsys, ["note", "get", str(create["id"])])
+        assert data["content"] == "updated"
+
+    def test_update_missing_note_exits_nonzero(self, capsys):
+        err = _exit_err(capsys, ["note", "update", "9999", "--title", "x"])
+        assert "error" in err
+
+    def test_update_no_fields_exits_nonzero(self, capsys):
+        _seed()
+        create = _stdout_json(capsys, ["note", "create", ARXIV_ID, "body"])
+        err = _exit_err(capsys, ["note", "update", str(create["id"])])
+        assert "error" in err
+
+
+# ---------------------------------------------------------------------------
+# paper repair / restore / hard-delete / search / remove-from-all-projects
+# ---------------------------------------------------------------------------
+
+class TestPaperRepairCommand:
+    def test_repair_updates_title(self, capsys):
+        _seed()
+        _stdout_json(capsys, [
+            "paper", "repair", ARXIV_ID,
+            "--title", "Fixed Title",
+            "--authors", "Author A",
+            "--published", "2020-01-01",
+        ])
+        data = _stdout_json(capsys, ["paper", "get", ARXIV_ID])
+        assert data["title"] == "Fixed Title"
+
+    def test_repair_versioned_paper_succeeds(self, capsys):
+        _seed()
+        v2 = _make_meta(version=2, title="Version Two")
+        svc_paper.save_paper_metadata(v2, None)
+        _stdout_json(capsys, [
+            "paper", "repair", ARXIV_ID,
+            "--title", "Repaired V2",
+            "--authors", "Author B",
+            "--published", "2021-03-15",
+        ])
+        data = _stdout_json(capsys, ["paper", "get", ARXIV_ID])
+        assert data["title"] == "Repaired V2"
+
+    def test_repair_missing_paper_exits_nonzero(self, capsys):
+        err = _exit_err(capsys, [
+            "paper", "repair", "2000.00001",
+            "--title", "X", "--authors", "A", "--published", "2020-01-01",
+        ])
+        assert "error" in err
+
+    def test_repair_bad_date_exits_nonzero(self, capsys):
+        _seed()
+        err = _exit_err(capsys, [
+            "paper", "repair", ARXIV_ID,
+            "--title", "X", "--authors", "A", "--published", "not-a-date",
+        ])
+        assert "error" in err
+
+
+class TestPaperRestoreCommand:
+    def test_restore_after_delete(self, capsys):
+        _seed()
+        main(["paper", "delete", ARXIV_ID])
+        result = _stdout_json(capsys, ["paper", "restore", ARXIV_ID])
+        assert result["restored"] == ARXIV_ID
+
+    def test_restore_returns_pdf_path_and_project_fks(self, capsys):
+        _seed()
+        main(["paper", "delete", ARXIV_ID])
+        result = _stdout_json(capsys, ["paper", "restore", ARXIV_ID])
+        assert "pdf_path" in result
+        assert isinstance(result["project_fks"], list)
+
+    def test_restore_active_paper_exits_nonzero(self, capsys):
+        _seed()
+        err = _exit_err(capsys, ["paper", "restore", ARXIV_ID])
+        assert "error" in err
+
+    def test_restore_nonexistent_paper_exits_nonzero(self, capsys):
+        err = _exit_err(capsys, ["paper", "restore", "2000.00001"])
+        assert "error" in err
+
+
+class TestPaperHardDeleteCommand:
+    def test_hard_delete_removes_paper(self, capsys):
+        _seed()
+        result = _stdout_json(capsys, ["paper", "hard-delete", ARXIV_ID])
+        assert result["hard_deleted"] == ARXIV_ID
+        assert svc_paper.get(svc_paper.Paper(source_id=ARXIV_ID)) is None
+
+    def test_hard_delete_nonexistent_exits_nonzero(self, capsys):
+        err = _exit_err(capsys, ["paper", "hard-delete", "2000.00001"])
+        assert "error" in err
+
+
+class TestPaperSearchCommand:
+    def test_search_returns_list(self, capsys):
+        _seed()
+        data = _stdout_json(capsys, ["paper", "search", "Test"])
+        assert isinstance(data, list)
+
+    def test_search_empty_db_returns_empty(self, capsys):
+        data = _stdout_json(capsys, ["paper", "search", "anything"])
+        assert data == []
+
+    def test_search_limit_forwarded(self, monkeypatch, capsys):
+        calls = []
+
+        def _fake_search(query, limit):
+            calls.append(limit)
+            return []
+
+        monkeypatch.setattr("linxiv_cli.svc_paper.search_papers", _fake_search)
+        _stdout_json(capsys, ["paper", "search", "anything", "--limit", "3"])
+        assert calls == [3]
+
+
+class TestPaperRemoveFromAllProjectsCommand:
+    def test_removes_from_project(self, capsys):
+        _seed()
+        proj = _stdout_json(capsys, ["project", "create", "P"])
+        main(["project", "add-paper", str(proj["id"]), ARXIV_ID])
+        result = _stdout_json(capsys, ["paper", "remove-from-all-projects", ARXIV_ID])
+        assert "removed_from_projects" in result
+        proj_data = _stdout_json(capsys, ["project", "get", str(proj["id"])])
+        assert len(proj_data["source_fks"]) == 0
+
+    def test_missing_paper_exits_nonzero(self, capsys):
+        err = _exit_err(capsys, ["paper", "remove-from-all-projects", "2000.00001"])
+        assert "error" in err
+
+
+# ---------------------------------------------------------------------------
+# trash list / restore / hard-delete / restore-project / hard-delete-project
+# ---------------------------------------------------------------------------
+
+class TestTrashCommands:
+    def test_list_empty(self, capsys):
+        data = _stdout_json(capsys, ["trash", "list"])
+        assert data["papers"] == []
+        assert data["projects"] == []
+
+    def test_list_shows_deleted_paper(self, capsys):
+        _seed()
+        main(["paper", "delete", ARXIV_ID])
+        data = _stdout_json(capsys, ["trash", "list"])
+        assert any(p["source_id"] == ARXIV_ID for p in data["papers"])
+
+    def test_list_shows_deleted_project(self, capsys):
+        create = _stdout_json(capsys, ["project", "create", "ToTrash"])
+        main(["project", "delete", str(create["id"])])
+        data = _stdout_json(capsys, ["trash", "list"])
+        assert any(p["name"] == "ToTrash" for p in data["projects"])
+
+    def test_restore_paper(self, capsys):
+        _seed()
+        main(["paper", "delete", ARXIV_ID])
+        result = _stdout_json(capsys, ["trash", "restore", ARXIV_ID])
+        assert result["restored"] == ARXIV_ID
+
+    def test_hard_delete_paper(self, capsys):
+        _seed()
+        main(["paper", "delete", ARXIV_ID])
+        result = _stdout_json(capsys, ["trash", "hard-delete", ARXIV_ID])
+        assert "hard_deleted" in result
+
+    def test_restore_project(self, capsys):
+        create = _stdout_json(capsys, ["project", "create", "Recoverable"])
+        main(["project", "delete", str(create["id"])])
+        result = _stdout_json(capsys, ["trash", "restore-project", str(create["id"])])
+        assert result["restored_project_id"] == create["id"]
+
+    def test_hard_delete_project(self, capsys):
+        create = _stdout_json(capsys, ["project", "create", "Gone"])
+        main(["project", "delete", str(create["id"])])
+        result = _stdout_json(capsys, ["trash", "hard-delete-project", str(create["id"])])
+        assert result["hard_deleted_project_id"] == create["id"]
+
+    def test_hard_delete_active_paper_exits_nonzero(self, capsys):
+        _seed()
+        err = _exit_err(capsys, ["trash", "hard-delete", ARXIV_ID])
+        assert "error" in err
+
+    def test_restore_nonexistent_paper_exits_nonzero(self, capsys):
+        err = _exit_err(capsys, ["trash", "restore", "2000.00001"])
+        assert "error" in err
+
+    def test_restore_project_nonexistent_exits_nonzero(self, capsys):
+        err = _exit_err(capsys, ["trash", "restore-project", "9999"])
+        assert "error" in err
+
+    def test_hard_delete_project_nonexistent_exits_nonzero(self, capsys):
+        err = _exit_err(capsys, ["trash", "hard-delete-project", "9999"])
+        assert "error" in err
+
+    def test_hard_delete_active_project_exits_nonzero(self, capsys):
+        create = _stdout_json(capsys, ["project", "create", "Active"])
+        err = _exit_err(capsys, ["trash", "hard-delete-project", str(create["id"])])
+        assert "error" in err
+
+    def test_hard_delete_archived_project_exits_nonzero(self, capsys):
+        create = _stdout_json(capsys, ["project", "create", "Archived"])
+        main(["project", "archive", str(create["id"])])
+        err = _exit_err(capsys, ["trash", "hard-delete-project", str(create["id"])])
+        assert "error" in err
+
+    def test_restore_active_project_exits_nonzero(self, capsys):
+        create = _stdout_json(capsys, ["project", "create", "StillActive"])
+        err = _exit_err(capsys, ["trash", "restore-project", str(create["id"])])
+        assert "error" in err
+
+
+# ---------------------------------------------------------------------------
+# doi resolve / save
+# ---------------------------------------------------------------------------
+
+class TestDoiCommands:
+    def test_resolve_returns_metadata(self, monkeypatch, capsys):
+        meta = _make_meta(source_id="doi:10.1234/test", source="crossref")
+        monkeypatch.setattr("linxiv_cli.resolve_doi", lambda doi: meta)
+        data = _stdout_json(capsys, ["doi", "resolve", "10.1234/test"])
+        assert data["title"] == meta.title
+
+    def test_resolve_error_exits_nonzero(self, monkeypatch, capsys):
+        def _raise(doi):
+            raise ValueError("not found")
+        monkeypatch.setattr("linxiv_cli.resolve_doi", _raise)
+        err = _exit_err(capsys, ["doi", "resolve", "10.bad/doi"])
+        assert "error" in err
+
+    def test_save_persists_paper(self, monkeypatch, capsys):
+        meta = _make_meta(source_id="doi:10.1234/save", source="crossref")
+        monkeypatch.setattr("linxiv_cli.resolve_doi", lambda doi: meta)
+        data = _stdout_json(capsys, ["doi", "save", "10.1234/save"])
+        assert data["source_id"] == "doi:10.1234/save"
+        assert svc_paper.get(svc_paper.Paper(source_id="doi:10.1234/save")) is not None
+
+    def test_save_error_exits_nonzero(self, monkeypatch, capsys):
+        def _raise(doi):
+            raise ValueError("bad")
+        monkeypatch.setattr("linxiv_cli.resolve_doi", _raise)
+        err = _exit_err(capsys, ["doi", "save", "10.bad/doi"])
+        assert "error" in err
+
+    def test_resolve_network_error_exits_nonzero(self, monkeypatch, capsys):
+        def _raise(doi):
+            raise ConnectionError("network failure")
+        monkeypatch.setattr("linxiv_cli.resolve_doi", _raise)
+        err = _exit_err(capsys, ["doi", "resolve", "10.bad/doi"])
+        assert "error" in err
+
+    def test_save_network_error_exits_nonzero(self, monkeypatch, capsys):
+        def _raise(doi):
+            raise ConnectionError("network failure")
+        monkeypatch.setattr("linxiv_cli.resolve_doi", _raise)
+        err = _exit_err(capsys, ["doi", "save", "10.bad/doi"])
+        assert "error" in err
+
+    def test_resolve_error_has_tag_prefix_in_stderr(self, monkeypatch, capsys):
+        def _raise(doi):
+            raise ValueError("not found")
+        monkeypatch.setattr("linxiv_cli.resolve_doi", _raise)
+        capsys.readouterr()
+        with pytest.raises(SystemExit):
+            main(["doi", "resolve", "10.bad/doi"])
+        assert "[doi]" in capsys.readouterr().err
+
+    def test_save_error_has_tag_prefix_in_stderr(self, monkeypatch, capsys):
+        def _raise(doi):
+            raise ValueError("bad")
+        monkeypatch.setattr("linxiv_cli.resolve_doi", _raise)
+        capsys.readouterr()
+        with pytest.raises(SystemExit):
+            main(["doi", "save", "10.bad/doi"])
+        assert "[doi]" in capsys.readouterr().err
+
+    def test_resolve_error_stdout_is_empty(self, monkeypatch, capsys):
+        def _raise(doi):
+            raise ValueError("x")
+        monkeypatch.setattr("linxiv_cli.resolve_doi", _raise)
+        capsys.readouterr()
+        with pytest.raises(SystemExit):
+            main(["doi", "resolve", "10.bad/doi"])
+        assert capsys.readouterr().out == ""
+
+    def test_save_error_stdout_is_empty(self, monkeypatch, capsys):
+        def _raise(doi):
+            raise ValueError("x")
+        monkeypatch.setattr("linxiv_cli.resolve_doi", _raise)
+        capsys.readouterr()
+        with pytest.raises(SystemExit):
+            main(["doi", "save", "10.bad/doi"])
+        assert capsys.readouterr().out == ""
+
+
+# ---------------------------------------------------------------------------
+# author list / get / update / delete
+# ---------------------------------------------------------------------------
+
+class TestAuthorCommands:
+    def _seed_author(self):
+        import storage.authors as _au
+        return _au.create_author(
+            full_name="Jane Doe", first_name="Jane", last_name="Doe", orcid=None
+        )
+
+    def test_list_empty(self, capsys):
+        data = _stdout_json(capsys, ["author", "list"])
+        assert isinstance(data, list)
+
+    def test_list_shows_authors(self, capsys):
+        self._seed_author()
+        data = _stdout_json(capsys, ["author", "list"])
+        assert any(a["full_name"] == "Jane Doe" for a in data)
+
+    def test_get_author(self, capsys):
+        author_id = self._seed_author()
+        data = _stdout_json(capsys, ["author", "get", str(author_id)])
+        assert data["full_name"] == "Jane Doe"
+        assert "papers" in data
+
+    def test_get_missing_author_exits_nonzero(self, capsys):
+        err = _exit_err(capsys, ["author", "get", "9999"])
+        assert "error" in err
+
+    def test_update_author_name(self, capsys):
+        author_id = self._seed_author()
+        result = _stdout_json(capsys, [
+            "author", "update", str(author_id), "--full-name", "Jane Smith"
+        ])
+        assert result["updated_author_id"] == author_id
+        data = _stdout_json(capsys, ["author", "get", str(author_id)])
+        assert data["full_name"] == "Jane Smith"
+
+    def test_update_missing_author_exits_nonzero(self, capsys):
+        err = _exit_err(capsys, ["author", "update", "9999", "--full-name", "X"])
+        assert "error" in err
+
+    def test_update_no_fields_exits_nonzero(self, capsys):
+        author_id = self._seed_author()
+        err = _exit_err(capsys, ["author", "update", str(author_id)])
+        assert "error" in err
+
+    def test_delete_unlinked_author(self, capsys):
+        import storage.authors as _au
+        author_id = _au.create_author(
+            full_name="Unlinked", first_name=None, last_name=None, orcid=None
+        )
+        result = _stdout_json(capsys, ["author", "delete", str(author_id)])
+        assert result["deleted_author_id"] == author_id
+
+    def test_delete_linked_author_exits_nonzero(self, capsys, monkeypatch):
+        author_id = self._seed_author()
+        monkeypatch.setattr("service.author.count_paper_links", lambda aid: 1)
+        err = _exit_err(capsys, ["author", "delete", str(author_id)])
+        assert "error" in err
+
+
+# ---------------------------------------------------------------------------
+# project archive / restore / hard-delete
+# ---------------------------------------------------------------------------
+
+class TestProjectLifecycleCommands:
+    def test_archive_project(self, capsys):
+        create = _stdout_json(capsys, ["project", "create", "Archivable"])
+        result = _stdout_json(capsys, ["project", "archive", str(create["id"])])
+        assert result["archived_project_id"] == create["id"]
+        data = _stdout_json(capsys, ["project", "get", str(create["id"])])
+        assert data["status"] == "archived"
+
+    def test_archive_missing_project_exits_nonzero(self, capsys):
+        err = _exit_err(capsys, ["project", "archive", "9999"])
+        assert "error" in err
+
+    def test_restore_archived_project(self, capsys):
+        create = _stdout_json(capsys, ["project", "create", "RestoreMe"])
+        main(["project", "archive", str(create["id"])])
+        result = _stdout_json(capsys, ["project", "restore", str(create["id"])])
+        assert result["restored_project_id"] == create["id"]
+        data = _stdout_json(capsys, ["project", "get", str(create["id"])])
+        assert data["status"] == "active"
+
+    def test_hard_delete_project(self, capsys):
+        create = _stdout_json(capsys, ["project", "create", "Perma"])
+        main(["project", "delete", str(create["id"])])
+        result = _stdout_json(capsys, ["project", "hard-delete", str(create["id"])])
+        assert result["hard_deleted_project_id"] == create["id"]
+
+    def test_restore_nonexistent_project_exits_nonzero(self, capsys):
+        err = _exit_err(capsys, ["project", "restore", "9999"])
+        assert "error" in err
+
+    def test_hard_delete_nonexistent_project_exits_nonzero(self, capsys):
+        err = _exit_err(capsys, ["project", "hard-delete", "9999"])
+        assert "error" in err
+
+
+# ---------------------------------------------------------------------------
+# project create / update — color and tags
+# ---------------------------------------------------------------------------
+
+class TestProjectCreateUpdateExtended:
+    def test_create_with_color(self, capsys):
+        create = _stdout_json(capsys, ["project", "create", "Colored", "--color", "#ff0000"])
+        proj = _stdout_json(capsys, ["project", "get", str(create["id"])])
+        assert proj["color"] is not None
+
+    def test_create_with_tags(self, capsys):
+        create = _stdout_json(capsys, ["project", "create", "Tagged", "--tags", "ml", "nlp"])
+        proj = _stdout_json(capsys, ["project", "get", str(create["id"])])
+        assert "ml" in proj["project_tags"]
+        assert "nlp" in proj["project_tags"]
+
+    def test_update_with_color(self, capsys):
+        create = _stdout_json(capsys, ["project", "create", "Colorless"])
+        result = _stdout_json(capsys, ["project", "update", str(create["id"]), "--color", "#00ff00"])
+        assert result["color"] is not None
+
+    def test_update_invalid_color_exits_nonzero(self, capsys):
+        create = _stdout_json(capsys, ["project", "create", "BadColor"])
+        err = _exit_err(capsys, ["project", "update", str(create["id"]), "--color", "notacolor"])
+        assert "error" in err
+
+    def test_update_error_has_tag_prefix_in_stderr(self, capsys):
+        create = _stdout_json(capsys, ["project", "create", "TagCheck"])
+        capsys.readouterr()
+        with pytest.raises(SystemExit):
+            main(["project", "update", str(create["id"]), "--color", "notacolor"])
+        assert "[project]" in capsys.readouterr().err
+
+    def test_update_with_tags_replaces_existing(self, capsys):
+        create = _stdout_json(capsys, ["project", "create", "Tagged2", "--tags", "old"])
+        _stdout_json(capsys, ["project", "update", str(create["id"]), "--tags", "new1", "new2"])
+        proj = _stdout_json(capsys, ["project", "get", str(create["id"])])
+        assert "old" not in proj["project_tags"]
+        assert "new1" in proj["project_tags"]
+
+    def test_update_status_to_archived(self, capsys):
+        create = _stdout_json(capsys, ["project", "create", "StatusTest"])
+        result = _stdout_json(capsys, ["project", "update", str(create["id"]), "--status", "archived"])
+        assert result["status"] == "archived"
+
+    def test_update_name_preserves_description(self, capsys):
+        create = _stdout_json(capsys, ["project", "create", "Orig", "--description", "Orig desc"])
+        data = _stdout_json(capsys, ["project", "update", str(create["id"]), "--name", "New Name"])
+        assert data["name"] == "New Name"
+        assert data["description"] == "Orig desc"
+
+    def test_update_description_preserves_name(self, capsys):
+        create = _stdout_json(capsys, ["project", "create", "Orig2", "--description", "Orig desc2"])
+        data = _stdout_json(capsys, ["project", "update", str(create["id"]), "--description", "New desc"])
+        assert data["name"] == "Orig2"
+        assert data["description"] == "New desc"
+
+
+# ---------------------------------------------------------------------------
+# project export-bibtex / export-obsidian
+# ---------------------------------------------------------------------------
+
+class TestProjectExportFormats:
+    def test_export_bibtex_creates_file(self, capsys, tmp_path):
+        _seed()
+        proj = _stdout_json(capsys, ["project", "create", "BibProj"])
+        main(["project", "add-paper", str(proj["id"]), ARXIV_ID])
+        dest = str(tmp_path / "output")
+        result = _stdout_json(capsys, ["project", "export-bibtex", str(proj["id"]), dest])
+        assert result["path"].endswith(".bib")
+        assert Path(result["path"]).exists()
+
+    def test_export_bibtex_extension_added(self, capsys, tmp_path):
+        _seed()
+        proj = _stdout_json(capsys, ["project", "create", "BibProj2"])
+        main(["project", "add-paper", str(proj["id"]), ARXIV_ID])
+        dest = str(tmp_path / "out")
+        result = _stdout_json(capsys, ["project", "export-bibtex", str(proj["id"]), dest])
+        assert result["path"].endswith(".bib")
+
+    def test_export_bibtex_empty_project_succeeds(self, capsys, tmp_path):
+        proj = _stdout_json(capsys, ["project", "create", "Empty"])
+        dest = str(tmp_path / "empty")
+        result = _stdout_json(capsys, ["project", "export-bibtex", str(proj["id"]), dest])
+        assert result["path"].endswith(".bib")
+        assert Path(result["path"]).exists()
+
+    def test_export_bibtex_missing_project_exits_nonzero(self, capsys, tmp_path):
+        err = _exit_err(capsys, ["project", "export-bibtex", "9999", str(tmp_path / "out")])
+        assert "error" in err
+
+    def test_export_obsidian_empty_project_succeeds(self, capsys, tmp_path):
+        proj = _stdout_json(capsys, ["project", "create", "EmptyObs"])
+        dest = str(tmp_path / "empty_obs")
+        result = _stdout_json(capsys, ["project", "export-obsidian", str(proj["id"]), dest])
+        assert result["path"].endswith(".md")
+        assert Path(result["path"]).exists()
+
+    def test_export_obsidian_creates_file(self, capsys, tmp_path):
+        _seed()
+        proj = _stdout_json(capsys, ["project", "create", "ObsProj"])
+        main(["project", "add-paper", str(proj["id"]), ARXIV_ID])
+        dest = str(tmp_path / "output")
+        result = _stdout_json(capsys, ["project", "export-obsidian", str(proj["id"]), dest])
+        assert result["path"].endswith(".md")
+        assert Path(result["path"]).exists()
+
+    def test_export_obsidian_extension_added(self, capsys, tmp_path):
+        _seed()
+        proj = _stdout_json(capsys, ["project", "create", "ObsProj2"])
+        main(["project", "add-paper", str(proj["id"]), ARXIV_ID])
+        dest = str(tmp_path / "obs_out")
+        result = _stdout_json(capsys, ["project", "export-obsidian", str(proj["id"]), dest])
+        assert result["path"].endswith(".md")
+
+    def test_export_obsidian_missing_project_exits_nonzero(self, capsys, tmp_path):
+        err = _exit_err(capsys, ["project", "export-obsidian", "9999", str(tmp_path / "out")])
+        assert "error" in err
+
+
+# ---------------------------------------------------------------------------
+# bibtex import
+# ---------------------------------------------------------------------------
+
+class TestBibtexImportCommand:
+    _BIB = """\
+@article{test2024,
+  author = {Smith, John},
+  title  = {A Test Paper},
+  year   = {2024},
+}
+"""
+
+    def test_import_basic(self, capsys, tmp_path):
+        bib_file = tmp_path / "refs.bib"
+        bib_file.write_text(self._BIB)
+        data = _stdout_json(capsys, ["bibtex", "import", str(bib_file)])
+        assert data["imported"] == 1
+        assert len(data["papers"]) == 1
+
+    def test_import_bad_file_exits_nonzero(self, capsys, tmp_path):
+        missing = tmp_path / "nope.bib"
+        err = _exit_err(capsys, ["bibtex", "import", str(missing)])
+        assert "error" in err
+
+    def test_import_with_project(self, capsys, tmp_path):
+        bib_file = tmp_path / "refs2.bib"
+        bib_file.write_text(self._BIB)
+        proj = _stdout_json(capsys, ["project", "create", "BibImportProj"])
+        data = _stdout_json(capsys, ["bibtex", "import", str(bib_file), "--project-id", str(proj["id"])])
+        assert data["imported"] == 1
+        proj_data = _stdout_json(capsys, ["project", "get", str(proj["id"])])
+        assert len(proj_data["source_fks"]) == 1
+
+    def test_import_nonexistent_project_exits_before_writing(self, capsys, tmp_path):
+        bib_file = tmp_path / "refs3.bib"
+        bib_file.write_text(self._BIB)
+        err = _exit_err(capsys, ["bibtex", "import", str(bib_file), "--project-id", "9999"])
+        assert "error" in err
+        data = _stdout_json(capsys, ["list"])
+        assert data == []
+
+
+# ---------------------------------------------------------------------------
+# pdf import
+# ---------------------------------------------------------------------------
+
+class TestPdfImportCommand:
+    def test_pdf_import_success(self, monkeypatch, capsys, tmp_path):
+        from service.paper import PaperImportResult
+        fake_result = PaperImportResult(source_id="local:abc123", title="My Paper")
+        monkeypatch.setattr("service.paper.import_pdf", lambda content, project_id=None: fake_result)
+        fake_pdf = tmp_path / "paper.pdf"
+        fake_pdf.write_bytes(b"%PDF-1.4 fake")
+        data = _stdout_json(capsys, ["pdf", "import", str(fake_pdf)])
+        assert data["source_id"] == "local:abc123"
+        assert data["title"] == "My Paper"
+
+    def test_pdf_import_metadata_failure_exits_nonzero(self, monkeypatch, capsys, tmp_path):
+        from service.paper import PdfImportError
+        def _raise(content, project_id=None):
+            raise PdfImportError("no metadata")
+        monkeypatch.setattr("service.paper.import_pdf", _raise)
+        fake_pdf = tmp_path / "bad.pdf"
+        fake_pdf.write_bytes(b"not a pdf")
+        err = _exit_err(capsys, ["pdf", "import", str(fake_pdf)])
+        assert "error" in err
+
+    def test_pdf_import_missing_file_exits_nonzero(self, capsys, tmp_path):
+        missing = tmp_path / "missing.pdf"
+        err = _exit_err(capsys, ["pdf", "import", str(missing)])
+        assert "error" in err
+
+    def test_pdf_import_nonexistent_project_exits_nonzero(self, monkeypatch, capsys, tmp_path):
+        from service.paper import PaperImportResult
+        fake_result = PaperImportResult(source_id="local:abc456", title="No Project")
+        monkeypatch.setattr("service.paper.import_pdf", lambda content, project_id=None: fake_result)
+        fake_pdf = tmp_path / "paper.pdf"
+        fake_pdf.write_bytes(b"%PDF-1.4 fake")
+        err = _exit_err(capsys, ["pdf", "import", str(fake_pdf), "--project-id", "9999"])
+        assert "error" in err
+
+
+# ---------------------------------------------------------------------------
+# stats / categories / settings
+# ---------------------------------------------------------------------------
+
+class TestStatsCommand:
+    def test_stats_empty_db(self, capsys):
+        data = _stdout_json(capsys, ["stats"])
+        assert data["paper_count"] == 0
+        assert data["tag_count"] == 0
+        assert data["pdf_count"] == 0
+        assert "category_count" in data
+
+    def test_stats_with_paper(self, capsys):
+        _seed()
+        data = _stdout_json(capsys, ["stats"])
+        assert data["paper_count"] == 1
+
+    def test_stats_counts_tags(self, capsys):
+        _seed()
+        main(["tag", "add", ARXIV_ID, "ml"])
+        data = _stdout_json(capsys, ["stats"])
+        assert data["tag_count"] >= 1
+
+
+class TestCategoriesCommand:
+    def test_categories_returns_list(self, capsys):
+        data = _stdout_json(capsys, ["categories"])
+        assert isinstance(data, list)
+
+    def test_categories_empty_db(self, capsys):
+        data = _stdout_json(capsys, ["categories"])
+        assert data == []
+
+
+class TestSettingsCommands:
+    def test_get_returns_dict(self, capsys, monkeypatch):
+        monkeypatch.setattr("linxiv_cli.user_settings", type("S", (), {
+            "all_settings": staticmethod(lambda: {"max_results": 25}),
+            "set": staticmethod(lambda k, v: None),
+        })())
+        data = _stdout_json(capsys, ["settings", "get"])
+        assert isinstance(data, dict)
+
+    def test_update_string_value(self, capsys, monkeypatch):
+        stored = {}
+        monkeypatch.setattr("linxiv_cli.user_settings", type("S", (), {
+            "all_settings": staticmethod(lambda: stored),
+            "set": staticmethod(lambda k, v: stored.update({k: v})),
+        })())
+        data = _stdout_json(capsys, ["settings", "update", "crossref_email", "test@example.com"])
+        assert data["crossref_email"] == "test@example.com"
+
+    def test_update_json_value_parsed(self, capsys, monkeypatch):
+        stored = {}
+        monkeypatch.setattr("linxiv_cli.user_settings", type("S", (), {
+            "all_settings": staticmethod(lambda: stored),
+            "set": staticmethod(lambda k, v: stored.update({k: v})),
+        })())
+        data = _stdout_json(capsys, ["settings", "update", "max_results", "50"])
+        assert data["max_results"] == 50
+        assert isinstance(data["max_results"], int)

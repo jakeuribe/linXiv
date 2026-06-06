@@ -16,7 +16,7 @@ export function Badge({ color, size = "sm", className = "", style, children, ...
   return (
     <span
       className={[
-        "inline-flex items-center rounded-full font-medium",
+        "inline-flex items-center justify-center leading-none rounded-full font-medium",
         "border border-[var(--color-border)] bg-[var(--color-panel)] text-[var(--color-text)]",
         sizeStyles[size],
         className,

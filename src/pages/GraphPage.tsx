@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useThemeStore } from "../stores/theme";
+import { useUiStore } from "../stores/ui";
 import { getColors } from "../lib/theme";
 import { listProjects, addPaperToProject, createProject } from "../api/projects";
 import { Spinner } from "../components/ui/spinner";
@@ -17,6 +18,8 @@ export default function GraphPage() {
   const mode = useThemeStore(s => s.mode);
   const overrides = useThemeStore(s => s.overrides);
   const overrideAlphas = useThemeStore(s => s.overrideAlphas);
+  const hideSingleAuthors = useUiStore(s => s.hideSingleAuthors);
+  const setHideSingleAuthors = useUiStore(s => s.setHideSingleAuthors);
 
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
@@ -108,6 +111,14 @@ export default function GraphPage() {
     sendTheme();
   }, [sendTheme]);
 
+  // Toggling the single-author filter reloads the iframe (its src carries the
+  // flag), which boots with an empty selection. Clear the parent's selection too
+  // so the header count and "Add to project" target don't reference nodes the
+  // reloaded graph no longer shows as selected.
+  useEffect(() => {
+    setSelectedSourceIds([]);
+  }, [hideSingleAuthors]);
+
   function handleClearSelection() {
     setSelectedSourceIds([]);
     postToIframe({ type: "clear_selection" });
@@ -122,10 +133,21 @@ export default function GraphPage() {
             ? `${selectedSourceIds.length} paper${selectedSourceIds.length !== 1 ? "s" : ""} selected — Ctrl/Cmd+click to add more`
             : "Click a node to open · Ctrl/Cmd+click to select"}
         </span>
+        <label
+          className="ml-auto flex items-center gap-2 text-sm text-muted cursor-pointer select-none"
+          title="Drop authors linked to only one paper to declutter the graph"
+        >
+          <input
+            type="checkbox"
+            checked={hideSingleAuthors}
+            onChange={(e) => setHideSingleAuthors(e.target.checked)}
+          />
+          Hide single-paper authors
+        </label>
       </div>
       <iframe
         ref={iframeRef}
-        src="/graph/graph.html"
+        src={hideSingleAuthors ? "/graph/graph.html?excludeSingleAuthors=1" : "/graph/graph.html"}
         className="flex-1 border-0 w-full"
         title="Paper knowledge graph"
         onLoad={sendTheme}

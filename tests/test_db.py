@@ -477,6 +477,29 @@ class TestGetGraphData:
         paper_node = next(n for n in nodes if n.get("type") == "paper")
         assert paper_node["tags"] == []
 
+    def test_default_keeps_single_paper_authors(self):
+        db.save_paper(_make_result("2204.12985v1", authors=["Solo Author"]))
+        nodes, _ = db.get_graph_data()
+        assert any(n.get("type") == "author" and n["label"] == "Solo Author" for n in nodes)
+
+    def test_exclude_single_authors_drops_single_paper_author(self):
+        db.save_paper(_make_result("2204.12985v1", authors=["Solo Author", "Shared Author"]))
+        db.save_paper(_make_result("2301.00001v1", authors=["Shared Author"]))
+        nodes, edges = db.get_graph_data(exclude_single_authors=True)
+        author_labels = {n["label"] for n in nodes if n.get("type") == "author"}
+        assert "Shared Author" in author_labels       # 2 papers — kept
+        assert "Solo Author" not in author_labels      # 1 paper — dropped
+        # The dropped author's edge is gone too (match the exact node id).
+        assert not any(e["target"] == "author::Solo Author" for e in edges)
+
+    def test_exclude_single_authors_counts_distinct_papers_not_versions(self):
+        # Same author on two versions of ONE paper root is still "single-paper".
+        db.save_paper(_make_result("2204.12985v1", authors=["Versioned Author"]))
+        db.save_paper(_make_result("2204.12985v2", authors=["Versioned Author"]))
+        nodes, _ = db.get_graph_data(exclude_single_authors=True)
+        author_labels = {n["label"] for n in nodes if n.get("type") == "author"}
+        assert "Versioned Author" not in author_labels
+
 
 # ---------------------------------------------------------------------------
 # get_categories

@@ -169,7 +169,7 @@ export function Sidebar() {
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 px-2 flex flex-col gap-0.5">
+      <nav className="flex-1 px-3 flex flex-col gap-1">
         {NAV_ITEMS.filter(({ pageKey }) => !pageKey || sidebarPages[pageKey]).map(({ to, label, icon, end }) => (
           <NavLink
             key={to}
@@ -181,7 +181,7 @@ export function Sidebar() {
               alignItems: "center",
               justifyContent: sidebarCollapsed ? "center" : "flex-start",
               gap: 8,
-              padding: sidebarCollapsed ? "8px 0" : "6px 10px",
+              padding: sidebarCollapsed ? "8px 0" : "8px 12px",
               borderRadius: 6,
               fontSize: 13,
               fontWeight: 500,

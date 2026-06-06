@@ -6,6 +6,7 @@ use std::net::TcpListener;
 use std::sync::OnceLock;
 use std::time::Duration;
 use tauri::Manager;
+use tauri_plugin_opener::OpenerExt;
 
 static API_PORT: OnceLock<u16> = OnceLock::new();
 static API_READY: OnceLock<bool> = OnceLock::new();
@@ -59,6 +60,37 @@ fn wait_for_api(port: u16, max_attempts: u32) -> bool {
         }
     }
     false
+}
+
+/// Open a locally-stored PDF in the OS default viewer.
+///
+/// The path comes from our own backend's `pdf-path` endpoint, but this command
+/// is reachable over IPC, so we re-validate before handing the path to the OS:
+/// it must be an absolute path to an existing `.pdf` file. We open from Rust
+/// rather than the JS opener plugin on purpose — the plugin's `open_path` is
+/// scope-gated against a static capability glob, and the PDF lives under a
+/// per-OS data directory that's awkward to express as one. The Rust opener API
+/// is not scope-gated, so this resolves the "view in system viewer fails" bug.
+#[tauri::command]
+fn open_pdf_in_system(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let candidate = std::path::Path::new(&path);
+    if !candidate.is_absolute() {
+        return Err("Refusing to open a non-absolute path".to_string());
+    }
+    if !candidate.is_file() {
+        return Err("PDF file not found on disk".to_string());
+    }
+    let is_pdf = candidate
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.eq_ignore_ascii_case("pdf"))
+        .unwrap_or(false);
+    if !is_pdf {
+        return Err("Refusing to open a non-PDF file in the system viewer".to_string());
+    }
+    app.opener()
+        .open_path(path, None::<&str>)
+        .map_err(|e| format!("System viewer could not open the PDF: {e}"))
 }
 
 #[tauri::command]
@@ -137,6 +169,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             get_api_port,
+            open_pdf_in_system,
             integrations::is_cli_installed,
             integrations::install_cli,
             integrations::uninstall_cli,

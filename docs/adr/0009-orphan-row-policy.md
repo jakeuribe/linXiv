@@ -37,6 +37,8 @@ TAG orphans are never cleaned up automatically — not on repair, not on hard de
 
 ### NOTE rows on project delete
 
+<!-- #TODO: revisit this policy — the NULL-on-delete behaviour below is to be slightly altered. -->
+
 When a project is hard-deleted, `hard_delete_project` does **not** delete NOTE rows that were scoped to that project. Instead, it sets `NOTE.PROJECT_FK = NULL` on those rows. The note content is preserved; the note loses its project scope and becomes a global (unscoped) note.
 
 **Rationale:** A note represents the user's research work. Deleting a project should not silently destroy notes the user may have written. The user can always delete specific notes manually. This is distinct from soft-delete (where the project is recoverable) — even on hard delete, we preserve the intellectual content.

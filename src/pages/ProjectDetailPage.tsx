@@ -261,6 +261,9 @@ function AddPapersDialog({
         [...selectedIds].map((id) => addPaperToProject(projectId, id))
       );
       await queryClient.invalidateQueries({ queryKey: ["project", String(projectId)] });
+      // The ["projects"] list query backs the note scope picker / badges on the
+      // paper detail page; keep its membership (source_ids) fresh.
+      await queryClient.invalidateQueries({ queryKey: ["projects"] });
       const failed = results.filter((r) => r.status === "rejected");
       if (failed.length > 0) {
         setError(`Failed to add ${failed.length} paper${failed.length !== 1 ? "s" : ""}`);
@@ -366,9 +369,12 @@ interface PaperRowProps {
   paper: Paper;
   checked: boolean;
   onToggle: () => void;
+  /** Project being viewed; passed as nav state so the note scope picker
+   *  on the paper detail page pre-selects it (ADR 0003). */
+  projectId: number;
 }
 
-function PaperRow({ paper, checked, onToggle }: PaperRowProps) {
+function PaperRow({ paper, checked, onToggle, projectId }: PaperRowProps) {
   const navigate = useNavigate();
   const authors = Array.isArray(paper.authors)
     ? paper.authors.slice(0, 3).join(", ")
@@ -388,7 +394,11 @@ function PaperRow({ paper, checked, onToggle }: PaperRowProps) {
       />
       <div
         className="flex-1 min-w-0 cursor-pointer"
-        onClick={() => navigate(`/library/${paper.source_fk}`)}
+        onClick={() =>
+          navigate(`/library/${paper.source_fk}`, {
+            state: { fromProjectId: projectId },
+          })
+        }
       >
         <p
           className="text-sm font-medium leading-snug line-clamp-2"
@@ -607,6 +617,9 @@ export default function ProjectDetailPage() {
         clear();
       }
       await queryClient.invalidateQueries({ queryKey: ["project", id] });
+      // Keep the ["projects"] list (source_ids) fresh for the paper detail
+      // note scope picker / badges.
+      await queryClient.invalidateQueries({ queryKey: ["projects"] });
     } finally {
       setRemoving(false);
     }
@@ -875,6 +888,7 @@ export default function ProjectDetailPage() {
                 paper={paper}
                 checked={selectedIds.has(paper.source_id)}
                 onToggle={() => toggle(paper.source_id)}
+                projectId={projectId}
               />
             ))
           )}
