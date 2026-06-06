@@ -4,7 +4,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useThemeStore } from "../stores/theme";
 import { useUiStore } from "../stores/ui";
 import { getColors } from "../lib/theme";
-import { listProjects, addPaperToProject, createProject } from "../api/projects";
+import { listProjects, addPapersToProject, createProject } from "../api/projects";
 import { Spinner } from "../components/ui/spinner";
 import { Button } from "../components/ui/button";
 import { Dialog } from "../components/ui/dialog";
@@ -34,10 +34,8 @@ export default function GraphPage() {
 
   const addToProjectMutation = useMutation({
     mutationFn: async ({ projectId, sourceIds }: { projectId: number; sourceIds: string[] }) => {
-      const results = await Promise.allSettled(
-        sourceIds.map(id => addPaperToProject(projectId, id))
-      );
-      return sourceIds.filter((_, i) => results[i].status === "rejected");
+      const { failed } = await addPapersToProject(projectId, sourceIds);
+      return failed;
     },
     onMutate: () => {
       setProjectPickerError(null);
@@ -66,15 +64,34 @@ export default function GraphPage() {
   const createProjectMutation = useMutation({
     mutationFn: async ({ name, sourceIds }: { name: string; sourceIds: string[] }) => {
       const result = await createProject({ name });
-      await Promise.allSettled(sourceIds.map((id) => addPaperToProject(result.project.id, id)));
+      try {
+        const { failed } = await addPapersToProject(result.project.id, sourceIds);
+        return failed.length;
+      } catch {
+        // The project was created; route through onSuccess so the name is
+        // cleared and a retry can't create a duplicate.
+        return sourceIds.length;
+      }
     },
-    onSuccess: () => {
+    // Invalidate in onSettled, not onSuccess: the project may have been
+    // created even when the mutation rejects (e.g. a paper-add request fails).
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+    },
+    onSuccess: (failedCount) => {
+      // The project exists either way — clear the name so a retry can't
+      // create a duplicate.
       setNewProjectName("");
+      if (failedCount > 0) {
+        setProjectPickerError(
+          `Project created, but ${failedCount} paper${failedCount !== 1 ? "s" : ""} could not be added`
+        );
+        return;
+      }
       setProjectPickerOpen(false);
       setProjectPickerError(null);
       setSelectedSourceIds([]);
       postToIframe({ type: "clear_selection" });
-      queryClient.invalidateQueries({ queryKey: ["projects"] });
     },
     onError: (err) => {
       setProjectPickerError(err instanceof Error ? err.message : "Failed to create project");

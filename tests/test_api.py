@@ -362,6 +362,41 @@ class TestProjectPapers:
         r = client.post("/api/projects/999/papers", json={"source_id": "2204.12985"})
         assert r.status_code == 404
 
+    def test_bulk_add_papers(self, client):
+        import storage.db as db
+        pid = self._setup(client)
+        db.save_paper_metadata(_meta(source_id="2301.00001"))
+        r = client.post(
+            f"/api/projects/{pid}/papers/bulk",
+            json={"source_ids": ["2204.12985", "2301.00001"]},
+        )
+        assert r.status_code == 200
+        assert r.json() == {"ok": True, "failed": []}
+        source_ids = client.get(f"/api/projects/{pid}").json()["source_ids"]
+        assert "2204.12985" in source_ids
+        assert "2301.00001" in source_ids
+
+    def test_bulk_add_reports_unknown_papers_but_adds_rest(self, client):
+        pid = self._setup(client)
+        r = client.post(
+            f"/api/projects/{pid}/papers/bulk",
+            json={"source_ids": ["2204.12985", "9999.99999"]},
+        )
+        assert r.status_code == 200
+        assert r.json() == {"ok": False, "failed": ["9999.99999"]}
+        assert "2204.12985" in client.get(f"/api/projects/{pid}").json()["source_ids"]
+
+    def test_bulk_add_to_nonexistent_project_returns_404(self, client):
+        r = client.post(
+            "/api/projects/999/papers/bulk", json={"source_ids": ["2204.12985"]}
+        )
+        assert r.status_code == 404
+
+    def test_bulk_add_empty_list_returns_422(self, client):
+        pid = self._setup(client)
+        r = client.post(f"/api/projects/{pid}/papers/bulk", json={"source_ids": []})
+        assert r.status_code == 422
+
     def test_remove_from_nonexistent_project_returns_404(self, client):
         r = client.delete("/api/projects/999/papers/2204.12985")
         assert r.status_code == 404

@@ -523,38 +523,33 @@ def cmd_project_hard_delete(args: argparse.Namespace) -> None:
 
 def cmd_project_add_paper(args: argparse.Namespace) -> None:
     source_id = _as_source_id(args.source_id)
-    details = _resolve_project_or_exit(args.project_id)
+    _resolve_project_or_exit(args.project_id)
     root = svc_paper.get_paper_root(source_id)
     if root is None:
         print(json.dumps({"error": f"Paper {source_id} not found in database"}), file=sys.stderr)
         sys.exit(1)
-    source_fk = int(root["SOURCE_FK"])
-    if source_fk not in details.source_fks:
-        svc_project.upsert(ProjectIn(
-            name=details.name,
-            description=details.description,
-            color=details.color,
-            tags=details.project_tags,
-            source_fks=details.source_fks + [source_fk],
-        ), project_fk=args.project_id)
+    # Incremental add — not upsert(), which would rewrite the full membership
+    # list from this process's snapshot.
+    try:
+        svc_project.add_papers(args.project_id, [int(root["SOURCE_FK"])])
+    except (LookupError, ValueError) as e:
+        print(json.dumps({"error": str(e)}), file=sys.stderr)
+        sys.exit(1)
     _output({"project_id": args.project_id, "source_id": source_id})
 
 
 def cmd_project_remove_paper(args: argparse.Namespace) -> None:
     source_id = _as_source_id(args.source_id)
-    details = _resolve_project_or_exit(args.project_id)
+    _resolve_project_or_exit(args.project_id)
     root = svc_paper.get_paper_root(source_id)
     if root is None:
         print(json.dumps({"error": f"Paper {source_id} not found in database"}), file=sys.stderr)
         sys.exit(1)
-    source_fk = int(root["SOURCE_FK"])
-    svc_project.upsert(ProjectIn(
-        name=details.name,
-        description=details.description,
-        color=details.color,
-        tags=details.project_tags,
-        source_fks=[fk for fk in details.source_fks if fk != source_fk],
-    ), project_fk=args.project_id)
+    try:
+        svc_project.remove_paper(args.project_id, int(root["SOURCE_FK"]))
+    except (LookupError, ValueError) as e:
+        print(json.dumps({"error": str(e)}), file=sys.stderr)
+        sys.exit(1)
     _output({"project_id": args.project_id, "source_id": source_id, "removed": True})
 
 
@@ -741,24 +736,17 @@ def cmd_bibtex_import(args: argparse.Namespace) -> None:
         sys.exit(1)
     results = svc_paper.save_papers_metadata(metas)
     if args.project_id is not None:
-        details = _resolve_project_or_exit(args.project_id)
-        existing_fks: set[int] = set(details.source_fks)
-        new_fks: list[int] = []
-        for source_id, _ in results:
-            root = svc_paper.get_paper_root(source_id)
-            if root:
-                fk = int(root["SOURCE_FK"])
-                if fk not in existing_fks:
-                    new_fks.append(fk)
-                    existing_fks.add(fk)
-        if new_fks:
-            svc_project.upsert(ProjectIn(
-                name=details.name,
-                description=details.description,
-                color=details.color,
-                tags=details.project_tags,
-                source_fks=details.source_fks + new_fks,
-            ), project_fk=args.project_id)
+        # Incremental add — not upsert(), which would rewrite the full
+        # membership list from this process's snapshot. add_papers skips
+        # existing members itself.
+        resolved = svc_paper.get_paper_roots_bulk([s for s, _ in results])
+        fks = [resolved[s] for s, _ in results if s in resolved]
+        if fks:
+            try:
+                svc_project.add_papers(args.project_id, fks)
+            except (LookupError, ValueError) as e:
+                print(json.dumps({"error": str(e)}), file=sys.stderr)
+                sys.exit(1)
     _output({"imported": len(results), "papers": [{"source_id": s, "version": v} for s, v in results]})
 
 

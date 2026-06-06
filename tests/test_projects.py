@@ -18,6 +18,7 @@ from storage.projects import (
     Project,
     Status,
     filter_projects,
+    get_project,
 )
 import service.project as _svc_project
 import service.tag as _svc_tag
@@ -232,13 +233,16 @@ class TestProjectAddPaper:
         with pytest.raises(ValueError, match="saved"):
             p.add_paper(1)
 
-    def test_add_paper_at_position(self):
+    def test_add_papers_preserves_input_order(self):
         p = Project(name="Ordered Papers")
         p.save()
-        p.add_paper(_sfk("2204.12985"))
-        p.add_paper(_sfk("2301.00001"))
-        p.add_paper(_sfk("1905.00001"), position=0)
-        assert p.source_fks[0] == _sfk("1905.00001")
+        a, b, c = _sfk("2204.12985"), _sfk("2301.00001"), _sfk("1905.00001")
+        p.add_papers([c, a, b])
+        assert p.source_fks == [c, a, b]
+        assert p.id is not None
+        fresh = get_project(p.id)
+        assert fresh is not None
+        assert fresh.source_fks == [c, a, b]
 
     def test_paper_count_property(self):
         p = Project(name="Counter")
@@ -248,6 +252,124 @@ class TestProjectAddPaper:
         assert p.paper_count == 1
         p.add_paper(_sfk("2301.00001"))
         assert p.paper_count == 2
+
+    def test_concurrent_adds_with_stale_snapshots_both_persist(self):
+        """Regression: two Project instances loaded before either writes must
+        not clobber each other's adds (read-modify-write race)."""
+        p = Project(name="Race")
+        p.save()
+        assert p.id is not None
+        p1 = get_project(p.id)
+        p2 = get_project(p.id)
+        assert p1 is not None and p2 is not None
+        p1.add_paper(_sfk("2204.12985"))
+        p2.add_paper(_sfk("2301.00001"))
+        fresh = get_project(p.id)
+        assert fresh is not None
+        assert _sfk("2204.12985") in fresh.source_fks
+        assert _sfk("2301.00001") in fresh.source_fks
+
+    def test_concurrent_removes_with_stale_snapshots_both_persist(self):
+        p = Project(name="Race Remove")
+        p.save()
+        assert p.id is not None
+        p.add_papers([_sfk("2204.12985"), _sfk("2301.00001")])
+        p1 = get_project(p.id)
+        p2 = get_project(p.id)
+        assert p1 is not None and p2 is not None
+        p1.remove_paper(_sfk("2204.12985"))
+        p2.remove_paper(_sfk("2301.00001"))
+        fresh = get_project(p.id)
+        assert fresh is not None
+        assert fresh.source_fks == []
+
+    def test_add_papers_bulk_dedupes_input_and_existing(self):
+        p = Project(name="Bulk")
+        p.save()
+        p.add_paper(_sfk("2204.12985"))
+        p.add_papers([_sfk("2204.12985"), _sfk("2301.00001"), _sfk("2301.00001")])
+        assert p.source_fks == [_sfk("2204.12985"), _sfk("2301.00001")]
+        assert p.id is not None
+        fresh = get_project(p.id)
+        assert fresh is not None
+        assert fresh.source_fks == [_sfk("2204.12985"), _sfk("2301.00001")]
+
+    def test_save_does_not_clobber_concurrent_membership_writes(self):
+        """Regression: a field-only save() from a stale snapshot must not
+        discard membership rows written since the snapshot was loaded."""
+        p = Project(name="Meta Edit")
+        p.save()
+        assert p.id is not None
+        stale = get_project(p.id)
+        assert stale is not None
+        other = get_project(p.id)
+        assert other is not None
+        other.add_paper(_sfk("2204.12985"))
+        stale.name = "Renamed"
+        stale.save()
+        fresh = get_project(p.id)
+        assert fresh is not None
+        assert fresh.name == "Renamed"
+        assert _sfk("2204.12985") in fresh.source_fks
+
+    def test_incremental_writes_keep_trashed_members(self):
+        """Regression: incremental add/remove must not drop membership rows of
+        trashed papers (the active-filtered snapshot omits them; a full rewrite
+        from that snapshot would delete them, losing membership on restore)."""
+        p = Project(name="Trash Safe")
+        p.save()
+        assert p.id is not None
+        a, b = _sfk("2204.12985"), _sfk("2301.00001")
+        p.add_papers([a, b])
+        with _db._connect() as conn:
+            conn.execute(
+                "UPDATE PAPER_ROOTS SET STATUS = 'deleted' WHERE SOURCE_FK = ?", (a,)
+            )
+        stale = get_project(p.id)  # sees only b
+        assert stale is not None
+        stale.add_paper(_sfk("1905.00001"))
+        stale.remove_paper(b)
+        with _db._connect() as conn:
+            conn.execute(
+                "UPDATE PAPER_ROOTS SET STATUS = 'active' WHERE SOURCE_FK = ?", (a,)
+            )
+        fresh = get_project(p.id)
+        assert fresh is not None
+        assert a in fresh.source_fks  # membership survived the trash window
+
+    def test_replace_papers_sets_exact_membership(self):
+        p = Project(name="Replace")
+        p.save()
+        assert p.id is not None
+        p.add_papers([_sfk("2204.12985"), _sfk("2301.00001")])
+        p.replace_papers([_sfk("1905.00001"), _sfk("2301.00001"), _sfk("1905.00001")])
+        fresh = get_project(p.id)
+        assert fresh is not None
+        assert fresh.source_fks == [_sfk("1905.00001"), _sfk("2301.00001")]
+
+
+# ---------------------------------------------------------------------------
+# storage.db.get_paper_roots_bulk
+# ---------------------------------------------------------------------------
+
+@pytest.mark.usefixtures("tmp_db")
+class TestGetPaperRootsBulk:
+    def test_resolves_across_chunk_boundary(self):
+        # 501 ids forces a second 500-id chunk.
+        ids = [f"9000.{i:05d}" for i in range(501)]
+        with _db._connect() as conn:
+            conn.executemany(
+                "INSERT OR IGNORE INTO PAPER_ROOTS (SOURCE_ID) VALUES (?)",
+                [(sid,) for sid in ids],
+            )
+        resolved = _db.get_paper_roots_bulk(ids + ["no.such.id"])
+        assert len(resolved) == 501
+        assert "no.such.id" not in resolved
+        assert resolved[ids[0]] == _sfk(ids[0])
+        assert resolved[ids[-1]] == _sfk(ids[-1])
+
+    def test_empty_input_returns_empty(self):
+        assert _db.get_paper_roots_bulk([]) == {}
 
 
 # ---------------------------------------------------------------------------
@@ -386,6 +508,44 @@ class TestServiceProjectUpsertTags:
                 _svc_project.ProjectIn(name="Ghost", description=""),
                 project_fk=9999,
             )
+
+
+# ---------------------------------------------------------------------------
+# service.project — incremental membership
+# ---------------------------------------------------------------------------
+
+@pytest.mark.usefixtures("tmp_db")
+class TestServiceProjectMembership:
+    def test_add_papers_appends(self):
+        fk = _svc_project.upsert(_svc_project.ProjectIn(name="Inc", description=""))
+        _svc_project.add_papers(fk, [_sfk("2204.12985")])
+        details = _svc_project.get(_svc_project.Project(project_fk=fk))
+        assert details is not None
+        assert _sfk("2204.12985") in details.source_fks
+
+    def test_remove_paper_removes(self):
+        fk = _svc_project.upsert(_svc_project.ProjectIn(name="Inc Rm", description=""))
+        _svc_project.add_papers(fk, [_sfk("2204.12985")])
+        _svc_project.remove_paper(fk, _sfk("2204.12985"))
+        details = _svc_project.get(_svc_project.Project(project_fk=fk))
+        assert details is not None
+        assert details.source_fks == []
+
+    def test_add_papers_unknown_project_raises(self):
+        with pytest.raises(LookupError):
+            _svc_project.add_papers(9999, [_sfk("2204.12985")])
+
+    def test_add_papers_to_deleted_project_raises(self):
+        fk = _svc_project.upsert(_svc_project.ProjectIn(name="Trashed", description=""))
+        _svc_project.delete(_svc_project.Project(project_fk=fk))
+        with pytest.raises(ValueError, match="deleted"):
+            _svc_project.add_papers(fk, [_sfk("2204.12985")])
+
+    def test_remove_paper_from_deleted_project_raises(self):
+        fk = _svc_project.upsert(_svc_project.ProjectIn(name="Trashed Rm", description=""))
+        _svc_project.delete(_svc_project.Project(project_fk=fk))
+        with pytest.raises(ValueError, match="deleted"):
+            _svc_project.remove_paper(fk, _sfk("2204.12985"))
 
 
 # ---------------------------------------------------------------------------

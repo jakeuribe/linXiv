@@ -358,6 +358,11 @@ def get_paper_root(source_id: str) -> sqlite3.Row | None:
     return db.get_paper_root(source_id)
 
 
+def get_paper_roots_bulk(source_ids: list[str]) -> dict[str, int]:
+    """Resolve SOURCE_IDs to SOURCE_FKs in bulk: {source_id: source_fk}."""
+    return db.get_paper_roots_bulk(source_ids)
+
+
 def ensure_paper_root(source_id: str) -> int:
     """Insert PAPER_ROOTS row if absent. Returns SOURCE_FK."""
     return db.ensure_paper_root(source_id)

@@ -127,7 +127,17 @@ def get_many(projects: Projects) -> list[ProjectDetails]:
 
 
 def upsert(project: ProjectIn, project_fk: int | None = None) -> int:
-    """Insert a new project or update an existing one. Returns PROJECT_FK."""
+    """Insert a new project or update an existing one. Returns PROJECT_FK.
+
+    The update branch (project_fk given) is a full replace: fields, membership
+    (becomes exactly project.source_fks), and tags. As of 2026-06 no production
+    code calls it — all production updates are field-only (update()) or
+    incremental membership (add_papers()/remove_paper()); it is kept as the
+    one sanctioned full-replace entry point rather than having callers reach
+    for Project.replace_papers directly. Do not use it to express incremental
+    membership changes: the rewrite discards rows written by other processes
+    since project.source_fks was loaded.
+    """
     if project_fk is None:
         name = project.name.strip()
         if not name:
@@ -157,12 +167,16 @@ def upsert(project: ProjectIn, project_fk: int | None = None) -> int:
         p.name         = name
         p.description  = project.description
         p.color        = project.color
-        p.source_fks   = project.source_fks
-        # Project row saved before tag sync (opposite order to update()): on
-        # partial failure, field changes are committed but tag changes are not.
+        # Three separate transactions (fields, membership, tags), in that
+        # order: on partial failure, earlier steps are committed and later
+        # ones are not.
         p.save()
         if p.id is None:
             raise RuntimeError("Project.save() did not set an id")
+        # Upsert semantics: membership becomes exactly project.source_fks.
+        # save() itself no longer writes membership (see storage.projects).
+        # Callers making incremental changes should use add_papers/remove_paper.
+        p.replace_papers(project.source_fks)
         _sync_tags(p.id, project.tags)
         return p.id
 
@@ -229,6 +243,30 @@ def update(
         return
     if dirty:
         p.save()
+
+
+def add_papers(project_fk: int, source_fks: list[int]) -> None:
+    """Incrementally add papers to a project (no-op for existing members).
+
+    Unlike upsert(), this performs only per-row inserts and never rewrites
+    the membership list.
+    """
+    p = _get_project(project_fk)
+    if p is None:
+        raise LookupError(f"Project {project_fk} not found")
+    if p.status == Status.DELETED:
+        raise ValueError("cannot update a deleted project")
+    p.add_papers(source_fks)
+
+
+def remove_paper(project_fk: int, source_fk: int) -> None:
+    """Incrementally remove one paper from a project (no-op for non-members)."""
+    p = _get_project(project_fk)
+    if p is None:
+        raise LookupError(f"Project {project_fk} not found")
+    if p.status == Status.DELETED:
+        raise ValueError("cannot update a deleted project")
+    p.remove_paper(source_fk)
 
 
 def delete(project: Project) -> None:

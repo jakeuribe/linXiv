@@ -40,6 +40,7 @@ from service.paper import (
     get_all as get_all_paper_versions,
     get_source_id as get_paper_source_id,
     get_paper_root,
+    get_paper_roots_bulk,
     list_paper_details,
     list_deleted as list_deleted_papers,
     delete as soft_delete_paper,
@@ -589,6 +590,41 @@ def api_project_add_paper(project_id: int, body: ProjectPaperBody) -> dict:
         raise HTTPException(status_code=404, detail="Paper not found")
     p.add_paper(int(root["SOURCE_FK"]))
     return {"ok": True}
+
+
+class ProjectPapersBulkBody(BaseModel):
+    source_ids: list[str] = Field(min_length=1, max_length=10_000)
+
+
+@app.post("/api/projects/{project_id}/papers/bulk")
+def api_project_add_papers(project_id: int, body: ProjectPapersBulkBody) -> dict:
+    """Add many papers in one request. Partial success: unknown source_ids
+    are reported back in `failed` (verbatim, un-stripped) while the rest
+    are still added.
+
+    Trashed papers count as known (same as the single-add endpoint): the
+    membership row is written but hidden from project reads until the paper
+    is restored."""
+    p = get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    resolved = get_paper_roots_bulk([sid.strip() for sid in body.source_ids])
+    fks: list[int] = []
+    failed: list[str] = []
+    seen: set[str] = set()
+    for sid in body.source_ids:
+        stripped = sid.strip()
+        if stripped in seen:
+            continue  # report each unknown id once, however often it repeats
+        seen.add(stripped)
+        fk = resolved.get(stripped)
+        if fk is None:
+            failed.append(sid)
+        else:
+            fks.append(fk)
+    if fks:
+        p.add_papers(fks)
+    return {"ok": not failed, "failed": failed}
 
 
 @app.delete("/api/projects/{project_id}/papers/{source_id:path}")
@@ -1215,10 +1251,10 @@ async def api_import_bibtex(
     if project_id is not None and saved:
         proj = get_project(project_id)
         if proj and proj.status == Status.ACTIVE:
-            for sid in saved:
-                root = get_paper_root(sid)
-                if root:
-                    proj.add_paper(int(root["SOURCE_FK"]))
+            resolved = get_paper_roots_bulk(saved)
+            fks = [resolved[sid] for sid in saved if sid in resolved]
+            if fks:
+                proj.add_papers(fks)
     return {"saved_count": len(saved), "source_ids": saved}
 
 

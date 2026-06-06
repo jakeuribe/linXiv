@@ -67,6 +67,31 @@ export async function addPaperToProject(
   });
 }
 
+// Server caps source_ids at 10k per request; stay well under it.
+const BULK_ADD_CHUNK = 5_000;
+
+/** Bulk-add papers to a project. Partial success: unknown source_ids come
+ *  back in `failed` while the rest are still added. Input is deduplicated
+ *  and chunked, so any list size is accepted; an empty list is a no-op. */
+export async function addPapersToProject(
+  projectId: number,
+  sourceIds: string[]
+): Promise<{ ok: boolean; failed: string[] }> {
+  const ids = [...new Set(sourceIds)];
+  const failed: string[] = [];
+  for (let i = 0; i < ids.length; i += BULK_ADD_CHUNK) {
+    const res = await apiFetch<{ ok: boolean; failed: string[] }>(
+      `/api/projects/${projectId}/papers/bulk`,
+      {
+        method: "POST",
+        body: JSON.stringify({ source_ids: ids.slice(i, i + BULK_ADD_CHUNK) }),
+      }
+    );
+    failed.push(...res.failed);
+  }
+  return { ok: failed.length === 0, failed };
+}
+
 export async function removePaperFromProject(
   projectId: number,
   sourceId: string

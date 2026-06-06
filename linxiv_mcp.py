@@ -1036,31 +1036,19 @@ def import_bibtex(file: str, project_id: Optional[int] = None) -> dict:
         file: Path to the .bib file on disk.
         project_id: Optionally link all imported papers to this project.
     """
-    details = None
     if project_id is not None:
-        details = svc_project.get(_SvcProjectFilter(project_fk=project_id))
-        if details is None:
+        if svc_project.get(_SvcProjectFilter(project_fk=project_id)) is None:
             raise ValueError(f"Project {project_id} not found.")
     metas = BibTeXFormat().import_file(file)
     results = svc_paper.save_papers_metadata(metas)
-    if details is not None:
-        existing_fks: set[int] = set(details.source_fks)
-        new_fks: list[int] = []
-        for source_id, _ in results:
-            root = svc_paper.get_paper_root(source_id)
-            if root:
-                fk = int(root["SOURCE_FK"])
-                if fk not in existing_fks:
-                    new_fks.append(fk)
-                    existing_fks.add(fk)
-        if new_fks:
-            svc_project.upsert(ProjectIn(
-                name=details.name,
-                description=details.description,
-                color=details.color,
-                tags=details.project_tags,
-                source_fks=details.source_fks + new_fks,
-            ), project_fk=project_id)
+    if project_id is not None:
+        # Incremental add — not upsert(), which would rewrite the full
+        # membership list from this process's snapshot. add_papers skips
+        # existing members itself.
+        resolved = svc_paper.get_paper_roots_bulk([s for s, _ in results])
+        fks = [resolved[s] for s, _ in results if s in resolved]
+        if fks:
+            svc_project.add_papers(project_id, fks)
     return {"imported": len(results), "papers": [{"source_id": s, "version": v} for s, v in results]}
 
 
