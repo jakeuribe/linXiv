@@ -1,18 +1,19 @@
 # Editor delivered as an online-downloaded, locally-cached plugin
 
 ---
-Status: proposed (decision in progress — hosting, versioning, integrity, and TeXLive sourcing still being resolved)
+Status: accepted — Phases 0–6 implemented (hosting via the custom `texbrain://` scheme; versioning via `bridgeProtocol` compat-gating; integrity via per-artifact sha256; TeXLive served lazily from the compressed cache).
+Note 2026-06-06: the release repo moved to `linxiv-dev/tex-brain-tauri` and is currently PRIVATE — this ADR's distribution model requires a publicly readable release feed (unauthenticated `/releases/latest` + asset downloads). Decision 2026-06-07: the repo WILL be made public before ship (no mirror). Until visibility is flipped, install/update cannot work in shipped builds — flip it as part of the release checklist.
 ---
 
-The embedded LaTeX editor (tex-brain) is **not** bundled into the linXiv installer. Bundling the editor build plus its ~78MB TeXLive cache would bloat the installer and collide with tex-brain's size-reduction roadmap. Instead, **when the user explicitly chooses to install the plugin** (not automatically on first editor open) the Host downloads it from the internet, caches it in the app-data dir, and the Host Rust shell serves it same-origin at `/texbrain/*` (the iframe's `EDITOR_SRC`). This supersedes the "bundle TeXbrain static as a Tauri resource" mechanism in PORT_PLAN.md Milestone 2.
+The embedded LaTeX editor (tex-brain) is **not** bundled into the linXiv installer. Bundling the editor build plus its ~78MB TeXLive cache would bloat the installer and collide with tex-brain's size-reduction roadmap. Instead, **when the user explicitly chooses to install the plugin** (not automatically on first editor open) the Host downloads it from the internet, caches it in the app-data dir, and the Host Rust shell serves it from a custom URI scheme — `texbrain://localhost` (a separate origin, NOT a `/texbrain/*` path under the app origin; see ADR 0015), which is the iframe's `EDITOR_SRC`. This supersedes the "bundle TeXbrain static as a Tauri resource" mechanism in PORT_PLAN.md Milestone 2.
 
 The plugin is **two independently-versioned, separately-cached artifacts** (see CONTEXT.md): the **Editor build** (SvelteKit SPA + SwiftLaTeX worker; a few MB; updates often) and the **TeXLive cache** (~78MB uncompressed; rarely changes). They are split because they differ ~20× in size and change at very different cadences — a monolithic bundle would force re-downloading TeXLive on every editor bugfix.
 
 The TeXLive cache is **downloaded eagerly and in full at install time** (so the editor is fully offline afterward — no per-compile network), but **stored compressed at rest**; the serving scheme **decompresses individual files on demand and evicts them when idle**, keeping the disk/memory footprint well below the uncompressed 78MB. This requires an archive format with **random per-entry access by name** (ZIP central-directory seek, or seekable-zstd) — *not* a plain `.tar.gz` — which constrains what tex-brain's release tooling must emit.
 
-**Distribution: GitHub Releases on `jakeuribe/tex-brain-tauri`.** A new CI workflow on that repo (it has none today) builds the editor (served at its origin root — no `base` pinning, see ADR 0015), produces the two compressed artifacts (editor build + TeXLive cache) plus a small `manifest.json` (plugin/bridge-protocol version, per-artifact URL + sha256 + uncompressed size), and uploads all three as release assets. linXiv reads the manifest to discover what to download and to verify it. The editor's outputs stay versioned in the editor's own repo; linXiv only consumes them.
+**Distribution: GitHub Releases on `linxiv-dev/tex-brain-tauri`.** A CI workflow on that repo builds the editor (served at its origin root — no `base` pinning, see ADR 0015), produces the two compressed artifacts (editor build + TeXLive cache) plus a small `manifest.json` (plugin/bridge-protocol version, per-artifact URL + sha256 + uncompressed size), and uploads all three as release assets. linXiv reads the manifest to discover what to download and to verify it. The editor's outputs stay versioned in the editor's own repo; linXiv only consumes them.
 
-In **development the plugin is not downloaded**: the editor is served from its own running dev server (via the Host's dev proxy — see ADR 0015); only packaged/production builds download + cache + serve from app-data.
+In **development the plugin is not downloaded**: the editor is served from its own running dev server (`http://localhost:5173/editor` — NO proxy; dev is intentionally cross-origin to mirror prod, see ADR 0015); only packaged/production builds download + cache + serve from app-data.
 
 ## Versioning & updates
 
@@ -37,4 +38,4 @@ This is a **scope decision, not a permanent one** — pending user feedback. If 
 ## Consequences
 
 - tex-brain must start producing **release artifacts** (editor build + TeXLive cache) — it ships none today (no tags; only a GitHub Pages deploy).
-- The Host gains a workspace-local Tauri plugin, `tauri-plugin-texbrain`, that registers the custom URI scheme serving cached files with the required `fileid`/`pkid` headers (ported from tex-brain's `texlive://` protocol) — see ADR 0016. No SvelteKit `base` pinning is needed (the editor sits at the scheme root — see ADR 0015).
+- The Host gains a Tauri plugin crate in the sibling tex-brain-tauri repo (consumed as a path dependency), `tauri-plugin-texbrain`, that registers the custom URI scheme serving cached files with the required `fileid`/`pkid` headers (ported from tex-brain's `texlive://` protocol) — see ADR 0016. No SvelteKit `base` pinning is needed (the editor sits at the scheme root — see ADR 0015).

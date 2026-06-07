@@ -1,1 +1,0 @@
-{"default":{"identifier":"default","description":"Default capabilities for linXiv","local":true,"windows":["main"],"permissions":["core:default","core:webview:allow-set-webview-zoom","dialog:allow-save","dialog:allow-open","opener:default","shell:allow-open","shell:allow-execute"]}}

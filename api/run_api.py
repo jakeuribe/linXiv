@@ -5,7 +5,7 @@ HTTP JSON API for linXiv → http://127.0.0.1:8000
 - External frontends call ``/api/...`` on this origin.
 
 CORS: set env ``CORS_ORIGINS`` to a comma-separated list of frontend origins, e.g.
-``http://localhost:5173``. If unset, all origins are allowed (no credentials).
+``http://localhost:5180``. If unset, all origins are allowed (no credentials).
 
 Run with venv:
     python -m api

@@ -47,8 +47,14 @@ export async function createEditorProject(
   });
 }
 
-/** The DocOpenPayload the host pushes to the editor: main file + all text files. */
-export async function getEditorDoc(noteId: number): Promise<DocOpenPayload> {
+/**
+ * The doc the host pushes to the editor: main file + all text files. The
+ * backend doesn't know the bridge's `projectId` (that IS the noteId); the
+ * caller stamps it on before sendDocOpen, so this returns the payload sans id.
+ */
+export async function getEditorDoc(
+  noteId: number
+): Promise<Omit<DocOpenPayload, "projectId">> {
   return apiFetch(`/api/editor/projects/${noteId}/doc`);
 }
 

@@ -88,9 +88,10 @@ export interface FsResponder {
 }
 
 /**
- * Default no-op responder for the spike: lists nothing, reads empty, and accepts
- * (drops) every write/mkdir/remove. Lets the bridge run end-to-end before the real
- * /api-backed adapter exists. Swap in the real FsResponder when persistence lands.
+ * Safe default when no fs handler is configured: lists nothing, reads empty, and
+ * accepts (silently drops) every write/mkdir/remove. Any bridge that needs real
+ * persistence must pass an FsResponder (HostFsRouter, ApiFsResponder,
+ * DiskFsResponder) via EditorBridgeHandlers.fs.
  */
 export class NoopFsResponder implements FsResponder {
   async list(): Promise<Extract<FsResult, { kind: "list" }>> {
@@ -110,12 +111,37 @@ export class NoopFsResponder implements FsResponder {
   }
 }
 
+/**
+ * Serialize a thrown value for an ok:false wire reply. Tauri plugin commands
+ * reject with serialized values that are NOT Error instances — plain strings
+ * (tauri-plugin-fs) or `{ kind, message }` objects (tauri-plugin-texbrain) —
+ * and String() on the latter yields '[object Object]', so prefer a string
+ * `message` field when one exists.
+ */
+function extractErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "object" && err !== null) {
+    const m = (err as { message?: unknown }).message;
+    if (typeof m === "string") return m;
+  }
+  return String(err);
+}
+
 // -------------------------------------------------------------------------
 // EditorBridgeClient: owns the iframe postMessage channel.
 // -------------------------------------------------------------------------
 
 /** The document/project payload the host mounts into the editor. */
 export interface DocOpenPayload {
+  /**
+   * Stable host-side project identity (the note id). The editor keys its
+   * doc:open idempotency guard on THIS, not on (projectName, mainFile): those
+   * collide trivially (two "Untitled" projects, both main.tex) and a guard
+   * keyed on them would mistake a real switch for a re-send — keeping the old
+   * buffers mounted while the host believes the new project is open, so a save
+   * writes the wrong project's content. The id is unambiguous.
+   */
+  projectId: number;
   mainFile: string;
   files: Record<string, string>;
   projectName: string;
@@ -135,12 +161,27 @@ export interface EditorBridgeHandlers {
   getInitialDoc?: () => DocOpenPayload | null | undefined;
   /** FS-adapter RPC handler. Defaults to NoopFsResponder. */
   fs?: FsResponder;
-  /** Compile finished (or failed) on the guest. */
-  onCompiled?: (status: number, log: string, pdf: number[] | null) => void;
+  /**
+   * The guest asked for the host's NATIVE directory picker (its embedded
+   * "Open Folder" — the iframe can't pick itself). Show the dialog, re-root the
+   * fs responder at the chosen folder, and resolve with the folder's basename
+   * (null = user cancelled). Unset ⇒ the client replies ok:false so the guest
+   * surfaces an error instead of hanging.
+   */
+  onPickFolder?: () => Promise<string | null>;
+  /** Compile finished (or failed) on the guest. `pdf` is base64-encoded. */
+  onCompiled?: (status: number, log: string, pdf: string | null) => void;
   /** Editor buffer dirty-state changed. */
   onDirty?: (dirty: boolean) => void;
-  /** Guest completed its boot handshake. */
-  onReady?: () => void;
+  /**
+   * Guest completed its boot handshake. `protocol` is the bridge protocol the
+   * live Editor build reports in texbrain:ready — a belt-and-suspenders runtime
+   * signal only (the REAL compat gate is the release-manifest check at
+   * install/update time, ADR 0017); compare against SUPPORTED_BRIDGE_PROTOCOLS
+   * (src/api/editorPlugin.ts, exported from the plugin's guest-js) to show a
+   * non-fatal warning on mismatch.
+   */
+  onReady?: (protocol?: number) => void;
 }
 
 /**
@@ -195,6 +236,7 @@ export class EditorBridgeClient {
   sendDocOpen(doc: DocOpenPayload): void {
     this.post({
       type: "texbrain:doc:open",
+      projectId: doc.projectId,
       mainFile: doc.mainFile,
       files: doc.files,
       projectName: doc.projectName,
@@ -216,16 +258,18 @@ export class EditorBridgeClient {
 
   private handleMessage(event: MessageEvent): void {
     if (this.disposed) return;
-    // Pin origin + source: only accept messages from our own iframe at its origin.
+    // Pin origin + source: only accept messages from our own iframe at its
+    // origin. Fail closed when guest is null (the bridge can't validate the
+    // source, and event.source can itself be null for a closed window).
     if (event.origin !== this.targetOrigin) return;
-    if (this.guest && event.source !== this.guest) return;
+    if (!this.guest || event.source !== this.guest) return;
 
     const msg = this.parse(event.data);
     if (!msg) return;
 
     switch (msg.type) {
       case "texbrain:ready":
-        this.onReady();
+        this.onReady(msg.protocol);
         break;
       case "texbrain:compiled":
         this.handlers.onCompiled?.(msg.status, msg.log, msg.pdf);
@@ -234,7 +278,15 @@ export class EditorBridgeClient {
         this.handlers.onDirty?.(msg.dirty);
         break;
       case "texbrain:fs":
-        void this.handleFs(msg.id, msg.op);
+        // parse() narrows on the 'texbrain:' type prefix only, so a malformed
+        // wire message can omit id/op at runtime. Without a string id the
+        // reply can't be correlated to the guest's pending request — drop it.
+        // (A nullish/unknown op with a valid id still gets an ok:false reply
+        // via handleFs's catch.)
+        if (typeof msg.id === "string") void this.handleFs(msg.id, msg.op);
+        break;
+      case "texbrain:pick:folder":
+        if (typeof msg.id === "string") void this.handlePickFolder(msg.id);
         break;
       default:
         // Host-authored (HostToGuest) messages echo back here in some test rigs;
@@ -244,11 +296,38 @@ export class EditorBridgeClient {
   }
 
   /** Handshake reply: theme first (before first paint), then the optional doc. */
-  private onReady(): void {
+  private onReady(protocol?: number): void {
     this.pushTheme();
     const doc = this.handlers.getInitialDoc?.();
     if (doc) this.sendDocOpen(doc);
-    this.handlers.onReady?.();
+    this.handlers.onReady?.(protocol);
+  }
+
+  private async handlePickFolder(id: string): Promise<void> {
+    // No handler configured = this host doesn't support folder picking. Must
+    // NOT ack: the ack means "supported, dialog opening" and cancels the
+    // guest's support-detection timer (see editorBridgeTypes.ts). Reject
+    // immediately instead — unforced, since with no ack sent a disposed
+    // bridge can fall back on the guest's own ack timeout.
+    if (!this.handlers.onPickFolder) {
+      this.post({ type: "texbrain:pick:folder:result", id, ok: false, error: "the host does not support folder picking" });
+      return;
+    }
+    // Ack receipt BEFORE the long-lived native dialog opens: a missing ack is
+    // the guest's only signal that the host predates pick:folder (it bounds
+    // its wait on the ack, not on the dialog — see editorBridgeTypes.ts).
+    this.post({ type: "texbrain:pick:folder:ack", id });
+    try {
+      const name = await this.handlers.onPickFolder();
+      // force: the result must reach the guest even if destroy() ran while the
+      // native dialog sat open — the ack above already cancelled the guest's
+      // support-detection timer, so a dropped result would leave its
+      // pickFolder() promise pending forever.
+      this.post({ type: "texbrain:pick:folder:result", id, ok: true, name }, { force: true });
+    } catch (err) {
+      const error = extractErrorMessage(err);
+      this.post({ type: "texbrain:pick:folder:result", id, ok: false, error }, { force: true });
+    }
   }
 
   private async handleFs(id: string, op: FsOp): Promise<void> {
@@ -256,7 +335,7 @@ export class EditorBridgeClient {
       const value = await this.runFsOp(op);
       this.post({ type: "texbrain:fs:result", id, ok: true, value });
     } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
+      const error = extractErrorMessage(err);
       this.post({ type: "texbrain:fs:result", id, ok: false, error });
     }
   }
@@ -273,13 +352,26 @@ export class EditorBridgeClient {
         return this.fs.mkdir(op.path);
       case "remove":
         return this.fs.remove(op.path, op.recursive ?? false);
+      default: {
+        // parse() only checks the 'texbrain:' type prefix, so a tampered wire
+        // message can carry an unknown op.kind; falling through would resolve
+        // undefined and post a malformed `{ ok: true }` with no value. Throw so
+        // handleFs replies ok:false. The never binding keeps the switch
+        // exhaustive at compile time when FsOp grows.
+        const unknown: never = op;
+        throw new Error(`unknown fs op kind: ${(unknown as { kind?: string }).kind}`);
+      }
     }
   }
 
   // ---- wire helpers ----------------------------------------------------
 
-  private post(msg: HostToGuest): void {
-    if (!this.guest) return;
+  private post(msg: HostToGuest, opts?: { force?: boolean }): void {
+    // disposed: async handlers (handleFs/handlePickFolder) can resume after
+    // destroy() — a torn-down bridge must not post stale replies to the guest.
+    // force bypasses that gate for pick:folder RESULTS only: once acked, the
+    // guest waits on the result without bound (see handlePickFolder).
+    if (!this.guest || (this.disposed && !opts?.force)) return;
     this.guest.postMessage(JSON.stringify(msg), this.targetOrigin);
   }
 

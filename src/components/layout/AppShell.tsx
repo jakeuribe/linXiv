@@ -21,6 +21,7 @@ const ROUTE_PAGE_KEY: Record<string, SidebarPageKey> = {
   "/doi":    "doi",
   "/tags":   "tags",
   "/notes":  "notes",
+  "/editor": "notes",
 };
 
 function PageFallback() {

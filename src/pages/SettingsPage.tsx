@@ -9,6 +9,7 @@ import { ExportSection } from "../components/settings/ExportSection";
 import { IntegrationsSection } from "../components/settings/IntegrationsSection";
 import { TrashSection } from "../components/settings/TrashSection";
 import { AboutSection } from "../components/settings/AboutSection";
+import { EditorPluginSection } from "../components/settings/EditorPluginSection";
 
 function Divider() {
   return <div className="border-t border-border -mx-2 mb-4" />;
@@ -108,6 +109,9 @@ export default function SettingsPage() {
         </div>
 
         <Divider />
+        {/* Editor-plugin management sits beside the app update check (ADR 0017
+            "unified Check for updates"); top-level on purpose — plan finding 10. */}
+        <EditorPluginSection defaultOpen={false} />
         <AboutSection />
       </div>
     </div>
