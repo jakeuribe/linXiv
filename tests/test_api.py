@@ -401,6 +401,91 @@ class TestProjectPapers:
         r = client.delete("/api/projects/999/papers/2204.12985")
         assert r.status_code == 404
 
+    def test_add_to_deleted_project_returns_400(self, client):
+        pid = self._setup(client)
+        client.delete(f"/api/projects/{pid}")
+        r = client.post(f"/api/projects/{pid}/papers", json={"source_id": "2204.12985"})
+        assert r.status_code == 400
+
+    def test_bulk_add_to_deleted_project_returns_400(self, client):
+        pid = self._setup(client)
+        client.delete(f"/api/projects/{pid}")
+        r = client.post(
+            f"/api/projects/{pid}/papers/bulk", json={"source_ids": ["2204.12985"]}
+        )
+        assert r.status_code == 400
+
+    def test_remove_from_deleted_project_returns_400(self, client):
+        pid = self._setup(client)
+        client.post(f"/api/projects/{pid}/papers", json={"source_id": "2204.12985"})
+        client.delete(f"/api/projects/{pid}")
+        r = client.delete(f"/api/projects/{pid}/papers/2204.12985")
+        assert r.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# BibTeX import
+# ---------------------------------------------------------------------------
+
+class TestBibtexImport:
+    def _post(self, client, bib: str, project_id=None):
+        params = {} if project_id is None else {"project_id": project_id}
+        return client.post(
+            "/api/papers/import/bibtex",
+            params=params,
+            files={"file": ("refs.bib", bib.encode(), "text/x-bibtex")},
+        )
+
+    def test_import_without_project(self, client, minimal_bib):
+        r = self._post(client, minimal_bib)
+        assert r.status_code == 200
+        assert r.json() == {"saved_count": 1, "source_ids": ["smith2020"]}
+
+    def test_import_links_to_project(self, client, minimal_bib):
+        pid = client.post("/api/projects", json={"name": "Bib"}).json()["project"]["id"]
+        r = self._post(client, minimal_bib, project_id=pid)
+        assert r.status_code == 200
+        assert "smith2020" in client.get(f"/api/projects/{pid}").json()["source_ids"]
+
+    def test_import_to_unknown_project_returns_404_and_saves_nothing(self, client, minimal_bib):
+        import storage.db as db
+        r = self._post(client, minimal_bib, project_id=999)
+        assert r.status_code == 404
+        assert db.get_paper_root("smith2020") is None
+
+    def test_import_to_deleted_project_returns_400_and_saves_nothing(self, client, minimal_bib):
+        import storage.db as db
+        pid = client.post("/api/projects", json={"name": "Bin"}).json()["project"]["id"]
+        client.delete(f"/api/projects/{pid}")
+        r = self._post(client, minimal_bib, project_id=pid)
+        assert r.status_code == 400
+        assert db.get_paper_root("smith2020") is None
+
+
+# ---------------------------------------------------------------------------
+# PDF import — link-failure boundary
+# ---------------------------------------------------------------------------
+
+class TestPdfImportLinkFailure:
+    def test_link_failure_returns_400_naming_the_imported_paper(self, client, monkeypatch):
+        # Simulates the project vanishing between import_pdf's pre-guard and
+        # its post-import link step.
+        from service.paper import PaperLinkError
+
+        def _raise(content, project_id=None):
+            raise PaperLinkError(
+                "paper local:abc was imported but could not be linked to project 1: gone"
+            )
+
+        monkeypatch.setattr("api.app.svc_import_pdf", _raise)
+        r = client.post(
+            "/api/papers/import/pdf",
+            params={"project_id": 1},
+            files={"file": ("p.pdf", b"%PDF-1.4 fake", "application/pdf")},
+        )
+        assert r.status_code == 400
+        assert "was imported but could not be linked" in r.json()["detail"]
+
 
 # ---------------------------------------------------------------------------
 # Notes

@@ -33,8 +33,10 @@ def color_from_hex(hex_str: str) -> int:
 # ── Internal helpers ──────────────────────────────────────────────────────────
 #
 # Membership writes come in two shapes:
-#   * Incremental (add_paper / add_papers / remove_paper): single-statement
+#   * Incremental (add_papers / remove_papers): single-statement
 #     INSERT OR IGNORE / DELETE per row. These never touch other rows.
+#     add_papers raises ValueError on an unsaved project; remove_papers is
+#     a silent no-op there (no rows can exist yet).
 #   * Full replace (_save_source_fks, used by replace_papers and the initial
 #     insert in save()): DELETE everything for the project, re-insert from the
 #     caller's list. Rows written by anyone else since the caller loaded its
@@ -125,10 +127,10 @@ class Project:
                 assert self.id
                 _save_source_fks(conn, self.id, self.source_fks)
         else:
-            # Fields only. Membership is written by add_paper/add_papers/
-            # remove_paper/replace_papers — rewriting it here from this
-            # instance's (possibly stale) snapshot would discard rows written
-            # by other requests since the snapshot was loaded.
+            # Fields only. Membership is written by add_papers/remove_papers/
+            # replace_papers — rewriting it here from this instance's
+            # (possibly stale) snapshot would discard rows written by other
+            # requests since the snapshot was loaded.
             with _connect() as conn:
                 conn.execute(
                     """
@@ -164,22 +166,14 @@ class Project:
         self.source_fks = _load_source_fks(self.id)
         self._sources_loaded = True
 
-    def add_paper(self, source_fk: int) -> None:
-        """Add one paper to the project (no-op if already a member)."""
-        if self.id is None:
-            raise ValueError("Project must be saved before papers can be added.")
-        # No membership pre-check against self.source_fks (it may be stale);
-        # the insert is OR IGNORE.
-        with _connect() as conn:
-            conn.execute(_INSERT_MEMBERSHIP_SQL, (self.id, source_fk))
-        self._refresh_source_fks()
-
     def add_papers(self, source_fks: list[int]) -> None:
         """Add many papers; duplicates and existing members are skipped."""
         if self.id is None:
             raise ValueError("Project must be saved before papers can be added.")
         if not source_fks:
             return
+        # No membership pre-check against self.source_fks (it may be stale);
+        # the insert is OR IGNORE.
         with _connect() as conn:
             conn.executemany(
                 _INSERT_MEMBERSHIP_SQL,
@@ -187,14 +181,16 @@ class Project:
             )
         self._refresh_source_fks()
 
-    def remove_paper(self, source_fk: int) -> None:
-        """Remove one paper from the project (no-op if not a member)."""
+    def remove_papers(self, source_fks: list[int]) -> None:
+        """Remove many papers; non-members are skipped."""
         if self.id is None:
             return
+        if not source_fks:
+            return
         with _connect() as conn:
-            conn.execute(
+            conn.executemany(
                 "DELETE FROM PROJECT_TO_PAPER WHERE PROJECT_FK = ? AND SOURCE_FK = ?",
-                (self.id, source_fk),
+                [(self.id, sfk) for sfk in source_fks],
             )
         self._refresh_source_fks()
 
@@ -232,12 +228,12 @@ class Project:
 
 # ── Queries ───────────────────────────────────────────────────────────────────
 
-def get_project(project_id: int) -> Optional[Project]:
+def get_project(project_id: int, load_sources: bool = True) -> Optional[Project]:
     with _connect() as conn:
         row = conn.execute(
             "SELECT * FROM PROJECT WHERE PROJECT_FK = ?", (project_id,)
         ).fetchone()
-    return Project.from_row(row) if row else None
+    return Project.from_row(row, load_sources=load_sources) if row else None
 
 
 def filter_projects(condition: Q | None = None, load_sources: bool = True) -> list[Project]:

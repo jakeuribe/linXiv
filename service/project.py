@@ -1,8 +1,10 @@
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional
 
 from service.models.project import ProjectDetails, Status
+from storage.db import get_paper_roots_bulk as _get_paper_roots_bulk
 from storage.notes import count_project_notes as _count_project_notes
 from storage.projects import (
     Q,
@@ -13,8 +15,11 @@ from storage.projects import (
     get_project as _get_project,
     filter_projects as _filter_projects,
     hard_delete_project as _hard_delete_project,
+    remove_paper_from_all_projects as _remove_paper_from_all_projects,
 )
 import storage.tags as _tags_storage
+
+_log = logging.getLogger(__name__)
 
 
 class Unset:
@@ -132,7 +137,7 @@ def upsert(project: ProjectIn, project_fk: int | None = None) -> int:
     The update branch (project_fk given) is a full replace: fields, membership
     (becomes exactly project.source_fks), and tags. As of 2026-06 no production
     code calls it — all production updates are field-only (update()) or
-    incremental membership (add_papers()/remove_paper()); it is kept as the
+    incremental membership (add_papers()/remove_papers()); it is kept as the
     one sanctioned full-replace entry point rather than having callers reach
     for Project.replace_papers directly. Do not use it to express incremental
     membership changes: the rewrite discards rows written by other processes
@@ -175,7 +180,7 @@ def upsert(project: ProjectIn, project_fk: int | None = None) -> int:
             raise RuntimeError("Project.save() did not set an id")
         # Upsert semantics: membership becomes exactly project.source_fks.
         # save() itself no longer writes membership (see storage.projects).
-        # Callers making incremental changes should use add_papers/remove_paper.
+        # Callers making incremental changes should use add_papers/remove_papers.
         p.replace_papers(project.source_fks)
         _sync_tags(p.id, project.tags)
         return p.id
@@ -245,28 +250,142 @@ def update(
         p.save()
 
 
-def add_papers(project_fk: int, source_fks: list[int]) -> None:
-    """Incrementally add papers to a project (no-op for existing members).
+# ---------------------------------------------------------------------------
+# Membership seam
+#
+# add_papers / remove_papers / link_imported are the membership-write
+# functions for consumers (API, CLI, MCP, import flows); they resolve paper
+# ids, apply the shared guards, and perform only per-row writes. Full replace
+# happens solely through upsert() -> replace_papers. Guards: missing project
+# raises ProjectNotFoundError (a LookupError), deleted project raises
+# ProjectDeletedError (a ValueError); archived projects accept membership
+# writes. Boundaries that translate errors (HTTP statuses, MCP ValueError
+# convention) catch the typed subclasses so unrelated LookupError/ValueError
+# from deeper layers pass through unclaimed.
+# ---------------------------------------------------------------------------
 
-    Unlike upsert(), this performs only per-row inserts and never rewrites
-    the membership list.
+class ProjectNotFoundError(LookupError):
+    """Membership guard: the project does not exist."""
+
+
+class ProjectDeletedError(ValueError):
+    """Membership guard: the project has been soft-deleted."""
+
+
+def _get_for_membership(project_fk: int) -> _StorageProject:
+    """Load a project for a membership write, applying the shared guards.
+
+    Skips loading the membership list — the write paths refresh it after
+    writing, and the guards only need existence and status.
     """
-    p = _get_project(project_fk)
+    p = _get_project(project_fk, load_sources=False)
     if p is None:
-        raise LookupError(f"Project {project_fk} not found")
+        raise ProjectNotFoundError(f"Project {project_fk} not found")
     if p.status == Status.DELETED:
-        raise ValueError("cannot update a deleted project")
-    p.add_papers(source_fks)
+        raise ProjectDeletedError("cannot update a deleted project")
+    return p
 
 
-def remove_paper(project_fk: int, source_fk: int) -> None:
-    """Incrementally remove one paper from a project (no-op for non-members)."""
-    p = _get_project(project_fk)
-    if p is None:
-        raise LookupError(f"Project {project_fk} not found")
-    if p.status == Status.DELETED:
-        raise ValueError("cannot update a deleted project")
-    p.remove_paper(source_fk)
+def ensure_membership_writable(project_fk: int) -> None:
+    """Apply the membership-write guards without writing anything.
+
+    Import flows call this before saving papers, so a missing project
+    (ProjectNotFoundError) or deleted project (ProjectDeletedError) fails
+    the operation before the library is mutated.
+    """
+    _get_for_membership(project_fk)
+
+
+def _resolve_source_ids(source_ids: list[str]) -> tuple[list[int], list[str]]:
+    """Resolve paper ids to SOURCE_FKs in one bulk lookup.
+
+    Ids are stripped before lookup. Returns (fks in first-seen input order,
+    unresolved ids verbatim — each reported once however often it repeats).
+    """
+    resolved = _get_paper_roots_bulk([sid.strip() for sid in source_ids])
+    fks: list[int] = []
+    failed: list[str] = []
+    seen: set[str] = set()
+    for sid in source_ids:
+        stripped = sid.strip()
+        if stripped in seen:
+            continue
+        seen.add(stripped)
+        fk = resolved.get(stripped)
+        if fk is None:
+            failed.append(sid)
+        else:
+            fks.append(fk)
+    return fks, failed
+
+
+def add_papers(project_fk: int, source_ids: list[str]) -> list[str]:
+    """Add papers to a project by paper id (no-op for existing members).
+
+    Resolves each id to its PAPER_ROOTS row and performs only per-row
+    inserts — the membership list is never rewritten. Partial success: ids
+    that don't match any known paper are returned (verbatim, each reported
+    once) while the rest are still added. Trashed papers count as known —
+    the membership row is written but hidden from project reads until the
+    paper is restored.
+
+    Raises ProjectNotFoundError if the project does not exist,
+    ProjectDeletedError if it has been deleted.
+    """
+    p = _get_for_membership(project_fk)
+    fks, failed = _resolve_source_ids(source_ids)
+    if fks:
+        p.add_papers(fks)
+    return failed
+
+
+def remove_papers(project_fk: int, source_ids: list[str]) -> list[str]:
+    """Remove papers from a project by paper id (no-op for non-members).
+
+    Same contract as add_papers: per-row deletes only, and unresolved ids
+    are returned verbatim while the rest are still removed.
+    """
+    p = _get_for_membership(project_fk)
+    fks, failed = _resolve_source_ids(source_ids)
+    if fks:
+        p.remove_papers(fks)
+    return failed
+
+
+def link_imported(project_fk: int, source_ids: list[str]) -> None:
+    """Link just-imported papers to a project (same write path as add_papers).
+
+    On import flows the ids come from the import itself, not from user
+    input, so an unresolved id means the save step and the lookup disagree
+    on id form — it is logged as a warning rather than returned, since the
+    caller has no user to report it to.
+
+    Raises ProjectNotFoundError if the project does not exist,
+    ProjectDeletedError if it has been deleted (e.g. deleted between the
+    caller's pre-import ensure_membership_writable() check and this call).
+    """
+    failed = add_papers(project_fk, source_ids)
+    if failed:
+        _log.warning(
+            "link_imported: %d of %d imported id(s) did not resolve for project %d: %r",
+            len(failed), len(source_ids), project_fk, failed[:5],
+        )
+
+
+def remove_paper_from_all_projects(source_fk: int) -> list[int]:
+    """Delete this paper's membership rows across all projects (single
+    transaction). Returns the PROJECT_FKs that contained it."""
+    return _remove_paper_from_all_projects(source_fk)
+
+
+def remove_paper_from_all_projects_by_id(source_id: str) -> list[int] | None:
+    """Resolve a paper id (stripped before lookup) and delete its membership
+    rows across all projects. Returns the PROJECT_FKs that contained it, or
+    None when the id does not match any known paper."""
+    fk = _get_paper_roots_bulk([source_id.strip()]).get(source_id.strip())
+    if fk is None:
+        return None
+    return _remove_paper_from_all_projects(fk)
 
 
 def delete(project: Project) -> None:

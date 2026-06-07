@@ -40,7 +40,6 @@ from service.paper import (
     get_all as get_all_paper_versions,
     get_source_id as get_paper_source_id,
     get_paper_root,
-    get_paper_roots_bulk,
     list_paper_details,
     list_deleted as list_deleted_papers,
     delete as soft_delete_paper,
@@ -56,6 +55,7 @@ from service.paper import (
     search_papers,
     import_pdf as svc_import_pdf,
     PdfImportError,
+    PaperLinkError,
     pdf_on_disk_name,
     set_has_pdf,
     set_pdf_path,
@@ -65,16 +65,21 @@ from service.tag import list_all_tags
 import user_settings
 import service.note as _service_note
 from storage.projects import (
-    Project,
     Status,
     ensure_projects_db,
     filter_projects,
     get_project,
-    remove_paper_from_all_projects,
 )
 from service.project import (
     Project as SvcProject,
     ProjectIn as SvcProjectIn,
+    ProjectDeletedError,
+    ProjectNotFoundError,
+    add_papers as add_papers_svc,
+    remove_papers as remove_papers_svc,
+    ensure_membership_writable as ensure_membership_writable_svc,
+    link_imported as link_imported_svc,
+    remove_paper_from_all_projects,
     color_from_hex,
     color_to_hex,
     create as create_project_svc,
@@ -582,13 +587,14 @@ class ProjectPaperBody(BaseModel):
 
 @app.post("/api/projects/{project_id}/papers")
 def api_project_add_paper(project_id: int, body: ProjectPaperBody) -> dict:
-    p = get_project(project_id)
-    if not p:
-        raise HTTPException(status_code=404, detail="Project not found")
-    root = get_paper_root(body.source_id.strip())
-    if root is None:
+    try:
+        failed = add_papers_svc(project_id, [body.source_id])
+    except ProjectNotFoundError as e:
+        raise HTTPException(status_code=404, detail="Project not found") from e
+    except ProjectDeletedError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if failed:
         raise HTTPException(status_code=404, detail="Paper not found")
-    p.add_paper(int(root["SOURCE_FK"]))
     return {"ok": True}
 
 
@@ -600,42 +606,26 @@ class ProjectPapersBulkBody(BaseModel):
 def api_project_add_papers(project_id: int, body: ProjectPapersBulkBody) -> dict:
     """Add many papers in one request. Partial success: unknown source_ids
     are reported back in `failed` (verbatim, un-stripped) while the rest
-    are still added.
-
-    Trashed papers count as known (same as the single-add endpoint): the
-    membership row is written but hidden from project reads until the paper
-    is restored."""
-    p = get_project(project_id)
-    if not p:
-        raise HTTPException(status_code=404, detail="Project not found")
-    resolved = get_paper_roots_bulk([sid.strip() for sid in body.source_ids])
-    fks: list[int] = []
-    failed: list[str] = []
-    seen: set[str] = set()
-    for sid in body.source_ids:
-        stripped = sid.strip()
-        if stripped in seen:
-            continue  # report each unknown id once, however often it repeats
-        seen.add(stripped)
-        fk = resolved.get(stripped)
-        if fk is None:
-            failed.append(sid)
-        else:
-            fks.append(fk)
-    if fks:
-        p.add_papers(fks)
+    are still added — see service.project.add_papers for the full contract."""
+    try:
+        failed = add_papers_svc(project_id, body.source_ids)
+    except ProjectNotFoundError as e:
+        raise HTTPException(status_code=404, detail="Project not found") from e
+    except ProjectDeletedError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return {"ok": not failed, "failed": failed}
 
 
 @app.delete("/api/projects/{project_id}/papers/{source_id:path}")
 def api_project_remove_paper(project_id: int, source_id: str) -> dict:
-    p = get_project(project_id)
-    if not p:
-        raise HTTPException(status_code=404, detail="Project not found")
-    root = get_paper_root(source_id)
-    if root is None:
+    try:
+        failed = remove_papers_svc(project_id, [source_id])
+    except ProjectNotFoundError as e:
+        raise HTTPException(status_code=404, detail="Project not found") from e
+    except ProjectDeletedError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if failed:
         raise HTTPException(status_code=404, detail="Paper not found")
-    p.remove_paper(int(root["SOURCE_FK"]))
     return {"ok": True}
 
 
@@ -1241,6 +1231,16 @@ async def api_import_bibtex(
     project_id: int | None = Query(default=None),
 ) -> dict:
     text = (await file.read()).decode("utf-8", errors="replace")
+    # The link target is checked before parsing/saving; a delete that lands
+    # between this check and the post-save link still saves the papers and
+    # surfaces as a 4xx from the link step below.
+    if project_id is not None:
+        try:
+            ensure_membership_writable_svc(project_id)
+        except ProjectNotFoundError as e:
+            raise HTTPException(status_code=404, detail="Project not found") from e
+        except ProjectDeletedError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
     try:
         metas = BibTeXFormat().import_string(text)
     except Exception as e:
@@ -1249,12 +1249,13 @@ async def api_import_bibtex(
     pairs = save_papers_metadata(metas, tags=None)
     saved = [sid for sid, _ in pairs]
     if project_id is not None and saved:
-        proj = get_project(project_id)
-        if proj and proj.status == Status.ACTIVE:
-            resolved = get_paper_roots_bulk(saved)
-            fks = [resolved[sid] for sid in saved if sid in resolved]
-            if fks:
-                proj.add_papers(fks)
+        try:
+            link_imported_svc(project_id, saved)
+        except (ProjectNotFoundError, ProjectDeletedError) as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{len(saved)} paper(s) were imported but could not be linked: {e}",
+            ) from e
     return {"saved_count": len(saved), "source_ids": saved}
 
 
@@ -1282,6 +1283,15 @@ async def api_import_pdf(
         result = await run_in_threadpool(svc_import_pdf, content, project_id)
     except PdfImportError as e:
         raise HTTPException(status_code=422, detail=f"Could not extract PDF metadata: {e}") from e
+    except ProjectNotFoundError as e:
+        # Raised by import_pdf's pre-import membership guard — nothing was
+        # imported. A project that goes away after the import surfaces as
+        # PaperLinkError below instead.
+        raise HTTPException(status_code=404, detail="Project not found") from e
+    except ProjectDeletedError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except PaperLinkError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         _api_log.exception("PDF import failed")
         raise HTTPException(status_code=500, detail="PDF import failed") from e

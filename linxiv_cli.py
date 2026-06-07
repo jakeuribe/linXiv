@@ -28,7 +28,6 @@ from sources.base import PaperMetadata, PaperSource
 from sources.crossref_source import CrossRefSource
 from sources.doi_resolve import resolve_doi
 from sources.openalex_source import OpenAlexSource
-from storage.projects import remove_paper_from_all_projects as _remove_paper_from_all_projects
 import user_settings
 
 import service.author as svc_author
@@ -249,12 +248,10 @@ def cmd_paper_search(args: argparse.Namespace) -> None:
 
 def cmd_paper_remove_from_all(args: argparse.Namespace) -> None:
     source_id = _as_source_id(args.source_id)
-    root = svc_paper.get_paper_root(source_id)
-    if root is None:
+    removed = svc_project.remove_paper_from_all_projects_by_id(source_id)
+    if removed is None:
         print(json.dumps({"error": f"Paper {source_id!r} not found"}), file=sys.stderr)
         sys.exit(1)
-    source_fk = int(root["SOURCE_FK"])
-    removed = _remove_paper_from_all_projects(source_fk)
     _output({"source_id": source_id, "removed_from_projects": removed})
 
 
@@ -523,32 +520,26 @@ def cmd_project_hard_delete(args: argparse.Namespace) -> None:
 
 def cmd_project_add_paper(args: argparse.Namespace) -> None:
     source_id = _as_source_id(args.source_id)
-    _resolve_project_or_exit(args.project_id)
-    root = svc_paper.get_paper_root(source_id)
-    if root is None:
-        print(json.dumps({"error": f"Paper {source_id} not found in database"}), file=sys.stderr)
-        sys.exit(1)
-    # Incremental add — not upsert(), which would rewrite the full membership
-    # list from this process's snapshot.
     try:
-        svc_project.add_papers(args.project_id, [int(root["SOURCE_FK"])])
-    except (LookupError, ValueError) as e:
+        failed = svc_project.add_papers(args.project_id, [source_id])
+    except (svc_project.ProjectNotFoundError, svc_project.ProjectDeletedError) as e:
         print(json.dumps({"error": str(e)}), file=sys.stderr)
+        sys.exit(1)
+    if failed:
+        print(json.dumps({"error": f"Paper {source_id} not found in database"}), file=sys.stderr)
         sys.exit(1)
     _output({"project_id": args.project_id, "source_id": source_id})
 
 
 def cmd_project_remove_paper(args: argparse.Namespace) -> None:
     source_id = _as_source_id(args.source_id)
-    _resolve_project_or_exit(args.project_id)
-    root = svc_paper.get_paper_root(source_id)
-    if root is None:
-        print(json.dumps({"error": f"Paper {source_id} not found in database"}), file=sys.stderr)
-        sys.exit(1)
     try:
-        svc_project.remove_paper(args.project_id, int(root["SOURCE_FK"]))
-    except (LookupError, ValueError) as e:
+        failed = svc_project.remove_papers(args.project_id, [source_id])
+    except (svc_project.ProjectNotFoundError, svc_project.ProjectDeletedError) as e:
         print(json.dumps({"error": str(e)}), file=sys.stderr)
+        sys.exit(1)
+    if failed:
+        print(json.dumps({"error": f"Paper {source_id} not found in database"}), file=sys.stderr)
         sys.exit(1)
     _output({"project_id": args.project_id, "source_id": source_id, "removed": True})
 
@@ -707,8 +698,8 @@ def cmd_pdf_storage(args: argparse.Namespace) -> None:
 
 
 def cmd_pdf_import(args: argparse.Namespace) -> None:
-    if args.project_id is not None:
-        _resolve_project_or_exit(args.project_id)
+    # import_pdf applies the membership guards itself (before any import
+    # work); the except below turns them into the JSON error exit.
     pdf_path = Path(args.file)
     try:
         content = pdf_path.read_bytes()
@@ -727,7 +718,13 @@ def cmd_pdf_import(args: argparse.Namespace) -> None:
 def cmd_bibtex_import(args: argparse.Namespace) -> None:
     bib_path = Path(args.file)
     if args.project_id is not None:
-        _resolve_project_or_exit(args.project_id)
+        # Guard before parsing/saving so a missing or deleted project fails
+        # the command before the library is mutated.
+        try:
+            svc_project.ensure_membership_writable(args.project_id)
+        except (svc_project.ProjectNotFoundError, svc_project.ProjectDeletedError) as e:
+            print(json.dumps({"error": str(e)}), file=sys.stderr)
+            sys.exit(1)
     try:
         metas = BibTeXFormat().import_file(str(bib_path))
     except Exception as e:
@@ -735,18 +732,17 @@ def cmd_bibtex_import(args: argparse.Namespace) -> None:
         print(json.dumps({"error": str(e)}), file=sys.stderr)
         sys.exit(1)
     results = svc_paper.save_papers_metadata(metas)
-    if args.project_id is not None:
-        # Incremental add — not upsert(), which would rewrite the full
-        # membership list from this process's snapshot. add_papers skips
-        # existing members itself.
-        resolved = svc_paper.get_paper_roots_bulk([s for s, _ in results])
-        fks = [resolved[s] for s, _ in results if s in resolved]
-        if fks:
-            try:
-                svc_project.add_papers(args.project_id, fks)
-            except (LookupError, ValueError) as e:
-                print(json.dumps({"error": str(e)}), file=sys.stderr)
-                sys.exit(1)
+    if args.project_id is not None and results:
+        try:
+            svc_project.link_imported(args.project_id, [s for s, _ in results])
+        except (svc_project.ProjectNotFoundError, svc_project.ProjectDeletedError) as e:
+            # Project went away between the pre-parse guard and the link; the
+            # message says the papers stayed imported.
+            print(
+                json.dumps({"error": f"{len(results)} paper(s) were imported but could not be linked: {e}"}),
+                file=sys.stderr,
+            )
+            sys.exit(1)
     _output({"imported": len(results), "papers": [{"source_id": s, "version": v} for s, v in results]})
 
 

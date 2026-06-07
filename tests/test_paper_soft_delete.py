@@ -376,7 +376,7 @@ class TestProjectMembershipSurvivesSoftDelete:
         p.save()
         source_fk = db.ensure_paper_root("2204.12985")
         db.save_paper(_make_result("2204.12985v1"))
-        p.add_paper(source_fk)
+        p.add_papers([source_fk])
 
         db.soft_delete_paper("2204.12985")
 
@@ -392,7 +392,7 @@ class TestProjectMembershipSurvivesSoftDelete:
         p.save()
         source_fk = db.ensure_paper_root("2204.12985")
         db.save_paper(_make_result("2204.12985v1"))
-        p.add_paper(source_fk)
+        p.add_papers([source_fk])
 
         db.soft_delete_paper("2204.12985")
 
@@ -408,7 +408,7 @@ class TestProjectMembershipSurvivesSoftDelete:
         p.save()
         source_fk = db.ensure_paper_root("2204.12985")
         db.save_paper(_make_result("2204.12985v1"))
-        p.add_paper(source_fk)
+        p.add_papers([source_fk])
 
         db.soft_delete_paper("2204.12985")
         db.restore_paper("2204.12985")
@@ -425,7 +425,7 @@ class TestProjectMembershipSurvivesSoftDelete:
         p.save()
         source_fk = db.ensure_paper_root("2204.12985")
         db.save_paper(_make_result("2204.12985v1"))
-        p.add_paper(source_fk)
+        p.add_papers([source_fk])
         assert p.id is not None
         assert count_project_papers(p.id) == 1
 
@@ -491,7 +491,7 @@ class TestPaperSvcRestore:
         p.save()
         _save("2204.12985v1")
         sfk = db.ensure_paper_root("2204.12985")
-        p.add_paper(sfk)
+        p.add_papers([sfk])
 
         paper_svc.delete(Paper(source_id="2204.12985"))
         _, project_fks = paper_svc.restore(Paper(source_id="2204.12985"))
@@ -554,7 +554,7 @@ class TestPaperSvcListDeleted:
         p.save()
         _save("2204.12985v1")
         sfk = db.ensure_paper_root("2204.12985")
-        p.add_paper(sfk)
+        p.add_papers([sfk])
 
         paper_svc.delete(Paper(source_id="2204.12985"))
         deleted = paper_svc.list_deleted()
@@ -758,7 +758,7 @@ class TestNoteCountsExcludeDeleted:
 
         _save("2204.12985v1")
         sfk = db.ensure_paper_root("2204.12985")
-        proj.add_paper(sfk)
+        proj.add_papers([sfk])
 
         db.soft_delete_paper("2204.12985")
 
@@ -775,7 +775,7 @@ class TestNoteCountsExcludeDeleted:
 
         _save("2204.12985v1")
         sfk = db.ensure_paper_root("2204.12985")
-        proj.add_paper(sfk)
+        proj.add_papers([sfk])
 
         counts = note_counts_by_paper_for_project(proj.id)
         assert sfk in counts

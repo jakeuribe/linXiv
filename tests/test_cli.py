@@ -1511,10 +1511,9 @@ class TestPdfImportCommand:
         err = _exit_err(capsys, ["pdf", "import", str(missing)])
         assert "error" in err
 
-    def test_pdf_import_nonexistent_project_exits_nonzero(self, monkeypatch, capsys, tmp_path):
-        from service.paper import PaperImportResult
-        fake_result = PaperImportResult(source_id="local:abc456", title="No Project")
-        monkeypatch.setattr("service.paper.import_pdf", lambda content, project_id=None: fake_result)
+    def test_pdf_import_nonexistent_project_exits_nonzero(self, capsys, tmp_path):
+        # Unmocked: import_pdf's membership guard runs before any parsing,
+        # so the fake PDF content is never parsed.
         fake_pdf = tmp_path / "paper.pdf"
         fake_pdf.write_bytes(b"%PDF-1.4 fake")
         err = _exit_err(capsys, ["pdf", "import", str(fake_pdf), "--project-id", "9999"])
