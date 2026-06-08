@@ -6,7 +6,7 @@ function unchanged, so the tools are callable as plain functions.
 """
 from __future__ import annotations
 
-import importlib.util
+import importlib
 import sys
 import types
 
@@ -20,11 +20,13 @@ def _ensure_mcp_importable() -> None:
     # The stubs stay registered in sys.modules for the whole session, like
     # linxiv_mcp itself once imported. Nothing else in the repo imports the
     # `mcp` package, so no other test observes them.
+    # importlib.import_module rather than a bare `import mcp...` so pyright
+    # doesn't try (and fail) to statically resolve the optional dependency.
+    # Succeeds both for a real install and for the stub already in sys.modules.
     try:
-        if importlib.util.find_spec("mcp.server.fastmcp") is not None:
-            return
+        importlib.import_module("mcp.server.fastmcp")
+        return
     except ModuleNotFoundError:
-        # find_spec raises when a parent package (mcp, mcp.server) is absent.
         pass
 
     class _FastMCP:
