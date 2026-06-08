@@ -6,6 +6,7 @@ function unchanged, so the tools are callable as plain functions.
 """
 from __future__ import annotations
 
+import importlib.util
 import sys
 import types
 
@@ -20,9 +21,10 @@ def _ensure_mcp_importable() -> None:
     # linxiv_mcp itself once imported. Nothing else in the repo imports the
     # `mcp` package, so no other test observes them.
     try:
-        import mcp.server.fastmcp  # noqa: F401
-        return
+        if importlib.util.find_spec("mcp.server.fastmcp") is not None:
+            return
     except ModuleNotFoundError:
+        # find_spec raises when a parent package (mcp, mcp.server) is absent.
         pass
 
     class _FastMCP:
@@ -37,9 +39,9 @@ def _ensure_mcp_importable() -> None:
     root = types.ModuleType("mcp")
     server = types.ModuleType("mcp.server")
     fastmcp = types.ModuleType("mcp.server.fastmcp")
-    fastmcp.FastMCP = _FastMCP
-    root.server = server
-    server.fastmcp = fastmcp
+    setattr(fastmcp, "FastMCP", _FastMCP)
+    setattr(root, "server", server)
+    setattr(server, "fastmcp", fastmcp)
     sys.modules.setdefault("mcp", root)
     sys.modules.setdefault("mcp.server", server)
     sys.modules.setdefault("mcp.server.fastmcp", fastmcp)
