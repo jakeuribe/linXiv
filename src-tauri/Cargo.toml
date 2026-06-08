@@ -1,3 +1,9 @@
+# Workspace root is src-tauri (NOT the repo root): upstream's integrations.rs
+# resolves sidecar binaries relative to current_exe(), so the cargo target/
+# directory must stay at src-tauri/target (ADR 0016 / drift report 2026-06-05).
+[workspace]
+members = ["."]
+
 [package]
 name = "linxiv-app"
 version = "0.1.0"
@@ -15,8 +21,14 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["unstable"] }
 tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-shell = "2"
+# Path dep on a SIBLING checkout (deliberate — not a published crate; ADR 0016).
+# A fresh clone of this repo alone will fail here: you also need
+# https://github.com/linxiv-dev/tex-brain-tauri cloned next to it, so the two
+# repos sit side by side (<parent>/linxiv-texbrain and <parent>/tex-brain-tauri).
+tauri-plugin-texbrain = { path = "../../tex-brain-tauri/tauri-plugin-texbrain" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }

@@ -63,6 +63,8 @@ from service.models.paper import PaperDetails
 from service.tag import list_all_tags
 import user_settings
 import service.note as _service_note
+import service.vault as _vault
+import service.editor_project as _editor_project
 from storage.projects import (
     Project,
     Status,
@@ -88,8 +90,9 @@ from storage.config.queries import Q, list_project_tags_bulk, list_project_sourc
 import storage.search_history as _search_history
 import storage.search_state as _search_state
 
-from storage.paths import pdf_dir as _storage_pdf_dir
+from storage.paths import pdf_dir as _storage_pdf_dir, vault_dir as _storage_vault_dir
 PDF_DIR = _storage_pdf_dir()
+VAULT_DIR = _storage_vault_dir()
 
 _arxiv_source = ArxivSource()
 _openalex = OpenAlexSource()
@@ -130,6 +133,7 @@ async def _lifespan(_: FastAPI):
     ensure_projects_db()
     _service_note.ensure_notes_db()
     PDF_DIR.mkdir(parents=True, exist_ok=True)
+    VAULT_DIR.mkdir(parents=True, exist_ok=True)
     async def _purge():
         try:
             await asyncio.to_thread(purge_old_projects, 30)
@@ -837,9 +841,77 @@ def api_note_update(note_id: int, body: NoteUpdate) -> dict:
 
 @app.delete("/api/notes/{note_id}")
 def api_note_delete(note_id: int) -> dict:
+    # If this note is an editor project, remember to drop its on-disk vault too. Resolve
+    # this BEFORE the DB delete (the frontmatter flag must still be readable).
+    is_editor_project = _editor_project.get_meta(note_id) is not None
     if not _service_note.delete(_service_note.Note(note_id=note_id)):
         raise HTTPException(status_code=404, detail="Note not found")
+    if is_editor_project:
+        _vault.delete_vault(note_id)
     return {"ok": True}
+
+
+# ── embedded TeXbrain editor: projects (note-link) + vault filesystem ────────────
+# An editor project is a NOTE flagged in frontmatter that owns an on-disk LaTeX vault
+# at vault_dir()/note_<id>/. The editor (in an iframe) reads/writes that vault over a
+# postMessage FS bridge; /fs forwards one FsOp and returns the FsResult (see
+# service/vault.py + service/editor_project.py and src/lib/editorBridgeTypes.ts).
+
+class EditorProjectCreate(BaseModel):
+    project_name: str = Field(min_length=1)
+    main_file: str = "main.tex"
+    source_id: str | None = None
+    project_id: int | None = None
+
+
+class VaultFsOp(BaseModel):
+    """One FsOp from the editor's FileSystem adapter. ``path`` is root-relative
+    (no leading slash; "" == vault root). ``data`` is base64 when ``binary``."""
+    kind: Literal["list", "readFile", "writeFile", "mkdir", "remove"]
+    path: str = ""
+    data: str | None = None
+    binary: bool = False
+    recursive: bool = False
+
+
+@app.get("/api/editor/projects")
+def api_editor_projects(project_id: int | None = None) -> dict:
+    return {"projects": _editor_project.list_projects(project_id)}
+
+
+@app.post("/api/editor/projects")
+def api_editor_project_create(body: EditorProjectCreate) -> dict:
+    try:
+        return _editor_project.create_project(
+            project_name=body.project_name,
+            main_file=body.main_file,
+            source_id=body.source_id,
+            project_id=body.project_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/editor/projects/{note_id}/doc")
+def api_editor_project_doc(note_id: int) -> dict:
+    doc = _editor_project.get_doc(note_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Editor project not found")
+    return doc
+
+
+@app.post("/api/editor/vault/{note_id}/fs")
+def api_editor_vault_fs(note_id: int, op: VaultFsOp) -> dict:
+    if _editor_project.get_meta(note_id) is None:
+        raise HTTPException(status_code=404, detail="Editor project not found")
+    try:
+        return _vault.run_fs_op(note_id, op.model_dump())
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Not found: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 import service.author as _service_author

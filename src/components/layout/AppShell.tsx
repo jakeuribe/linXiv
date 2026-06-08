@@ -3,6 +3,7 @@ import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { Spinner } from "../ui/spinner";
 import GraphPage from "../../pages/GraphPage";
+import EditorPage from "../../pages/EditorPage";
 import { useUiStore, type SidebarPageKey } from "../../stores/ui";
 import { ZOOM_STEP, DEFAULT_ZOOM } from "../../lib/zoom";
 import { getSettings } from "../../api/settings";
@@ -10,7 +11,7 @@ import { useThemeStore } from "../../stores/theme";
 import { VALID_HEX } from "../../lib/theme";
 import type { ThemeColors, ColorAlphas } from "../../lib/theme";
 
-const KEEP_ALIVE = ["/graph"];
+const KEEP_ALIVE = ["/graph", "/editor"];
 
 const VALID_COLOR_KEYS = new Set<string>(["bg", "panel", "border", "accent", "text", "muted", "success", "danger"]);
 
@@ -20,6 +21,7 @@ const ROUTE_PAGE_KEY: Record<string, SidebarPageKey> = {
   "/doi":    "doi",
   "/tags":   "tags",
   "/notes":  "notes",
+  "/editor": "notes",
 };
 
 function PageFallback() {
@@ -108,6 +110,13 @@ export default function AppShell() {
           style={{ display: pathname === "/graph" ? "flex" : "none" }}
         >
           <GraphPage />
+        </div>
+
+        <div
+          className="absolute inset-0 flex flex-col"
+          style={{ display: pathname === "/editor" ? "flex" : "none" }}
+        >
+          <EditorPage />
         </div>
 
         {!onKeepAlive && (

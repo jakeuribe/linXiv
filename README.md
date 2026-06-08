@@ -113,6 +113,7 @@ linXiv/
 - [Node.js](https://nodejs.org/) 18+ (for frontend / Tauri dev)
 - [Rust toolchain](https://rustup.rs/) (for Tauri)
 - [uv](https://github.com/astral-sh/uv) (recommended Python package manager)
+- [tex-brain-tauri](https://github.com/linxiv-dev/tex-brain-tauri) cloned as a sibling directory next to this repo (`../tex-brain-tauri`) — the Tauri build depends on its `tauri-plugin-texbrain` crate by path
 
 ### Install dependencies
 
@@ -246,6 +247,7 @@ The Tauri desktop app wraps the React/Vite frontend and bundles the Python backe
 - [Node.js](https://nodejs.org/) 18+
 - [Rust toolchain](https://rustup.rs/) (stable)
 - [uv](https://github.com/astral-sh/uv)
+- [tex-brain-tauri](https://github.com/linxiv-dev/tex-brain-tauri) cloned as a sibling directory, so the two repos sit side by side (`<parent>/linxiv-texbrain` and `<parent>/tex-brain-tauri`) — `src-tauri/Cargo.toml` has a path dependency on its `tauri-plugin-texbrain` crate
 - System Tauri dependencies — follow the [Tauri v2 prerequisites guide](https://tauri.app/start/prerequisites/) for your OS (WebKit2GTK on Linux, Xcode Command Line Tools on macOS, Microsoft C++ Build Tools on Windows)
 
 ### Development
