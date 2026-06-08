@@ -670,6 +670,29 @@ def get_paper_root(source_id: str) -> Optional[sqlite3.Row]:
         ).fetchone()
 
 
+def get_paper_roots_bulk(source_ids: list[str]) -> dict[str, int]:
+    """Resolve SOURCE_IDs to SOURCE_FKs in bulk: {source_id: source_fk}.
+
+    Unknown ids are simply absent from the result. Queries are chunked to
+    stay under SQLite's IN-list variable cap (~999).
+    """
+    result: dict[str, int] = {}
+    if not source_ids:
+        return result
+    chunk_size = 500
+    with _connect() as conn:
+        for i in range(0, len(source_ids), chunk_size):
+            chunk = source_ids[i : i + chunk_size]
+            placeholders = ",".join("?" * len(chunk))
+            rows = conn.execute(
+                f"SELECT SOURCE_ID, SOURCE_FK FROM PAPER_ROOTS WHERE SOURCE_ID IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                result[str(row["SOURCE_ID"])] = int(row["SOURCE_FK"])
+    return result
+
+
 #TODO: FIX TO WORK EXPECTED WAY 
 def get_all_versions(source_id: str) -> list[sqlite3.Row]:
     """Fetch all stored versions of a paper, ordered oldest to newest."""

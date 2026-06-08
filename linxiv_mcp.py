@@ -27,11 +27,7 @@ from service.note import Note as _SvcNote, Notes as _SvcNotes, NoteIn, NoteUpdat
 from service.models.project import ProjectDetails, Status as _SvcStatus
 from service.models.note import NoteDetails
 from storage.notes import ensure_notes_db as _ensure_notes_db
-from storage.projects import (
-    ensure_projects_db,
-    get_project as _storage_get_project,
-    remove_paper_from_all_projects as _remove_paper_from_all_projects,
-)
+from storage.projects import ensure_projects_db
 from formats.bibtex import BibTeXFormat
 from formats.markdown import ObsidianFormat
 from sources.arxiv_source import ArxivSource
@@ -101,6 +97,15 @@ def _resolve_source(source: str):
     if cls is None:
         raise ValueError(f"Unknown source {source!r}. Use 'arxiv', 'crossref', or 'openalex'.")
     return cls
+
+
+def _project_paper_count(project_id: int) -> int:
+    """Re-read the project and count its (active) members. Raises ValueError
+    if the project vanished (e.g. hard-deleted) since the caller's write."""
+    details = svc_project.get(_SvcProjectFilter(project_fk=project_id))
+    if details is None:
+        raise ValueError(f"Project {project_id} not found.")
+    return len(details.source_fks)
 
 
 # ── Paper tools ───────────────────────────────────────────────────────────────
@@ -392,14 +397,14 @@ def add_paper_to_project(project_id: int, paper_id: str) -> dict:
         project_id: Numeric project ID.
         paper_id: Paper ID to add (e.g. "arxiv:2204.12985").
     """
-    p = _storage_get_project(project_id)
-    if p is None:
-        raise ValueError(f"Project {project_id} not found.")
-    root = svc_paper.get_paper_root(paper_id)
-    if root is None:
+    try:
+        failed = svc_project.add_papers(project_id, [paper_id])
+    except svc_project.ProjectNotFoundError as e:
+        raise ValueError(f"Project {project_id} not found.") from e
+    if failed:
         raise ValueError(f"Paper {paper_id!r} not found in database.")
-    p.add_paper(int(root["SOURCE_FK"]))
-    return {"project_id": p.id, "paper_id": paper_id, "paper_count": p.paper_count}
+    return {"project_id": project_id, "paper_id": paper_id,
+            "paper_count": _project_paper_count(project_id)}
 
 
 @mcp.tool()
@@ -410,14 +415,14 @@ def remove_paper_from_project(project_id: int, paper_id: str) -> dict:
         project_id: Numeric project ID.
         paper_id: Paper ID to remove.
     """
-    p = _storage_get_project(project_id)
-    if p is None:
-        raise ValueError(f"Project {project_id} not found.")
-    root = svc_paper.get_paper_root(paper_id)
-    if root is None:
+    try:
+        failed = svc_project.remove_papers(project_id, [paper_id])
+    except svc_project.ProjectNotFoundError as e:
+        raise ValueError(f"Project {project_id} not found.") from e
+    if failed:
         raise ValueError(f"Paper {paper_id!r} not found in database.")
-    p.remove_paper(int(root["SOURCE_FK"]))
-    return {"project_id": p.id, "paper_id": paper_id, "paper_count": p.paper_count}
+    return {"project_id": project_id, "paper_id": paper_id,
+            "paper_count": _project_paper_count(project_id)}
 
 
 @mcp.tool()
@@ -731,11 +736,9 @@ def remove_paper_from_all_projects(paper_id: str) -> dict:
     Args:
         paper_id: The paper source ID (e.g. "arxiv:2204.12985").
     """
-    root = svc_paper.get_paper_root(paper_id)
-    if root is None:
+    removed = svc_project.remove_paper_from_all_projects_by_id(paper_id)
+    if removed is None:
         raise ValueError(f"Paper {paper_id!r} not found.")
-    source_fk = int(root["SOURCE_FK"])
-    removed = _remove_paper_from_all_projects(source_fk)
     return {"paper_id": paper_id, "removed_from_projects": removed}
 
 
@@ -1036,31 +1039,24 @@ def import_bibtex(file: str, project_id: Optional[int] = None) -> dict:
         file: Path to the .bib file on disk.
         project_id: Optionally link all imported papers to this project.
     """
-    details = None
     if project_id is not None:
-        details = svc_project.get(_SvcProjectFilter(project_fk=project_id))
-        if details is None:
-            raise ValueError(f"Project {project_id} not found.")
+        # Guard before parsing/saving so a missing or deleted project fails
+        # the tool call before the library is mutated.
+        try:
+            svc_project.ensure_membership_writable(project_id)
+        except svc_project.ProjectNotFoundError as e:
+            raise ValueError(f"Project {project_id} not found.") from e
     metas = BibTeXFormat().import_file(file)
     results = svc_paper.save_papers_metadata(metas)
-    if details is not None:
-        existing_fks: set[int] = set(details.source_fks)
-        new_fks: list[int] = []
-        for source_id, _ in results:
-            root = svc_paper.get_paper_root(source_id)
-            if root:
-                fk = int(root["SOURCE_FK"])
-                if fk not in existing_fks:
-                    new_fks.append(fk)
-                    existing_fks.add(fk)
-        if new_fks:
-            svc_project.upsert(ProjectIn(
-                name=details.name,
-                description=details.description,
-                color=details.color,
-                tags=details.project_tags,
-                source_fks=details.source_fks + new_fks,
-            ), project_fk=project_id)
+    if project_id is not None and results:
+        try:
+            svc_project.link_imported(project_id, [s for s, _ in results])
+        except (svc_project.ProjectNotFoundError, svc_project.ProjectDeletedError) as e:
+            # Project went away between the guard above and the link; the
+            # message says the papers stayed imported.
+            raise ValueError(
+                f"{len(results)} paper(s) were imported but could not be linked: {e}"
+            ) from e
     return {"imported": len(results), "papers": [{"source_id": s, "version": v} for s, v in results]}
 
 
@@ -1072,10 +1068,24 @@ def import_pdf(file: str, project_id: Optional[int] = None) -> dict:
         file: Path to the PDF file on disk.
         project_id: Optionally link the imported paper to this project.
     """
-    if project_id is not None and svc_project.get(_SvcProjectFilter(project_fk=project_id)) is None:
-        raise ValueError(f"Project {project_id} not found.")
+    if project_id is not None:
+        # import_pdf re-applies the same guards; this converts the missing-
+        # project case to the MCP-conventional ValueError before reading the file.
+        try:
+            svc_project.ensure_membership_writable(project_id)
+        except svc_project.ProjectNotFoundError as e:
+            raise ValueError(f"Project {project_id} not found.") from e
     content = Path(file).read_bytes()
-    result = svc_paper.import_pdf(content, project_id)
+    try:
+        result = svc_paper.import_pdf(content, project_id)
+    except svc_project.ProjectNotFoundError as e:
+        # Project hard-deleted between the guard above and import_pdf's own
+        # pre-import guard — nothing was imported.
+        raise ValueError(f"Project {project_id} not found.") from e
+    except svc_paper.PaperLinkError as e:
+        # Project went away after the import; the paper stays imported and
+        # the message says so.
+        raise ValueError(str(e)) from e
     return _asdict_json(result)
 
 
