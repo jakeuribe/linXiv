@@ -1,9 +1,8 @@
 import { isTauri } from "./client";
 
 // linXiv ships its releases on GitHub, so "check for updates" compares the
-// installed version against the latest published GitHub Release. This avoids
-// standing up a bespoke update server while still being a real, working check.
-const REPO = "jakeuribe/linXiv";
+// installed version against the latest published GitHub Release. 
+const REPO = "linxiv-dev/linXiv";
 const LATEST_RELEASE_API = `https://api.github.com/repos/${REPO}/releases/latest`;
 export const RELEASES_PAGE = `https://github.com/${REPO}/releases`;
 
