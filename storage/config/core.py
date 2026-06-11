@@ -183,6 +183,15 @@ def _migrate_project_to_paper_unique_index(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_author_full_name_index(conn: sqlite3.Connection) -> None:
+    # Indexes AUTHOR_FULL_NAME under COLLATE NOCASE for the graph's author-name
+    # join. Non-unique: create_author does not dedup names.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_author_full_name "
+        "ON AUTHOR (AUTHOR_FULL_NAME COLLATE NOCASE)"
+    )
+
+
 def apply_sql_schema(conn: sqlite3.Connection) -> None:
     """Create bundled tables (and optional views/indexes) from ``sql/tables``."""
     conn.execute("PRAGMA foreign_keys = ON")
@@ -196,6 +205,7 @@ def apply_sql_schema(conn: sqlite3.Connection) -> None:
     _migrate_tag_label_unique_index(conn)
     _migrate_project_to_tag_unique_index(conn)
     _migrate_project_to_paper_unique_index(conn)
+    _migrate_author_full_name_index(conn)
     _apply_views(conn)
     _apply_indices(conn)
     # Persist regardless of how the caller manages the connection: not every

@@ -10,7 +10,12 @@ from typing import Optional, TYPE_CHECKING
 import arxiv
 
 from storage.config.core import apply_sql_schema
-from storage.config.queries import _TAG_FK_BY_LABEL_SQL, list_papers as _queries_list_papers
+from storage.config.queries import (
+    _GRAPH_AUTHORS_SQL,
+    _GRAPH_AUTHORS_WITH_COUNT_SQL,
+    _TAG_FK_BY_LABEL_SQL,
+    list_papers as _queries_list_papers,
+)
 from storage.paths import old_pdf_dir, pdf_dir
 
 if TYPE_CHECKING:
@@ -706,9 +711,8 @@ def get_all_versions(source_id: str) -> list[sqlite3.Row]:
 def get_graph_data(exclude_single_authors: bool = False) -> tuple[list[dict], list[dict]]:
     """Returns (nodes, edges) ready to pass to the graph view.
 
-    When ``exclude_single_authors`` is True, author nodes linked to only one
-    paper (and their edges) are dropped from the result. This shrinks the node
-    set the graph has to lay out and render, which is the dominant cost.
+    With ``exclude_single_authors`` True, an author node is dropped unless some
+    AUTHOR_FK matching its name (COLLATE NOCASE) has two or more active papers.
     """
     with _connect() as conn:
         paper_nodes = [
@@ -737,37 +741,27 @@ def get_graph_data(exclude_single_authors: bool = False) -> tuple[list[dict], li
                   AND r.STATUS = 'active'
             """)
         ]
-        author_rows = conn.execute("""
-            SELECT r.SOURCE_FK AS source_fk, je.value AS author_name
-            FROM PAPER_ROOTS r
-            JOIN PAPER p ON p.SOURCE_FK = r.SOURCE_FK
-            JOIN PAPER_META m ON m.PAPER_ID = p.PAPER_ID,
-                 json_each(m.AUTHORS) je
-            WHERE p.VERSION = (SELECT MAX(VERSION) FROM PAPER WHERE SOURCE_FK = r.SOURCE_FK)
-              AND r.STATUS = 'active'
-        """).fetchall()
-
-    # Distinct papers per author name; only built when dropping single-paper
-    # authors. KNOWN INCONSISTENCY: this counts each raw author *name string*
-    # from the latest version of each paper only, whereas the Authors page
-    # (list_authors_with_paper_count / the author_paper_counts view) counts the
-    # relational AUTHOR_FK case-insensitively across all versions. The two can
-    # therefore disagree about who is "single-paper" for the same person — name
-    # case/whitespace variants, or an author who appears only on an older
-    # version. The relational count is the source of truth; this graph filter is
-    # meant to be brought in line with it (see TODO), so do NOT propagate this
-    # latest-version/name-string definition elsewhere.
-    papers_per_author: dict[str, set] = {}
-    if exclude_single_authors:
-        for row in author_rows:
-            papers_per_author.setdefault(row["author_name"], set()).add(row["source_fk"])
+        # _GRAPH_AUTHORS_WITH_COUNT_SQL adds the per-name paper_count column
+        # (see queries.py); the default constant omits it and scans unchanged.
+        sql = (
+            _GRAPH_AUTHORS_WITH_COUNT_SQL
+            if exclude_single_authors
+            else _GRAPH_AUTHORS_SQL
+        )
+        author_rows = conn.execute(sql).fetchall()
 
     seen_authors: set[str] = set()
     author_nodes: list[dict] = []
     edges: list[dict] = []
     for row in author_rows:
         name = row["author_name"]
-        if exclude_single_authors and len(papers_per_author[name]) < 2:
+        # Drop an author when its paper_count is below two. A NULL count (no
+        # matching AUTHOR row) fails the `is not None` guard, so it is kept.
+        if (
+            exclude_single_authors
+            and row["paper_count"] is not None
+            and row["paper_count"] < 2
+        ):
             continue
         author_id = f"author::{name}"
         if author_id not in seen_authors:
