@@ -473,10 +473,11 @@ def set_pdf_path(source_id: str, path: str, version: int | None = None) -> None:
 
 
 def mark_pdf_saved(source_id: str, path: str, version: int) -> None:
-    """Atomically write PDF_PATH and set HAS_PDF=True for a specific paper version.
+    """Write PDF_PATH and set HAS_PDF=True for a specific paper version in one transaction.
 
-    Both columns are updated inside one explicit BEGIN/COMMIT block so a crash
-    between the two writes cannot leave them in a disagreeing state.
+    Both columns are updated under a single BEGIN IMMEDIATE transaction so a crash
+    between the two writes cannot leave HAS_PDF and PDF_PATH in a disagreeing state.
+
     Raises RuntimeError if either PAPER or PAPER_META has no matching row.
     """
     with _connect() as conn:
@@ -733,18 +734,34 @@ def get_graph_data() -> tuple[list[dict], list[dict]]:
     return paper_nodes + author_nodes, edges
 
 
-def list_papers(latest_only: bool = True, limit: int | None = None, offset: int = 0) -> list[sqlite3.Row]:
-    """List all stored papers (latest version per paper by default)."""
+_LIST_PAPERS_LATEST_SQL = "SELECT * FROM latest_papers"
+_LIST_PAPERS_ALL_SQL = "SELECT * FROM papers"
+
+
+def list_papers(
+    latest_only: bool = True,
+    limit: int | None = None,
+    offset: int = 0,
+    category: str | None = None,
+) -> list[sqlite3.Row]:
+    """List all stored papers (latest version per paper by default).
+
+    Optionally filter by exact primary category (e.g. "cs.LG"); limit/offset
+    apply to the filtered result.
+    """
     with _connect() as conn:
-        table = "latest_papers" if latest_only else "papers"
-        sql = f"SELECT * FROM {table} ORDER BY published DESC"
-        params: list[int] = []
-        if limit:
+        sql = _LIST_PAPERS_LATEST_SQL if latest_only else _LIST_PAPERS_ALL_SQL
+        params: list[int | str] = []
+        if category is not None:
+            sql += " WHERE category = ?"
+            params.append(category)
+        sql += " ORDER BY published DESC"
+        if limit is not None:
             sql += " LIMIT ? OFFSET ?"
-            params = [limit, offset]
+            params += [limit, offset]
         elif offset:
             sql += " LIMIT -1 OFFSET ?"
-            params = [offset]
+            params.append(offset)
         return conn.execute(sql, params).fetchall()
 
 

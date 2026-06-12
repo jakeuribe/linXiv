@@ -56,8 +56,7 @@ from service.paper import (
     import_pdf as svc_import_pdf,
     PdfImportError,
     pdf_on_disk_name,
-    set_has_pdf,
-    set_pdf_path,
+    mark_pdf_saved,
 )
 from service.models.paper import PaperDetails
 from service.tag import list_all_tags
@@ -292,8 +291,12 @@ async def api_attach_pdf(source_id: str, file: UploadFile = File(...)) -> dict:
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid source_id")
     dest.write_bytes(content)
-    set_pdf_path(source_id, str(dest), ver)
-    set_has_pdf(source_id, ver, True)
+    try:
+        mark_pdf_saved(source_id, str(dest), ver)
+    except RuntimeError as exc:
+        print(f"[pdf] failed to record PDF for {source_id} v{ver}: {exc}")
+        dest.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     return {"ok": True}
 
 
@@ -931,9 +934,18 @@ def api_author_delete(author_id: int) -> dict:
     return {"ok": True}
 
 
+# Env keys merged into the GET /api/settings response alongside user_settings.
+_SETTINGS_ENV_KEYS = ("CROSSREF_MAILTO", "OPENALEX_MAILTO")
+
+
 @app.get("/api/settings")
 def api_settings_get() -> dict:
-    return user_settings.all_settings()
+    settings = user_settings.all_settings()
+    for key in _SETTINGS_ENV_KEYS:
+        value = os.environ.get(key)
+        if value is not None:
+            settings[key] = value
+    return settings
 
 
 class SettingsUpdate(BaseModel):
@@ -952,8 +964,19 @@ class EnvUpdate(BaseModel):
     value: str
 
 
+# Env keys writable via PATCH /api/env.
+_ALLOWED_ENV_KEYS = frozenset(
+    {"CROSSREF_MAILTO", "OPENALEX_MAILTO", "GEMINI_API_KEY", "OPENAI_API_KEY"}
+)
+
+
 @app.patch("/api/env")
 def api_env_patch(body: EnvUpdate) -> dict:
+    if body.key not in _ALLOWED_ENV_KEYS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Key {body.key!r} is not settable via this endpoint",
+        )
     set_key(str(ENV_PATH), body.key, body.value)
     os.environ[body.key] = body.value
     return {"ok": True}

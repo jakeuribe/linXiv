@@ -1,14 +1,25 @@
-"""OpenAlex paper source — REST API, no authentication required."""
+"""OpenAlex paper source — REST API, no authentication required.
+
+Include a mailto address in OPENALEX_MAILTO env var to use OpenAlex's polite pool.
+"""
 
 from __future__ import annotations
 
 import datetime
+import os
 import re
 import httpx
 from sources.base import PaperMetadata, PaperSource
 
 _BASE_URL = "https://api.openalex.org"
 _USER_AGENT = "linXiv/1.0"
+
+
+def _user_agent() -> str:
+    addr = os.environ.get("OPENALEX_MAILTO", "").replace("\r", "").replace("\n", "")
+    return f"{_USER_AGENT} (mailto:{addr})" if addr else _USER_AGENT
+
+
 _OPENALEX_WORK_FIELDS = (
     "id,title,authorships,publication_date,doi,"
     "primary_topic,abstract_inverted_index"
@@ -111,7 +122,6 @@ class OpenAlexSource(PaperSource):
     def __init__(self) -> None:
         self._http = httpx.Client(
             base_url=_BASE_URL,
-            headers={"User-Agent": _USER_AGENT},
             timeout=30.0,
         )
 
@@ -130,7 +140,9 @@ class OpenAlexSource(PaperSource):
             "sort": _SORT_PARAM[sort],
         }
         try:
-            response = self._http.get("/works", params=params)
+            response = self._http.get(
+                "/works", params=params, headers={"User-Agent": _user_agent()}
+            )
             response.raise_for_status()
             raw_results = response.json().get("results", [])
         except httpx.HTTPStatusError as e:
@@ -165,6 +177,7 @@ class OpenAlexSource(PaperSource):
             response = self._http.get(
                 f"/works/{bare_id}",
                 params={"select": _OPENALEX_WORK_FIELDS},
+                headers={"User-Agent": _user_agent()},
             )
             response.raise_for_status()
             return _work_to_metadata(response.json())

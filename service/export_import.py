@@ -343,5 +343,10 @@ def _import_pdfs(zip_path: Path, source_id_to_fk: dict[str, int]) -> None:
             except ValueError:
                 version = 1
 
-            _paper.set_pdf_path(source_id, str(dest_path))
-            _paper.set_has_pdf(source_id, version, True)
+            try:
+                _paper.mark_pdf_saved(source_id, str(dest_path), version)
+            except RuntimeError as exc:
+                # Bundled PDF names a version that wasn't imported; skip it
+                # and remove the file already extracted to disk.
+                dest_path.unlink(missing_ok=True)
+                print(f"[import] skipping PDF for {basename}: {exc}")

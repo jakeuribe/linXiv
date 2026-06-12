@@ -376,15 +376,17 @@ def list_papers(
     latest_only: bool = True,
     limit: int | None = None,
     offset: int = 0,
+    category: str | None = None,
 ) -> list[sqlite3.Row]:
-    return db.list_papers(latest_only=latest_only, limit=limit, offset=offset)
+    return db.list_papers(latest_only=latest_only, limit=limit, offset=offset, category=category)
 
 def list_paper_details(
     latest_only: bool = True,
     limit: int | None = None,
     offset: int = 0,
+    category: str | None = None,
 ) -> list[PaperDetails]:
-    rows = db.list_papers(latest_only=latest_only, limit=limit, offset=offset)
+    rows = db.list_papers(latest_only=latest_only, limit=limit, offset=offset, category=category)
     return [_row_to_paper_details(r) for r in rows]
 
 def sfks_to_source_ids(source_fks: list[int]) -> list[str]:

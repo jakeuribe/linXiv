@@ -241,6 +241,23 @@ class TestListPapers:
         rows = db.list_papers(latest_only=False)
         assert len(rows) == 2
 
+    def test_category_filter_returns_only_matching(self):
+        db.save_paper(_make_result("2204.12985v1", primary_category="cs.LG"))
+        db.save_paper(_make_result("2301.00001v1", primary_category="cs.CV"))
+        rows = db.list_papers(category="cs.LG")
+        assert len(rows) == 1
+        assert rows[0]["category"] == "cs.LG"
+
+    def test_category_filter_limit_offset_apply_to_filtered_set(self):
+        db.save_paper(_make_result("2204.12985v1", primary_category="cs.LG"))
+        db.save_paper(_make_result("2301.00001v1", primary_category="cs.CV"))
+        db.save_paper(_make_result("2302.00002v1", primary_category="cs.LG"))
+        page1 = db.list_papers(category="cs.LG", limit=1, offset=0)
+        page2 = db.list_papers(category="cs.LG", limit=1, offset=1)
+        assert len(page1) == 1
+        assert len(page2) == 1
+        assert {page1[0]["source_id"], page2[0]["source_id"]} == {"2204.12985", "2302.00002"}
+
 
 # ---------------------------------------------------------------------------
 # set_full_text / search_full_text (FTS)
