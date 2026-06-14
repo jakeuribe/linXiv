@@ -255,7 +255,7 @@ def cmd_trash_list(args: argparse.Namespace) -> None:
     projects = svc_project.list_deleted()
     _output({
         "papers": [_details_to_dict(p) for p in papers],
-        "projects": [_details_to_dict(p) for p in projects],
+        "projects": [p.to_dict() for p in projects],
     })
 
 
@@ -321,7 +321,7 @@ def cmd_doi_save(args: argparse.Namespace) -> None:
 
 def cmd_author_list(args: argparse.Namespace) -> None:
     authors = svc_author.list_with_paper_count()
-    _output([_details_to_dict(a) for a in authors])
+    _output([a.to_dict() for a in authors])
 
 
 def cmd_author_get(args: argparse.Namespace) -> None:
@@ -330,8 +330,8 @@ def cmd_author_get(args: argparse.Namespace) -> None:
         print(json.dumps({"error": f"Author {args.author_id} not found"}), file=sys.stderr)
         sys.exit(1)
     previews = svc_author.get_paper_previews(args.author_id)
-    result = _details_to_dict(author)
-    result["papers"] = [_details_to_dict(p) for p in previews]
+    result = author.to_dict()
+    result["papers"] = [p.to_dict() for p in previews]
     _output(result)
 
 
@@ -447,7 +447,7 @@ def cmd_project_list(args: argparse.Namespace) -> None:
 
 def cmd_project_get(args: argparse.Namespace) -> None:
     details = _resolve_project_or_exit(args.project_id)
-    _output(_details_to_dict(details))
+    _output(details.to_dict())
 
 
 def cmd_project_create(args: argparse.Namespace) -> None:
@@ -481,8 +481,8 @@ def cmd_project_update(args: argparse.Namespace) -> None:
         print(f"[project] {e}", file=sys.stderr)
         print(json.dumps({"error": str(e)}), file=sys.stderr)
         sys.exit(1)
-    updated = svc_project.get(Project(project_fk=args.project_id))
-    _output(_details_to_dict(updated))
+    updated = _resolve_project_or_exit(args.project_id)
+    _output(updated.to_dict())
 
 
 def cmd_project_delete(args: argparse.Namespace) -> None:
@@ -618,7 +618,7 @@ def cmd_note_get(args: argparse.Namespace) -> None:
     if details is None:
         print(json.dumps({"error": f"Note {args.note_id} not found"}), file=sys.stderr)
         sys.exit(1)
-    _output(_details_to_dict(details))
+    _output(details.to_dict())
 
 
 def cmd_note_list(args: argparse.Namespace) -> None:
@@ -634,7 +634,7 @@ def cmd_note_list(args: argparse.Namespace) -> None:
         notes = svc_note.list_all()
     else:
         notes = svc_note.get_many(Notes(source_fk=source_fk, project_fk=args.project_id))
-    _output([_details_to_dict(n) for n in notes])
+    _output([n.to_dict() for n in notes])
 
 
 def cmd_note_update(args: argparse.Namespace) -> None:

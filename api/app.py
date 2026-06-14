@@ -831,21 +831,7 @@ def api_notes(
         project_fk=project_id,
         all_projects=all_projects,
     ))
-    return {
-        "notes": [
-            {
-                "id": n.note_id,
-                "source_fk": n.source_fk,
-                "paper_id_fk": n.paper_id_fk,
-                "project_id": n.project_id,
-                "title": n.title,
-                "content": n.content,
-                "created_at": n.created_at.isoformat() if isinstance(n.created_at, datetime.datetime) else n.created_at,
-                "updated_at": n.updated_at.isoformat() if isinstance(n.updated_at, datetime.datetime) else n.updated_at,
-            }
-            for n in notes
-        ]
-    }
+    return {"notes": [n.to_dict() for n in notes]}
 
 
 @app.post("/api/notes")
@@ -964,41 +950,16 @@ def _author_detail_response(author_id: int) -> dict:
         raise HTTPException(status_code=404, detail="Author not found")
     papers = _service_author.get_paper_previews(author_id)
     return {
-        "author_id":   author.author_id,
-        "full_name":   author.full_name,
-        "first_name":  author.first_name,
-        "last_name":   author.last_name,
-        "orcid":       author.orcid,
+        **author.to_dict(),
         "paper_count": len(papers),
-        "papers": [
-            {
-                "paper_id":  p.paper_id,
-                "source_id": p.source_id,
-                "source_fk": p.source_fk,
-                "version":   p.version,
-                "title":     p.title,
-            }
-            for p in papers
-        ],
+        "papers": [p.to_dict() for p in papers],
     }
 
 
 @app.get("/api/authors")
 def api_authors_list(exclude_single: bool = False) -> dict:
     authors = _service_author.list_with_paper_count(min_papers=2 if exclude_single else 0)
-    return {
-        "authors": [
-            {
-                "author_id":   a.author_id,
-                "full_name":   a.full_name,
-                "first_name":  a.first_name,
-                "last_name":   a.last_name,
-                "orcid":       a.orcid,
-                "paper_count": a.paper_count,
-            }
-            for a in authors
-        ]
-    }
+    return {"authors": [a.to_dict() for a in authors]}
 
 
 @app.get("/api/authors/{author_id}")
