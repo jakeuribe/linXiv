@@ -14,8 +14,8 @@ from typing import TYPE_CHECKING
 import storage.db as db
 import storage.notes as _notes_storage
 import storage.projects as _proj_storage
+import service.project as _proj_service
 from service.models.paper import PaperDetails, PaperDetailsAll
-from service.models.project import Status
 from sources.base import PaperMetadata
 from sources.pdf_metadata import resolve_pdf_metadata
 from storage.paths import pdf_dir as _pdf_dir
@@ -85,6 +85,13 @@ class PaperImportResult:
 
 class PdfImportError(Exception):
     """Raised when PDF metadata cannot be extracted."""
+
+
+class PaperLinkError(RuntimeError):
+    """Raised when an imported paper could not be linked to the requested
+    project; the paper itself stays imported. Distinct from the pre-import
+    membership-guard errors so boundaries can word the two outcomes
+    differently."""
 
 
 def pdf_filename_safe(source_id: str) -> str:
@@ -594,10 +601,15 @@ def import_pdf(content: bytes, project_id: int | None = None) -> PaperImportResu
         A user manually deleting the canonical PDF between those two steps
         leaves the DB pointing to a missing file. Narrow race, accepted.
 
-    Project linking is best-effort: silently skips if the project is missing or not active;
-    logs a warning on any unexpected exception.
+    Project linking: the membership guards run before any import work
+    (missing project raises ProjectNotFoundError, deleted raises
+    ProjectDeletedError) and again at the post-import link step — a project
+    deleted mid-import surfaces from there as PaperLinkError, with the
+    paper already saved.
     Note: _pdf_import_root_lock is a threading.Lock (single-process only).
     """
+    if project_id is not None:
+        _proj_service.ensure_membership_writable(project_id)
     dest_dir = _pdf_dir()
     dest_dir.mkdir(parents=True, exist_ok=True)
     tmp_path = dest_dir / f"_upload_{uuid.uuid4().hex}.pdf"
@@ -718,18 +730,11 @@ def import_pdf(content: bytes, project_id: int | None = None) -> PaperImportResu
 
     if project_id is not None:
         try:
-            proj = _proj_storage.get_project(project_id)
-            if proj and proj.status == Status.ACTIVE:
-                # save_paper_metadata returns (source_id, version); source_fk requires
-                # a separate lookup since add_paper takes the integer SOURCE_FK.
-                root = db.get_paper_root(source_id)
-                if root:
-                    proj.add_paper(int(root["SOURCE_FK"]))
-        except Exception:
-            _log.warning(
-                "import_pdf: project link failed for source_id=%r project_id=%r",
-                source_id, project_id, exc_info=True,
-            )
+            _proj_service.link_imported(project_id, [source_id])
+        except (_proj_service.ProjectNotFoundError, _proj_service.ProjectDeletedError) as e:
+            raise PaperLinkError(
+                f"paper {source_id} was imported but could not be linked to project {project_id}: {e}"
+            ) from e
 
     return PaperImportResult(source_id=source_id, title=meta.title)
 

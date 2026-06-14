@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import arxiv
 import storage.db as db
+import storage.authors as authors
 
 
 # ---------------------------------------------------------------------------
@@ -476,6 +477,124 @@ class TestGetGraphData:
         nodes, _ = db.get_graph_data()
         paper_node = next(n for n in nodes if n.get("type") == "paper")
         assert paper_node["tags"] == []
+
+    def test_default_keeps_single_paper_authors(self):
+        db.save_paper(_make_result("2204.12985v1", authors=["Solo Author"]))
+        nodes, _ = db.get_graph_data()
+        assert any(n.get("type") == "author" and n["label"] == "Solo Author" for n in nodes)
+
+    def test_exclude_single_authors_drops_single_paper_author(self):
+        db.save_paper(_make_result("2204.12985v1", authors=["Solo Author", "Shared Author"]))
+        db.save_paper(_make_result("2301.00001v1", authors=["Shared Author"]))
+        nodes, edges = db.get_graph_data(exclude_single_authors=True)
+        author_labels = {n["label"] for n in nodes if n.get("type") == "author"}
+        assert "Shared Author" in author_labels       # 2 papers — kept
+        assert "Solo Author" not in author_labels      # 1 paper — dropped
+        # The dropped author's edge is gone too (match the exact node id).
+        assert not any(e["target"] == "author::Solo Author" for e in edges)
+
+    def test_exclude_single_authors_counts_distinct_papers_not_versions(self):
+        # Same author on two versions of ONE paper root is still "single-paper".
+        db.save_paper(_make_result("2204.12985v1", authors=["Versioned Author"]))
+        db.save_paper(_make_result("2204.12985v2", authors=["Versioned Author"]))
+        nodes, _ = db.get_graph_data(exclude_single_authors=True)
+        author_labels = {n["label"] for n in nodes if n.get("type") == "author"}
+        assert "Versioned Author" not in author_labels
+
+    def test_exclude_single_authors_uses_relational_case_insensitive_count(self):
+        # Same person, two casings, two papers -> one AUTHOR_FK, count 2: both
+        # nodes kept (raw-name counting would see two singles and drop them).
+        db.save_paper(_make_result("2204.12985v1", authors=["Jane Smith"]))
+        db.save_paper(_make_result("2301.00001v1", authors=["JANE SMITH"]))
+        nodes, _ = db.get_graph_data(exclude_single_authors=True)
+        author_labels = {n["label"] for n in nodes if n.get("type") == "author"}
+        assert "Jane Smith" in author_labels
+        assert "JANE SMITH" in author_labels
+
+    def test_exclude_single_authors_drops_cross_casing_single_paper_author(self):
+        # Two casings across versions of ONE root -> one AUTHOR_FK, count 1:
+        # the latest-version node is dropped.
+        db.save_paper(_make_result("2204.12985v1", authors=["Jane Smith"]))
+        db.save_paper(_make_result("2204.12985v2", authors=["JANE SMITH"]))
+        nodes, _ = db.get_graph_data(exclude_single_authors=True)
+        author_labels = {n["label"] for n in nodes if n.get("type") == "author"}
+        assert "JANE SMITH" not in author_labels  # latest version, count == 1
+
+    def test_exclude_single_authors_drops_duplicate_author_fks_on_one_root(self):
+        # Two AUTHOR_FK rows share a name (create_author does not dedup), both
+        # on the SAME root: each FK's count is 1, MAX per-FK is 1.
+        db.save_paper(_make_result("2204.12985v1", authors=["Dup Author"]))
+        first_fk = authors.list_authors(name="Dup Author")[0].author_id
+        paper_id = authors.get_author_papers(first_fk)[0]["paper_id"]
+        second_fk = authors.create_author("Dup Author")
+        assert second_fk is not None and second_fk != first_fk
+        authors.link_author_to_paper(second_fk, paper_id)
+        nodes, _ = db.get_graph_data(exclude_single_authors=True)
+        author_labels = {n["label"] for n in nodes if n.get("type") == "author"}
+        assert "Dup Author" not in author_labels
+
+    def test_exclude_single_authors_drops_duplicate_author_fks_on_different_roots(self):
+        # Two AUTHOR_FK rows share a name on DIFFERENT roots: each FK's count is
+        # 1, MAX per-FK is 1 — dropped on the graph and the Authors page alike.
+        db.save_paper(_make_result("2204.12985v1", authors=["Split Author"]))
+        db.save_paper(_make_result("2301.00001v1", authors=["Decoy"]))
+        first_fk = authors.list_authors(name="Split Author")[0].author_id
+        second_root_paper_id = next(
+            p["paper_id"]
+            for p in authors.get_author_paper_previews(
+                authors.list_authors(name="Decoy")[0].author_id
+            )
+        )
+        # A second AUTHOR_FK with the same name, linked to the OTHER active root.
+        second_fk = authors.create_author("Split Author")
+        assert second_fk is not None and second_fk != first_fk
+        authors.link_author_to_paper(second_fk, second_root_paper_id)
+
+        nodes, _ = db.get_graph_data(exclude_single_authors=True)
+        author_labels = {n["label"] for n in nodes if n.get("type") == "author"}
+        assert "Split Author" not in author_labels  # MAX per-FK count == 1 — dropped
+
+        # The Authors page, counting per AUTHOR_FK, also hides both FKs at min_papers=2.
+        page_names = {
+            a["full_name"]
+            for a in authors.list_authors_with_paper_count(min_papers=2)
+        }
+        assert "Split Author" not in page_names
+
+    def test_exclude_single_authors_keeps_author_with_no_author_row(self):
+        # A JSON name with no AUTHOR row has no name_counts match, so paper_count
+        # is NULL — kept as "unknown", not dropped.
+        db.save_paper(_make_result("2204.12985v1", authors=["Ghost Author"]))
+        # Delete the AUTHOR row and its link via the storage API, leaving the
+        # name in PAPER_META.AUTHORS.
+        ghost = authors.list_authors(name="Ghost Author")[0]
+        for paper in authors.get_author_papers(ghost.author_id):
+            authors.unlink_author_from_paper(ghost.author_id, paper["paper_id"])
+        authors.delete_author(ghost.author_id)
+        nodes, _ = db.get_graph_data(exclude_single_authors=True)
+        author_labels = {n["label"] for n in nodes if n.get("type") == "author"}
+        assert "Ghost Author" in author_labels
+
+    def test_exclude_single_authors_drops_orphan_with_only_inactive_links(self):
+        # AUTHOR row exists but its only link is to a soft-deleted root, so its
+        # author_paper_counts is 0 (not NULL): 0 < 2 drops the node.
+        db.save_paper(_make_result("2204.12985v1", authors=["Orphan Author"]))
+        db.save_paper(_make_result("2301.00001v1", authors=["Orphan Author"]))
+        orphan = authors.list_authors(name="Orphan Author")[0]
+        # The PAPER_ID of the paper we keep active, captured before any delete
+        # (previews only lists active papers and gives paper_id + source_id).
+        active_paper_id = next(
+            p["paper_id"]
+            for p in authors.get_author_paper_previews(orphan.author_id)
+            if p["source_id"] == "2204.12985"
+        )
+        # Soft-delete the other root and unlink the FK from the active paper:
+        # the author is now linked only to the inactive root.
+        db.soft_delete_paper("2301.00001")
+        authors.unlink_author_from_paper(orphan.author_id, active_paper_id)
+        nodes, _ = db.get_graph_data(exclude_single_authors=True)
+        author_labels = {n["label"] for n in nodes if n.get("type") == "author"}
+        assert "Orphan Author" not in author_labels
 
 
 # ---------------------------------------------------------------------------

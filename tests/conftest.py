@@ -50,6 +50,12 @@ def tmp_db(tmp_path, monkeypatch):
 
 
 @pytest.fixture()
+def minimal_bib() -> str:
+    """One-entry BibTeX content; the key 'smith2020' becomes the source_id."""
+    return "@article{smith2020, title = {A Paper}, year = {2020}}"
+
+
+@pytest.fixture()
 def note_projects(tmp_db):
     """Pre-create 10 projects so test_notes.py FK constraints are satisfied."""
     from storage.projects import Project

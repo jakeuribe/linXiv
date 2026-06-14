@@ -6,7 +6,7 @@ import { useUiStore, type ExportFormatKey } from "../stores/ui";
 import {
   getProject,
   updateProject,
-  addPaperToProject,
+  addPapersToProject,
   removePaperFromProject,
   archiveProject,
   restoreProject,
@@ -257,19 +257,18 @@ function AddPapersDialog({
     setSubmitting(true);
     setError(null);
     try {
-      const results = await Promise.allSettled(
-        [...selectedIds].map((id) => addPaperToProject(projectId, id))
-      );
+      const { failed } = await addPapersToProject(projectId, [...selectedIds]);
       await queryClient.invalidateQueries({ queryKey: ["project", String(projectId)] });
       // The ["projects"] list query backs the note scope picker / badges on the
       // paper detail page; keep its membership (source_ids) fresh.
       await queryClient.invalidateQueries({ queryKey: ["projects"] });
-      const failed = results.filter((r) => r.status === "rejected");
       if (failed.length > 0) {
         setError(`Failed to add ${failed.length} paper${failed.length !== 1 ? "s" : ""}`);
       } else {
         onClose();
       }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to add papers");
     } finally {
       setSubmitting(false);
     }

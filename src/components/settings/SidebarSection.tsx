@@ -5,8 +5,8 @@ const SIDEBAR_PAGE_OPTIONS: { key: SidebarPageKey; label: string; description: s
   { key: "graph",  label: "Graph",      description: "Citation graph explorer" },
   { key: "search", label: "Search",     description: "arXiv / OpenAlex search" },
   { key: "doi",    label: "DOI Lookup", description: "Resolve papers by DOI" },
-  { key: "tags",   label: "Tags",       description: "Tag browser (coming soon)" },
-  { key: "notes",  label: "Notes",      description: "Notes editor (coming soon)" },
+  { key: "tags",   label: "Tags",       description: "Tag browser" },
+  { key: "notes",  label: "Editor (Notes)", description: "LaTeX editor (TeXbrain)" },
 ];
 
 export function SidebarSection({ defaultOpen = true }: { defaultOpen?: boolean } = {}) {

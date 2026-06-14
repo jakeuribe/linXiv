@@ -20,7 +20,6 @@ import service.paper as _paper
 import service.project as _project
 from sources.base import PaperMetadata
 from storage.paths import pdf_dir
-from storage.projects import get_project as _get_storage_project
 
 
 _FORMAT_VERSION = 1
@@ -226,10 +225,16 @@ def _commit_import_body(
 
         source_id_to_fk[source_id] = source_fk
 
-    # Link all papers to the newly created project in order
-    proj = _get_storage_project(project_fk)
-    if proj and source_id_to_fk:
-        proj.add_papers(list(source_id_to_fk.values()))
+    # Link all papers to the newly created project in order. Every id was
+    # saved or matched above, so an unresolved id means the save step and the
+    # membership lookup disagree on id form — fail the import (the caller
+    # rolls the project back) rather than produce a partially linked project.
+    if source_id_to_fk:
+        failed = _project.add_papers(project_fk, list(source_id_to_fk.keys()))
+        if failed:
+            raise RuntimeError(
+                f"{len(failed)} imported paper(s) could not be linked to the project: {failed[:5]}"
+            )
 
     # Copy any bundled PDFs into the local pdf directory
     _import_pdfs(zip_path, source_id_to_fk)

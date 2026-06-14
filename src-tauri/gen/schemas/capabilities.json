@@ -1,1 +1,0 @@
-{"default":{"identifier":"default","description":"Default capabilities for linXiv","local":true,"windows":["main"],"permissions":["core:default","dialog:allow-save","dialog:allow-open","opener:default","opener:allow-open-path","shell:allow-open","shell:allow-execute"]}}

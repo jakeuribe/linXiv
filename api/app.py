@@ -55,6 +55,7 @@ from service.paper import (
     search_papers,
     import_pdf as svc_import_pdf,
     PdfImportError,
+    PaperLinkError,
     pdf_on_disk_name,
     set_has_pdf,
     set_pdf_path,
@@ -63,17 +64,24 @@ from service.models.paper import PaperDetails
 from service.tag import list_all_tags
 import user_settings
 import service.note as _service_note
+import service.vault as _vault
+import service.editor_project as _editor_project
 from storage.projects import (
-    Project,
     Status,
     ensure_projects_db,
     filter_projects,
     get_project,
-    remove_paper_from_all_projects,
 )
 from service.project import (
     Project as SvcProject,
     ProjectIn as SvcProjectIn,
+    ProjectDeletedError,
+    ProjectNotFoundError,
+    add_papers as add_papers_svc,
+    remove_papers as remove_papers_svc,
+    ensure_membership_writable as ensure_membership_writable_svc,
+    link_imported as link_imported_svc,
+    remove_paper_from_all_projects,
     color_from_hex,
     color_to_hex,
     create as create_project_svc,
@@ -88,8 +96,9 @@ from storage.config.queries import Q, list_project_tags_bulk, list_project_sourc
 import storage.search_history as _search_history
 import storage.search_state as _search_state
 
-from storage.paths import pdf_dir as _storage_pdf_dir
+from storage.paths import pdf_dir as _storage_pdf_dir, vault_dir as _storage_vault_dir
 PDF_DIR = _storage_pdf_dir()
+VAULT_DIR = _storage_vault_dir()
 
 _arxiv_source = ArxivSource()
 _openalex = OpenAlexSource()
@@ -130,6 +139,7 @@ async def _lifespan(_: FastAPI):
     ensure_projects_db()
     _service_note.ensure_notes_db()
     PDF_DIR.mkdir(parents=True, exist_ok=True)
+    VAULT_DIR.mkdir(parents=True, exist_ok=True)
     async def _purge():
         try:
             await asyncio.to_thread(purge_old_projects, 30)
@@ -397,8 +407,8 @@ def api_repair_paper(source_fk: int, body: PaperRepairBody) -> dict:
 
 
 @app.get("/api/graph")
-def api_graph() -> dict:
-    return get_augmented_graph_data()
+def api_graph(exclude_single_authors: bool = False) -> dict:
+    return get_augmented_graph_data(exclude_single_authors=exclude_single_authors)
 
 
 @app.get("/api/categories")
@@ -581,25 +591,45 @@ class ProjectPaperBody(BaseModel):
 
 @app.post("/api/projects/{project_id}/papers")
 def api_project_add_paper(project_id: int, body: ProjectPaperBody) -> dict:
-    p = get_project(project_id)
-    if not p:
-        raise HTTPException(status_code=404, detail="Project not found")
-    root = get_paper_root(body.source_id.strip())
-    if root is None:
+    try:
+        failed = add_papers_svc(project_id, [body.source_id])
+    except ProjectNotFoundError as e:
+        raise HTTPException(status_code=404, detail="Project not found") from e
+    except ProjectDeletedError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if failed:
         raise HTTPException(status_code=404, detail="Paper not found")
-    p.add_paper(int(root["SOURCE_FK"]))
     return {"ok": True}
+
+
+class ProjectPapersBulkBody(BaseModel):
+    source_ids: list[str] = Field(min_length=1, max_length=10_000)
+
+
+@app.post("/api/projects/{project_id}/papers/bulk")
+def api_project_add_papers(project_id: int, body: ProjectPapersBulkBody) -> dict:
+    """Add many papers in one request. Partial success: unknown source_ids
+    are reported back in `failed` (verbatim, un-stripped) while the rest
+    are still added — see service.project.add_papers for the full contract."""
+    try:
+        failed = add_papers_svc(project_id, body.source_ids)
+    except ProjectNotFoundError as e:
+        raise HTTPException(status_code=404, detail="Project not found") from e
+    except ProjectDeletedError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"ok": not failed, "failed": failed}
 
 
 @app.delete("/api/projects/{project_id}/papers/{source_id:path}")
 def api_project_remove_paper(project_id: int, source_id: str) -> dict:
-    p = get_project(project_id)
-    if not p:
-        raise HTTPException(status_code=404, detail="Project not found")
-    root = get_paper_root(source_id)
-    if root is None:
+    try:
+        failed = remove_papers_svc(project_id, [source_id])
+    except ProjectNotFoundError as e:
+        raise HTTPException(status_code=404, detail="Project not found") from e
+    except ProjectDeletedError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if failed:
         raise HTTPException(status_code=404, detail="Paper not found")
-    p.remove_paper(int(root["SOURCE_FK"]))
     return {"ok": True}
 
 
@@ -837,9 +867,77 @@ def api_note_update(note_id: int, body: NoteUpdate) -> dict:
 
 @app.delete("/api/notes/{note_id}")
 def api_note_delete(note_id: int) -> dict:
+    # If this note is an editor project, remember to drop its on-disk vault too. Resolve
+    # this BEFORE the DB delete (the frontmatter flag must still be readable).
+    is_editor_project = _editor_project.get_meta(note_id) is not None
     if not _service_note.delete(_service_note.Note(note_id=note_id)):
         raise HTTPException(status_code=404, detail="Note not found")
+    if is_editor_project:
+        _vault.delete_vault(note_id)
     return {"ok": True}
+
+
+# ── embedded TeXbrain editor: projects (note-link) + vault filesystem ────────────
+# An editor project is a NOTE flagged in frontmatter that owns an on-disk LaTeX vault
+# at vault_dir()/note_<id>/. The editor (in an iframe) reads/writes that vault over a
+# postMessage FS bridge; /fs forwards one FsOp and returns the FsResult (see
+# service/vault.py + service/editor_project.py and src/lib/editorBridgeTypes.ts).
+
+class EditorProjectCreate(BaseModel):
+    project_name: str = Field(min_length=1)
+    main_file: str = "main.tex"
+    source_id: str | None = None
+    project_id: int | None = None
+
+
+class VaultFsOp(BaseModel):
+    """One FsOp from the editor's FileSystem adapter. ``path`` is root-relative
+    (no leading slash; "" == vault root). ``data`` is base64 when ``binary``."""
+    kind: Literal["list", "readFile", "writeFile", "mkdir", "remove"]
+    path: str = ""
+    data: str | None = None
+    binary: bool = False
+    recursive: bool = False
+
+
+@app.get("/api/editor/projects")
+def api_editor_projects(project_id: int | None = None) -> dict:
+    return {"projects": _editor_project.list_projects(project_id)}
+
+
+@app.post("/api/editor/projects")
+def api_editor_project_create(body: EditorProjectCreate) -> dict:
+    try:
+        return _editor_project.create_project(
+            project_name=body.project_name,
+            main_file=body.main_file,
+            source_id=body.source_id,
+            project_id=body.project_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/editor/projects/{note_id}/doc")
+def api_editor_project_doc(note_id: int) -> dict:
+    doc = _editor_project.get_doc(note_id)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Editor project not found")
+    return doc
+
+
+@app.post("/api/editor/vault/{note_id}/fs")
+def api_editor_vault_fs(note_id: int, op: VaultFsOp) -> dict:
+    if _editor_project.get_meta(note_id) is None:
+        raise HTTPException(status_code=404, detail="Editor project not found")
+    try:
+        return _vault.run_fs_op(note_id, op.model_dump())
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Not found: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 import service.author as _service_author
@@ -883,8 +981,8 @@ def _author_detail_response(author_id: int) -> dict:
 
 
 @app.get("/api/authors")
-def api_authors_list() -> dict:
-    authors = _service_author.list_with_paper_count()
+def api_authors_list(exclude_single: bool = False) -> dict:
+    authors = _service_author.list_with_paper_count(min_papers=2 if exclude_single else 0)
     return {
         "authors": [
             {
@@ -1205,6 +1303,16 @@ async def api_import_bibtex(
     project_id: int | None = Query(default=None),
 ) -> dict:
     text = (await file.read()).decode("utf-8", errors="replace")
+    # The link target is checked before parsing/saving; a delete that lands
+    # between this check and the post-save link still saves the papers and
+    # surfaces as a 4xx from the link step below.
+    if project_id is not None:
+        try:
+            ensure_membership_writable_svc(project_id)
+        except ProjectNotFoundError as e:
+            raise HTTPException(status_code=404, detail="Project not found") from e
+        except ProjectDeletedError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
     try:
         metas = BibTeXFormat().import_string(text)
     except Exception as e:
@@ -1213,12 +1321,13 @@ async def api_import_bibtex(
     pairs = save_papers_metadata(metas, tags=None)
     saved = [sid for sid, _ in pairs]
     if project_id is not None and saved:
-        proj = get_project(project_id)
-        if proj and proj.status == Status.ACTIVE:
-            for sid in saved:
-                root = get_paper_root(sid)
-                if root:
-                    proj.add_paper(int(root["SOURCE_FK"]))
+        try:
+            link_imported_svc(project_id, saved)
+        except (ProjectNotFoundError, ProjectDeletedError) as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{len(saved)} paper(s) were imported but could not be linked: {e}",
+            ) from e
     return {"saved_count": len(saved), "source_ids": saved}
 
 
@@ -1246,6 +1355,15 @@ async def api_import_pdf(
         result = await run_in_threadpool(svc_import_pdf, content, project_id)
     except PdfImportError as e:
         raise HTTPException(status_code=422, detail=f"Could not extract PDF metadata: {e}") from e
+    except ProjectNotFoundError as e:
+        # Raised by import_pdf's pre-import membership guard — nothing was
+        # imported. A project that goes away after the import surfaces as
+        # PaperLinkError below instead.
+        raise HTTPException(status_code=404, detail="Project not found") from e
+    except ProjectDeletedError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except PaperLinkError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         _api_log.exception("PDF import failed")
         raise HTTPException(status_code=500, detail="PDF import failed") from e

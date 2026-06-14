@@ -219,9 +219,11 @@ WHERE TRIM(j.value) <> '';
 -- ---------------------------------------------------------------------------
 -- 9. PROJECT_TO_PAPER: explode old.projects.paper_ids JSON array
 --    Maps each old bare paper_id -> SOURCE_FK in PAPER_ROOTS (via namespaced id)
+--    OR IGNORE: legacy paper_ids arrays may contain duplicates, which would
+--    otherwise abort under idx_project_to_paper_unique.
 -- ---------------------------------------------------------------------------
 
-INSERT INTO PROJECT_TO_PAPER (PROJECT_TO_PAPER_FK, PROJECT_FK, SOURCE_FK)
+INSERT OR IGNORE INTO PROJECT_TO_PAPER (PROJECT_TO_PAPER_FK, PROJECT_FK, SOURCE_FK)
 SELECT
     row_number() OVER (ORDER BY pr.id, j.key) AS pk,
     pr.id,
@@ -234,9 +236,11 @@ WHERE TRIM(j.value) <> '';
 
 -- ---------------------------------------------------------------------------
 -- 10. PROJECT_TO_TAG: explode old.projects.project_tags JSON array
+--     OR IGNORE: duplicate legacy tags would abort under
+--     idx_project_to_tag_unique.
 -- ---------------------------------------------------------------------------
 
-INSERT INTO PROJECT_TO_TAG (PROJECT_TO_TAG_FK, PROJECT_FK, TAG_FK)
+INSERT OR IGNORE INTO PROJECT_TO_TAG (PROJECT_TO_TAG_FK, PROJECT_FK, TAG_FK)
 SELECT
     row_number() OVER (ORDER BY pr.id, j.key) AS pk,
     pr.id,

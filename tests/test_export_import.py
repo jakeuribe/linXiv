@@ -532,6 +532,23 @@ class TestCommitImportRollback:
         after_ids = {p.id for p in _project.get_many(active)}
         assert after_ids == before_ids  # no new ACTIVE project left
 
+    def test_unresolved_link_ids_fail_import_and_roll_back(self, tmp_path, monkeypatch):
+        sfk = _save_paper("2204.00006", "Zeta Paper")
+        proj_fk = _make_project("Zeta Project", [sfk])
+        archive = ei.export_project(proj_fk, tmp_path / "export")
+
+        # Force the membership seam to report every id as unresolved.
+        monkeypatch.setattr(_project, "add_papers", lambda fk, ids: list(ids))
+
+        active = _project.Projects(status=Status.ACTIVE)
+        before_ids = {p.id for p in _project.get_many(active)}
+
+        with pytest.raises(ei.ProjectImportError, match="could not be linked"):
+            ei.commit_import(archive)
+
+        after_ids = {p.id for p in _project.get_many(active)}
+        assert after_ids == before_ids  # imported project rolled back
+
     def test_raises_project_import_error_not_bare_exception(self, tmp_path, monkeypatch):
         sfk = _save_paper("2204.00006", "Zeta Paper")
         proj_fk = _make_project("Zeta Project", [sfk])

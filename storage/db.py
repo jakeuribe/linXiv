@@ -10,7 +10,12 @@ from typing import Optional, TYPE_CHECKING
 import arxiv
 
 from storage.config.core import apply_sql_schema
-from storage.config.queries import _TAG_FK_BY_LABEL_SQL, list_papers as _queries_list_papers
+from storage.config.queries import (
+    _GRAPH_AUTHORS_SQL,
+    _GRAPH_AUTHORS_WITH_COUNT_SQL,
+    _TAG_FK_BY_LABEL_SQL,
+    list_papers as _queries_list_papers,
+)
 from storage.paths import old_pdf_dir, pdf_dir
 
 if TYPE_CHECKING:
@@ -670,6 +675,29 @@ def get_paper_root(source_id: str) -> Optional[sqlite3.Row]:
         ).fetchone()
 
 
+def get_paper_roots_bulk(source_ids: list[str]) -> dict[str, int]:
+    """Resolve SOURCE_IDs to SOURCE_FKs in bulk: {source_id: source_fk}.
+
+    Unknown ids are simply absent from the result. Queries are chunked to
+    stay under SQLite's IN-list variable cap (~999).
+    """
+    result: dict[str, int] = {}
+    if not source_ids:
+        return result
+    chunk_size = 500
+    with _connect() as conn:
+        for i in range(0, len(source_ids), chunk_size):
+            chunk = source_ids[i : i + chunk_size]
+            placeholders = ",".join("?" * len(chunk))
+            rows = conn.execute(
+                f"SELECT SOURCE_ID, SOURCE_FK FROM PAPER_ROOTS WHERE SOURCE_ID IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                result[str(row["SOURCE_ID"])] = int(row["SOURCE_FK"])
+    return result
+
+
 #TODO: FIX TO WORK EXPECTED WAY 
 def get_all_versions(source_id: str) -> list[sqlite3.Row]:
     """Fetch all stored versions of a paper, ordered oldest to newest."""
@@ -680,8 +708,12 @@ def get_all_versions(source_id: str) -> list[sqlite3.Row]:
         ).fetchall()
 
 
-def get_graph_data() -> tuple[list[dict], list[dict]]:
-    """Returns (nodes, edges) ready to pass to the graph view."""
+def get_graph_data(exclude_single_authors: bool = False) -> tuple[list[dict], list[dict]]:
+    """Returns (nodes, edges) ready to pass to the graph view.
+
+    With ``exclude_single_authors`` True, an author node is dropped unless some
+    AUTHOR_FK matching its name (COLLATE NOCASE) has two or more active papers.
+    """
     with _connect() as conn:
         paper_nodes = [
             {
@@ -709,21 +741,28 @@ def get_graph_data() -> tuple[list[dict], list[dict]]:
                   AND r.STATUS = 'active'
             """)
         ]
-        author_rows = conn.execute("""
-            SELECT r.SOURCE_FK AS source_fk, je.value AS author_name
-            FROM PAPER_ROOTS r
-            JOIN PAPER p ON p.SOURCE_FK = r.SOURCE_FK
-            JOIN PAPER_META m ON m.PAPER_ID = p.PAPER_ID,
-                 json_each(m.AUTHORS) je
-            WHERE p.VERSION = (SELECT MAX(VERSION) FROM PAPER WHERE SOURCE_FK = r.SOURCE_FK)
-              AND r.STATUS = 'active'
-        """).fetchall()
+        # _GRAPH_AUTHORS_WITH_COUNT_SQL adds the per-name paper_count column
+        # (see queries.py); the default constant omits it and scans unchanged.
+        sql = (
+            _GRAPH_AUTHORS_WITH_COUNT_SQL
+            if exclude_single_authors
+            else _GRAPH_AUTHORS_SQL
+        )
+        author_rows = conn.execute(sql).fetchall()
 
     seen_authors: set[str] = set()
     author_nodes: list[dict] = []
     edges: list[dict] = []
     for row in author_rows:
         name = row["author_name"]
+        # Drop an author when its paper_count is below two. A NULL count (no
+        # matching AUTHOR row) fails the `is not None` guard, so it is kept.
+        if (
+            exclude_single_authors
+            and row["paper_count"] is not None
+            and row["paper_count"] < 2
+        ):
+            continue
         author_id = f"author::{name}"
         if author_id not in seen_authors:
             author_nodes.append({"id": author_id, "label": name, "type": "author"})

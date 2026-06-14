@@ -9,8 +9,8 @@ from storage.projects import Project, Status, filter_projects, color_to_hex
 _DEFAULT_PROJECT_COLOR = "#5b8dee"
 
 
-def get_augmented_graph_data() -> dict[str, list[dict]]:
-    all_nodes, edges = get_graph_data()  # returns paper + author nodes
+def get_augmented_graph_data(exclude_single_authors: bool = False) -> dict[str, list[dict]]:
+    all_nodes, edges = get_graph_data(exclude_single_authors=exclude_single_authors)  # paper + author nodes
 
     paper_to_projects: dict[int, list[int]] = {}
     for proj in filter_projects(Q("STATUS = ?", Status.ACTIVE), load_sources=True):

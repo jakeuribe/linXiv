@@ -5,7 +5,7 @@
   "identifier": "com.linxiv.app",
   "build": {
     "frontendDist": "../dist",
-    "devUrl": "http://localhost:5173",
+    "devUrl": "http://localhost:5180",
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build"
   },
@@ -24,7 +24,8 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; frame-src 'self' texbrain://localhost http://texbrain.localhost http://127.0.0.1:*; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* https://api.github.com; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com",
+      "devCsp": "default-src 'self'; frame-src 'self' texbrain://localhost http://texbrain.localhost http://127.0.0.1:* http://localhost:*; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* http://localhost:* https://api.github.com; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com"
     }
   },
   "bundle": {

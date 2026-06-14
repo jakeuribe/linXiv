@@ -2,8 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useThemeStore } from "../stores/theme";
+import { useUiStore } from "../stores/ui";
 import { getColors } from "../lib/theme";
-import { listProjects, addPaperToProject, createProject } from "../api/projects";
+import { listProjects, addPapersToProject, createProject } from "../api/projects";
 import { Spinner } from "../components/ui/spinner";
 import { Button } from "../components/ui/button";
 import { Dialog } from "../components/ui/dialog";
@@ -17,6 +18,8 @@ export default function GraphPage() {
   const mode = useThemeStore(s => s.mode);
   const overrides = useThemeStore(s => s.overrides);
   const overrideAlphas = useThemeStore(s => s.overrideAlphas);
+  const hideSingleAuthors = useUiStore(s => s.hideSingleAuthors);
+  const setHideSingleAuthors = useUiStore(s => s.setHideSingleAuthors);
 
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
@@ -31,10 +34,8 @@ export default function GraphPage() {
 
   const addToProjectMutation = useMutation({
     mutationFn: async ({ projectId, sourceIds }: { projectId: number; sourceIds: string[] }) => {
-      const results = await Promise.allSettled(
-        sourceIds.map(id => addPaperToProject(projectId, id))
-      );
-      return sourceIds.filter((_, i) => results[i].status === "rejected");
+      const { failed } = await addPapersToProject(projectId, sourceIds);
+      return failed;
     },
     onMutate: () => {
       setProjectPickerError(null);
@@ -63,15 +64,34 @@ export default function GraphPage() {
   const createProjectMutation = useMutation({
     mutationFn: async ({ name, sourceIds }: { name: string; sourceIds: string[] }) => {
       const result = await createProject({ name });
-      await Promise.allSettled(sourceIds.map((id) => addPaperToProject(result.project.id, id)));
+      try {
+        const { failed } = await addPapersToProject(result.project.id, sourceIds);
+        return failed.length;
+      } catch {
+        // The project was created; route through onSuccess so the name is
+        // cleared and a retry can't create a duplicate.
+        return sourceIds.length;
+      }
     },
-    onSuccess: () => {
+    // Invalidate in onSettled, not onSuccess: the project may have been
+    // created even when the mutation rejects (e.g. a paper-add request fails).
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+    },
+    onSuccess: (failedCount) => {
+      // The project exists either way — clear the name so a retry can't
+      // create a duplicate.
       setNewProjectName("");
+      if (failedCount > 0) {
+        setProjectPickerError(
+          `Project created, but ${failedCount} paper${failedCount !== 1 ? "s" : ""} could not be added`
+        );
+        return;
+      }
       setProjectPickerOpen(false);
       setProjectPickerError(null);
       setSelectedSourceIds([]);
       postToIframe({ type: "clear_selection" });
-      queryClient.invalidateQueries({ queryKey: ["projects"] });
     },
     onError: (err) => {
       setProjectPickerError(err instanceof Error ? err.message : "Failed to create project");
@@ -108,6 +128,14 @@ export default function GraphPage() {
     sendTheme();
   }, [sendTheme]);
 
+  // Toggling the single-author filter reloads the iframe (its src carries the
+  // flag), which boots with an empty selection. Clear the parent's selection too
+  // so the header count and "Add to project" target don't reference nodes the
+  // reloaded graph no longer shows as selected.
+  useEffect(() => {
+    setSelectedSourceIds([]);
+  }, [hideSingleAuthors]);
+
   function handleClearSelection() {
     setSelectedSourceIds([]);
     postToIframe({ type: "clear_selection" });
@@ -122,10 +150,21 @@ export default function GraphPage() {
             ? `${selectedSourceIds.length} paper${selectedSourceIds.length !== 1 ? "s" : ""} selected — Ctrl/Cmd+click to add more`
             : "Click a node to open · Ctrl/Cmd+click to select"}
         </span>
+        <label
+          className="ml-auto flex items-center gap-2 text-sm text-muted cursor-pointer select-none"
+          title="Drop authors linked to only one paper to declutter the graph"
+        >
+          <input
+            type="checkbox"
+            checked={hideSingleAuthors}
+            onChange={(e) => setHideSingleAuthors(e.target.checked)}
+          />
+          Hide single-paper authors
+        </label>
       </div>
       <iframe
         ref={iframeRef}
-        src="/graph/graph.html"
+        src={hideSingleAuthors ? "/graph/graph.html?excludeSingleAuthors=1" : "/graph/graph.html"}
         className="flex-1 border-0 w-full"
         title="Paper knowledge graph"
         onLoad={sendTheme}
