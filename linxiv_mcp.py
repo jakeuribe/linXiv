@@ -144,14 +144,8 @@ def list_papers(limit: Optional[int] = None, offset: int = 0, category: Optional
         offset: Number of papers to skip for pagination.
         category: Filter by arXiv primary category (e.g. "cs.LG").
     """
-    papers = svc_paper.list_paper_details(limit=None, offset=0)
-    results = [p.to_dict() for p in papers]
-    if category:
-        results = [p for p in results if p.get("category") == category]
-    results = results[offset:]
-    if limit is not None:
-        results = results[:limit]
-    return results
+    papers = svc_paper.list_paper_details(limit=limit, offset=offset, category=category)
+    return [p.to_dict() for p in papers]
 
 
 @mcp.tool()

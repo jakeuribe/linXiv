@@ -3,6 +3,7 @@ import { AppearanceSection } from "../components/settings/AppearanceSection";
 import { ApiKeysSection } from "../components/settings/ApiKeysSection";
 import { StorageSection } from "../components/settings/StorageSection";
 import { CrossRefSection } from "../components/settings/CrossRefSection";
+import { OpenAlexSection } from "../components/settings/OpenAlexSection";
 import { SearchSection } from "../components/settings/SearchSection";
 import { SidebarSection } from "../components/settings/SidebarSection";
 import { ExportSection } from "../components/settings/ExportSection";
@@ -74,6 +75,8 @@ export default function SettingsPage() {
         <AppearanceSection />
         <Divider />
         <CrossRefSection defaultOpen={false} />
+        <Divider />
+        <OpenAlexSection defaultOpen={false} />
         <Divider />
 
         <AdvancedToggle

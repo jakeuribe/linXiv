@@ -143,17 +143,8 @@ def cmd_fetch(args: argparse.Namespace) -> None:
 
 
 def cmd_list(args: argparse.Namespace) -> None:
-    if args.category:
-        rows = svc_paper.list_papers(limit=None, offset=0)
-        papers = [p for p in [{k: row[k] for k in row.keys()} for row in rows]
-                  if p.get("category") == args.category]
-        if args.offset:
-            papers = papers[args.offset:]
-        if args.limit is not None:
-            papers = papers[:args.limit]
-    else:
-        rows = svc_paper.list_papers(limit=args.limit, offset=args.offset)
-        papers = [{k: row[k] for k in row.keys()} for row in rows]
+    rows = svc_paper.list_papers(limit=args.limit, offset=args.offset, category=args.category)
+    papers = [{k: row[k] for k in row.keys()} for row in rows]
     _output(papers)
 
 

@@ -503,11 +503,29 @@ class TestCommitImportPdfs:
 
         ei.commit_import(archive)
 
-        # Fallback to version=1 means set_has_pdf("2204.00005", 1, True) was called
+        # Fallback to version=1 means mark_pdf_saved("2204.00005", ..., 1) was called
         paper = _paper.get(_paper.Paper(source_id="2204.00005"))
         assert paper
         assert paper.has_pdf is True
         assert paper.pdf_path
+
+    def test_pdf_for_missing_version_is_skipped_and_file_removed(self, tmp_path, monkeypatch):
+        sfk = _save_paper("2204.00005", "Epsilon Paper")  # version 1 only
+        proj_fk = _make_project("PDF Project", [sfk])
+        archive = ei.export_project(proj_fk, tmp_path / "export")
+
+        with zipfile.ZipFile(archive, "a") as zf:
+            zf.writestr("pdfs/2204.00005_v99.pdf", b"%PDF-missing-version")
+
+        dest_dir = tmp_path / "imported_pdfs"
+        monkeypatch.setattr(ei, "pdf_dir", lambda: dest_dir)
+
+        ei.commit_import(archive)  # must not raise ProjectImportError
+
+        assert not (dest_dir / "2204.00005_v99.pdf").exists()
+        paper = _paper.get(_paper.Paper(source_id="2204.00005"))
+        assert paper
+        assert paper.has_pdf is False
 
 
 # ---------------------------------------------------------------------------
