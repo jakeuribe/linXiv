@@ -24,6 +24,10 @@ let _tagRows = [];
 
 let _projectMap = new Map();  // id → {name, color, tags[]}
 
+// paperId → [author label lowercased]; built once per load so the author filter
+// doesn't walk connectedEdges() per paper on every keystroke.
+let _paperAuthorLabels = new Map();
+
 // Data-fetch state for in-place refresh / option changes (see fetchAndLoadGraph).
 let _graphBase           = null;   // resolved API origin, or null when offline (file:)
 let _excludeSingleAuthors = false; // current "hide single-paper authors" option
@@ -34,11 +38,15 @@ const $ = id => document.getElementById(id);
 // ── Panel collapse wiring ────────────────────────────────────────────────────
 
 document.querySelectorAll('.panel-toggle').forEach(btn => {
+    const body = document.getElementById(btn.dataset.target);
+    if (!body) return;
+    btn.setAttribute('aria-controls', btn.dataset.target);
+    btn.setAttribute('aria-expanded', String(body.style.display !== 'none'));
     btn.addEventListener('click', () => {
-        const body = document.getElementById(btn.dataset.target);
         const collapsed = body.style.display === 'none';
         body.style.display = collapsed ? '' : 'none';
         btn.textContent = collapsed ? '▼' : '▶';
+        btn.setAttribute('aria-expanded', String(collapsed));
     });
 });
 
@@ -191,6 +199,8 @@ $('isolate-btn').addEventListener('click', () => {
     _applyFilter();
 });
 
+$('clear-filters-btn').addEventListener('click', clearFilters);
+
 // ── Selection panel buttons ─────────────────────────────────────────────────
 
 $('select-all-btn').addEventListener('click', () => selectAllPapers());
@@ -296,7 +306,7 @@ function setFilterOptions(categories, tags, projects) {
         .join('');
 }
 
-// ── Called from Python toolbar "Clear filters" ───────────────────────────────
+// ── Reset every filter panel to its default and re-apply ─────────────────────
 
 function clearFilters() {
     _textFilterIds.forEach(id => { $(id).value = ''; });
@@ -318,6 +328,10 @@ function clearFilters() {
 function loadGraph(data, opts = {}) {
     const { nodes, edges } = data;
     const { preserveView = false } = opts;
+
+    // Frame the graph once the layout first settles on a fresh load; cleared as
+    // soon as the user interacts so we never reframe under an in-progress drag.
+    let fitOnSettle = !preserveView;
 
     // Seed surviving nodes from the outgoing layout and hold zoom/pan so an
     // in-place reload starts from the current view instead of re-randomising.
@@ -363,6 +377,9 @@ function loadGraph(data, opts = {}) {
                     has_pdf:     n.has_pdf     || false,
                     published:   n.published   || null,
                     project_ids: n.project_ids || [],
+                    url:         n.url         || null,
+                    doi:         n.doi         || null,
+                    summary:     n.summary     || '',
                 },
                 position: { x: sn.x, y: sn.y },
             };
@@ -398,7 +415,23 @@ function loadGraph(data, opts = {}) {
     // lookup (and its allocation) per node per frame.
     simNodes.forEach(sn => { sn.cyNode = cy.getElementById(sn.id); });
 
+    // Build paper → author-label index in one edge pass so the author filter
+    // reads from a Map instead of walking each paper's edges per keystroke.
+    _paperAuthorLabels = new Map();
+    cy.edges().forEach(e => {
+        const src = e.source(), tgt = e.target();
+        let paper, author;
+        if (src.data('type') === 'paper' && tgt.data('type') === 'author') { paper = src; author = tgt; }
+        else if (tgt.data('type') === 'paper' && src.data('type') === 'author') { paper = tgt; author = src; }
+        else return;
+        const labels = _paperAuthorLabels.get(paper.id());
+        const lower = String(author.data('label') || '').toLowerCase();
+        if (labels) labels.push(lower);
+        else _paperAuthorLabels.set(paper.id(), [lower]);
+    });
+
     cy.on('grab', 'node', e => {
+        fitOnSettle = false;  // user took control — don't reframe under them
         const sn = _simNodeById.get(e.target.id());
         if (sn) { sn.fx = sn.x; sn.fy = sn.y; }
         if (simulation) simulation.alphaTarget(0.3).restart();
@@ -410,28 +443,26 @@ function loadGraph(data, opts = {}) {
     });
     cy.on('free', 'node', e => {
         const sn = _simNodeById.get(e.target.id());
-        if (sn) { sn.fx = null; sn.fy = null; }
+        if (sn) { sn.fx = null; sn.fy = null; sn._filterPinned = false; }
         if (simulation) simulation.alphaTarget(0);
     });
 
     // Click paper node:
-    //   Regular click  → set selection to this node alone + navigate
+    //   Regular click  → clear selection + navigate to the paper
     //   Ctrl/Cmd click → toggle additive (no navigation)
     cy.on('tap', 'node[type = "paper"]', e => {
         const paper_id = e.target.id();
         if (e.originalEvent.ctrlKey || e.originalEvent.metaKey) {
             _toggleSelection(paper_id);
         } else {
+            // Clear the local selection + counter so returning to the graph
+            // shows no stale highlight. The host owns its own count via the
+            // paper_clicked handler, so we skip the selection_changed post.
             _selectedIds.clear();
             _applyAllStyles();
-            console.log('GRAPHVIEW_PAPER_CLICKED:' + paper_id);
+            _updateSelectionCount();
             window.parent.postMessage({ type: 'paper_clicked', id: paper_id }, window.location.origin);
         }
-    });
-
-    // Right-click paper node → open its Library detail page
-    cy.on('cxttap', 'node[type = "paper"]', e => {
-        console.log('GRAPHVIEW_PAPER_RIGHT_CLICKED:' + e.target.id());
     });
 
     // Tap background → clear selection (unless Ctrl/Cmd held)
@@ -455,6 +486,15 @@ function loadGraph(data, opts = {}) {
         cy.batch(() => {
             simNodes.forEach(d => d.cyNode.position({ x: d.x, y: d.y }));
         });
+    });
+
+    // Frame the graph once the layout settles, rather than the random seed
+    // positions fitted above. fitOnSettle is cleared on the first grab so a
+    // drag's own settle can't re-fit and jump the viewport.
+    simulation.on('end', () => {
+        if (!fitOnSettle) return;
+        fitOnSettle = false;
+        cy.fit(undefined, 40);
     });
 
     // Drop selected ids the reload removed (_applyFilter re-renders selection),
@@ -606,11 +646,7 @@ function filterGraph(opts) {
         if (dateFrom && d.published && d.published < dateFrom) return;
         if (dateTo   && d.published && d.published > dateTo)   return;
         if (authLower) {
-            const authorLabels = [];
-            n.connectedEdges().forEach(e => {
-                const other = e.source().id() === n.id() ? e.target() : e.source();
-                if (other.data('type') === 'author') authorLabels.push(other.data('label').toLowerCase());
-            });
+            const authorLabels = _paperAuthorLabels.get(n.id()) || [];
             if (!authorLabels.some(a => a.includes(authLower))) return;
         }
         visiblePaperIds.add(n.id());
@@ -650,13 +686,15 @@ function filterGraph(opts) {
             ...visiblePaperIds, ...visibleAuthorIds, ...visibleTagIds,
         ]);
 
-        // Pin non-visible nodes in place; unpin visible ones
+        // Pin non-visible nodes in place; release the pins the filter owns once
+        // a node is visible again. Tracked via _filterPinned so a drag pin
+        // (fx/fy set by the grab handler) is never cleared out from under it,
+        // and so isolate-mode toggles don't permanently freeze the layout.
         _simNodeById.forEach((sn, id) => {
             if (!visibleNodeIds.has(id)) {
-                if (sn.fx == null) { sn.fx = sn.x; sn.fy = sn.y; }
-            } else {
-                // Only unpin if we own the pin (drag handler sets fx/fy too)
-                if (!isolate) { sn.fx = null; sn.fy = null; }
+                if (sn.fx == null) { sn.fx = sn.x; sn.fy = sn.y; sn._filterPinned = true; }
+            } else if (sn._filterPinned) {
+                sn.fx = null; sn.fy = null; sn._filterPinned = false;
             }
         });
 
@@ -774,17 +812,7 @@ function _applyAllStyles() {
     });
 }
 
-// ── Highlight (called from Python when a table row is selected) ───────────────
-// Sets the selection to just this one node (or clears if null).
-
-function highlightNode(nodeId) {
-    _selectedIds.clear();
-    if (nodeId !== null) _selectedIds.add(String(nodeId));
-    _applyAllStyles();
-    _notifySelectionChanged();
-}
-
-// ── Selection (click to set, Ctrl+click to toggle, Python bulk ops) ──────────
+// ── Selection (click to set, Ctrl+click to toggle) ───────────────────────────
 
 function _toggleSelection(paperId) {
     if (_selectedIds.has(paperId)) {
@@ -804,7 +832,13 @@ function _notifySelectionChanged() {
             if (sid) sourceIds.push(sid);
         });
     }
+    _updateSelectionCount();
     window.parent.postMessage({ type: 'selection_changed', sourceIds }, window.location.origin);
+}
+
+function _updateSelectionCount() {
+    const counter = $('selectionCount');
+    if (counter) counter.textContent = `(${_selectedIds.size})`;
 }
 
 function selectAllPapers() {
