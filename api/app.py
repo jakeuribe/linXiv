@@ -41,6 +41,7 @@ from service.paper import (
     get_source_id as get_paper_source_id,
     get_paper_root,
     list_paper_details,
+    list_papers_with_pdf,
     list_deleted as list_deleted_papers,
     delete as soft_delete_paper,
     restore as restore_paper,
@@ -58,7 +59,10 @@ from service.paper import (
     PaperLinkError,
     pdf_on_disk_name,
     mark_pdf_saved,
+    set_has_pdf,
+    set_pdf_path,
 )
+from service.files import delete_pdf as delete_local_pdf
 from service.models.paper import PaperDetails
 from service.tag import list_all_tags
 import user_settings
@@ -308,6 +312,50 @@ async def api_attach_pdf(source_id: str, file: UploadFile = File(...)) -> dict:
         dest.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return {"ok": True}
+
+
+_SAVED_PDF_LIST_CAP = 200
+
+
+@app.get("/api/pdfs")
+def api_list_saved_pdfs() -> dict:
+    """List papers whose PDF is stored locally on disk, largest first."""
+    out: list[dict] = []
+    for p in list_papers_with_pdf():
+        path = _resolve_local_pdf(p, None)
+        if not path:
+            continue
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            continue
+        out.append({
+            "source_id": p.source_id,
+            "source_fk": p.source_fk,
+            "title": p.title,
+            "version": p.version,
+            "size_bytes": size,
+        })
+    out.sort(key=lambda d: d["size_bytes"], reverse=True)
+    return {"pdfs": out[:_SAVED_PDF_LIST_CAP]}
+
+
+@app.delete("/api/pdfs/{source_id:path}")
+def api_delete_saved_pdf(source_id: str) -> dict:
+    """Delete a paper's local PDF copy; the paper record itself is kept."""
+    details = get_all_paper_versions(Paper(source_id=source_id))
+    if not details:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    for ver in details.versions:
+        path = _resolve_local_pdf(ver, ver.version)
+        # delete_local_pdf returns False when path is outside the managed dir.
+        if path and not delete_local_pdf(path):
+            raise HTTPException(status_code=409, detail="PDF is outside managed storage")
+        # Clear this version's flag/path before the next iteration may raise 409.
+        set_has_pdf(source_id, ver.version, False)
+        if path:
+            set_pdf_path(source_id, "", ver.version)
+    return {"deleted": True}
 
 
 @app.get("/api/papers/{source_id:path}")

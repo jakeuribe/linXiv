@@ -808,6 +808,18 @@ def list_papers(
         return conn.execute(sql, params).fetchall()
 
 
+_LIST_PDFS_SQL = (
+    "SELECT paper_id, source_id, source_fk, title, version, pdf_path "
+    "FROM latest_papers WHERE has_pdf = 1 ORDER BY source_id"
+)
+
+
+def list_papers_with_pdf() -> list[sqlite3.Row]:
+    """Return latest-version rows flagged has_pdf=1, with only PDF-list columns."""
+    with _connect() as conn:
+        return conn.execute(_LIST_PDFS_SQL).fetchall()
+
+
 def get_categories() -> list[str]:
     """Return a sorted list of all distinct primary categories in the DB."""
     with _connect() as conn:
