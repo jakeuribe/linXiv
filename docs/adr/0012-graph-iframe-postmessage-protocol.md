@@ -26,11 +26,16 @@ The message protocol is:
 | Direction | `type` | Payload | Purpose |
 |---|---|---|---|
 | iframe → parent | `paper_clicked` | `{ id: string }` | Navigate to paper detail |
-| iframe → parent | `selection_changed` | `{ sourceIds: string[] }` | Update selection state in parent |
+| iframe → parent | `selection_changed` | `{ sourceIds: string[] }` | Update selection state in parent (also re-emitted after every in-place reload, pruned to surviving nodes) |
+| iframe → parent | `graph_loaded` | `{ ok: boolean }` | Signal a data (re)load finished, so the parent can clear its "refreshing" state |
 | parent → iframe | `clear_selection` | — | Tell graph to deselect all nodes |
 | parent → iframe | `theme_update` | `{ colors: ThemeColors }` | Push current palette to graph renderer |
+| parent → iframe | `refresh` | — | Re-fetch graph data in place (manual Refresh button; the dirty dot is a passive hint, not an auto-refresh) |
+| parent → iframe | `set_options` | `{ excludeSingleAuthors: boolean }` | Apply a graph option in place instead of reloading the iframe (see ADR consequences below) |
 
 All handlers verify `e.origin === window.location.origin` before processing.
+
+`refresh` and `set_options` re-fetch graph data without reloading the iframe, preserving in-iframe state (filters, tag-logic rows, layout sliders, zoom/pan, and seeded positions for surviving nodes so the layout re-settles from the current view instead of re-randomising). Each graph option selects its update path — in place (postMessage) or full iframe reload (src swap) — via a per-option constant in `GraphPage.tsx` (`HIDE_SINGLE_AUTHORS_STRATEGY`), so the choice is independent of the src wiring.
 
 `theme_update` is sent on iframe load (`onLoad` prop) and on every theme state change (via `useCallback` + `useEffect` on `preset`, `mode`, `overrides`, `overrideAlphas`).
 

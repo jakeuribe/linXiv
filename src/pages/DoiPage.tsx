@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Spinner } from "../components/ui/spinner";
@@ -25,6 +25,7 @@ function getAuthorsText(meta: DisplayMetadata): string {
 }
 
 export default function DoiPage() {
+  const queryClient = useQueryClient();
   const [doi, setDoi] = useState("");
   // Capture the exact DOI string that was resolved, so Save always uses it
   // even if the user edits the input field afterwards.
@@ -47,6 +48,9 @@ export default function DoiPage() {
     mutationFn: (d: string) => saveDoi(d),
     onSuccess: () => {
       setSaveSuccess(true);
+      // Refresh library/stats consumers and trip the graph's dirty flag.
+      queryClient.invalidateQueries({ queryKey: ["papers"] });
+      queryClient.invalidateQueries({ queryKey: ["stats"] });
     },
   });
 
