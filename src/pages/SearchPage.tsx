@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useMemo } from "react";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { Spinner } from "../components/ui/spinner";
 import { QueryBuilder, makeClause } from "../components/search/QueryBuilder";
@@ -109,6 +109,7 @@ const MAX_RESULT_OPTIONS = [10, 25, 50, 100] as const;
 
 export default function SearchPage() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [queryText, setQueryText] = useState("");
   const [source, setSource] = useState<Source>("arxiv");
   const [maxResults, setMaxResults] = useState<number>(25);
@@ -276,7 +277,10 @@ const { data: settings } = useQuery({ queryKey: ["settings"], queryFn: getSettin
       throw new Error(`Unknown source ID format: ${sourceId}`);
     }
     setSavedIds((prev) => new Set([...prev, sourceId]));
-  }, []);
+    // Refresh library/stats consumers and trip the graph's dirty flag.
+    queryClient.invalidateQueries({ queryKey: ["papers"] });
+    queryClient.invalidateQueries({ queryKey: ["stats"] });
+  }, [queryClient]);
 
   const handleViewPdf = useCallback((result: SearchResult, isSaved: boolean) => {
     navigate("/pdf-preview", { state: { result, isSaved } });
