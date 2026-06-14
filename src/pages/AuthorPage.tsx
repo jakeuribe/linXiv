@@ -76,7 +76,7 @@ function AuthorIndexView() {
   }
 
   return (
-    <div className="max-w-3xl mx-auto px-6 py-8 space-y-6">
+    <div className="max-w-4xl mx-auto px-6 py-8 space-y-6">
       <div>
         <h1 className="text-xl font-semibold" style={{ color: "var(--color-text)" }}>
           Authors
@@ -222,7 +222,7 @@ function AuthorDetailView({ authorId }: AuthorDetailViewProps) {
   }
 
   return (
-    <div className="max-w-3xl mx-auto px-6 py-8 space-y-8">
+    <div className="max-w-4xl mx-auto px-6 py-8 space-y-8">
       {/* Back */}
       <Button
         variant="ghost"

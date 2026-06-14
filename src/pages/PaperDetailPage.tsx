@@ -306,7 +306,7 @@ export default function PaperDetailPage() {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="max-w-4xl mx-auto px-6 py-8 space-y-5">
+      <div className="max-w-5xl mx-auto px-6 py-8 space-y-5">
         {/* Header row: back + edit */}
         <div
           className="flex items-center justify-between"
