@@ -11,11 +11,6 @@ import { Button } from "../components/ui/button";
 import { Dialog } from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
 
-// Per-option: 'in-place' applies via postMessage (iframe keeps its state);
-// 'reload' lets the src track the live value so toggling re-bootstraps graph.js.
-type ReloadStrategy = "in-place" | "reload";
-const HIDE_SINGLE_AUTHORS_STRATEGY: ReloadStrategy = "in-place";
-
 // Root query keys whose invalidation may change graph-relevant data.
 const GRAPH_DIRTYING_KEYS = new Set([
   "stats", "papers", "paper", "projects", "project", "tags", "tag", "authors", "author",
@@ -42,7 +37,7 @@ export default function GraphPage() {
   const [dirty, setDirty] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
 
-  // Frozen at mount: drives the iframe src under the 'in-place' strategy.
+  // Frozen at mount: drives the iframe src; later changes ride postMessage.
   const initialExclude = useRef(hideSingleAuthors).current;
   // Last option value pushed to the iframe; the option effect bails when this
   // is unchanged.
@@ -167,15 +162,12 @@ export default function GraphPage() {
     sendTheme();
   }, [sendTheme]);
 
-  // Push an option change to the iframe in place; bail when the value is unchanged.
+  // Push an option change to the iframe in place; bail when the value is
+  // unchanged. The iframe re-fetches and keeps its layout/filters/view.
   useEffect(() => {
     if (hideSingleAuthors === appliedExclude.current) return;
     appliedExclude.current = hideSingleAuthors;
-    if (HIDE_SINGLE_AUTHORS_STRATEGY === "in-place") {
-      requestGraphReload({ type: "set_options", excludeSingleAuthors: hideSingleAuthors });
-    }
-    // 'reload': the src tracks the live value (see iframeSrc), so the iframe
-    // reloads itself — nothing to post.
+    requestGraphReload({ type: "set_options", excludeSingleAuthors: hideSingleAuthors });
   }, [hideSingleAuthors]);
 
   // Flag the Refresh button when a query holding graph-relevant data is
@@ -225,11 +217,9 @@ export default function GraphPage() {
     sendTheme();
   }
 
-  // 'reload' tracks the live option (toggling swaps the src → full reload);
-  // 'in-place' freezes it at mount so changes ride postMessage instead.
-  const srcExclude =
-    HIDE_SINGLE_AUTHORS_STRATEGY === "reload" ? hideSingleAuthors : initialExclude;
-  const iframeSrc = srcExclude
+  // Freeze the option at mount for the iframe src; later changes ride
+  // postMessage (see the effect above) so the iframe keeps its state.
+  const iframeSrc = initialExclude
     ? "/graph/graph.html?excludeSingleAuthors=1"
     : "/graph/graph.html";
 
