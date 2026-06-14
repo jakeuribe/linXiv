@@ -3,6 +3,7 @@ import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
 import { formatDate } from "../../lib/date";
 import { useConfirmWithTimeout } from "../../hooks/useConfirmWithTimeout";
+import { MathText } from "../../lib/tex";
 
 interface NoteCardProps {
   note: Note;
@@ -43,7 +44,7 @@ export function NoteCard({ note, projects = [], onEdit, onDelete }: NoteCardProp
       {/* Header: title + scope badge + date */}
       <div className="flex items-start justify-between gap-2">
         <span className="font-medium text-text leading-snug">
-          {note.title || "Untitled note"}
+          <MathText forceInline>{note.title || "Untitled note"}</MathText>
         </span>
         <div className="shrink-0 flex items-center gap-2 mt-0.5">
           <Badge color={scopeProject?.color_hex ?? undefined}>{scopeLabel}</Badge>
@@ -56,11 +57,14 @@ export function NoteCard({ note, projects = [], onEdit, onDelete }: NoteCardProp
 
       {/* Content preview */}
       {note.content && (
-        <p
-          className="text-muted text-sm line-clamp-3 leading-relaxed whitespace-pre-wrap"
-        >
-          {note.content}
-        </p>
+        <div className="text-muted text-sm line-clamp-3 leading-relaxed whitespace-pre-wrap">
+          {note.content.split("\n").map((line, i) => (
+            <span key={i + "-" + line}>
+              {i > 0 && <br />}
+              <MathText forceInline>{line}</MathText>
+            </span>
+          ))}
+        </div>
       )}
 
       {/* Actions */}

@@ -1,9 +1,11 @@
 import { useId, useMemo, useState, useRef, useEffect } from "react";
+import { useMutation } from "@tanstack/react-query";
 import { useThemeStore } from "../../stores/theme";
 import type { CustomPalette } from "../../stores/theme";
 import { PRESETS, VALID_HEX } from "../../lib/theme";
 import type { PresetName, ThemeColors, ThemeMode, ColorAlphas } from "../../lib/theme";
 import { updateSettings } from "../../api/settings";
+import { useTexEnabled } from "../../lib/tex";
 import { Input } from "../ui/input";
 import { Section } from "./Section";
 import { ZoomControl } from "./ZoomControl";
@@ -363,6 +365,14 @@ export function AppearanceSection() {
   const applyCustomPalette  = useThemeStore((s) => s.applyCustomPalette);
   const [overridesOpen, setOverridesOpen] = useState(false);
   const overridesPanelId = useId();
+  const texEnabled = useTexEnabled();
+  const {
+    mutate: toggleTex,
+    isPending: texPending,
+    error: texError,
+  } = useMutation({
+    mutationFn: (next: boolean) => updateSettings({ tex_rendering_enabled: next }),
+  });
 
   const existingPaletteNames = useMemo(
     () => new Set(customPalettes.map((p) => p.name.toLowerCase())),
@@ -527,6 +537,36 @@ export function AppearanceSection() {
             existingNames={existingPaletteNames}
           />
         </div>
+      </div>
+
+      <div className="flex items-center justify-between mt-6 pt-4 border-t border-border">
+        <div>
+          <span className="text-sm font-medium text-text">Render TeX / math</span>
+          <p className="text-xs text-muted mt-0.5">
+            Render $…$ LaTeX in titles, abstracts, and notes
+          </p>
+          {texError && (
+            <p className="text-xs text-danger mt-0.5">
+              {texError instanceof Error ? texError.message : "Failed to save setting"}
+            </p>
+          )}
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={texEnabled}
+          aria-label="Render TeX / math"
+          disabled={texPending}
+          aria-disabled={texPending}
+          onClick={() => toggleTex(!texEnabled)}
+          className="relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors disabled:cursor-not-allowed disabled:opacity-60"
+          style={{ background: texEnabled ? "var(--color-accent)" : "var(--color-border)" }}
+        >
+          <span
+            className="pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-sm transition-transform"
+            style={{ transform: texEnabled ? "translateX(20px)" : "translateX(0)" }}
+          />
+        </button>
       </div>
     </Section>
   );

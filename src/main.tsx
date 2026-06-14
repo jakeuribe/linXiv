@@ -7,6 +7,7 @@ import "./styles/globals.css";
 import { useThemeStore } from "./stores/theme";
 import { isTauri, setApiPort } from "./api/client";
 import { queryClient } from "./lib/queryClient";
+import { getSettings } from "./api/settings";
 
 useThemeStore.getState();
 
@@ -68,6 +69,11 @@ async function bootstrap() {
       return;
     }
   }
+  // Warm the settings cache so the first render reads the saved preference
+  // (e.g. tex_rendering_enabled) instead of the default, avoiding a flash.
+  await queryClient
+    .prefetchQuery({ queryKey: ["settings"], queryFn: getSettings })
+    .catch(() => {});
   renderApp();
 }
 

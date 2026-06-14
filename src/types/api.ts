@@ -87,6 +87,7 @@ export interface Settings {
   theme_override_alphas: ColorAlphas;
   search_history_enabled?: boolean;
   search_history_max?: number;
+  tex_rendering_enabled?: boolean;
   [key: string]: unknown;
 }
 
