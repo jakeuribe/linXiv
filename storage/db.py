@@ -764,11 +764,15 @@ def get_graph_data(exclude_single_authors: bool = False) -> tuple[list[dict], li
             and row["paper_count"] < 2
         ):
             continue
-        author_id = f"author::{name}"
-        if author_id not in seen_authors:
-            author_nodes.append({"id": author_id, "label": name, "type": "author"})
-            seen_authors.add(author_id)
-        edges.append({"source": row["source_fk"], "target": author_id})
+        node_id = f"author::{name}"
+        if node_id not in seen_authors:
+            node: dict[str, object] = {"id": node_id, "label": name, "type": "author"}
+            # author_fk is NULL when the JSON name matches no AUTHOR row.
+            if row["author_fk"] is not None:
+                node["author_id"] = row["author_fk"]
+            author_nodes.append(node)
+            seen_authors.add(node_id)
+        edges.append({"source": row["source_fk"], "target": node_id})
 
     return paper_nodes + author_nodes, edges
 

@@ -468,6 +468,25 @@ class TestGetGraphData:
         author_nodes = [n for n in nodes if n.get("type") == "author"]
         assert any(n["label"] == "Alice Smith" for n in author_nodes)
 
+    def test_author_node_carries_relational_author_id(self):
+        db.save_paper(_make_result("2204.12985v1", authors=["Alice Smith"]))
+        expected_fk = authors.list_authors(name="Alice Smith")[0].author_id
+        nodes, _ = db.get_graph_data()
+        author_node = next(
+            n for n in nodes if n.get("type") == "author" and n["label"] == "Alice Smith"
+        )
+        assert author_node["author_id"] == expected_fk
+
+    def test_author_node_carries_author_id_with_exclude_single_authors(self):
+        db.save_paper(_make_result("2204.12985v1", authors=["Alice Smith"]))
+        db.save_paper(_make_result("2301.00001v1", authors=["Alice Smith"]))
+        expected_fk = authors.list_authors(name="Alice Smith")[0].author_id
+        nodes, _ = db.get_graph_data(exclude_single_authors=True)
+        author_node = next(
+            n for n in nodes if n.get("type") == "author" and n["label"] == "Alice Smith"
+        )
+        assert author_node["author_id"] == expected_fk
+
     def test_edge_connects_paper_to_author(self):
         db.save_paper(_make_result("2204.12985v1", authors=["Alice Smith"]))
         nodes, edges = db.get_graph_data()

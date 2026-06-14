@@ -135,6 +135,9 @@ export default function GraphPage() {
       if (e.data.type === "paper_clicked" && typeof e.data.id === "string") {
         setSelectedSourceIds([]);
         navigate(`/library/${e.data.id}`);
+      } else if (e.data.type === "author_clicked" && typeof e.data.id === "string") {
+        setSelectedSourceIds([]);
+        navigate(`/authors/${Number(e.data.id)}`);
       } else if (e.data.type === "selection_changed" && Array.isArray(e.data.sourceIds)) {
         setSelectedSourceIds(e.data.sourceIds);
       } else if (e.data.type === "graph_loaded") {
