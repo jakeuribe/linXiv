@@ -271,6 +271,13 @@ def _mock_work(work_id: str = "https://openalex.org/W1111",
 
 class TestOpenAlexSourceSearch:
 
+    @staticmethod
+    def _make_mock_response(results: list | None = None) -> MagicMock:
+        mock_resp = MagicMock()
+        mock_resp.raise_for_status.return_value = None
+        mock_resp.json.return_value = {"results": results or []}
+        return mock_resp
+
     def test_search_returns_paper_metadata_list(self):
         mock_resp = MagicMock()
         mock_resp.raise_for_status.return_value = None
@@ -318,6 +325,28 @@ class TestOpenAlexSourceSearch:
         params = mock_get.call_args[1]["params"]
         assert params["search"] == "neural networks"
         assert params["per_page"] == 5
+
+    def test_search_strips_operator_characters(self):
+        source = OpenAlexSource()
+        with patch.object(source._http, "get",
+                          return_value=self._make_mock_response()) as mock_get:
+            source.search("cats|dogs")
+        assert mock_get.call_args[1]["params"]["search"] == "cats dogs"
+
+    def test_search_strips_leading_and_trailing_operators(self):
+        source = OpenAlexSource()
+        with patch.object(source._http, "get",
+                          return_value=self._make_mock_response()) as mock_get:
+            source.search("*what is AI?")
+        assert mock_get.call_args[1]["params"]["search"] == "what is AI"
+
+    def test_search_all_operator_query_returns_empty_without_request(self):
+        source = OpenAlexSource()
+        with patch.object(source._http, "get",
+                          return_value=self._make_mock_response()) as mock_get:
+            results = source.search("|||")
+        assert results == []
+        mock_get.assert_not_called()
 
 
 class TestOpenAlexSourceFetchById:
