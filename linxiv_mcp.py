@@ -24,8 +24,7 @@ from service.paper import Paper, Papers
 from service.tag import Tag, TagIn
 from service.project import Project as _SvcProjectFilter, Projects as _SvcProjects, ProjectIn, UNSET
 from service.note import Note as _SvcNote, Notes as _SvcNotes, NoteIn, NoteUpdateIn
-from service.models.project import ProjectDetails, Status as _SvcStatus
-from service.models.note import NoteDetails
+from service.models.project import Status as _SvcStatus
 from storage.notes import ensure_notes_db as _ensure_notes_db
 from storage.projects import ensure_projects_db
 from formats.bibtex import BibTeXFormat
@@ -54,35 +53,6 @@ _ensure_notes_db()
 # ---------------------------------------------------------------------------
 # Serialization helpers
 # ---------------------------------------------------------------------------
-
-def _note_to_dict(n: NoteDetails) -> dict:
-    return {
-        "id":          n.note_id,
-        "source_fk":   n.source_fk,
-        "paper_id_fk": n.paper_id_fk,
-        "project_id":  n.project_id,
-        "title":       n.title,
-        "content":     n.content,
-        "created_at":  n.created_at.isoformat() if n.created_at else None,
-        "updated_at":  n.updated_at.isoformat() if n.updated_at else None,
-    }
-
-
-def _project_details_to_dict(p: ProjectDetails) -> dict:
-    return {
-        "id":           p.id,
-        "name":         p.name,
-        "description":  p.description,
-        "color":        p.color,
-        "project_tags": p.project_tags,
-        "source_fks":   p.source_fks,
-        "paper_count":  len(p.source_fks),
-        "status":       p.status.value,
-        "created_at":   p.created_at.isoformat() if p.created_at else None,
-        "updated_at":   p.updated_at.isoformat() if p.updated_at else None,
-        "archived_at":  p.archived_at.isoformat() if p.archived_at else None,
-    }
-
 
 def _asdict_json(obj) -> dict:
     """dataclasses.asdict with datetime/date values rendered as ISO strings."""
@@ -299,7 +269,7 @@ def list_projects(status: Optional[str] = None) -> list[dict]:
     else:
         all_projects = svc_project.get_many(_SvcProjects())
         projects = [p for p in all_projects if p.status != _SvcStatus.DELETED]
-    return [_project_details_to_dict(p) for p in projects]
+    return [p.to_dict() for p in projects]
 
 
 @mcp.tool()
@@ -310,7 +280,7 @@ def get_project(project_id: int) -> Optional[dict]:
         project_id: Numeric project ID.
     """
     details = svc_project.get(_SvcProjectFilter(project_fk=project_id))
-    return _project_details_to_dict(details) if details else None
+    return details.to_dict() if details else None
 
 
 @mcp.tool()
@@ -323,7 +293,7 @@ def create_project(name: str, description: str = "") -> dict:
     """
     fk = svc_project.create(ProjectIn(name=name, description=description))
     details = svc_project.get(_SvcProjectFilter(project_fk=fk))
-    return _project_details_to_dict(details) if details else {"id": fk, "name": name}
+    return details.to_dict() if details else {"id": fk, "name": name}
 
 
 @mcp.tool()
@@ -366,7 +336,7 @@ def update_project(
         status=status_enum,
     )
     updated = svc_project.get(_SvcProjectFilter(project_fk=project_id))
-    return _project_details_to_dict(updated) if updated else {}
+    return updated.to_dict() if updated else {}
 
 
 @mcp.tool()
@@ -481,7 +451,7 @@ def create_note(
     source_fk = int(root["SOURCE_FK"])
     note_id = svc_note.create(NoteIn(source_fk=source_fk, project_fk=project_id, title=title, content=content))
     created = svc_note.get(_SvcNote(note_id=note_id))
-    return _note_to_dict(created) if created else {"id": note_id, "source_fk": source_fk, "project_id": project_id, "title": title}
+    return created.to_dict() if created else {"id": note_id, "source_fk": source_fk, "project_id": project_id, "title": title}
 
 
 @mcp.tool()
@@ -492,7 +462,7 @@ def get_note(note_id: int) -> Optional[dict]:
         note_id: Numeric note ID.
     """
     details = svc_note.get(_SvcNote(note_id=note_id))
-    return _note_to_dict(details) if details else None
+    return details.to_dict() if details else None
 
 
 @mcp.tool()
@@ -524,7 +494,7 @@ def list_notes(
             project_fk=project_id,
             all_projects=paper_id is not None and project_id is None,
         ))
-    return [_note_to_dict(n) for n in notes]
+    return [n.to_dict() for n in notes]
 
 
 @mcp.tool()
@@ -546,7 +516,7 @@ def update_note(
     if not ok:
         raise ValueError(f"Note {note_id} not found.")
     updated = svc_note.get(_SvcNote(note_id=note_id))
-    return _note_to_dict(updated) if updated else {}
+    return updated.to_dict() if updated else {}
 
 
 @mcp.tool()
@@ -574,7 +544,7 @@ def get_notes_for_paper(paper_id: str, project_id: Optional[int] = None) -> list
     root = svc_paper.get_paper_root(paper_id)
     if root is None:
         raise ValueError(f"Paper {paper_id!r} not found in database.")
-    return [_note_to_dict(n) for n in svc_note.get_many(_SvcNotes(
+    return [n.to_dict() for n in svc_note.get_many(_SvcNotes(
         source_fk=int(root["SOURCE_FK"]),
         project_fk=project_id,
         all_projects=project_id is None,
@@ -588,7 +558,7 @@ def get_notes_for_project(project_id: int) -> list[dict]:
     Args:
         project_id: Numeric project ID.
     """
-    return [_note_to_dict(n) for n in svc_note.get_many(_SvcNotes(project_fk=project_id))]
+    return [n.to_dict() for n in svc_note.get_many(_SvcNotes(project_fk=project_id))]
 
 
 # ── PDF tools ─────────────────────────────────────────────────────────────────
@@ -745,7 +715,7 @@ def list_trash() -> dict:
     projects = svc_project.list_deleted()
     return {
         "papers": [_asdict_json(p) for p in papers],
-        "projects": [_project_details_to_dict(p) for p in projects],
+        "projects": [p.to_dict() for p in projects],
     }
 
 
@@ -959,7 +929,7 @@ def save_doi(doi: str) -> dict:
 @mcp.tool()
 def list_authors() -> list[dict]:
     """List all authors in the library with their paper counts."""
-    return [_asdict_json(a) for a in svc_author.list_with_paper_count()]
+    return [a.to_dict() for a in svc_author.list_with_paper_count()]
 
 
 @mcp.tool()
@@ -973,8 +943,8 @@ def get_author(author_id: int) -> dict:
     if author is None:
         raise ValueError(f"Author {author_id} not found.")
     previews = svc_author.get_paper_previews(author_id)
-    result = _asdict_json(author)
-    result["papers"] = [_asdict_json(p) for p in previews]
+    result = author.to_dict()
+    result["papers"] = [p.to_dict() for p in previews]
     return result
 
 
