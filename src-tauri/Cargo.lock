@@ -3944,6 +3944,7 @@ dependencies = [
 [[package]]
 name = "tauri-plugin-texbrain"
 version = "0.1.0"
+source = "git+https://github.com/linxiv-dev/tex-brain-linxiv-plugin#9499d4343033de0c3f1e52a2f2a06989fa4d2f13"
 dependencies = [
  "futures-util",
  "reqwest 0.12.28",

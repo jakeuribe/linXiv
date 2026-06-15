@@ -71,8 +71,10 @@ function toNodes(text: string, forceInline: boolean): ReactNode[] {
   let key = 0;
   for (const m of text.matchAll(MATH_RE)) {
     if (m.index > last) nodes.push(text.slice(last, m.index));
-    const display = m[1] !== undefined && !forceInline;
-    const html = mathHtml(display ? m[1] : m[2] ?? m[1], display);
+    const isDisplay = m[1] !== undefined;
+    const display = isDisplay && !forceInline;
+    const tex = (isDisplay ? m[1] : m[2]) as string;
+    const html = mathHtml(tex, display);
     if (html === null) {
       nodes.push(m[0]); // empty or unrenderable — keep the raw delimited source
     } else {
