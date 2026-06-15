@@ -24,10 +24,6 @@ let _tagRows = [];
 
 let _projectMap = new Map();  // id → {name, color, tags[]}
 
-// paperId → [author label lowercased]; built once per load so the author filter
-// doesn't walk connectedEdges() per paper on every keystroke.
-let _paperAuthorLabels = new Map();
-
 // Data-fetch state for in-place refresh / option changes (see fetchAndLoadGraph).
 let _graphBase           = null;   // resolved API origin, or null when offline (file:)
 let _excludeSingleAuthors = false; // current "hide single-paper authors" option
@@ -329,10 +325,6 @@ function loadGraph(data, opts = {}) {
     const { nodes, edges } = data;
     const { preserveView = false } = opts;
 
-    // Frame the graph once the layout first settles on a fresh load; cleared as
-    // soon as the user interacts so we never reframe under an in-progress drag.
-    let fitOnSettle = !preserveView;
-
     // Seed surviving nodes from the outgoing layout and hold zoom/pan so an
     // in-place reload starts from the current view instead of re-randomising.
     const prevPositions = new Map();
@@ -415,21 +407,6 @@ function loadGraph(data, opts = {}) {
     // lookup (and its allocation) per node per frame.
     simNodes.forEach(sn => { sn.cyNode = cy.getElementById(sn.id); });
 
-    // Build paper → author-label index in one edge pass so the author filter
-    // reads from a Map instead of walking each paper's edges per keystroke.
-    _paperAuthorLabels = new Map();
-    cy.edges().forEach(e => {
-        const src = e.source(), tgt = e.target();
-        let paper, author;
-        if (src.data('type') === 'paper' && tgt.data('type') === 'author') { paper = src; author = tgt; }
-        else if (tgt.data('type') === 'paper' && src.data('type') === 'author') { paper = tgt; author = src; }
-        else return;
-        const labels = _paperAuthorLabels.get(paper.id());
-        const lower = String(author.data('label') || '').toLowerCase();
-        if (labels) labels.push(lower);
-        else _paperAuthorLabels.set(paper.id(), [lower]);
-    });
-
     cy.on('grab', 'node', e => {
         fitOnSettle = false;  // user took control — don't reframe under them
         const sn = _simNodeById.get(e.target.id());
@@ -486,15 +463,6 @@ function loadGraph(data, opts = {}) {
         cy.batch(() => {
             simNodes.forEach(d => d.cyNode.position({ x: d.x, y: d.y }));
         });
-    });
-
-    // Frame the graph once the layout settles, rather than the random seed
-    // positions fitted above. fitOnSettle is cleared on the first grab so a
-    // drag's own settle can't re-fit and jump the viewport.
-    simulation.on('end', () => {
-        if (!fitOnSettle) return;
-        fitOnSettle = false;
-        cy.fit(undefined, 40);
     });
 
     // Drop selected ids the reload removed (_applyFilter re-renders selection),
