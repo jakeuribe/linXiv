@@ -396,6 +396,21 @@ def list_paper_details(
     rows = db.list_papers(latest_only=latest_only, limit=limit, offset=offset, category=category)
     return [_row_to_paper_details(r) for r in rows]
 
+def list_papers_with_pdf() -> list[PaperDetails]:
+    """Latest-version papers flagged has_pdf=1 (PDF-list columns only)."""
+    return [
+        PaperDetails(
+            paper_id=r["paper_id"],
+            source_id=r["source_id"],
+            source_fk=r["source_fk"],
+            title=r["title"],
+            version=r["version"],
+            has_pdf=True,
+            pdf_path=r["pdf_path"],
+        )
+        for r in db.list_papers_with_pdf()
+    ]
+
 def sfks_to_source_ids(source_fks: list[int]) -> list[str]:
     return [sid for sfk in source_fks if (sid := db.get_source_id(sfk))]
 

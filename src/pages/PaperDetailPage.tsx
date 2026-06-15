@@ -19,6 +19,7 @@ import { NoteCard } from "../components/notes/NoteCard";
 import { NoteEditor } from "../components/notes/NoteEditor";
 import { PaperMetadataEditor } from "../components/papers/PaperMetadataEditor";
 import { normalizeAuthors } from "../lib/papers";
+import { MathText } from "../lib/tex";
 import { formatDate } from "../lib/date";
 import { TagBadge } from "../components/tags/TagBadge";
 import { invoke } from "@tauri-apps/api/core";
@@ -305,7 +306,7 @@ export default function PaperDetailPage() {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="max-w-4xl mx-auto px-6 py-8 space-y-5">
+      <div className="max-w-5xl mx-auto px-6 py-8 space-y-5">
         {/* Header row: back + edit */}
         <div
           className="flex items-center justify-between"
@@ -333,7 +334,7 @@ export default function PaperDetailPage() {
           }}
         >
           <h1 className="text-xl font-semibold text-text leading-snug">
-            {paper.title}
+            <MathText forceInline>{paper.title}</MathText>
           </h1>
 
           {authors.length > 0 && (
@@ -426,9 +427,9 @@ export default function PaperDetailPage() {
             {paper.summary ? (
               <div className="space-y-1.5">
                 <h2 className="text-sm font-semibold text-text">Abstract</h2>
-                <p className="text-muted text-sm leading-relaxed whitespace-pre-wrap">
-                  {paper.summary}
-                </p>
+                <div className="text-muted text-sm leading-relaxed whitespace-pre-wrap">
+                  <MathText forceInline>{paper.summary}</MathText>
+                </div>
               </div>
             ) : (
               <p className="text-muted text-sm">No abstract available.</p>

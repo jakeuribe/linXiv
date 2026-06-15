@@ -9,6 +9,12 @@ export default defineConfig({
   resolve: {
     alias: { "@": path.resolve(__dirname, "src") },
   },
+  // mathjax-full reads its version via eval('require') in components/version.js
+  // unless PACKAGE_VERSION is pre-defined. Injecting it here bypasses that branch
+  // entirely so the bundle works in a browser/Tauri webview without unsafe-eval.
+  define: {
+    PACKAGE_VERSION: JSON.stringify("3.2.1"),
+  },
   clearScreen: false,
   server: {
     // 5180, not 5173: the embedded TeXbrain editor's dev server owns 5173

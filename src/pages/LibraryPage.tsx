@@ -6,6 +6,8 @@ import { Upload } from "lucide-react";
 import { listPapers, deletePaper, searchLibrary } from "../api/papers";
 import { listProjects, addPapersToProject, createProject } from "../api/projects";
 import { useSelectionStore } from "../stores/selection";
+import { useLibraryStore } from "../stores/library";
+import type { LibraryFilterMode as FilterMode } from "../stores/library";
 import type { Paper } from "../types/api";
 import { normalizeAuthors } from "../lib/papers";
 import { Spinner } from "../components/ui/spinner";
@@ -15,8 +17,6 @@ import { Dialog } from "../components/ui/dialog";
 import { PaperCard } from "../components/papers/PaperCard";
 import { SelectionBar } from "../components/papers/SelectionBar";
 import { ImportDialog } from "../components/import/ImportDialog";
-
-type FilterMode = "all" | "has_pdf" | "no_pdf";
 
 const PAPER_FETCH_LIMIT = 5000;
 const VIRTUALIZER_ESTIMATE_HEIGHT = 120;
@@ -43,11 +43,13 @@ export default function LibraryPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  const [search, setSearch] = useState("");
+  const search = useLibraryStore((s) => s.search);
+  const setSearch = useLibraryStore((s) => s.setSearch);
   const deferredSearch = useDeferredValue(search);
   const trimmedSearch = deferredSearch.trim();
   const ftsEnabled = trimmedSearch.length >= 3;
-  const [filterMode, setFilterMode] = useState<FilterMode>("all");
+  const filterMode = useLibraryStore((s) => s.filterMode);
+  const setFilterMode = useLibraryStore((s) => s.setFilterMode);
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [projectPickerError, setProjectPickerError] = useState<string | null>(null);
   const [newProjectName, setNewProjectName] = useState("");

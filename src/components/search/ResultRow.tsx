@@ -3,6 +3,7 @@ import { Badge } from "../ui/badge";
 import { Spinner } from "../ui/spinner";
 import type { SearchResult } from "../../types/api";
 import { isArxivId } from "../../lib/papers";
+import { MathText } from "../../lib/tex";
 
 interface ResultRowProps {
   result: SearchResult;
@@ -69,7 +70,7 @@ export function ResultRow({ result, saved, onSave, onViewPdf }: ResultRowProps) 
         <div className="flex-1 min-w-0">
           {/* Title */}
           <p className="font-medium text-[var(--color-text)] leading-snug">
-            {result.title}
+            <MathText forceInline>{result.title}</MathText>
           </p>
 
           {/* Authors */}
@@ -113,9 +114,9 @@ export function ResultRow({ result, saved, onSave, onViewPdf }: ResultRowProps) 
           )}
 
           {/* Abstract */}
-          <p className="text-sm text-[var(--color-muted)] leading-relaxed whitespace-pre-line">
-            {result.summary}
-          </p>
+          <div className="text-sm text-[var(--color-muted)] leading-relaxed whitespace-pre-line">
+            <MathText forceInline>{result.summary}</MathText>
+          </div>
 
           {result.paper_url && (
             isArxivId(result.source_id) ? (

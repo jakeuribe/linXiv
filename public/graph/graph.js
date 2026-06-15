@@ -362,6 +362,7 @@ function loadGraph(data, opts = {}) {
                 data: {
                     id:          String(n.id),
                     source_id:   n.source_id   || null,
+                    author_id:   n.author_id   ?? null,
                     label:       n.label,
                     type:        n.type,
                     category:    n.category    || null,
@@ -440,6 +441,15 @@ function loadGraph(data, opts = {}) {
             _updateSelectionCount();
             window.parent.postMessage({ type: 'paper_clicked', id: paper_id }, window.location.origin);
         }
+    });
+
+    // Click author node → open its author page. Skip Ctrl/Cmd (reserved for paper
+    // multi-select) and nodes with no resolved AUTHOR_FK.
+    cy.on('tap', 'node[type = "author"]', e => {
+        if (e.originalEvent.ctrlKey || e.originalEvent.metaKey) return;
+        const authorId = e.target.data('author_id');
+        if (authorId === null) return;
+        window.parent.postMessage({ type: 'author_clicked', id: String(authorId) }, window.location.origin);
     });
 
     // Tap background → clear selection (unless Ctrl/Cmd held)

@@ -7,6 +7,7 @@ import { Spinner } from "../components/ui/spinner";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { useUiStore } from "../stores/ui";
+import { MathText } from "../lib/tex";
 
 export default function AuthorPage() {
   const { id } = useParams<{ id?: string }>();
@@ -75,7 +76,7 @@ function AuthorIndexView() {
   }
 
   return (
-    <div className="max-w-3xl mx-auto px-6 py-8 space-y-6">
+    <div className="max-w-4xl mx-auto px-6 py-8 space-y-6">
       <div>
         <h1 className="text-xl font-semibold" style={{ color: "var(--color-text)" }}>
           Authors
@@ -221,7 +222,7 @@ function AuthorDetailView({ authorId }: AuthorDetailViewProps) {
   }
 
   return (
-    <div className="max-w-3xl mx-auto px-6 py-8 space-y-8">
+    <div className="max-w-4xl mx-auto px-6 py-8 space-y-8">
       {/* Back */}
       <Button
         variant="ghost"
@@ -341,7 +342,7 @@ function AuthorDetailView({ authorId }: AuthorDetailViewProps) {
                 onClick={() => navigate(`/library/${paper.source_fk}`)}
               >
                 <span className="text-sm flex-1" style={{ color: "var(--color-text)" }}>
-                  {paper.title ?? paper.source_id}
+                  <MathText forceInline>{paper.title ?? paper.source_id}</MathText>
                 </span>
                 <span className="text-xs shrink-0 mt-0.5" style={{ color: "var(--color-muted)" }}>
                   v{paper.version}

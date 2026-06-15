@@ -26,6 +26,14 @@ _OPENALEX_WORK_FIELDS = (
 )
 _WORK_ID_RE = re.compile(r"^W\d+$")
 
+# OpenAlex parses | ! * ? in the `search` value as query operators and returns
+# HTTP 400 for free-text containing them; replace each run with a space.
+_SEARCH_OPERATOR_RE = re.compile(r"[|!*?]+")
+
+
+def _sanitize_search_query(query: str) -> str:
+    return " ".join(_SEARCH_OPERATOR_RE.sub(" ", query).split())
+
 
 class OpenAlexNotFoundError(LookupError):
     """Raised by fetch_by_id when the work ID does not exist on OpenAlex."""
@@ -133,8 +141,12 @@ class OpenAlexSource(PaperSource):
     ) -> list[PaperMetadata]:
         if sort not in _SORT_PARAM:
             raise ValueError(f"unknown sort {sort!r}; valid: {sorted(_SORT_PARAM)}")
+        sanitized = _sanitize_search_query(query)
+        # An empty search returns OpenAlex's unfiltered work list; skip the call.
+        if not sanitized:
+            return []
         params: dict[str, str | int] = {
-            "search": query,
+            "search": sanitized,
             "per_page": max_results,
             "select": _OPENALEX_WORK_FIELDS,
             "sort": _SORT_PARAM[sort],

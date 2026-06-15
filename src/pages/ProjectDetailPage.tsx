@@ -27,6 +27,7 @@ import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/input";
 import { Spinner } from "../components/ui/spinner";
 import { normalizeAuthors } from "../lib/papers";
+import { MathText } from "../lib/tex";
 
 // ---------------------------------------------------------------------------
 // Edit Project Dialog
@@ -319,7 +320,7 @@ function AddPapersDialog({
                     className="text-sm font-medium leading-snug line-clamp-2"
                     style={{ color: "var(--color-text)" }}
                   >
-                    {paper.title}
+                    <MathText forceInline>{paper.title}</MathText>
                   </span>
                   <span
                     className="text-xs truncate"
@@ -403,7 +404,7 @@ function PaperRow({ paper, checked, onToggle, projectId }: PaperRowProps) {
           className="text-sm font-medium leading-snug line-clamp-2"
           style={{ color: "var(--color-text)" }}
         >
-          {paper.title}
+          <MathText forceInline>{paper.title}</MathText>
         </p>
         {authors && (
           <p className="text-xs mt-0.5 truncate" style={{ color: "var(--color-muted)" }}>
