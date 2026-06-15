@@ -34,11 +34,15 @@ const $ = id => document.getElementById(id);
 // ── Panel collapse wiring ────────────────────────────────────────────────────
 
 document.querySelectorAll('.panel-toggle').forEach(btn => {
+    const body = document.getElementById(btn.dataset.target);
+    if (!body) return;
+    btn.setAttribute('aria-controls', btn.dataset.target);
+    btn.setAttribute('aria-expanded', String(body.style.display !== 'none'));
     btn.addEventListener('click', () => {
-        const body = document.getElementById(btn.dataset.target);
         const collapsed = body.style.display === 'none';
         body.style.display = collapsed ? '' : 'none';
         btn.textContent = collapsed ? '▼' : '▶';
+        btn.setAttribute('aria-expanded', String(collapsed));
     });
 });
 
@@ -191,6 +195,8 @@ $('isolate-btn').addEventListener('click', () => {
     _applyFilter();
 });
 
+$('clear-filters-btn').addEventListener('click', clearFilters);
+
 // ── Selection panel buttons ─────────────────────────────────────────────────
 
 $('select-all-btn').addEventListener('click', () => selectAllPapers());
@@ -296,7 +302,7 @@ function setFilterOptions(categories, tags, projects) {
         .join('');
 }
 
-// ── Called from Python toolbar "Clear filters" ───────────────────────────────
+// ── Reset every filter panel to its default and re-apply ─────────────────────
 
 function clearFilters() {
     _textFilterIds.forEach(id => { $(id).value = ''; });
@@ -363,6 +369,9 @@ function loadGraph(data, opts = {}) {
                     has_pdf:     n.has_pdf     || false,
                     published:   n.published   || null,
                     project_ids: n.project_ids || [],
+                    url:         n.url         || null,
+                    doi:         n.doi         || null,
+                    summary:     n.summary     || '',
                 },
                 position: { x: sn.x, y: sn.y },
             };
@@ -399,6 +408,7 @@ function loadGraph(data, opts = {}) {
     simNodes.forEach(sn => { sn.cyNode = cy.getElementById(sn.id); });
 
     cy.on('grab', 'node', e => {
+        fitOnSettle = false;  // user took control — don't reframe under them
         const sn = _simNodeById.get(e.target.id());
         if (sn) { sn.fx = sn.x; sn.fy = sn.y; }
         if (simulation) simulation.alphaTarget(0.3).restart();
@@ -410,28 +420,26 @@ function loadGraph(data, opts = {}) {
     });
     cy.on('free', 'node', e => {
         const sn = _simNodeById.get(e.target.id());
-        if (sn) { sn.fx = null; sn.fy = null; }
+        if (sn) { sn.fx = null; sn.fy = null; sn._filterPinned = false; }
         if (simulation) simulation.alphaTarget(0);
     });
 
     // Click paper node:
-    //   Regular click  → set selection to this node alone + navigate
+    //   Regular click  → clear selection + navigate to the paper
     //   Ctrl/Cmd click → toggle additive (no navigation)
     cy.on('tap', 'node[type = "paper"]', e => {
         const paper_id = e.target.id();
         if (e.originalEvent.ctrlKey || e.originalEvent.metaKey) {
             _toggleSelection(paper_id);
         } else {
+            // Clear the local selection + counter so returning to the graph
+            // shows no stale highlight. The host owns its own count via the
+            // paper_clicked handler, so we skip the selection_changed post.
             _selectedIds.clear();
             _applyAllStyles();
-            console.log('GRAPHVIEW_PAPER_CLICKED:' + paper_id);
+            _updateSelectionCount();
             window.parent.postMessage({ type: 'paper_clicked', id: paper_id }, window.location.origin);
         }
-    });
-
-    // Right-click paper node → open its Library detail page
-    cy.on('cxttap', 'node[type = "paper"]', e => {
-        console.log('GRAPHVIEW_PAPER_RIGHT_CLICKED:' + e.target.id());
     });
 
     // Tap background → clear selection (unless Ctrl/Cmd held)
@@ -606,11 +614,7 @@ function filterGraph(opts) {
         if (dateFrom && d.published && d.published < dateFrom) return;
         if (dateTo   && d.published && d.published > dateTo)   return;
         if (authLower) {
-            const authorLabels = [];
-            n.connectedEdges().forEach(e => {
-                const other = e.source().id() === n.id() ? e.target() : e.source();
-                if (other.data('type') === 'author') authorLabels.push(other.data('label').toLowerCase());
-            });
+            const authorLabels = _paperAuthorLabels.get(n.id()) || [];
             if (!authorLabels.some(a => a.includes(authLower))) return;
         }
         visiblePaperIds.add(n.id());
@@ -650,13 +654,15 @@ function filterGraph(opts) {
             ...visiblePaperIds, ...visibleAuthorIds, ...visibleTagIds,
         ]);
 
-        // Pin non-visible nodes in place; unpin visible ones
+        // Pin non-visible nodes in place; release the pins the filter owns once
+        // a node is visible again. Tracked via _filterPinned so a drag pin
+        // (fx/fy set by the grab handler) is never cleared out from under it,
+        // and so isolate-mode toggles don't permanently freeze the layout.
         _simNodeById.forEach((sn, id) => {
             if (!visibleNodeIds.has(id)) {
-                if (sn.fx == null) { sn.fx = sn.x; sn.fy = sn.y; }
-            } else {
-                // Only unpin if we own the pin (drag handler sets fx/fy too)
-                if (!isolate) { sn.fx = null; sn.fy = null; }
+                if (sn.fx == null) { sn.fx = sn.x; sn.fy = sn.y; sn._filterPinned = true; }
+            } else if (sn._filterPinned) {
+                sn.fx = null; sn.fy = null; sn._filterPinned = false;
             }
         });
 
@@ -774,17 +780,7 @@ function _applyAllStyles() {
     });
 }
 
-// ── Highlight (called from Python when a table row is selected) ───────────────
-// Sets the selection to just this one node (or clears if null).
-
-function highlightNode(nodeId) {
-    _selectedIds.clear();
-    if (nodeId !== null) _selectedIds.add(String(nodeId));
-    _applyAllStyles();
-    _notifySelectionChanged();
-}
-
-// ── Selection (click to set, Ctrl+click to toggle, Python bulk ops) ──────────
+// ── Selection (click to set, Ctrl+click to toggle) ───────────────────────────
 
 function _toggleSelection(paperId) {
     if (_selectedIds.has(paperId)) {
@@ -804,7 +800,13 @@ function _notifySelectionChanged() {
             if (sid) sourceIds.push(sid);
         });
     }
+    _updateSelectionCount();
     window.parent.postMessage({ type: 'selection_changed', sourceIds }, window.location.origin);
+}
+
+function _updateSelectionCount() {
+    const counter = $('selectionCount');
+    if (counter) counter.textContent = `(${_selectedIds.size})`;
 }
 
 function selectAllPapers() {
