@@ -43,10 +43,9 @@ fn make_health_token() -> String {
     format!("{:x}-{:x}", std::process::id(), nanos)
 }
 
-/// Try to bind 127.0.0.1:preferred. If that fails, bind 127.0.0.1:0 and let the
-/// OS pick a free port. There is a small race between releasing the listener and
-/// the API binding — wait_for_api guards against a rogue process by validating
-/// the /api/health response identifies itself as the process we just spawned.
+/// Bind 127.0.0.1:preferred, falling back to an OS-assigned ephemeral port.
+/// Dropping the listener to hand the port to the API leaves a small race;
+/// `wait_for_api`'s token check is what closes it.
 fn find_free_port(preferred: u16) -> u16 {
     if let Ok(listener) = TcpListener::bind(("127.0.0.1", preferred)) {
         drop(listener);
@@ -62,9 +61,8 @@ fn find_free_port(preferred: u16) -> u16 {
     port
 }
 
-/// Poll /api/health until it answers with our service name and echoes our token.
-/// Returns false on timeout. The token check is what prevents adopting a stale
-/// build or rogue process that grabbed the port.
+/// Poll /api/health until it answers with our service name and echoes our token,
+/// or false on timeout. The token rejects a stale build or a port-squatter.
 fn wait_for_api(port: u16, max_attempts: u32, token: &str) -> bool {
     let client = match reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(2))
@@ -141,7 +139,7 @@ fn owned_by_live_launcher(pid: i32, launcher_name: &str) -> bool {
         if ppid <= 1 {
             return false; // re-parented to init — orphaned
         }
-        // Match the launcher on its resolved exe, not argv[0] (ADR 0018).
+        // Match the launcher on its resolved exe, not argv[0].
         if proc_exe_basename(ppid).as_deref() == Some(launcher_name) {
             return true; // live launcher ancestor
         }
