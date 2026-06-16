@@ -7,6 +7,7 @@ database or external network calls are made (external calls are mocked).
 from __future__ import annotations
 
 import datetime
+import os
 from unittest.mock import patch
 
 import pytest
@@ -727,7 +728,7 @@ class TestSavedPdfs:
             r = client.delete("/api/pdfs/2204.12985")
         assert r.status_code == 200
         assert r.json()["deleted"] is True
-        deleted_names = {p.rsplit("/", 1)[-1] for p in deleted}
+        deleted_names = {os.path.basename(p) for p in deleted}
         assert deleted_names == {"2204.12985v1.pdf", "2204.12985v2.pdf"}
         rows = db.get_all_versions("2204.12985")
         flags = {row["version"]: bool(row["has_pdf"]) for row in rows}
