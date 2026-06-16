@@ -25,12 +25,13 @@ export function SettingRow({
   return (
     <div
       className={[
-        "flex items-center justify-between gap-6 py-[15px]",
+        "flex items-center justify-between gap-6",
         "border-b border-border last:border-0",
         className,
       ]
         .filter(Boolean)
         .join(" ")}
+      style={{ paddingTop: "var(--row-pad-y)", paddingBottom: "var(--row-pad-y)" }}
     >
       <div className="min-w-0">
         <span className="block text-sm font-medium text-text">{label}</span>
@@ -75,17 +76,19 @@ interface SettingGroupProps extends HTMLAttributes<HTMLDivElement> {
 export function SettingGroup({
   block = false,
   className = "",
+  style,
   ...props
 }: SettingGroupProps) {
   return (
     <div
       className={[
-        "rounded-card border border-border bg-panel shadow-card",
+        "border border-border bg-panel shadow-card",
         block ? "px-5 py-[18px]" : "px-5 py-1",
         className,
       ]
         .filter(Boolean)
         .join(" ")}
+      style={{ borderRadius: "var(--card-radius)", ...style }}
       {...props}
     />
   );

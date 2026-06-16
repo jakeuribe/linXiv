@@ -10,6 +10,14 @@ import { Input } from "../ui/input";
 import { Toggle } from "../ui/toggle";
 import { SettingGroup, SettingGroupLabel, SettingRow } from "./SettingRow";
 import { ZoomControl } from "./ZoomControl";
+import { Segmented } from "../ui/segmented";
+import { useUiStore } from "../../stores/ui";
+import type { Density } from "../../lib/density";
+
+const DENSITY_OPTIONS: { value: Density; label: string }[] = [
+  { value: "comfortable", label: "Comfortable" },
+  { value: "compact", label: "Compact" },
+];
 
 const PRESET_NAMES = Object.keys(PRESETS) as PresetName[];
 const BUILT_IN_LOWER = new Set(PRESET_NAMES.map((n) => n.toLowerCase()));
@@ -367,6 +375,8 @@ export function AppearanceSection() {
   const [overridesOpen, setOverridesOpen] = useState(false);
   const overridesPanelId = useId();
   const texEnabled = useTexEnabled();
+  const density = useUiStore((s) => s.density);
+  const setDensity = useUiStore((s) => s.setDensity);
   const {
     mutate: toggleTex,
     isPending: texPending,
@@ -493,7 +503,19 @@ export function AppearanceSection() {
           <ZoomControl />
         </SettingRow>
 
-        <div className="py-[15px] border-b border-border last:border-0">
+        <SettingRow label="Density" description="Controls card and row spacing.">
+          <Segmented
+            options={DENSITY_OPTIONS}
+            value={density}
+            onChange={setDensity}
+            aria-label="Interface density"
+          />
+        </SettingRow>
+
+        <div
+          className="border-b border-border last:border-0"
+          style={{ paddingTop: "var(--row-pad-y)", paddingBottom: "var(--row-pad-y)" }}
+        >
           <button
             type="button"
             aria-expanded={overridesOpen}
