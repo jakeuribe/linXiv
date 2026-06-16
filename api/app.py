@@ -177,10 +177,14 @@ def api_root() -> dict:
 
 @app.get("/api/health")
 def health() -> dict:
-    # The "service" field is checked by the Tauri launcher to verify that a
-    # response on the expected port is actually our API and not a rogue process
-    # that happened to grab the port between bind-probe and uvicorn startup.
-    return {"ok": True, "service": "linxiv-api"}
+    # "token" echoes the launcher's LINXIV_HEALTH_TOKEN (empty when not launched
+    # by Tauri, e.g. CLI/tests) so the launcher can match a health response to the
+    # process it just spawned. "service" is the coarse identity check.
+    return {
+        "ok": True,
+        "service": "linxiv-api",
+        "token": os.environ.get("LINXIV_HEALTH_TOKEN", ""),
+    }
 
 
 @app.get("/api/stats")
