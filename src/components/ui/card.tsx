@@ -6,14 +6,15 @@ interface CardProps extends HTMLAttributes<HTMLDivElement> {
   inset?: boolean;
 }
 
-export function Card({ inset = false, className = "", ...props }: CardProps) {
+export function Card({ inset = false, className = "", style, ...props }: CardProps) {
   return (
     <div
       className={[
-        "rounded-card border border-border shadow-card p-5.5",
+        "border border-border shadow-card",
         inset ? "bg-surface2" : "bg-panel",
         className,
       ].join(" ")}
+      style={{ borderRadius: "var(--card-radius)", padding: "var(--card-pad)", ...style }}
       {...props}
     />
   );
