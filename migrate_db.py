@@ -77,7 +77,7 @@ def run_migration(old_db: str, new_db: str, *, force: bool = False) -> None:
 
     conn = None
     try:
-        # 1. Apply green schema DDL (includes DB_VERSION with v0.1.1 seed row)
+        # 1. Apply green schema DDL (includes DB_VERSION with v0.1.2 seed row)
         print(f"[migrate] Applying schema to {new_db!r}...")
         conn = _connect(new_db)
         apply_sql_schema(conn)

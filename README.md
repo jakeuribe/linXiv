@@ -2,11 +2,11 @@
 
 <img src="assets/wide_logo.png" alt="linXiv logo" width="800" />
 
-A local-first desktop application for discovering, managing, and visualizing academic papers from arXiv and other sources. Combines a local SQLite database, optional AI-powered tagging, Obsidian vault integration, and an interactive D3.js network graph, wrapped in a Tauri desktop shell (React + TypeScript frontend, Python backend).
+A local-first desktop application for discovering, managing, and visualizing academic papers from arXiv and other sources. Combines a local SQLite database, optional AI-powered tagging, Obsidian vault integration, and an interactive network graph (Cytoscape rendering with a D3 force simulation), wrapped in a Tauri desktop shell (React + TypeScript frontend, Python backend).
 
 Upload your PDFs, create projects, manage notes, tags, and more to organize your files — all locally, without sending your data anywhere. This project aims to be a one-stop-shop for researchers who want to manage their literature, with the near-term goal of extending to research groups who seek to share knowledge without going to the web.
 
-> **Development status:** The database schema and paper identifier format are actively changing. `source_id` values are being migrated to a namespaced format (`arxiv:2204.12985`, `doi:10.48550/…`, `openalex:W3123456789`, `local:{hash}`). Until that work lands, pre-v0.1.1 (current version) existing `papers.db` files will not be compatible with new builds — delete `papers.db` and let it rebuild on first run. No stable release has been cut yet. Migrations from version 0.1.0 to 0.1.1 will be accounted for.
+> **Development status:** The database schema and paper identifier format are actively changing. `source_id` values are being migrated to a namespaced format (`arxiv:2204.12985`, `doi:10.48550/…`, `openalex:W3123456789`, `local:{hash}`). Until that work lands, pre-v0.1.2 (current version) existing `papers.db` files will not be compatible with new builds — delete `papers.db` and let it rebuild on first run. No stable release has been cut yet.
 
 
 <img src="assets/carousel.gif" width="800" />
@@ -38,9 +38,9 @@ Upload your PDFs, create projects, manage notes, tags, and more to organize your
 ## Features
 
 - **Paper search** — Search arXiv by keyword, fetch by ID, or look up by DOI; results saved to a local SQLite DB with version tracking
-- **Interactive graph** — Force-directed D3.js visualization of papers and authors; real-time force controls (gravity, repulsion, link strength)
+- **Interactive graph** — Force-directed network of papers and authors (D3 force simulation, Cytoscape rendering); real-time force controls (center, repel, link distance, link strength)
 - **Projects** — Organise papers into projects; add notes per paper scoped to a project; composable SQL query builder (`Q`) for filtering
-- **TeX rendering** — KaTeX renders LaTeX math in titles and abstracts inside the search UI
+- **TeX rendering** — MathJax renders LaTeX math in titles and abstracts inside the search UI
 - **AI tools** — Google Gemini structured output for tag generation, paper summarization, and semantic similarity
 - **Obsidian integration** — Auto-generate markdown notes with YAML frontmatter for your vault
 - **PDF & TeX downloads** — Batch download PDFs and TeX source tarballs
@@ -60,7 +60,7 @@ linXiv/
 │   └── wide_logo.png          # Wide logo (README header)
 ├── api/
 │   ├── __main__.py            # Entry point: python -m api
-│   ├── app.py                 # FastAPI routes + /assets/graph (bundled graph for iframe/proxy)
+│   ├── app.py                 # FastAPI routes (REST API incl. /api/graph)
 │   ├── graph_payload.py       # Graph JSON (tags + projects) for /api/graph
 │   └── run_api.py             # uvicorn launcher helper
 ├── sources/
@@ -78,14 +78,16 @@ linXiv/
 │   ├── tag.py                 # Tag service: get, upsert, paper/project tag management
 │   ├── note.py                # Note service: get, upsert, count by paper/project
 │   ├── project.py             # Project service: get, upsert, filter, status management
-│   ├── content.py             # Content service: full-text and file content
+│   ├── export_import.py       # Export/import projects as .lxproj archives
+│   ├── vault.py               # On-disk LaTeX vault for the embedded editor
+│   ├── editor_project.py      # Note-link layer for the embedded editor
 │   ├── files.py               # File utilities for paper sources
 │   └── models/                # Typed return types (PaperDetails, ProjectDetails, etc.)
 ├── storage/
 │   ├── db.py                  # SQLite DB: versioned paper storage, graph data queries
 │   ├── authors.py             # Author CRUD and paper linkage
 │   ├── tags.py                # Tag CRUD
-│   ├── projects.py            # Projects: data model, Status enum, Q query builder
+│   ├── projects.py            # Projects: Project data model + CRUD (Status/Q imported)
 │   ├── notes.py               # Notes: per-paper annotations scoped to projects
 │   ├── paths.py               # Filesystem paths (project root, DB, PDFs)
 │   ├── config/
@@ -94,10 +96,14 @@ linXiv/
 │   │   └── sql/               # SQL table, view, and index definitions
 │   └── migrations/            # One-off schema migration scripts
 ├── formats/
+│   ├── bibtex.py              # BibTeX import/export
+│   ├── csv_fmt.py             # CSV import/export
+│   ├── json_fmt.py            # JSON import/export
+│   ├── markdown.py            # Markdown / Obsidian import/export
 │   ├── table_format.md        # YAML frontmatter template for Obsidian notes
 │   └── arxiv_paper.md         # Plain-text paper card template
 ├── public/
-│   └── graph/                 # Graph viewer (graph.js + graph.css) served by the API
+│   └── graph/                 # Graph viewer (graph.html/js/css), loaded in an iframe
 ├── src/                       # React + TypeScript frontend (Vite)
 ├── src-tauri/                 # Tauri shell (Rust) + bundled sidecar binaries
 ├── tests/                     # pytest suite (API, CLI, DB, sources, DOI, notes, projects)
@@ -113,7 +119,6 @@ linXiv/
 - [Node.js](https://nodejs.org/) 18+ (for frontend / Tauri dev)
 - [Rust toolchain](https://rustup.rs/) (for Tauri)
 - [uv](https://github.com/astral-sh/uv) (recommended Python package manager)
-- [tex-brain-tauri](https://github.com/linxiv-dev/tex-brain-tauri) cloned as a sibling directory next to this repo (`../tex-brain-tauri`) — the Tauri build depends on its `tauri-plugin-texbrain` crate by path
 
 ### Install dependencies
 
@@ -236,7 +241,7 @@ Or add manually to `.claude/settings.json`:
 > { "command": "uv", "args": ["run", "linxiv_mcp.py"], "cwd": "/absolute/path/to/linxiv" }
 > ```
 
-Once registered, Claude can call these tools directly: `search_papers`, `fetch_paper`, `list_papers`, `get_paper`, `search_full_text`, `tag_paper`, `list_projects`, `create_project`, `add_paper_to_project`, `remove_paper_from_project`, `create_note`, `get_notes_for_paper`, `get_notes_for_project`.
+Once registered, Claude can call the linXiv tools directly — for example `search_papers`, `fetch_paper`, and `list_papers`. Full tool documentation will be added soon.
 
 ## Building the Tauri App
 
@@ -247,7 +252,7 @@ The Tauri desktop app wraps the React/Vite frontend and bundles the Python backe
 - [Node.js](https://nodejs.org/) 18+
 - [Rust toolchain](https://rustup.rs/) (stable)
 - [uv](https://github.com/astral-sh/uv)
-- [tex-brain-tauri](https://github.com/linxiv-dev/tex-brain-tauri) cloned as a sibling directory, so the two repos sit side by side (`<parent>/linxiv-texbrain` and `<parent>/tex-brain-tauri`) — `src-tauri/Cargo.toml` has a path dependency on its `tauri-plugin-texbrain` crate
+- The Tauri build pulls the `tauri-plugin-texbrain` crate as a git dependency (`github.com/linxiv-dev/tex-brain-linxiv-plugin`, pinned in `Cargo.lock`) — no extra checkout needed
 - System Tauri dependencies — follow the [Tauri v2 prerequisites guide](https://tauri.app/start/prerequisites/) for your OS (WebKit2GTK on Linux, Xcode Command Line Tools on macOS, Microsoft C++ Build Tools on Windows)
 
 ### Development
@@ -299,15 +304,14 @@ After installing the desktop app, open Settings and click **Install CLI** to sym
 ### Projects
 
 ```python
-from storage import Project, filter_projects, Q, Status
+from storage import Project, filter_projects, Q, Status, get_paper
 
 # Create and save a project
 p = Project(name="Diffusion Models", color=0x5b8dee, project_tags=["generative"])
 p.save()
 
-# Add papers
-p.add_paper("2006.11239")
-p.add_papers(["2010.02502", "2112.10752"])
+# Add papers — add_papers takes integer SOURCE_FKs (papers must already be in the DB)
+p.add_papers([get_paper(sid)["source_fk"] for sid in ("2006.11239", "2010.02502", "2112.10752")])
 
 # Query with composable predicates
 active = filter_projects(Q("status = ?", Status.ACTIVE))
@@ -322,27 +326,31 @@ blue_diffusion = filter_projects(
 ### Notes
 
 ```python
-from storage import Note, get_notes, count_paper_notes, ensure_notes_db
+from storage import Note, get_notes, count_paper_notes, ensure_notes_db, get_paper
 
 ensure_notes_db()
 
+# Notes attach to a paper by its integer SOURCE_FK
+sfk = get_paper("2006.11239")["source_fk"]
+
 # Add a project-scoped note on a paper
-note = Note(paper_id="2006.11239", project_id=p.id, title="Key insight", content="...")
+note = Note(source_fk=sfk, project_id=p.id, title="Key insight", content="...")
 note.save()
 
 # Retrieve
-project_notes = get_notes("2006.11239", project_id=p.id)
-count = count_paper_notes("2006.11239", project_id=p.id)
+project_notes = get_notes(sfk, project_id=p.id)
+count = count_paper_notes(sfk, project_id=p.id)
 ```
 
 ### Search and save papers
 
 ```python
-from sources import search_papers, fetch_paper_metadata
-from storage import init_db
+from sources import search_papers
+from storage import init_db, save_papers
 
 init_db()
-papers = search_papers("lattice QCD", max_results=25)  # auto-saves to DB
+papers = search_papers("lattice QCD", max_results=25)  # returns arxiv.Result objects
+save_papers(papers)                                    # persist them to the DB
 ```
 
 ### Add by DOI
@@ -396,20 +404,19 @@ nodes, edges = get_graph_data()   # for the graph viewer
 
 ## Graph Visualization
 
-Papers (blue circles) and authors (gold diamonds) form a force-directed network. Edges connect each paper to its authors. The control panel has four real-time sliders:
+Papers (circles, in your theme's accent color — blue by default) and authors (gold diamonds) form a force-directed network. Edges connect each paper to its authors. The control panel has four real-time sliders:
 
 | Slider | Effect |
 |---|---|
 | Center force | Pulls/pushes nodes toward the center |
 | Repel force | Controls node-to-node repulsion |
-| Link force | Stiffness of paper–author edges |
 | Link distance | Target edge length |
+| Link strength | Stiffness of paper–author edges |
 
 ## Notes
 
-- arXiv requests are rate-limited to one every 3 seconds per arXiv's API policy.
 - `papers.db`, `pdfs/`, `source/`, and vault contents are gitignored.
-- KaTeX, D3, and all fonts are bundled locally — the app works fully offline after first run.
+- MathJax, D3, and the Inter UI font are all bundled locally — no external CDN calls, so the interface works fully offline.
 - `PaperContent` accepts `abstract`, `full_text` (TeX source), or `pdf` (bytes) — Gemini will use the richest available source.
 
 ## Acknowledgements
