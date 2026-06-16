@@ -19,9 +19,13 @@ export function Card({ inset = false, className = "", ...props }: CardProps) {
   );
 }
 
-export function MonoLabel({ className = "", ...props }: HTMLAttributes<HTMLSpanElement>) {
+interface MonoLabelProps extends HTMLAttributes<HTMLElement> {
+  as?: "span" | HeadingTag;
+}
+
+export function MonoLabel({ as: Tag = "span", className = "", ...props }: MonoLabelProps) {
   return (
-    <span
+    <Tag
       className={[
         "font-mono uppercase text-ink3 text-[10.5px] tracking-[0.08em]",
         className,

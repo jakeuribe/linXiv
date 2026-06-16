@@ -13,7 +13,7 @@ import { removeFromAllProjects } from "../../api/papers";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
 import { Dialog } from "../ui/dialog";
-import { Section } from "./Section";
+import { SettingGroup, SettingGroupLabel } from "./SettingRow";
 import { useConfirmWithTimeout } from "../../hooks/useConfirmWithTimeout";
 
 type ProjectPrompt = {
@@ -186,7 +186,7 @@ function ProjectTrashRow({
   );
 }
 
-export function TrashSection({ defaultOpen = true }: { defaultOpen?: boolean } = {}) {
+export function TrashSection() {
   const qc = useQueryClient();
 
   const { data, isLoading } = useQuery({
@@ -309,10 +309,11 @@ export function TrashSection({ defaultOpen = true }: { defaultOpen?: boolean } =
         onKeep={closeProjectPrompt}
         onRemove={handleRemoveFromProjects}
       />
-      <Section title="Trash" defaultOpen={defaultOpen}>
-        <p className="text-xs text-muted mb-4">
-          Deleted items are kept for 30 days, then permanently removed.
-        </p>
+      <SettingGroupLabel>Trash</SettingGroupLabel>
+      <p className="mb-2.5 text-xs text-muted">
+        Deleted items are kept for 30 days, then permanently removed.
+      </p>
+      <SettingGroup block>
         {actionError && (
           <p className="text-xs text-danger mb-3">{actionError}</p>
         )}
@@ -356,7 +357,7 @@ export function TrashSection({ defaultOpen = true }: { defaultOpen?: boolean } =
             )}
           </>
         )}
-      </Section>
+      </SettingGroup>
     </>
   );
 }
