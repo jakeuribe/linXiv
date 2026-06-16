@@ -41,3 +41,64 @@ export function Select({
     />
   );
 }
+
+interface OptionSelectOption<T extends string> {
+  value: T;
+  label: string;
+}
+
+interface OptionSelectBaseProps<T extends string> {
+  options: OptionSelectOption<T>[];
+  value: T;
+  onChange: (value: T) => void;
+  placeholder?: string;
+  disabled?: boolean;
+  size?: SelectSize;
+  className?: string;
+}
+
+type OptionSelectProps<T extends string> = OptionSelectBaseProps<T> &
+  (
+    | { id: string; "aria-label"?: string }
+    | { id?: string; "aria-label": string }
+  );
+
+export function OptionSelect<T extends string>({
+  options,
+  value,
+  onChange,
+  placeholder,
+  disabled,
+  size = "md",
+  className = "",
+  id,
+  "aria-label": ariaLabel,
+}: OptionSelectProps<T>) {
+  return (
+    <select
+      id={id}
+      aria-label={ariaLabel}
+      value={value}
+      disabled={disabled}
+      onChange={(event) => onChange(event.target.value as T)}
+      className={[
+        "min-w-[180px] rounded-md border border-[var(--color-border)] bg-[var(--color-panel)]",
+        "text-[var(--color-text)] cursor-pointer",
+        "disabled:opacity-60 disabled:cursor-not-allowed",
+        sizeStyles[size],
+        className,
+      ].join(" ")}
+    >
+      {placeholder !== undefined && (
+        <option value="" disabled>
+          {placeholder}
+        </option>
+      )}
+      {options.map((option) => (
+        <option key={option.value} value={option.value}>
+          {option.label}
+        </option>
+      ))}
+    </select>
+  );
+}
