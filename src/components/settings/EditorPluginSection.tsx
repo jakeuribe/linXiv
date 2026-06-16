@@ -1,10 +1,3 @@
-// Editor-plugin management surface (plan §4.4, ADR 0017 §Lifecycle): installed
-// version + on-disk size, Check for updates (compat-gated against the release
-// feed), Update (non-destructive re-install), and Uninstall (reclaim space).
-// Mirrors AboutSection's button-initiated check + inline-message idiom so the
-// two update surfaces can later merge into one global "Check for updates"
-// (ADR 0017 "unified ... entry point").
-
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isTauri } from "../../api/client";
 import {
@@ -21,7 +14,7 @@ import { fmtMB, errMessage } from "../../lib/editorPluginUtils";
 import { Button } from "../ui/button";
 import { Dialog } from "../ui/dialog";
 import { Spinner } from "../ui/spinner";
-import { Section } from "./Section";
+import { SettingGroup, SettingGroupLabel, SettingRow } from "./SettingRow";
 
 function CheckMessage({ check }: { check: UpdateCheck }) {
   if (check.noCompatibleRelease) {
@@ -43,22 +36,15 @@ function CheckMessage({ check }: { check: UpdateCheck }) {
   return <span style={{ color: "var(--color-success)" }}>The editor is up to date.</span>;
 }
 
-export function EditorPluginSection({ defaultOpen = false }: { defaultOpen?: boolean } = {}) {
+export function EditorPluginSection() {
   const [info, setInfo] = useState<PluginStatus | null>(null);
   const [check, setCheck] = useState<UpdateCheck | null>(null);
   const [busy, setBusy] = useState<"check" | "install" | "uninstall" | null>(null);
   const [progress, setProgress] = useState<InstallProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Uninstall confirmation runs through the in-app Dialog below — window.confirm
-  // is suppressed in some webviews (e.g. Linux WebKitGTK returns false without
-  // showing anything), which would make Uninstall do nothing.
   const [confirmUninstall, setConfirmUninstall] = useState(false);
-  // Guards against committing state from in-flight async work after unmount.
   const alive = useRef(true);
 
-  // `isStale` is per effect invocation: a refresh started before a StrictMode
-  // teardown stays cancelled even after the re-run sets `alive` back to true,
-  // so it can't commit over a newer run's result.
   const refresh = useCallback(async (isStale: () => boolean) => {
     try {
       const s = await status();
@@ -92,8 +78,6 @@ export function EditorPluginSection({ defaultOpen = false }: { defaultOpen?: boo
     }
   }
 
-  // Install and Update are the same non-destructive pipeline (ADR 0017): the
-  // current install keeps serving until the replacement fully verifies.
   async function handleInstall() {
     setBusy("install");
     setError(null);
@@ -136,12 +120,15 @@ export function EditorPluginSection({ defaultOpen = false }: { defaultOpen?: boo
 
   if (!isTauri) {
     return (
-      <Section title="LaTeX editor" defaultOpen={defaultOpen}>
-        <p className="text-sm text-muted">
-          The editor plugin is managed from the desktop app (in browser dev the
-          editor runs from its own dev server).
-        </p>
-      </Section>
+      <div>
+        <SettingGroupLabel>LaTeX editor</SettingGroupLabel>
+        <SettingGroup block>
+          <p className="text-sm text-muted">
+            The editor plugin is managed from the desktop app (in browser dev the
+            editor runs from its own dev server).
+          </p>
+        </SettingGroup>
+      </div>
     );
   }
 
@@ -152,12 +139,13 @@ export function EditorPluginSection({ defaultOpen = false }: { defaultOpen?: boo
       : null;
 
   return (
-    <Section title="LaTeX editor" defaultOpen={defaultOpen}>
-      <div className="flex items-center justify-between gap-4 flex-wrap">
-        <div>
-          <p className="text-sm font-medium text-text">Editor plugin</p>
-          <p className="text-xs text-muted mt-0.5">
-            {info == null ? (
+    <div>
+      <SettingGroupLabel>LaTeX editor</SettingGroupLabel>
+      <SettingGroup>
+        <SettingRow
+          label="Editor plugin"
+          description={
+            info == null ? (
               "Reading status…"
             ) : info.installed ? (
               <>
@@ -165,10 +153,9 @@ export function EditorPluginSection({ defaultOpen = false }: { defaultOpen?: boo
               </>
             ) : (
               "Not installed — the Editor tab offers the download."
-            )}
-          </p>
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
+            )
+          }
+        >
           <Button variant="muted" size="sm" onClick={() => void handleCheck()} disabled={busy != null}>
             {busy === "check" ? <Spinner size={14} /> : "Check for updates"}
           </Button>
@@ -182,25 +169,25 @@ export function EditorPluginSection({ defaultOpen = false }: { defaultOpen?: boo
               {busy === "uninstall" ? <Spinner size={14} /> : "Uninstall"}
             </Button>
           )}
-        </div>
-      </div>
-      {(check || error || installing) && (
-        <div className="mt-3 text-sm">
-          {error ? (
-            <span style={{ color: "var(--color-danger)" }}>{error}</span>
-          ) : installing ? (
-            <span className="text-muted">
-              {progress?.phase === "promote"
-                ? "Finishing up…"
-                : progress?.phase === "verify"
-                  ? "Verifying download…"
-                  : `Downloading${pct != null ? ` ${pct}%` : "…"}`}
-            </span>
-          ) : check ? (
-            <CheckMessage check={check} />
-          ) : null}
-        </div>
-      )}
+        </SettingRow>
+        {(check || error || installing) && (
+          <SettingRow label="Status">
+            {error ? (
+              <span style={{ color: "var(--color-danger)" }}>{error}</span>
+            ) : installing ? (
+              <span className="text-muted">
+                {progress?.phase === "promote"
+                  ? "Finishing up…"
+                  : progress?.phase === "verify"
+                    ? "Verifying download…"
+                    : `Downloading${pct != null ? ` ${pct}%` : "…"}`}
+              </span>
+            ) : check ? (
+              <CheckMessage check={check} />
+            ) : null}
+          </SettingRow>
+        )}
+      </SettingGroup>
       <Dialog
         open={confirmUninstall}
         onClose={() => setConfirmUninstall(false)}
@@ -225,6 +212,6 @@ export function EditorPluginSection({ defaultOpen = false }: { defaultOpen?: boo
           </Button>
         </div>
       </Dialog>
-    </Section>
+    </div>
   );
 }

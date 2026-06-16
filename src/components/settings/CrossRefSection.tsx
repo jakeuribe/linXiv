@@ -3,9 +3,9 @@ import { useQuery } from "@tanstack/react-query";
 import { getSettings, updateEnv } from "../../api/settings";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
-import { Section } from "./Section";
+import { SettingGroup, SettingGroupLabel, SettingRow } from "./SettingRow";
 
-export function CrossRefSection({ defaultOpen = true }: { defaultOpen?: boolean } = {}) {
+export function CrossRefSection() {
   const { data: settings } = useQuery({
     queryKey: ["settings"],
     queryFn: getSettings,
@@ -21,19 +21,24 @@ export function CrossRefSection({ defaultOpen = true }: { defaultOpen?: boolean 
   }
 
   return (
-    <Section title="CrossRef" defaultOpen={defaultOpen}>
-      <div className="flex flex-col gap-1 mb-2">
-        <label className="text-sm text-muted font-medium">Contact Email</label>
-        <p className="text-xs text-muted mb-2">
-          Used as the{" "}
-          <code className="text-accent">mailto</code> parameter for polite CrossRef API access.
-        </p>
-        <div className="flex gap-2 items-center">
+    <div>
+      <SettingGroupLabel>CrossRef</SettingGroupLabel>
+      <SettingGroup>
+        <SettingRow
+          label="Contact email"
+          description={
+            <>
+              Used as the <code className="text-accent">mailto</code> parameter for
+              polite CrossRef API access.
+            </>
+          }
+        >
           <Input
             type="email"
             value={crossrefEmail}
             onChange={(e) => setCrossrefEmail(e.target.value)}
             placeholder="you@example.com"
+            aria-label="CrossRef contact email"
             style={{ maxWidth: 320 }}
           />
           <Button
@@ -42,8 +47,8 @@ export function CrossRefSection({ defaultOpen = true }: { defaultOpen?: boolean 
           >
             Save
           </Button>
-        </div>
-      </div>
-    </Section>
+        </SettingRow>
+      </SettingGroup>
+    </div>
   );
 }

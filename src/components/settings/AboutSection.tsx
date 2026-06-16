@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { checkForUpdates, getCurrentVersion, openReleaseUrl, type UpdateResult } from "../../api/updates";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
-import { Section } from "./Section";
+import { SettingGroup, SettingGroupLabel, SettingRow } from "./SettingRow";
 
 function UpdateMessage({ result }: { result: UpdateResult }) {
   if (result.error) {
@@ -27,8 +27,6 @@ function UpdateMessage({ result }: { result: UpdateResult }) {
   if (result.latest === null) {
     return <span className="text-muted">No published releases yet.</span>;
   }
-  // The latest release exists but we couldn't read the installed version
-  // (browser dev build) — show it for reference without claiming up-to-date.
   if (result.current === null) {
     return (
       <span className="flex items-center gap-3 flex-wrap">
@@ -46,12 +44,11 @@ function UpdateMessage({ result }: { result: UpdateResult }) {
   return <span style={{ color: "var(--color-success)" }}>You're on the latest version.</span>;
 }
 
-export function AboutSection({ defaultOpen = true }: { defaultOpen?: boolean } = {}) {
+export function AboutSection() {
   const [version, setVersion] = useState<string | null>(null);
   const [versionResolved, setVersionResolved] = useState(false);
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<UpdateResult | null>(null);
-  // Guards against committing state from in-flight async work after unmount.
   const alive = useRef(true);
 
   useEffect(() => {
@@ -82,34 +79,35 @@ export function AboutSection({ defaultOpen = true }: { defaultOpen?: boolean } =
   }
 
   return (
-    <Section title="About" defaultOpen={defaultOpen}>
-      <div className="flex items-center justify-between gap-4 flex-wrap">
-        <div>
-          <p className="text-sm font-medium text-text">linXiv</p>
-          <p className="text-xs text-muted mt-0.5">
-            {!versionResolved
+    <div>
+      <SettingGroupLabel>About</SettingGroupLabel>
+      <SettingGroup>
+        <SettingRow
+          label="linXiv"
+          description={
+            !versionResolved
               ? "Checking version…"
               : version
               ? `Version ${version}`
-              : "Development build"}
-          </p>
-        </div>
-        <Button variant="muted" size="sm" onClick={handleCheck} disabled={checking}>
-          {checking ? (
-            <>
-              <Spinner size={14} /> Checking…
-            </>
-          ) : (
-            "Check for updates"
-          )}
-        </Button>
-      </div>
-
-      {result && (
-        <div className="mt-3 text-sm">
-          <UpdateMessage result={result} />
-        </div>
-      )}
-    </Section>
+              : "Development build"
+          }
+        >
+          <Button variant="muted" size="sm" onClick={handleCheck} disabled={checking}>
+            {checking ? (
+              <>
+                <Spinner size={14} /> Checking…
+              </>
+            ) : (
+              "Check for updates"
+            )}
+          </Button>
+        </SettingRow>
+        {result && (
+          <SettingRow label="Update status">
+            <UpdateMessage result={result} />
+          </SettingRow>
+        )}
+      </SettingGroup>
+    </div>
   );
 }

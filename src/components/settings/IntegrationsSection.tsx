@@ -12,7 +12,7 @@ import {
 import { isTauri } from "../../api/client";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
-import { Section } from "./Section";
+import { SettingGroup, SettingGroupLabel, SettingRow } from "./SettingRow";
 
 function IntegrationRow({
   label,
@@ -32,13 +32,11 @@ function IntegrationRow({
   onUninstall: () => void;
 }) {
   return (
-    <div
-      className="flex items-center justify-between py-3 border-b border-border last:border-0"
-      style={{ opacity: available ? 1 : 0.45 }}
-    >
-      <div className="flex-1 min-w-0 mr-4">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium text-text">{label}</span>
+    <SettingRow
+      className={available ? "" : "opacity-45"}
+      label={
+        <span className="flex items-center gap-2">
+          {label}
           {installed && (
             <span
               className="text-xs px-2 py-0.5 rounded-full font-medium"
@@ -50,26 +48,23 @@ function IntegrationRow({
               installed
             </span>
           )}
-          {!available && (
-            <span className="text-xs text-muted">(not detected)</span>
-          )}
-        </div>
-        <p className="text-xs text-muted mt-0.5">{description}</p>
-      </div>
-      <div className="flex-shrink-0">
-        {loading ? (
-          <Spinner size={16} />
-        ) : installed ? (
-          <Button variant="danger" size="sm" onClick={onUninstall}>
-            Uninstall
-          </Button>
-        ) : (
-          <Button variant="primary" size="sm" onClick={onInstall} disabled={!available}>
-            Install
-          </Button>
-        )}
-      </div>
-    </div>
+          {!available && <span className="text-xs text-muted">(not detected)</span>}
+        </span>
+      }
+      description={description}
+    >
+      {loading ? (
+        <Spinner size={16} />
+      ) : installed ? (
+        <Button variant="danger" size="sm" onClick={onUninstall}>
+          Uninstall
+        </Button>
+      ) : (
+        <Button variant="primary" size="sm" onClick={onInstall} disabled={!available}>
+          Install
+        </Button>
+      )}
+    </SettingRow>
   );
 }
 
@@ -80,13 +75,9 @@ const mcpClientDescriptions: Record<string, string> = {
   antigravity: "Registers linXiv as an MCP server in Antigravity.",
 };
 
-export function IntegrationsSection({ defaultOpen = true }: { defaultOpen?: boolean } = {}) {
+export function IntegrationsSection() {
   const qc = useQueryClient();
 
-  // CLI/MCP install operations invoke Tauri commands directly. In a plain
-  // browser (the Vite dev server outside of `tauri dev`) those calls throw
-  // "Not running in Tauri", so we render the subsections in a disabled
-  // read-only state instead of letting the buttons fire.
   const { data: cliInstalled = false, isLoading: cliLoading } = useQuery({
     queryKey: ["cli_installed"],
     queryFn: isCliInstalled,
@@ -131,62 +122,66 @@ export function IntegrationsSection({ defaultOpen = true }: { defaultOpen?: bool
   }
 
   return (
-    <Section title="Integrations" defaultOpen={defaultOpen}>
-      <p className="text-xs text-muted mb-4">
+    <div>
+      <SettingGroupLabel>Integrations</SettingGroupLabel>
+      <p className="mb-2.5 text-xs text-muted">
         Install linXiv tools so other apps can use them outside the GUI.
       </p>
-
       {!isTauri && (
-        <p className="text-xs text-muted mb-4 italic">
+        <p className="mb-2.5 text-xs text-muted italic">
           Available in the desktop app. The browser dev build can't install
           system-level integrations.
         </p>
       )}
 
-      <p className="text-xs font-semibold text-muted uppercase tracking-wide mb-1">
-        Command Line
-      </p>
-      <IntegrationRow
-        label="linxiv CLI"
-        description="Adds the `linxiv` command to your terminal PATH."
-        installed={cliInstalled}
-        available={isTauri}
-        loading={cliLoading || cliPending}
-        onInstall={() => handleCli("install")}
-        onUninstall={() => handleCli("uninstall")}
-      />
-
-      <p className="text-xs font-semibold text-muted uppercase tracking-wide mt-4 mb-1">
-        MCP Clients
-      </p>
-      {!isTauri ? (
+      <SettingGroupLabel>Command line</SettingGroupLabel>
+      <SettingGroup>
         <IntegrationRow
-          label="MCP clients"
-          description="Register linXiv with Claude Desktop, Claude Code, Cursor, or Antigravity."
-          installed={false}
-          available={false}
-          loading={false}
-          onInstall={() => {}}
-          onUninstall={() => {}}
+          label="linxiv CLI"
+          description="Adds the `linxiv` command to your terminal PATH."
+          installed={cliInstalled}
+          available={isTauri}
+          loading={cliLoading || cliPending}
+          onInstall={() => handleCli("install")}
+          onUninstall={() => handleCli("uninstall")}
         />
-      ) : mcpLoading ? (
-        <div className="flex items-center gap-2 py-3 text-sm text-muted">
-          <Spinner size={14} /> Detecting clients…
-        </div>
-      ) : (
-        mcpClients.map((client: MpcClientStatus) => (
+      </SettingGroup>
+
+      <SettingGroupLabel className="mt-6">MCP clients</SettingGroupLabel>
+      {!isTauri ? (
+        <SettingGroup>
           <IntegrationRow
-            key={client.id}
-            label={client.name}
-            description={mcpClientDescriptions[client.id] ?? `Registers linXiv as an MCP server in ${client.name}.`}
-            installed={client.installed}
-            available={client.available}
-            loading={mcpPending === client.id}
-            onInstall={() => handleMcp(client.id, "install")}
-            onUninstall={() => handleMcp(client.id, "uninstall")}
+            label="MCP clients"
+            description="Register linXiv with Claude Desktop, Claude Code, Cursor, or Antigravity."
+            installed={false}
+            available={false}
+            loading={false}
+            onInstall={() => {}}
+            onUninstall={() => {}}
           />
-        ))
+        </SettingGroup>
+      ) : mcpLoading ? (
+        <p className="flex items-center gap-2 py-1 text-sm text-muted">
+          <Spinner size={14} /> Detecting clients…
+        </p>
+      ) : mcpClients.length === 0 ? (
+        <p className="py-1 text-sm text-muted">No MCP clients detected.</p>
+      ) : (
+        <SettingGroup>
+          {mcpClients.map((client: MpcClientStatus) => (
+            <IntegrationRow
+              key={client.id}
+              label={client.name}
+              description={mcpClientDescriptions[client.id] ?? `Registers linXiv as an MCP server in ${client.name}.`}
+              installed={client.installed}
+              available={client.available}
+              loading={mcpPending === client.id}
+              onInstall={() => handleMcp(client.id, "install")}
+              onUninstall={() => handleMcp(client.id, "uninstall")}
+            />
+          ))}
+        </SettingGroup>
       )}
-    </Section>
+    </div>
   );
 }

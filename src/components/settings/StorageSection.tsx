@@ -9,7 +9,7 @@ import { useConfirmWithTimeout } from "../../hooks/useConfirmWithTimeout";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Spinner } from "../ui/spinner";
-import { Section } from "./Section";
+import { SettingGroup, SettingGroupLabel, SettingRow } from "./SettingRow";
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -17,7 +17,7 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export function StorageSection({ defaultOpen = true }: { defaultOpen?: boolean } = {}) {
+export function StorageSection() {
   const qc = useQueryClient();
   const navigate = useNavigate();
 
@@ -78,38 +78,42 @@ export function StorageSection({ defaultOpen = true }: { defaultOpen?: boolean }
   }
 
   return (
-    <Section title="Storage" defaultOpen={defaultOpen}>
-      <div className="flex flex-col gap-1 mb-2">
-        <label className="text-sm text-muted font-medium">PDF Storage Limit (MB)</label>
-        {settingsLoading ? (
-          <div className="flex items-center gap-2 py-1 text-sm text-muted">
-            <Spinner size={14} /> Loading…
-          </div>
-        ) : settingsError ? (
-          <p className="text-xs text-danger">Could not load settings.</p>
-        ) : (
-          <>
-            <div className="flex gap-2 items-center">
+    <div>
+      <SettingGroupLabel>Storage</SettingGroupLabel>
+      <SettingGroup>
+        <SettingRow
+          label="PDF storage limit (MB)"
+          description="Maximum disk space for locally saved PDFs."
+        >
+          {settingsLoading ? (
+            <span className="flex items-center gap-2 text-sm text-muted">
+              <Spinner size={14} /> Loading…
+            </span>
+          ) : settingsError ? (
+            <span className="text-xs text-danger">Could not load settings.</span>
+          ) : (
+            <>
               <Input
                 type="number"
                 value={pdfLimit}
                 onChange={(e) => setPdfLimit(e.target.value)}
                 min={1}
                 style={{ width: 120 }}
+                aria-label="PDF storage limit (MB)"
               />
               <Button size="sm" disabled={!limitValid || saving} onClick={() => save()}>
                 {saving ? "Saving…" : "Save"}
               </Button>
-            </div>
-            {saveError && (
-              <p className="text-xs text-danger mt-1">Failed to save. Please try again.</p>
-            )}
-          </>
-        )}
-      </div>
+              {saveError && (
+                <span className="text-xs text-danger">Failed to save.</span>
+              )}
+            </>
+          )}
+        </SettingRow>
+      </SettingGroup>
 
-      <div className="flex flex-col gap-1 mt-4">
-        <label className="text-sm text-muted font-medium">Saved PDFs</label>
+      <SettingGroupLabel className="mt-6">Saved PDFs</SettingGroupLabel>
+      <SettingGroup block>
         {pdfsLoading ? (
           <div className="flex items-center gap-2 py-1 text-sm text-muted">
             <Spinner size={14} /> Loading…
@@ -130,8 +134,8 @@ export function StorageSection({ defaultOpen = true }: { defaultOpen?: boolean }
             ))}
           </ul>
         )}
-      </div>
-    </Section>
+      </SettingGroup>
+    </div>
   );
 }
 
