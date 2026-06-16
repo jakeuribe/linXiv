@@ -31,6 +31,17 @@ def color_from_hex(hex_str: str) -> int:
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
+#
+# Membership writes come in two shapes:
+#   * Incremental (add_papers / remove_papers): single-statement
+#     INSERT OR IGNORE / DELETE per row. These never touch other rows.
+#     add_papers raises ValueError on an unsaved project; remove_papers is
+#     a silent no-op there (no rows can exist yet).
+#   * Full replace (_save_source_fks, used by replace_papers and the initial
+#     insert in save()): DELETE everything for the project, re-insert from the
+#     caller's list. Rows written by anyone else since the caller loaded its
+#     list are not preserved.
+# save() persists project fields only; it does not write membership on update.
 
 def _load_source_fks(project_fk: int) -> list[int]:
     with _connect() as conn:
@@ -46,13 +57,21 @@ def _load_source_fks(project_fk: int) -> list[int]:
     return [int(row["SOURCE_FK"]) for row in rows]
 
 
+# Backed by idx_project_to_paper_unique on (PROJECT_FK, SOURCE_FK); OR IGNORE
+# makes the insert a no-op when the row already exists. Reads order by
+# PROJECT_TO_PAPER_FK (rowid alias), so appended rows sort after existing ones.
+_INSERT_MEMBERSHIP_SQL = (
+    "INSERT OR IGNORE INTO PROJECT_TO_PAPER (PROJECT_FK, SOURCE_FK) VALUES (?, ?)"
+)
+
+
 def _save_source_fks(conn, project_fk: int, source_fks: list[int]) -> None:
+    """Full replace: rewrite the project's membership to exactly source_fks."""
     conn.execute("DELETE FROM PROJECT_TO_PAPER WHERE PROJECT_FK = ?", (project_fk,))
-    for sfk in source_fks:
-        conn.execute(
-            "INSERT INTO PROJECT_TO_PAPER (PROJECT_FK, SOURCE_FK) VALUES (?, ?)",
-            (project_fk, sfk),
-        )
+    conn.executemany(
+        _INSERT_MEMBERSHIP_SQL,
+        [(project_fk, sfk) for sfk in source_fks],
+    )
 
 
 # ── Data model ────────────────────────────────────────────────────────────────
@@ -105,9 +124,13 @@ class Project:
                      self.created_at, self.updated_at, self.archived_at),
                 )
                 self.id = cur.lastrowid
-                assert self.id 
+                assert self.id
                 _save_source_fks(conn, self.id, self.source_fks)
         else:
+            # Fields only. Membership is written by add_papers/remove_papers/
+            # replace_papers — rewriting it here from this instance's
+            # (possibly stale) snapshot would discard rows written by other
+            # requests since the snapshot was loaded.
             with _connect() as conn:
                 conn.execute(
                     """
@@ -119,8 +142,6 @@ class Project:
                     (self.name, self.description, self.color, self.status,
                      self.updated_at, self.archived_at, self.id),
                 )
-                assert self.id 
-                _save_source_fks(conn, self.id, self.source_fks)
 
     def delete(self) -> None:
         self.status      = Status.DELETED
@@ -137,44 +158,59 @@ class Project:
         self.archived_at = None
         self.save()
 
-    def add_paper(self, source_fk: int, position: Optional[int] = None) -> None:
-        if self.id is None:
-            raise ValueError("Project must be saved before papers can be added.")
-        if source_fk in self.source_fks:
-            return
-        if position is None:
-            self.source_fks.append(source_fk)
-        else:
-            self.source_fks.insert(position, source_fk)
-        with _connect() as conn:
-            _save_source_fks(conn, self.id, self.source_fks)
+    def _refresh_source_fks(self) -> None:
+        """Reload membership through the usual read path after a write, so the
+        in-memory list matches what any fresh load would see (active papers,
+        PROJECT_TO_PAPER_FK order) rather than this instance's snapshot."""
+        assert self.id is not None
+        self.source_fks = _load_source_fks(self.id)
+        self._sources_loaded = True
 
     def add_papers(self, source_fks: list[int]) -> None:
+        """Add many papers; duplicates and existing members are skipped."""
         if self.id is None:
             raise ValueError("Project must be saved before papers can be added.")
-        new_fks = [sfk for sfk in source_fks if sfk not in self.source_fks]
-        if not new_fks:
+        if not source_fks:
             return
-        self.source_fks.extend(new_fks)
+        # No membership pre-check against self.source_fks (it may be stale);
+        # the insert is OR IGNORE.
         with _connect() as conn:
-            _save_source_fks(conn, self.id, self.source_fks)
+            conn.executemany(
+                _INSERT_MEMBERSHIP_SQL,
+                [(self.id, sfk) for sfk in source_fks],
+            )
+        self._refresh_source_fks()
 
-    def remove_paper(self, source_fk: int) -> None:
+    def remove_papers(self, source_fks: list[int]) -> None:
+        """Remove many papers; non-members are skipped."""
         if self.id is None:
             return
-        if source_fk not in self.source_fks:
+        if not source_fks:
             return
-        self.source_fks.remove(source_fk)
         with _connect() as conn:
-            _save_source_fks(conn, self.id, self.source_fks)
+            conn.executemany(
+                "DELETE FROM PROJECT_TO_PAPER WHERE PROJECT_FK = ? AND SOURCE_FK = ?",
+                [(self.id, sfk) for sfk in source_fks],
+            )
+        self._refresh_source_fks()
 
-    def reorder_paper(self, source_fk: int, new_position: int) -> None:
-        if self.id is None or source_fk not in self.source_fks:
-            return
-        self.source_fks.remove(source_fk)
-        self.source_fks.insert(new_position, source_fk)
+    def replace_papers(self, source_fks: list[int]) -> None:
+        """Set the membership to exactly source_fks (full replace, in order).
+
+        Any membership rows written since the caller loaded its snapshot are
+        discarded. Use add/remove for incremental changes.
+        """
+        if self.id is None:
+            raise ValueError("Project must be saved before papers can be replaced.")
+        seen: set[int] = set()
+        deduped: list[int] = []
+        for sfk in source_fks:
+            if sfk not in seen:
+                seen.add(sfk)
+                deduped.append(sfk)
         with _connect() as conn:
-            _save_source_fks(conn, self.id, self.source_fks)
+            _save_source_fks(conn, self.id, deduped)
+        self._refresh_source_fks()
 
     def load_papers(self) -> list[int]:
         return self.source_fks
@@ -192,12 +228,12 @@ class Project:
 
 # ── Queries ───────────────────────────────────────────────────────────────────
 
-def get_project(project_id: int) -> Optional[Project]:
+def get_project(project_id: int, load_sources: bool = True) -> Optional[Project]:
     with _connect() as conn:
         row = conn.execute(
             "SELECT * FROM PROJECT WHERE PROJECT_FK = ?", (project_id,)
         ).fetchone()
-    return Project.from_row(row) if row else None
+    return Project.from_row(row, load_sources=load_sources) if row else None
 
 
 def filter_projects(condition: Q | None = None, load_sources: bool = True) -> list[Project]:

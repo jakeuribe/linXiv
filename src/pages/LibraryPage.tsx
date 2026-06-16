@@ -4,8 +4,10 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Upload } from "lucide-react";
 import { listPapers, deletePaper, searchLibrary } from "../api/papers";
-import { listProjects, addPaperToProject, createProject } from "../api/projects";
+import { listProjects, addPapersToProject, createProject } from "../api/projects";
 import { useSelectionStore } from "../stores/selection";
+import { useLibraryStore } from "../stores/library";
+import type { LibraryFilterMode as FilterMode } from "../stores/library";
 import type { Paper } from "../types/api";
 import { normalizeAuthors } from "../lib/papers";
 import { Spinner } from "../components/ui/spinner";
@@ -15,8 +17,6 @@ import { Dialog } from "../components/ui/dialog";
 import { PaperCard } from "../components/papers/PaperCard";
 import { SelectionBar } from "../components/papers/SelectionBar";
 import { ImportDialog } from "../components/import/ImportDialog";
-
-type FilterMode = "all" | "has_pdf" | "no_pdf";
 
 const PAPER_FETCH_LIMIT = 5000;
 const VIRTUALIZER_ESTIMATE_HEIGHT = 120;
@@ -43,11 +43,13 @@ export default function LibraryPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
-  const [search, setSearch] = useState("");
+  const search = useLibraryStore((s) => s.search);
+  const setSearch = useLibraryStore((s) => s.setSearch);
   const deferredSearch = useDeferredValue(search);
   const trimmedSearch = deferredSearch.trim();
   const ftsEnabled = trimmedSearch.length >= 3;
-  const [filterMode, setFilterMode] = useState<FilterMode>("all");
+  const filterMode = useLibraryStore((s) => s.filterMode);
+  const setFilterMode = useLibraryStore((s) => s.setFilterMode);
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [projectPickerError, setProjectPickerError] = useState<string | null>(null);
   const [newProjectName, setNewProjectName] = useState("");
@@ -120,8 +122,11 @@ export default function LibraryPage() {
       projectId: number;
       sourceIds: string[];
     }) => {
-      for (const id of sourceIds) {
-        await addPaperToProject(projectId, id);
+      const { failed } = await addPapersToProject(projectId, sourceIds);
+      if (failed.length > 0) {
+        throw new Error(
+          `Failed to add ${failed.length} paper${failed.length !== 1 ? "s" : ""} to project`
+        );
       }
     },
     onSettled: () => {
@@ -142,16 +147,33 @@ export default function LibraryPage() {
   const createProjectMutation = useMutation({
     mutationFn: async ({ name, sourceIds }: { name: string; sourceIds: string[] }) => {
       const result = await createProject({ name });
-      for (const id of sourceIds) {
-        await addPaperToProject(result.project.id, id);
+      try {
+        const { failed } = await addPapersToProject(result.project.id, sourceIds);
+        return failed.length;
+      } catch {
+        // The project was created; route through onSuccess so the name is
+        // cleared and a retry can't create a duplicate.
+        return sourceIds.length;
       }
     },
-    onSuccess: () => {
+    // Invalidate in onSettled, not onSuccess: the project may have been
+    // created even when the mutation rejects (e.g. a paper-add request fails).
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+    },
+    onSuccess: (failedCount) => {
+      // The project exists either way — clear the name so a retry can't
+      // create a duplicate.
       setNewProjectName("");
+      if (failedCount > 0) {
+        setProjectPickerError(
+          `Project created, but ${failedCount} paper${failedCount !== 1 ? "s" : ""} could not be added`
+        );
+        return;
+      }
       setProjectPickerOpen(false);
       setProjectPickerError(null);
       clear();
-      queryClient.invalidateQueries({ queryKey: ["projects"] });
     },
     onError: (err) => {
       setProjectPickerError(err instanceof Error ? err.message : "Failed to create project");
@@ -215,6 +237,7 @@ export default function LibraryPage() {
   function handleAddToProject(projectId: number) {
     if (addToProjectMutation.isPending) return;
     const ids = Array.from(selectedIds);
+    if (ids.length === 0) return; // nothing to add
     addToProjectMutation.mutate({ projectId, sourceIds: ids });
   }
 

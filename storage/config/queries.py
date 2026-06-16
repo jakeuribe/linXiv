@@ -128,6 +128,69 @@ def get_papers_via_author_fk(author_fk: int) -> list[sqlite3.Row]:
 
 
 # ---------------------------------------------------------------------------
+# GRAPH
+# ---------------------------------------------------------------------------
+
+# Per author name (COLLATE NOCASE): the AUTHOR_FK with the most papers, ties
+# broken by lowest FK. Joined into the graph author queries so each graph node
+# carries the relational AUTHOR_FK for navigation.
+_GRAPH_AUTHOR_FK_BY_NAME_CTE = """
+    name_fk AS (
+        SELECT author_name, author_fk FROM (
+            SELECT a.AUTHOR_FULL_NAME AS author_name, a.AUTHOR_FK AS author_fk,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY a.AUTHOR_FULL_NAME COLLATE NOCASE
+                       ORDER BY COALESCE(apc.paper_count, 0) DESC, a.AUTHOR_FK ASC
+                   ) AS rn
+            FROM AUTHOR a
+            LEFT JOIN author_paper_counts apc ON apc.author_fk = a.AUTHOR_FK
+            WHERE a.AUTHOR_FULL_NAME IS NOT NULL
+        )
+        WHERE rn = 1
+    )
+"""
+
+# Graph author rows: one per (latest-version active root, JSON author name).
+# author_fk: the relational AUTHOR_FK for the name; NULL when no AUTHOR matches.
+# _WITH_COUNT adds the per-name active-paper count for the single-author filter.
+_GRAPH_AUTHORS_SQL = f"""
+    WITH {_GRAPH_AUTHOR_FK_BY_NAME_CTE}
+    SELECT r.SOURCE_FK AS source_fk, je.value AS author_name,
+           nf.author_fk AS author_fk
+    FROM PAPER_ROOTS r
+    JOIN PAPER p ON p.SOURCE_FK = r.SOURCE_FK
+    JOIN PAPER_META m ON m.PAPER_ID = p.PAPER_ID,
+         json_each(m.AUTHORS) je
+    LEFT JOIN name_fk nf ON nf.author_name = je.value COLLATE NOCASE
+    WHERE p.VERSION = (SELECT MAX(VERSION) FROM PAPER WHERE SOURCE_FK = r.SOURCE_FK)
+      AND r.STATUS = 'active'
+"""
+
+# paper_count: per author name (grouped COLLATE NOCASE), the max single-AUTHOR_FK
+# count from author_paper_counts; NULL when no AUTHOR row matches the JSON name.
+_GRAPH_AUTHORS_WITH_COUNT_SQL = f"""
+    WITH {_GRAPH_AUTHOR_FK_BY_NAME_CTE},
+    name_counts AS (
+        SELECT a.AUTHOR_FULL_NAME AS author_name,
+               MAX(apc.paper_count) AS paper_count
+        FROM AUTHOR a
+        JOIN author_paper_counts apc ON apc.author_fk = a.AUTHOR_FK
+        GROUP BY a.AUTHOR_FULL_NAME COLLATE NOCASE
+    )
+    SELECT r.SOURCE_FK AS source_fk, je.value AS author_name,
+           nc.paper_count AS paper_count, nf.author_fk AS author_fk
+    FROM PAPER_ROOTS r
+    JOIN PAPER p ON p.SOURCE_FK = r.SOURCE_FK
+    JOIN PAPER_META m ON m.PAPER_ID = p.PAPER_ID,
+         json_each(m.AUTHORS) je
+    LEFT JOIN name_counts nc ON nc.author_name = je.value COLLATE NOCASE
+    LEFT JOIN name_fk nf ON nf.author_name = je.value COLLATE NOCASE
+    WHERE p.VERSION = (SELECT MAX(VERSION) FROM PAPER WHERE SOURCE_FK = r.SOURCE_FK)
+      AND r.STATUS = 'active'
+"""
+
+
+# ---------------------------------------------------------------------------
 # PAPER  (via `papers` / `latest_papers` views — PAPER JOIN PAPER_META)
 # ---------------------------------------------------------------------------
 

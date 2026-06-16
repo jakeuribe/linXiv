@@ -130,8 +130,6 @@ def _migrate_tag_label_unique_index(conn: sqlite3.Connection) -> None:
             )
             """
         )
-    # No explicit commit: the DDL below auto-commits the preceding DML, keeping both
-    # in the same implicit SQLite transaction boundary.
     conn.execute("CREATE UNIQUE INDEX idx_tag_label_unique ON TAG (TAG COLLATE NOCASE)")
 
 
@@ -154,10 +152,43 @@ def _migrate_project_to_tag_unique_index(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    # No explicit commit: the DDL below auto-commits the preceding DML.
     conn.execute(
         "CREATE UNIQUE INDEX idx_project_to_tag_unique "
         "ON PROJECT_TO_TAG (PROJECT_FK, TAG_FK)"
+    )
+
+
+def _migrate_project_to_paper_unique_index(conn: sqlite3.Connection) -> None:
+    idx = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_project_to_paper_unique'"
+    ).fetchone()
+    if idx:
+        return
+    # Deduplicate before creating index: keep lowest PK per (PROJECT_FK, SOURCE_FK)
+    # pair. Duplicates could exist from the pre-index era when membership writes
+    # were unconstrained.
+    conn.execute(
+        """
+        DELETE FROM PROJECT_TO_PAPER
+        WHERE PROJECT_TO_PAPER_FK NOT IN (
+            SELECT MIN(PROJECT_TO_PAPER_FK)
+            FROM PROJECT_TO_PAPER
+            GROUP BY PROJECT_FK, SOURCE_FK
+        )
+        """
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX idx_project_to_paper_unique "
+        "ON PROJECT_TO_PAPER (PROJECT_FK, SOURCE_FK)"
+    )
+
+
+def _migrate_author_full_name_index(conn: sqlite3.Connection) -> None:
+    # Indexes AUTHOR_FULL_NAME under COLLATE NOCASE for the graph's author-name
+    # join. Non-unique: create_author does not dedup names.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_author_full_name "
+        "ON AUTHOR (AUTHOR_FULL_NAME COLLATE NOCASE)"
     )
 
 
@@ -173,8 +204,14 @@ def apply_sql_schema(conn: sqlite3.Connection) -> None:
     _migrate_search_state_sort_json(conn)
     _migrate_tag_label_unique_index(conn)
     _migrate_project_to_tag_unique_index(conn)
+    _migrate_project_to_paper_unique_index(conn)
+    _migrate_author_full_name_index(conn)
     _apply_views(conn)
     _apply_indices(conn)
+    # Persist regardless of how the caller manages the connection: not every
+    # caller wraps this in a committing context (e.g. init_db closes directly),
+    # and sqlite3 does not auto-commit an open transaction before DDL.
+    conn.commit()
 
 
 def init_db(db_path: str | None = None) -> None:

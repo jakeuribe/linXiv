@@ -3,13 +3,15 @@ import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { Spinner } from "../ui/spinner";
 import GraphPage from "../../pages/GraphPage";
+import EditorPage from "../../pages/EditorPage";
 import { useUiStore, type SidebarPageKey } from "../../stores/ui";
+import { ZOOM_STEP, DEFAULT_ZOOM } from "../../lib/zoom";
 import { getSettings } from "../../api/settings";
 import { useThemeStore } from "../../stores/theme";
 import { VALID_HEX } from "../../lib/theme";
 import type { ThemeColors, ColorAlphas } from "../../lib/theme";
 
-const KEEP_ALIVE = ["/graph"];
+const KEEP_ALIVE = ["/graph", "/editor"];
 
 const VALID_COLOR_KEYS = new Set<string>(["bg", "panel", "border", "accent", "text", "muted", "success", "danger"]);
 
@@ -19,6 +21,7 @@ const ROUTE_PAGE_KEY: Record<string, SidebarPageKey> = {
   "/doi":    "doi",
   "/tags":   "tags",
   "/notes":  "notes",
+  "/editor": "notes",
 };
 
 function PageFallback() {
@@ -44,6 +47,29 @@ export default function AppShell() {
       navigate("/", { replace: true });
     }
   }, [pathname, sidebarPages, navigate]);
+
+  // Global zoom hotkeys: Ctrl/Cmd +/-/0 mirror the Settings zoom buttons.
+  // preventDefault stops the webview's own native zoom so the two don't compound.
+  // setZoom already clamps + persists; read the live value from the store so the
+  // listener can stay bound once.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const { zoom, setZoom } = useUiStore.getState();
+      if (e.key === "+" || e.key === "=") {
+        e.preventDefault();
+        setZoom(zoom + ZOOM_STEP);
+      } else if (e.key === "-" || e.key === "_") {
+        e.preventDefault();
+        setZoom(zoom - ZOOM_STEP);
+      } else if (e.key === "0") {
+        e.preventDefault();
+        setZoom(DEFAULT_ZOOM);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   // Server is authoritative for theme overrides — restore on boot so that
   // cleared localStorage or a fresh profile picks up the saved values.
@@ -84,6 +110,13 @@ export default function AppShell() {
           style={{ display: pathname === "/graph" ? "flex" : "none" }}
         >
           <GraphPage />
+        </div>
+
+        <div
+          className="absolute inset-0 flex flex-col"
+          style={{ display: pathname === "/editor" ? "flex" : "none" }}
+        >
+          <EditorPage />
         </div>
 
         {!onKeepAlive && (

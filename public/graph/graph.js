@@ -24,16 +24,25 @@ let _tagRows = [];
 
 let _projectMap = new Map();  // id → {name, color, tags[]}
 
+// Data-fetch state for in-place refresh / option changes (see fetchAndLoadGraph).
+let _graphBase           = null;   // resolved API origin, or null when offline (file:)
+let _excludeSingleAuthors = false; // current "hide single-paper authors" option
+let _loadToken           = 0;      // guards against out-of-order fetch results
+
 const $ = id => document.getElementById(id);
 
 // ── Panel collapse wiring ────────────────────────────────────────────────────
 
 document.querySelectorAll('.panel-toggle').forEach(btn => {
+    const body = document.getElementById(btn.dataset.target);
+    if (!body) return;
+    btn.setAttribute('aria-controls', btn.dataset.target);
+    btn.setAttribute('aria-expanded', String(body.style.display !== 'none'));
     btn.addEventListener('click', () => {
-        const body = document.getElementById(btn.dataset.target);
         const collapsed = body.style.display === 'none';
         body.style.display = collapsed ? '' : 'none';
         btn.textContent = collapsed ? '▼' : '▶';
+        btn.setAttribute('aria-expanded', String(collapsed));
     });
 });
 
@@ -186,6 +195,8 @@ $('isolate-btn').addEventListener('click', () => {
     _applyFilter();
 });
 
+$('clear-filters-btn').addEventListener('click', clearFilters);
+
 // ── Selection panel buttons ─────────────────────────────────────────────────
 
 $('select-all-btn').addEventListener('click', () => selectAllPapers());
@@ -291,7 +302,7 @@ function setFilterOptions(categories, tags, projects) {
         .join('');
 }
 
-// ── Called from Python toolbar "Clear filters" ───────────────────────────────
+// ── Reset every filter panel to its default and re-apply ─────────────────────
 
 function clearFilters() {
     _textFilterIds.forEach(id => { $(id).value = ''; });
@@ -310,8 +321,18 @@ function clearFilters() {
 
 // ── Graph loading ─────────────────────────────────────────────────────────────
 
-function loadGraph(data) {
+function loadGraph(data, opts = {}) {
     const { nodes, edges } = data;
+    const { preserveView = false } = opts;
+
+    // Seed surviving nodes from the outgoing layout and hold zoom/pan so an
+    // in-place reload starts from the current view instead of re-randomising.
+    const prevPositions = new Map();
+    let prevZoom = null, prevPan = null;
+    if (preserveView) {
+        _simNodeById.forEach((sn, id) => prevPositions.set(id, { x: sn.x, y: sn.y }));
+        if (cy) { prevZoom = cy.zoom(); prevPan = { ...cy.pan() }; }
+    }
 
     if (simulation) { simulation.stop(); simulation = null; }
     if (cy) { cy.destroy(); cy = null; }
@@ -320,11 +341,14 @@ function loadGraph(data) {
     _visibleAuthorIds = null;
     _visibleTagIds    = null;
 
-    const simNodes = nodes.map(n => ({
-        id: String(n.id),
-        x:  (Math.random() - 0.5) * 800,
-        y:  (Math.random() - 0.5) * 800,
-    }));
+    const simNodes = nodes.map(n => {
+        const prev = prevPositions.get(String(n.id));
+        return {
+            id: String(n.id),
+            x:  prev ? prev.x : (Math.random() - 0.5) * 800,
+            y:  prev ? prev.y : (Math.random() - 0.5) * 800,
+        };
+    });
     // Store original edge defs before D3 mutates source/target to object refs
     _allEdgeDefs = edges.map(e => ({ source: String(e.source), target: String(e.target) }));
     const simLinks = _allEdgeDefs.map(e => ({ ...e }));
@@ -338,6 +362,7 @@ function loadGraph(data) {
                 data: {
                     id:          String(n.id),
                     source_id:   n.source_id   || null,
+                    author_id:   n.author_id   ?? null,
                     label:       n.label,
                     type:        n.type,
                     category:    n.category    || null,
@@ -345,6 +370,9 @@ function loadGraph(data) {
                     has_pdf:     n.has_pdf     || false,
                     published:   n.published   || null,
                     project_ids: n.project_ids || [],
+                    url:         n.url         || null,
+                    doi:         n.doi         || null,
+                    summary:     n.summary     || '',
                 },
                 position: { x: sn.x, y: sn.y },
             };
@@ -364,11 +392,24 @@ function loadGraph(data) {
         userPanningEnabled: true,
         minZoom: 0.05,
         maxZoom: 10,
+        // Cache a texture and drop edges while panning/zooming to keep the
+        // viewport smooth as the node count grows.
+        textureOnViewport: true,
+        hideEdgesOnViewport: true,
     });
 
-    cy.fit(undefined, 40);
+    if (preserveView && prevZoom != null && prevPan) {
+        cy.viewport({ zoom: prevZoom, pan: prevPan });
+    } else {
+        cy.fit(undefined, 40);
+    }
+
+    // Cache each node's handle so the per-tick sync below skips a getElementById
+    // lookup (and its allocation) per node per frame.
+    simNodes.forEach(sn => { sn.cyNode = cy.getElementById(sn.id); });
 
     cy.on('grab', 'node', e => {
+        fitOnSettle = false;  // user took control — don't reframe under them
         const sn = _simNodeById.get(e.target.id());
         if (sn) { sn.fx = sn.x; sn.fy = sn.y; }
         if (simulation) simulation.alphaTarget(0.3).restart();
@@ -380,28 +421,35 @@ function loadGraph(data) {
     });
     cy.on('free', 'node', e => {
         const sn = _simNodeById.get(e.target.id());
-        if (sn) { sn.fx = null; sn.fy = null; }
+        if (sn) { sn.fx = null; sn.fy = null; sn._filterPinned = false; }
         if (simulation) simulation.alphaTarget(0);
     });
 
     // Click paper node:
-    //   Regular click  → set selection to this node alone + navigate
+    //   Regular click  → clear selection + navigate to the paper
     //   Ctrl/Cmd click → toggle additive (no navigation)
     cy.on('tap', 'node[type = "paper"]', e => {
         const paper_id = e.target.id();
         if (e.originalEvent.ctrlKey || e.originalEvent.metaKey) {
             _toggleSelection(paper_id);
         } else {
+            // Clear the local selection + counter so returning to the graph
+            // shows no stale highlight. The host owns its own count via the
+            // paper_clicked handler, so we skip the selection_changed post.
             _selectedIds.clear();
             _applyAllStyles();
-            console.log('GRAPHVIEW_PAPER_CLICKED:' + paper_id);
+            _updateSelectionCount();
             window.parent.postMessage({ type: 'paper_clicked', id: paper_id }, window.location.origin);
         }
     });
 
-    // Right-click paper node → open its Library detail page
-    cy.on('cxttap', 'node[type = "paper"]', e => {
-        console.log('GRAPHVIEW_PAPER_RIGHT_CLICKED:' + e.target.id());
+    // Click author node → open its author page. Skip Ctrl/Cmd (reserved for paper
+    // multi-select) and nodes with no resolved AUTHOR_FK.
+    cy.on('tap', 'node[type = "author"]', e => {
+        if (e.originalEvent.ctrlKey || e.originalEvent.metaKey) return;
+        const authorId = e.target.data('author_id');
+        if (authorId === null) return;
+        window.parent.postMessage({ type: 'author_clicked', id: String(authorId) }, window.location.origin);
     });
 
     // Tap background → clear selection (unless Ctrl/Cmd held)
@@ -423,13 +471,16 @@ function loadGraph(data) {
 
     simulation.on('tick', () => {
         cy.batch(() => {
-            simNodes.forEach(d => {
-                cy.getElementById(d.id).position({ x: d.x, y: d.y });
-            });
+            simNodes.forEach(d => d.cyNode.position({ x: d.x, y: d.y }));
         });
     });
 
+    // Drop selected ids the reload removed (_applyFilter re-renders selection),
+    // then re-notify the host so its count stays authoritative.
+    _selectedIds.forEach(id => { if (cy.getElementById(id).empty()) _selectedIds.delete(id); });
+
     _applyFilter();
+    _notifySelectionChanged();
 }
 
 function getThemeColors() {
@@ -439,6 +490,7 @@ function getThemeColors() {
         bg:     s.getPropertyValue('--color-bg').trim()     || '#0f0f1a',
         border: s.getPropertyValue('--color-border').trim() || '#2e2e50',
         muted:  s.getPropertyValue('--color-muted').trim()  || '#7777aa',
+        text:   s.getPropertyValue('--color-text').trim()   || '#ccccdd',
     };
 }
 
@@ -448,56 +500,74 @@ function cytoscapeStyle() {
         {
             selector: 'node[type = "paper"]',
             style: {
-                'shape':            'ellipse',
-                'width':            20,
-                'height':           20,
-                'background-color': t.accent,
-                'label':            'data(label)',
-                'font-size':        '11px',
-                'color':            t.muted,
-                'font-family':      'Segoe UI, sans-serif',
-                'text-valign':      'center',
-                'text-halign':      'right',
-                'text-margin-x':    8,
-                'text-max-width':   '180px',
-                'text-wrap':        'ellipsis',
-                'border-width':     1.5,
-                'border-color':     t.bg,
+                'shape':                'ellipse',
+                'width':                20,
+                'height':               20,
+                'background-color':     t.accent,
+                'label':                'data(label)',
+                'font-size':            13,
+                'font-weight':          600,
+                // Theme text with a background-colored halo over edges/nodes.
+                'color':                t.text,
+                'text-outline-color':   t.bg,
+                'text-outline-width':   2.5,
+                'text-outline-opacity': 1,
+                // Stop rendering labels below ~7px on-screen.
+                'min-zoomed-font-size': 7,
+                'font-family':          'Segoe UI, sans-serif',
+                'text-valign':          'center',
+                'text-halign':          'right',
+                'text-margin-x':        8,
+                'text-max-width':       '180px',
+                'text-wrap':            'ellipsis',
+                'border-width':         1.5,
+                'border-color':         t.bg,
             },
         },
         {
             selector: 'node[type = "author"]',
             style: {
-                'shape':            'diamond',
-                'width':            14,
-                'height':           14,
-                'background-color': AUTHOR_COLOR,
-                'label':            'data(label)',
-                'font-size':        '10px',
-                'color':            '#c8a060',
-                'font-family':      'Segoe UI, sans-serif',
-                'text-valign':      'center',
-                'text-halign':      'right',
-                'text-margin-x':    7,
-                'text-max-width':   '140px',
-                'text-wrap':        'ellipsis',
+                'shape':                'diamond',
+                'width':                14,
+                'height':               14,
+                'background-color':     AUTHOR_COLOR,
+                'label':                'data(label)',
+                'font-size':            12,
+                'font-weight':          600,
+                'color':                t.text,
+                'text-outline-color':   t.bg,
+                'text-outline-width':   2.5,
+                'text-outline-opacity': 1,
+                'min-zoomed-font-size': 7,
+                'font-family':          'Segoe UI, sans-serif',
+                'text-valign':          'center',
+                'text-halign':          'right',
+                'text-margin-x':        7,
+                'text-max-width':       '140px',
+                'text-wrap':            'ellipsis',
             },
         },
         {
             selector: 'node[type = "tag"]',
             style: {
-                'shape':            'roundrectangle',
-                'width':            'label',
-                'height':           18,
-                'padding':          '0 6px',
-                'background-color': TAG_COLOR,
-                'label':            'data(label)',
-                'font-size':        '10px',
-                'color':            '#d4f0e0',
-                'font-family':      'Segoe UI, sans-serif',
-                'text-valign':      'center',
-                'text-halign':      'center',
-                'border-width':     0,
+                'shape':                'roundrectangle',
+                'width':                'label',
+                'height':               20,
+                'padding':              '0 7px',
+                'background-color':     TAG_COLOR,
+                'label':                'data(label)',
+                'font-size':            12,
+                'font-weight':          600,
+                // Label sits inside the chip: white text + dark halo for contrast.
+                'color':                '#ffffff',
+                'text-outline-color':   '#16321f',
+                'text-outline-width':   1.5,
+                'text-outline-opacity': 1,
+                'min-zoomed-font-size': 7,
+                'font-family':          'Segoe UI, sans-serif',
+                'text-valign':          'center',
+                'text-halign':          'center',
+                'border-width':         0,
             },
         },
         {
@@ -554,11 +624,7 @@ function filterGraph(opts) {
         if (dateFrom && d.published && d.published < dateFrom) return;
         if (dateTo   && d.published && d.published > dateTo)   return;
         if (authLower) {
-            const authorLabels = [];
-            n.connectedEdges().forEach(e => {
-                const other = e.source().id() === n.id() ? e.target() : e.source();
-                if (other.data('type') === 'author') authorLabels.push(other.data('label').toLowerCase());
-            });
+            const authorLabels = _paperAuthorLabels.get(n.id()) || [];
             if (!authorLabels.some(a => a.includes(authLower))) return;
         }
         visiblePaperIds.add(n.id());
@@ -598,13 +664,15 @@ function filterGraph(opts) {
             ...visiblePaperIds, ...visibleAuthorIds, ...visibleTagIds,
         ]);
 
-        // Pin non-visible nodes in place; unpin visible ones
+        // Pin non-visible nodes in place; release the pins the filter owns once
+        // a node is visible again. Tracked via _filterPinned so a drag pin
+        // (fx/fy set by the grab handler) is never cleared out from under it,
+        // and so isolate-mode toggles don't permanently freeze the layout.
         _simNodeById.forEach((sn, id) => {
             if (!visibleNodeIds.has(id)) {
-                if (sn.fx == null) { sn.fx = sn.x; sn.fy = sn.y; }
-            } else {
-                // Only unpin if we own the pin (drag handler sets fx/fy too)
-                if (!isolate) { sn.fx = null; sn.fy = null; }
+                if (sn.fx == null) { sn.fx = sn.x; sn.fy = sn.y; sn._filterPinned = true; }
+            } else if (sn._filterPinned) {
+                sn.fx = null; sn.fy = null; sn._filterPinned = false;
             }
         });
 
@@ -722,17 +790,7 @@ function _applyAllStyles() {
     });
 }
 
-// ── Highlight (called from Python when a table row is selected) ───────────────
-// Sets the selection to just this one node (or clears if null).
-
-function highlightNode(nodeId) {
-    _selectedIds.clear();
-    if (nodeId !== null) _selectedIds.add(String(nodeId));
-    _applyAllStyles();
-    _notifySelectionChanged();
-}
-
-// ── Selection (click to set, Ctrl+click to toggle, Python bulk ops) ──────────
+// ── Selection (click to set, Ctrl+click to toggle) ───────────────────────────
 
 function _toggleSelection(paperId) {
     if (_selectedIds.has(paperId)) {
@@ -752,7 +810,13 @@ function _notifySelectionChanged() {
             if (sid) sourceIds.push(sid);
         });
     }
+    _updateSelectionCount();
     window.parent.postMessage({ type: 'selection_changed', sourceIds }, window.location.origin);
+}
+
+function _updateSelectionCount() {
+    const counter = $('selectionCount');
+    if (counter) counter.textContent = `(${_selectedIds.size})`;
 }
 
 function selectAllPapers() {
@@ -832,22 +896,49 @@ window.addEventListener('message', function(e) {
         if (cy) cy.style(cytoscapeStyle()).update();
     } else if (e.data.type === 'clear_selection') {
         clearSelection();
+    } else if (e.data.type === 'set_options') {
+        // In-place option change: re-fetch, keeping filters / layout / view.
+        if (typeof e.data.excludeSingleAuthors === 'boolean') {
+            _excludeSingleAuthors = e.data.excludeSingleAuthors;
+        }
+        fetchAndLoadGraph({ preserveView: true });
+    } else if (e.data.type === 'refresh') {
+        fetchAndLoadGraph({ preserveView: true });
     }
 });
 
-// Bootstrap: http(s) = dev (Vite proxy handles /api), tauri: = production app (backend at 127.0.0.1:8000), file: = Qt bridge (skip).
-(function bootstrapWebGraph() {
+// ── Data fetch + bootstrap ───────────────────────────────────────────────────
+// http(s) = dev (Vite proxy handles /api), tauri: = production app
+// (backend at 127.0.0.1:8000), file: = Qt bridge (no fetch — skip).
+
+function _resolveGraphBase() {
     const proto = window.location.protocol;
-    const isTauri = proto === 'tauri:';
-    if (proto !== 'http:' && proto !== 'https:' && !isTauri) return;
-    const base = isTauri ? 'http://127.0.0.1:8000' : window.location.origin;
-    Promise.all([
-        fetch(base + '/api/graph').then(r => r.json()),
-        fetch(base + '/api/categories').then(r => r.json()),
-        fetch(base + '/api/tags').then(r => r.json()),
-        fetch(base + '/api/graph/project-options').then(r => r.json()),
-    ]).then(([graphData, catData, tagData, projData]) => {
-        loadGraph(graphData);
+    if (proto === 'tauri:') return 'http://127.0.0.1:8000';
+    if (proto === 'http:' || proto === 'https:') return window.location.origin;
+    return null;
+}
+
+// Fetch graph data + dropdowns and (re)load the graph. The token guards against
+// overlapping calls: only the most recent fetch applies its results.
+async function fetchAndLoadGraph(opts = {}) {
+    if (!_graphBase) { _notifyHost({ type: 'graph_loaded', ok: false }); return; }
+    const token = ++_loadToken;
+    const graphUrl = _graphBase + '/api/graph'
+        + (_excludeSingleAuthors ? '?exclude_single_authors=true' : '');
+    try {
+        const [graphData, catData, tagData, projData] = await Promise.all([
+            _fetchJson(graphUrl),
+            _fetchJson(_graphBase + '/api/categories'),
+            _fetchJson(_graphBase + '/api/tags'),
+            _fetchJson(_graphBase + '/api/graph/project-options'),
+        ]);
+        if (token !== _loadToken) return;  // superseded by a newer request
+        // Validate every payload before loadGraph destroys the current graph.
+        if (!graphData || !Array.isArray(graphData.nodes) || !Array.isArray(graphData.edges)
+            || !catData || !tagData || !projData) {
+            throw new Error('Malformed graph payload');
+        }
+        loadGraph(graphData, opts);
         const projects = (projData.projects || []).map(p => ({
             id: p.id,
             name: p.name,
@@ -855,5 +946,28 @@ window.addEventListener('message', function(e) {
             tags: p.tags || [],
         }));
         setFilterOptions(catData.categories || [], tagData.tags || [], projects);
-    }).catch(e => console.error('Graph bootstrap failed', e));
+        _notifyHost({ type: 'graph_loaded', ok: true });
+    } catch (err) {
+        if (token !== _loadToken) return;
+        console.error('Graph load failed', err);
+        _notifyHost({ type: 'graph_loaded', ok: false });
+    }
+}
+
+async function _fetchJson(url) {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error('HTTP ' + r.status + ' for ' + url);
+    return r.json();
+}
+
+function _notifyHost(msg) {
+    window.parent.postMessage(msg, window.location.origin);
+}
+
+(function bootstrapWebGraph() {
+    _graphBase = _resolveGraphBase();
+    if (!_graphBase) return;
+    _excludeSingleAuthors =
+        new URLSearchParams(window.location.search).get('excludeSingleAuthors') === '1';
+    fetchAndLoadGraph({ preserveView: false });
 })();

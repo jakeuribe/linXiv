@@ -7,6 +7,7 @@ database or external network calls are made (external calls are mocked).
 from __future__ import annotations
 
 import datetime
+import os
 from unittest.mock import patch
 
 import pytest
@@ -362,9 +363,129 @@ class TestProjectPapers:
         r = client.post("/api/projects/999/papers", json={"source_id": "2204.12985"})
         assert r.status_code == 404
 
+    def test_bulk_add_papers(self, client):
+        import storage.db as db
+        pid = self._setup(client)
+        db.save_paper_metadata(_meta(source_id="2301.00001"))
+        r = client.post(
+            f"/api/projects/{pid}/papers/bulk",
+            json={"source_ids": ["2204.12985", "2301.00001"]},
+        )
+        assert r.status_code == 200
+        assert r.json() == {"ok": True, "failed": []}
+        source_ids = client.get(f"/api/projects/{pid}").json()["source_ids"]
+        assert "2204.12985" in source_ids
+        assert "2301.00001" in source_ids
+
+    def test_bulk_add_reports_unknown_papers_but_adds_rest(self, client):
+        pid = self._setup(client)
+        r = client.post(
+            f"/api/projects/{pid}/papers/bulk",
+            json={"source_ids": ["2204.12985", "9999.99999"]},
+        )
+        assert r.status_code == 200
+        assert r.json() == {"ok": False, "failed": ["9999.99999"]}
+        assert "2204.12985" in client.get(f"/api/projects/{pid}").json()["source_ids"]
+
+    def test_bulk_add_to_nonexistent_project_returns_404(self, client):
+        r = client.post(
+            "/api/projects/999/papers/bulk", json={"source_ids": ["2204.12985"]}
+        )
+        assert r.status_code == 404
+
+    def test_bulk_add_empty_list_returns_422(self, client):
+        pid = self._setup(client)
+        r = client.post(f"/api/projects/{pid}/papers/bulk", json={"source_ids": []})
+        assert r.status_code == 422
+
     def test_remove_from_nonexistent_project_returns_404(self, client):
         r = client.delete("/api/projects/999/papers/2204.12985")
         assert r.status_code == 404
+
+    def test_add_to_deleted_project_returns_400(self, client):
+        pid = self._setup(client)
+        client.delete(f"/api/projects/{pid}")
+        r = client.post(f"/api/projects/{pid}/papers", json={"source_id": "2204.12985"})
+        assert r.status_code == 400
+
+    def test_bulk_add_to_deleted_project_returns_400(self, client):
+        pid = self._setup(client)
+        client.delete(f"/api/projects/{pid}")
+        r = client.post(
+            f"/api/projects/{pid}/papers/bulk", json={"source_ids": ["2204.12985"]}
+        )
+        assert r.status_code == 400
+
+    def test_remove_from_deleted_project_returns_400(self, client):
+        pid = self._setup(client)
+        client.post(f"/api/projects/{pid}/papers", json={"source_id": "2204.12985"})
+        client.delete(f"/api/projects/{pid}")
+        r = client.delete(f"/api/projects/{pid}/papers/2204.12985")
+        assert r.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# BibTeX import
+# ---------------------------------------------------------------------------
+
+class TestBibtexImport:
+    def _post(self, client, bib: str, project_id=None):
+        params = {} if project_id is None else {"project_id": project_id}
+        return client.post(
+            "/api/papers/import/bibtex",
+            params=params,
+            files={"file": ("refs.bib", bib.encode(), "text/x-bibtex")},
+        )
+
+    def test_import_without_project(self, client, minimal_bib):
+        r = self._post(client, minimal_bib)
+        assert r.status_code == 200
+        assert r.json() == {"saved_count": 1, "source_ids": ["smith2020"]}
+
+    def test_import_links_to_project(self, client, minimal_bib):
+        pid = client.post("/api/projects", json={"name": "Bib"}).json()["project"]["id"]
+        r = self._post(client, minimal_bib, project_id=pid)
+        assert r.status_code == 200
+        assert "smith2020" in client.get(f"/api/projects/{pid}").json()["source_ids"]
+
+    def test_import_to_unknown_project_returns_404_and_saves_nothing(self, client, minimal_bib):
+        import storage.db as db
+        r = self._post(client, minimal_bib, project_id=999)
+        assert r.status_code == 404
+        assert db.get_paper_root("smith2020") is None
+
+    def test_import_to_deleted_project_returns_400_and_saves_nothing(self, client, minimal_bib):
+        import storage.db as db
+        pid = client.post("/api/projects", json={"name": "Bin"}).json()["project"]["id"]
+        client.delete(f"/api/projects/{pid}")
+        r = self._post(client, minimal_bib, project_id=pid)
+        assert r.status_code == 400
+        assert db.get_paper_root("smith2020") is None
+
+
+# ---------------------------------------------------------------------------
+# PDF import — link-failure boundary
+# ---------------------------------------------------------------------------
+
+class TestPdfImportLinkFailure:
+    def test_link_failure_returns_400_naming_the_imported_paper(self, client, monkeypatch):
+        # Simulates the project vanishing between import_pdf's pre-guard and
+        # its post-import link step.
+        from service.paper import PaperLinkError
+
+        def _raise(content, project_id=None):
+            raise PaperLinkError(
+                "paper local:abc was imported but could not be linked to project 1: gone"
+            )
+
+        monkeypatch.setattr("api.app.svc_import_pdf", _raise)
+        r = client.post(
+            "/api/papers/import/pdf",
+            params={"project_id": 1},
+            files={"file": ("p.pdf", b"%PDF-1.4 fake", "application/pdf")},
+        )
+        assert r.status_code == 400
+        assert "was imported but could not be linked" in r.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -542,4 +663,149 @@ class TestPdfEndpoint:
         import storage.db as db
         db.save_paper_metadata(_meta(source_id="2204.12985", url=None))
         r = client.get("/api/papers/2204.12985/pdf")
+        assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Saved-PDF list / delete (Settings → Storage)
+# ---------------------------------------------------------------------------
+
+class TestSavedPdfs:
+    def test_list_includes_only_papers_with_local_pdf(self, client, tmp_path):
+        import storage.db as db
+        import service.paper as svc
+        (tmp_path / "2204.12985v1.pdf").write_bytes(b"%PDF-1.4 abc")
+        (tmp_path / "2305.00003v1.pdf").write_bytes(b"%PDF-1.4 " + b"x" * 500)
+        db.save_paper_metadata(_meta(source_id="2204.12985", title="Has PDF"))
+        db.save_paper_metadata(_meta(source_id="2305.00003", title="Bigger PDF"))
+        db.save_paper_metadata(_meta(source_id="2301.00002", title="No PDF"))
+        svc.set_has_pdf_by_source("2204.12985", True)
+        svc.set_has_pdf_by_source("2305.00003", True)
+        with patch("api.app.PDF_DIR", tmp_path):
+            r = client.get("/api/pdfs")
+        assert r.status_code == 200
+        pdfs = r.json()["pdfs"]
+        ids = {p["source_id"] for p in pdfs}
+        assert "2204.12985" in ids
+        assert "2305.00003" in ids
+        assert "2301.00002" not in ids
+        entry = next(p for p in pdfs if p["source_id"] == "2204.12985")
+        assert entry["title"] == "Has PDF"
+        assert entry["size_bytes"] == (tmp_path / "2204.12985v1.pdf").stat().st_size
+        assert pdfs[0]["size_bytes"] >= pdfs[1]["size_bytes"]
+        assert pdfs[0]["source_id"] == "2305.00003"
+
+    def test_delete_removes_file_and_clears_flag(self, client, tmp_path):
+        import storage.db as db
+        import service.paper as svc
+        (tmp_path / "2204.12985v1.pdf").write_bytes(b"%PDF-1.4 abc")
+        db.save_paper_metadata(_meta(source_id="2204.12985", url=None))
+        svc.set_has_pdf_by_source("2204.12985", True)
+        deleted: list[str] = []
+        with patch("api.app.PDF_DIR", tmp_path), patch(
+            "api.app.delete_local_pdf",
+            side_effect=lambda p: (deleted.append(p), True)[1],
+        ):
+            r = client.delete("/api/pdfs/2204.12985")
+        assert r.status_code == 200
+        assert r.json()["deleted"] is True
+        assert deleted and deleted[0].endswith("2204.12985v1.pdf")
+        assert client.get("/api/papers/2204.12985").json()["has_pdf"] is False
+
+    def test_delete_removes_every_version_file_and_clears_all_flags(self, client, tmp_path):
+        import storage.db as db
+        (tmp_path / "2204.12985v1.pdf").write_bytes(b"%PDF-1.4 v1")
+        (tmp_path / "2204.12985v2.pdf").write_bytes(b"%PDF-1.4 v2")
+        db.save_paper_metadata(_meta(source_id="2204.12985", version=1))
+        db.save_paper_metadata(_meta(source_id="2204.12985", version=2))
+        db.set_has_pdf("2204.12985", 1, True)
+        db.set_has_pdf("2204.12985", 2, True)
+        deleted: list[str] = []
+        with patch("api.app.PDF_DIR", tmp_path), patch(
+            "api.app.delete_local_pdf",
+            side_effect=lambda p: (deleted.append(p), True)[1],
+        ):
+            r = client.delete("/api/pdfs/2204.12985")
+        assert r.status_code == 200
+        assert r.json()["deleted"] is True
+        deleted_names = {os.path.basename(p) for p in deleted}
+        assert deleted_names == {"2204.12985v1.pdf", "2204.12985v2.pdf"}
+        rows = db.get_all_versions("2204.12985")
+        flags = {row["version"]: bool(row["has_pdf"]) for row in rows}
+        assert flags[1] is False
+        assert flags[2] is False
+
+    def test_delete_clears_stale_flag_when_no_file_on_disk(self, client, tmp_path):
+        import storage.db as db
+        import service.paper as svc
+        db.save_paper_metadata(_meta(source_id="2204.12985", url=None))
+        svc.set_has_pdf_by_source("2204.12985", True)
+        with patch("api.app.PDF_DIR", tmp_path):
+            # No file on disk: the stale flag does not put the row in the list.
+            before = client.get("/api/pdfs")
+            assert before.status_code == 200
+            assert "2204.12985" not in {p["source_id"] for p in before.json()["pdfs"]}
+            r = client.delete("/api/pdfs/2204.12985")
+            assert r.status_code == 200
+            assert r.json()["deleted"] is True
+            after = client.get("/api/pdfs")
+            assert "2204.12985" not in {p["source_id"] for p in after.json()["pdfs"]}
+        assert client.get("/api/papers/2204.12985").json()["has_pdf"] is False
+
+    def test_delete_outside_managed_dir_keeps_flag(self, client, tmp_path):
+        import storage.db as db
+        import service.paper as svc
+        (tmp_path / "2204.12985v1.pdf").write_bytes(b"%PDF-1.4 abc")
+        db.save_paper_metadata(_meta(source_id="2204.12985", url=None))
+        svc.set_has_pdf_by_source("2204.12985", True)
+        # delete_local_pdf returns False for a file outside the managed dir.
+        with patch("api.app.PDF_DIR", tmp_path), patch(
+            "api.app.delete_local_pdf", return_value=False,
+        ):
+            r = client.delete("/api/pdfs/2204.12985")
+        assert r.status_code == 409
+        assert client.get("/api/papers/2204.12985").json()["has_pdf"] is True
+
+    def test_delete_clears_pdf_path_in_meta(self, client, tmp_path):
+        import storage.db as db
+        import service.paper as svc
+        f = tmp_path / "2204.12985v1.pdf"
+        f.write_bytes(b"%PDF-1.4 abc")
+        db.save_paper_metadata(_meta(source_id="2204.12985", url=None))
+        svc.set_has_pdf_by_source("2204.12985", True)
+        svc.set_pdf_path("2204.12985", str(f), 1)
+        assert client.get("/api/papers/2204.12985").json()["pdf_path"] == str(f)
+        with patch("api.app.PDF_DIR", tmp_path), patch(
+            "api.app.delete_local_pdf", return_value=True,
+        ):
+            r = client.delete("/api/pdfs/2204.12985")
+        assert r.status_code == 200
+        assert client.get("/api/papers/2204.12985").json()["pdf_path"] in (None, "")
+
+    def test_delete_mixed_versions_clears_only_deleted_before_409(self, client, tmp_path):
+        import storage.db as db
+        (tmp_path / "2204.12985v1.pdf").write_bytes(b"%PDF-1.4 v1")
+        (tmp_path / "2204.12985v2.pdf").write_bytes(b"%PDF-1.4 v2")
+        db.save_paper_metadata(_meta(source_id="2204.12985", version=1))
+        db.save_paper_metadata(_meta(source_id="2204.12985", version=2))
+        db.set_has_pdf("2204.12985", 1, True)
+        db.set_has_pdf("2204.12985", 2, True)
+
+        # v1 deletes cleanly; v2 reports outside the managed dir, raising 409.
+        def _delete(path: str) -> bool:
+            return not path.endswith("v2.pdf")
+
+        with patch("api.app.PDF_DIR", tmp_path), patch(
+            "api.app.delete_local_pdf", side_effect=_delete,
+        ):
+            r = client.delete("/api/pdfs/2204.12985")
+        assert r.status_code == 409
+        rows = db.get_all_versions("2204.12985")
+        flags = {row["version"]: bool(row["has_pdf"]) for row in rows}
+        # v1's file was deleted, so its flag must be cleared even though v2 raised.
+        assert flags[1] is False
+        assert flags[2] is True
+
+    def test_delete_missing_paper_returns_404(self, client):
+        r = client.delete("/api/pdfs/9999.99999")
         assert r.status_code == 404

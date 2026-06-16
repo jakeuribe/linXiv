@@ -44,23 +44,25 @@ def list_authors(
     return [_row_to_details(row) for row in rows]
 
 
-def list_authors_with_paper_count() -> list[dict]:
-    """Return all authors ordered by last name, counting distinct active papers only."""
+def list_authors_with_paper_count(min_papers: int = 0) -> list[dict]:
+    """Return authors ordered by last name with their distinct active-paper count.
+
+    Counts are sourced from the ``author_paper_counts`` view so the aggregation
+    lives in SQL. Pass ``min_papers=2`` to drop single-paper authors; the default
+    of ``0`` keeps every author (including those with no active papers).
+    """
     with _connect() as conn:
         rows = conn.execute(
             """
             SELECT a.AUTHOR_FK, a.AUTHOR_FULL_NAME, a.AUTHOR_FIRST, a.AUTHOR_LAST, a.AUTHOR_ORCID,
-                   COUNT(DISTINCT
-                       CASE WHEN pr.STATUS = 'active' THEN p.SOURCE_FK END
-                   ) AS paper_count
+                   apc.paper_count AS paper_count
             FROM AUTHOR a
-            LEFT JOIN PAPER_TO_AUTHOR pta ON a.AUTHOR_FK = pta.AUTHOR_FK
-            LEFT JOIN PAPER p             ON p.PAPER_ID  = pta.PAPER_ID
-            LEFT JOIN PAPER_ROOTS pr      ON pr.SOURCE_FK = p.SOURCE_FK
-            GROUP BY a.AUTHOR_FK
+            JOIN author_paper_counts apc ON apc.author_fk = a.AUTHOR_FK
+            WHERE apc.paper_count >= ?
             ORDER BY (a.AUTHOR_LAST IS NULL), a.AUTHOR_LAST,
                      (a.AUTHOR_FIRST IS NULL), a.AUTHOR_FIRST
             """,
+            (min_papers,),
         ).fetchall()
     return [
         {

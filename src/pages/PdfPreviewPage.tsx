@@ -12,6 +12,7 @@ import { Button } from "../components/ui/button";
 import { Spinner } from "../components/ui/spinner";
 import type { SearchResult } from "../types/api";
 import { isArxivId } from "../lib/papers";
+import { MathText } from "../lib/tex";
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/build/pdf.worker.min.mjs",
@@ -120,7 +121,7 @@ export default function PdfPreviewPage() {
           className="flex-1 text-sm font-medium text-text truncate"
           title={result.title}
         >
-          {result.title}
+          <MathText forceInline>{result.title}</MathText>
         </h1>
 
         {isArxivId(result.source_id) && (

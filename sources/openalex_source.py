@@ -1,19 +1,38 @@
-"""OpenAlex paper source — REST API, no authentication required."""
+"""OpenAlex paper source — REST API, no authentication required.
+
+Include a mailto address in OPENALEX_MAILTO env var to use OpenAlex's polite pool.
+"""
 
 from __future__ import annotations
 
 import datetime
+import os
 import re
 import httpx
 from sources.base import PaperMetadata, PaperSource
 
 _BASE_URL = "https://api.openalex.org"
 _USER_AGENT = "linXiv/1.0"
+
+
+def _user_agent() -> str:
+    addr = os.environ.get("OPENALEX_MAILTO", "").replace("\r", "").replace("\n", "")
+    return f"{_USER_AGENT} (mailto:{addr})" if addr else _USER_AGENT
+
+
 _OPENALEX_WORK_FIELDS = (
     "id,title,authorships,publication_date,doi,"
     "primary_topic,abstract_inverted_index"
 )
 _WORK_ID_RE = re.compile(r"^W\d+$")
+
+# OpenAlex parses | ! * ? in the `search` value as query operators and returns
+# HTTP 400 for free-text containing them; replace each run with a space.
+_SEARCH_OPERATOR_RE = re.compile(r"[|!*?]+")
+
+
+def _sanitize_search_query(query: str) -> str:
+    return " ".join(_SEARCH_OPERATOR_RE.sub(" ", query).split())
 
 
 class OpenAlexNotFoundError(LookupError):
@@ -111,7 +130,6 @@ class OpenAlexSource(PaperSource):
     def __init__(self) -> None:
         self._http = httpx.Client(
             base_url=_BASE_URL,
-            headers={"User-Agent": _USER_AGENT},
             timeout=30.0,
         )
 
@@ -123,14 +141,20 @@ class OpenAlexSource(PaperSource):
     ) -> list[PaperMetadata]:
         if sort not in _SORT_PARAM:
             raise ValueError(f"unknown sort {sort!r}; valid: {sorted(_SORT_PARAM)}")
+        sanitized = _sanitize_search_query(query)
+        # An empty search returns OpenAlex's unfiltered work list; skip the call.
+        if not sanitized:
+            return []
         params: dict[str, str | int] = {
-            "search": query,
+            "search": sanitized,
             "per_page": max_results,
             "select": _OPENALEX_WORK_FIELDS,
             "sort": _SORT_PARAM[sort],
         }
         try:
-            response = self._http.get("/works", params=params)
+            response = self._http.get(
+                "/works", params=params, headers={"User-Agent": _user_agent()}
+            )
             response.raise_for_status()
             raw_results = response.json().get("results", [])
         except httpx.HTTPStatusError as e:
@@ -165,6 +189,7 @@ class OpenAlexSource(PaperSource):
             response = self._http.get(
                 f"/works/{bare_id}",
                 params={"select": _OPENALEX_WORK_FIELDS},
+                headers={"User-Agent": _user_agent()},
             )
             response.raise_for_status()
             return _work_to_metadata(response.json())

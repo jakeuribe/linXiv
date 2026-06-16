@@ -3,6 +3,7 @@ import type { Paper } from "../../types/api";
 import { Badge } from "../ui/badge";
 import { useSelectionStore } from "../../stores/selection";
 import { normalizeAuthors } from "../../lib/papers";
+import { MathText } from "../../lib/tex";
 
 const MAX_AUTHORS_DISPLAY = 3;
 const MAX_TAGS_DISPLAY = 4;
@@ -64,7 +65,7 @@ export const PaperCard = memo(function PaperCard({
         {/* Row 1: title + pdf badge */}
         <span className="flex items-start gap-2">
           <span className="flex-1 font-medium text-text leading-snug line-clamp-2">
-            {paper.title}
+            <MathText forceInline>{paper.title}</MathText>
           </span>
           {paper.has_pdf && (
             <Badge
@@ -120,7 +121,7 @@ export const PaperCard = memo(function PaperCard({
         {/* Abstract preview */}
         {paper.summary && (
           <span className="block mt-2 text-muted text-sm line-clamp-2 leading-relaxed">
-            {paper.summary}
+            <MathText forceInline>{paper.summary}</MathText>
           </span>
         )}
       </button>

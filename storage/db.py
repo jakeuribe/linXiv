@@ -10,7 +10,12 @@ from typing import Optional, TYPE_CHECKING
 import arxiv
 
 from storage.config.core import apply_sql_schema
-from storage.config.queries import _TAG_FK_BY_LABEL_SQL, list_papers as _queries_list_papers
+from storage.config.queries import (
+    _GRAPH_AUTHORS_SQL,
+    _GRAPH_AUTHORS_WITH_COUNT_SQL,
+    _TAG_FK_BY_LABEL_SQL,
+    list_papers as _queries_list_papers,
+)
 from storage.paths import old_pdf_dir, pdf_dir
 
 if TYPE_CHECKING:
@@ -473,10 +478,11 @@ def set_pdf_path(source_id: str, path: str, version: int | None = None) -> None:
 
 
 def mark_pdf_saved(source_id: str, path: str, version: int) -> None:
-    """Atomically write PDF_PATH and set HAS_PDF=True for a specific paper version.
+    """Write PDF_PATH and set HAS_PDF=True for a specific paper version in one transaction.
 
-    Both columns are updated inside one explicit BEGIN/COMMIT block so a crash
-    between the two writes cannot leave them in a disagreeing state.
+    Both columns are updated under a single BEGIN IMMEDIATE transaction so a crash
+    between the two writes cannot leave HAS_PDF and PDF_PATH in a disagreeing state.
+
     Raises RuntimeError if either PAPER or PAPER_META has no matching row.
     """
     with _connect() as conn:
@@ -670,6 +676,29 @@ def get_paper_root(source_id: str) -> Optional[sqlite3.Row]:
         ).fetchone()
 
 
+def get_paper_roots_bulk(source_ids: list[str]) -> dict[str, int]:
+    """Resolve SOURCE_IDs to SOURCE_FKs in bulk: {source_id: source_fk}.
+
+    Unknown ids are simply absent from the result. Queries are chunked to
+    stay under SQLite's IN-list variable cap (~999).
+    """
+    result: dict[str, int] = {}
+    if not source_ids:
+        return result
+    chunk_size = 500
+    with _connect() as conn:
+        for i in range(0, len(source_ids), chunk_size):
+            chunk = source_ids[i : i + chunk_size]
+            placeholders = ",".join("?" * len(chunk))
+            rows = conn.execute(
+                f"SELECT SOURCE_ID, SOURCE_FK FROM PAPER_ROOTS WHERE SOURCE_ID IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                result[str(row["SOURCE_ID"])] = int(row["SOURCE_FK"])
+    return result
+
+
 #TODO: FIX TO WORK EXPECTED WAY 
 def get_all_versions(source_id: str) -> list[sqlite3.Row]:
     """Fetch all stored versions of a paper, ordered oldest to newest."""
@@ -680,8 +709,12 @@ def get_all_versions(source_id: str) -> list[sqlite3.Row]:
         ).fetchall()
 
 
-def get_graph_data() -> tuple[list[dict], list[dict]]:
-    """Returns (nodes, edges) ready to pass to the graph view."""
+def get_graph_data(exclude_single_authors: bool = False) -> tuple[list[dict], list[dict]]:
+    """Returns (nodes, edges) ready to pass to the graph view.
+
+    With ``exclude_single_authors`` True, an author node is dropped unless some
+    AUTHOR_FK matching its name (COLLATE NOCASE) has two or more active papers.
+    """
     with _connect() as conn:
         paper_nodes = [
             {
@@ -709,43 +742,82 @@ def get_graph_data() -> tuple[list[dict], list[dict]]:
                   AND r.STATUS = 'active'
             """)
         ]
-        author_rows = conn.execute("""
-            SELECT r.SOURCE_FK AS source_fk, je.value AS author_name
-            FROM PAPER_ROOTS r
-            JOIN PAPER p ON p.SOURCE_FK = r.SOURCE_FK
-            JOIN PAPER_META m ON m.PAPER_ID = p.PAPER_ID,
-                 json_each(m.AUTHORS) je
-            WHERE p.VERSION = (SELECT MAX(VERSION) FROM PAPER WHERE SOURCE_FK = r.SOURCE_FK)
-              AND r.STATUS = 'active'
-        """).fetchall()
+        # _GRAPH_AUTHORS_WITH_COUNT_SQL adds the per-name paper_count column
+        # (see queries.py); the default constant omits it and scans unchanged.
+        sql = (
+            _GRAPH_AUTHORS_WITH_COUNT_SQL
+            if exclude_single_authors
+            else _GRAPH_AUTHORS_SQL
+        )
+        author_rows = conn.execute(sql).fetchall()
 
     seen_authors: set[str] = set()
     author_nodes: list[dict] = []
     edges: list[dict] = []
     for row in author_rows:
         name = row["author_name"]
-        author_id = f"author::{name}"
-        if author_id not in seen_authors:
-            author_nodes.append({"id": author_id, "label": name, "type": "author"})
-            seen_authors.add(author_id)
-        edges.append({"source": row["source_fk"], "target": author_id})
+        # Drop an author when its paper_count is below two. A NULL count (no
+        # matching AUTHOR row) fails the `is not None` guard, so it is kept.
+        if (
+            exclude_single_authors
+            and row["paper_count"] is not None
+            and row["paper_count"] < 2
+        ):
+            continue
+        node_id = f"author::{name}"
+        if node_id not in seen_authors:
+            node: dict[str, object] = {"id": node_id, "label": name, "type": "author"}
+            # author_fk is NULL when the JSON name matches no AUTHOR row.
+            if row["author_fk"] is not None:
+                node["author_id"] = row["author_fk"]
+            author_nodes.append(node)
+            seen_authors.add(node_id)
+        edges.append({"source": row["source_fk"], "target": node_id})
 
     return paper_nodes + author_nodes, edges
 
 
-def list_papers(latest_only: bool = True, limit: int | None = None, offset: int = 0) -> list[sqlite3.Row]:
-    """List all stored papers (latest version per paper by default)."""
+_LIST_PAPERS_LATEST_SQL = "SELECT * FROM latest_papers"
+_LIST_PAPERS_ALL_SQL = "SELECT * FROM papers"
+
+
+def list_papers(
+    latest_only: bool = True,
+    limit: int | None = None,
+    offset: int = 0,
+    category: str | None = None,
+) -> list[sqlite3.Row]:
+    """List all stored papers (latest version per paper by default).
+
+    Optionally filter by exact primary category (e.g. "cs.LG"); limit/offset
+    apply to the filtered result.
+    """
     with _connect() as conn:
-        table = "latest_papers" if latest_only else "papers"
-        sql = f"SELECT * FROM {table} ORDER BY published DESC"
-        params: list[int] = []
-        if limit:
+        sql = _LIST_PAPERS_LATEST_SQL if latest_only else _LIST_PAPERS_ALL_SQL
+        params: list[int | str] = []
+        if category is not None:
+            sql += " WHERE category = ?"
+            params.append(category)
+        sql += " ORDER BY published DESC"
+        if limit is not None:
             sql += " LIMIT ? OFFSET ?"
-            params = [limit, offset]
+            params += [limit, offset]
         elif offset:
             sql += " LIMIT -1 OFFSET ?"
-            params = [offset]
+            params.append(offset)
         return conn.execute(sql, params).fetchall()
+
+
+_LIST_PDFS_SQL = (
+    "SELECT paper_id, source_id, source_fk, title, version, pdf_path "
+    "FROM latest_papers WHERE has_pdf = 1 ORDER BY source_id"
+)
+
+
+def list_papers_with_pdf() -> list[sqlite3.Row]:
+    """Return latest-version rows flagged has_pdf=1, with only PDF-list columns."""
+    with _connect() as conn:
+        return conn.execute(_LIST_PDFS_SQL).fetchall()
 
 
 def get_categories() -> list[str]:

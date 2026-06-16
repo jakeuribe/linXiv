@@ -46,7 +46,7 @@ function TagIndexView() {
   }
 
   return (
-    <div className="max-w-4xl mx-auto px-6 py-8 space-y-6">
+    <div className="max-w-5xl mx-auto px-6 py-8 space-y-6">
       <div>
         <h1 className="text-xl font-semibold text-text">Tags</h1>
         <p className="text-sm mt-1" style={{ color: "var(--color-muted)" }}>
@@ -111,7 +111,7 @@ function TagDetailView({ label }: TagDetailViewProps) {
   const displayLabel = data?.label ?? label;
 
   return (
-    <div className="max-w-4xl mx-auto px-6 py-8 space-y-8">
+    <div className="max-w-5xl mx-auto px-6 py-8 space-y-8">
       {/* Header */}
       <div className="flex items-start gap-4">
         <Button

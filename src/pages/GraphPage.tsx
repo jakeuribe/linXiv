@@ -2,12 +2,27 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useThemeStore } from "../stores/theme";
+import { useUiStore } from "../stores/ui";
 import { getColors } from "../lib/theme";
-import { listProjects, addPaperToProject, createProject } from "../api/projects";
+import { listProjects, addPapersToProject, createProject } from "../api/projects";
+import { getStats } from "../api/settings";
 import { Spinner } from "../components/ui/spinner";
 import { Button } from "../components/ui/button";
 import { Dialog } from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
+
+// Per-option: 'in-place' applies via postMessage (iframe keeps its state);
+// 'reload' lets the src track the live value so toggling re-bootstraps graph.js.
+type ReloadStrategy = "in-place" | "reload";
+const HIDE_SINGLE_AUTHORS_STRATEGY: ReloadStrategy = "in-place";
+
+// Root query keys whose invalidation may change graph-relevant data.
+const GRAPH_DIRTYING_KEYS = new Set([
+  "stats", "papers", "paper", "projects", "project", "tags", "tag", "authors", "author",
+]);
+
+// How long to wait for a graph_loaded reply before clearing the spinner.
+const REFRESH_FALLBACK_MS = 8000;
 
 export default function GraphPage() {
   const navigate = useNavigate();
@@ -17,11 +32,30 @@ export default function GraphPage() {
   const mode = useThemeStore(s => s.mode);
   const overrides = useThemeStore(s => s.overrides);
   const overrideAlphas = useThemeStore(s => s.overrideAlphas);
+  const hideSingleAuthors = useUiStore(s => s.hideSingleAuthors);
+  const setHideSingleAuthors = useUiStore(s => s.setHideSingleAuthors);
 
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [projectPickerError, setProjectPickerError] = useState<string | null>(null);
   const [newProjectName, setNewProjectName] = useState("");
+  const [dirty, setDirty] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Frozen at mount: drives the iframe src under the 'in-place' strategy.
+  const initialExclude = useRef(hideSingleAuthors).current;
+  // Last option value pushed to the iframe; the option effect bails when this
+  // is unchanged.
+  const appliedExclude = useRef(initialExclude);
+  const refreshTimerRef = useRef<number | null>(null);
+  // dirtyEpoch bumps on each dirtying invalidation; loadEpoch snapshots it at
+  // each load start.
+  const dirtyEpochRef = useRef(0);
+  const loadEpochRef = useRef(0);
+
+  // Observe ["stats"] (paper add/remove/repair all invalidate it) so it stays
+  // active and the subscription below keeps refiring from the keep-alive page.
+  useQuery({ queryKey: ["stats"], queryFn: getStats, staleTime: Infinity });
 
   const { data: projectsData, isLoading: projectsLoading } = useQuery({
     queryKey: ["projects"],
@@ -31,10 +65,8 @@ export default function GraphPage() {
 
   const addToProjectMutation = useMutation({
     mutationFn: async ({ projectId, sourceIds }: { projectId: number; sourceIds: string[] }) => {
-      const results = await Promise.allSettled(
-        sourceIds.map(id => addPaperToProject(projectId, id))
-      );
-      return sourceIds.filter((_, i) => results[i].status === "rejected");
+      const { failed } = await addPapersToProject(projectId, sourceIds);
+      return failed;
     },
     onMutate: () => {
       setProjectPickerError(null);
@@ -63,15 +95,34 @@ export default function GraphPage() {
   const createProjectMutation = useMutation({
     mutationFn: async ({ name, sourceIds }: { name: string; sourceIds: string[] }) => {
       const result = await createProject({ name });
-      await Promise.allSettled(sourceIds.map((id) => addPaperToProject(result.project.id, id)));
+      try {
+        const { failed } = await addPapersToProject(result.project.id, sourceIds);
+        return failed.length;
+      } catch {
+        // The project was created; route through onSuccess so the name is
+        // cleared and a retry can't create a duplicate.
+        return sourceIds.length;
+      }
     },
-    onSuccess: () => {
+    // Invalidate in onSettled, not onSuccess: the project may have been
+    // created even when the mutation rejects (e.g. a paper-add request fails).
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+    },
+    onSuccess: (failedCount) => {
+      // The project exists either way — clear the name so a retry can't
+      // create a duplicate.
       setNewProjectName("");
+      if (failedCount > 0) {
+        setProjectPickerError(
+          `Project created, but ${failedCount} paper${failedCount !== 1 ? "s" : ""} could not be added`
+        );
+        return;
+      }
       setProjectPickerOpen(false);
       setProjectPickerError(null);
       setSelectedSourceIds([]);
       postToIframe({ type: "clear_selection" });
-      queryClient.invalidateQueries({ queryKey: ["projects"] });
     },
     onError: (err) => {
       setProjectPickerError(err instanceof Error ? err.message : "Failed to create project");
@@ -89,8 +140,19 @@ export default function GraphPage() {
       if (e.data.type === "paper_clicked" && typeof e.data.id === "string") {
         setSelectedSourceIds([]);
         navigate(`/library/${e.data.id}`);
+      } else if (e.data.type === "author_clicked" && typeof e.data.id === "string") {
+        setSelectedSourceIds([]);
+        navigate(`/authors/${Number(e.data.id)}`);
       } else if (e.data.type === "selection_changed" && Array.isArray(e.data.sourceIds)) {
         setSelectedSourceIds(e.data.sourceIds);
+      } else if (e.data.type === "graph_loaded") {
+        if (refreshTimerRef.current !== null) {
+          clearTimeout(refreshTimerRef.current);
+          refreshTimerRef.current = null;
+        }
+        setRefreshing(false);
+        // Clear dirty only on success and only if nothing changed since the load began.
+        setDirty(e.data.ok === false || dirtyEpochRef.current !== loadEpochRef.current);
       }
     }
     window.addEventListener("message", onMessage);
@@ -108,10 +170,71 @@ export default function GraphPage() {
     sendTheme();
   }, [sendTheme]);
 
+  // Push an option change to the iframe in place; bail when the value is unchanged.
+  useEffect(() => {
+    if (hideSingleAuthors === appliedExclude.current) return;
+    appliedExclude.current = hideSingleAuthors;
+    if (HIDE_SINGLE_AUTHORS_STRATEGY === "in-place") {
+      requestGraphReload({ type: "set_options", excludeSingleAuthors: hideSingleAuthors });
+    }
+    // 'reload': the src tracks the live value (see iframeSrc), so the iframe
+    // reloads itself — nothing to post.
+  }, [hideSingleAuthors]);
+
+  // Flag the Refresh button when a query holding graph-relevant data is
+  // invalidated elsewhere (GraphPage is keep-alive, so it sees those events).
+  useEffect(() => {
+    const unsubscribe = queryClient.getQueryCache().subscribe((event) => {
+      if (event.type !== "updated" || event.action.type !== "invalidate") return;
+      const root = event.query.queryKey[0];
+      if (typeof root === "string" && GRAPH_DIRTYING_KEYS.has(root)) {
+        dirtyEpochRef.current++;
+        setDirty(true);
+      }
+    });
+    return unsubscribe;
+  }, [queryClient]);
+
+  useEffect(() => () => {
+    if (refreshTimerRef.current !== null) clearTimeout(refreshTimerRef.current);
+  }, []);
+
   function handleClearSelection() {
     setSelectedSourceIds([]);
     postToIframe({ type: "clear_selection" });
   }
+
+  // Drive an in-place reload (refresh or option toggle): snapshot the epoch, show
+  // the spinner, and arm a fallback for a dropped graph_loaded reply.
+  function requestGraphReload(message: object) {
+    setRefreshing(true);
+    loadEpochRef.current = dirtyEpochRef.current;
+    postToIframe(message);
+    if (refreshTimerRef.current !== null) clearTimeout(refreshTimerRef.current);
+    refreshTimerRef.current = window.setTimeout(() => {
+      refreshTimerRef.current = null;
+      setRefreshing(false);
+      setDirty(true);
+    }, REFRESH_FALLBACK_MS);
+  }
+
+  function handleRefresh() {
+    requestGraphReload({ type: "refresh" });
+  }
+
+  function handleIframeLoad() {
+    // Snapshot the epoch for the bootstrap load, then push the theme.
+    loadEpochRef.current = dirtyEpochRef.current;
+    sendTheme();
+  }
+
+  // 'reload' tracks the live option (toggling swaps the src → full reload);
+  // 'in-place' freezes it at mount so changes ride postMessage instead.
+  const srcExclude =
+    HIDE_SINGLE_AUTHORS_STRATEGY === "reload" ? hideSingleAuthors : initialExclude;
+  const iframeSrc = srcExclude
+    ? "/graph/graph.html?excludeSingleAuthors=1"
+    : "/graph/graph.html";
 
   return (
     <div className="w-full h-full flex flex-col">
@@ -122,13 +245,46 @@ export default function GraphPage() {
             ? `${selectedSourceIds.length} paper${selectedSourceIds.length !== 1 ? "s" : ""} selected — Ctrl/Cmd+click to add more`
             : "Click a node to open · Ctrl/Cmd+click to select"}
         </span>
+        <div className="ml-auto flex items-center gap-4">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleRefresh}
+            disabled={refreshing}
+            title={
+              dirty
+                ? "Graph data has changed since it was loaded — click to refresh"
+                : "Reload the graph from the latest data"
+            }
+          >
+            {refreshing ? "Refreshing…" : "Refresh"}
+            {dirty && !refreshing && (
+              <span
+                aria-hidden
+                className="inline-block w-1.5 h-1.5 rounded-full align-middle"
+                style={{ backgroundColor: "var(--color-accent)" }}
+              />
+            )}
+          </Button>
+          <label
+            className="flex items-center gap-2 text-sm text-muted cursor-pointer select-none"
+            title="Drop authors linked to only one paper to declutter the graph"
+          >
+            <input
+              type="checkbox"
+              checked={hideSingleAuthors}
+              onChange={(e) => setHideSingleAuthors(e.target.checked)}
+            />
+            Hide single-paper authors
+          </label>
+        </div>
       </div>
       <iframe
         ref={iframeRef}
-        src="/graph/graph.html"
+        src={iframeSrc}
         className="flex-1 border-0 w-full"
         title="Paper knowledge graph"
-        onLoad={sendTheme}
+        onLoad={handleIframeLoad}
       />
 
       {selectedSourceIds.length > 0 && (

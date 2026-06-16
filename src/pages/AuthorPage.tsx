@@ -6,6 +6,8 @@ import type { AuthorUpdateBody } from "../api/authors";
 import { Spinner } from "../components/ui/spinner";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { useUiStore } from "../stores/ui";
+import { MathText } from "../lib/tex";
 
 export default function AuthorPage() {
   const { id } = useParams<{ id?: string }>();
@@ -35,10 +37,12 @@ export default function AuthorPage() {
 function AuthorIndexView() {
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
+  const hideSingleAuthors = useUiStore((s) => s.hideSingleAuthors);
+  const setHideSingleAuthors = useUiStore((s) => s.setHideSingleAuthors);
 
   const { data: authors = [], isLoading, error } = useQuery({
-    queryKey: ["authors"],
-    queryFn: () => listAuthors(),
+    queryKey: ["authors", { hideSingleAuthors }],
+    queryFn: () => listAuthors(hideSingleAuthors),
   });
 
   const filtered = search.trim()
@@ -72,13 +76,14 @@ function AuthorIndexView() {
   }
 
   return (
-    <div className="max-w-3xl mx-auto px-6 py-8 space-y-6">
+    <div className="max-w-4xl mx-auto px-6 py-8 space-y-6">
       <div>
         <h1 className="text-xl font-semibold" style={{ color: "var(--color-text)" }}>
           Authors
         </h1>
         <p className="text-sm mt-1" style={{ color: "var(--color-muted)" }}>
-          {authors.length} author{authors.length !== 1 ? "s" : ""} in your library
+          {authors.length} author{authors.length !== 1 ? "s" : ""}
+          {hideSingleAuthors ? " with multiple papers" : " in your library"}
         </p>
       </div>
 
@@ -89,9 +94,25 @@ function AuthorIndexView() {
         className="w-full"
       />
 
+      <label
+        className="flex items-center gap-2 text-sm cursor-pointer select-none w-fit"
+        style={{ color: "var(--color-muted)" }}
+      >
+        <input
+          type="checkbox"
+          checked={hideSingleAuthors}
+          onChange={(e) => setHideSingleAuthors(e.target.checked)}
+        />
+        Hide single-paper authors
+      </label>
+
       {filtered.length === 0 ? (
         <p className="text-sm" style={{ color: "var(--color-muted)" }}>
-          {search ? "No authors match your filter." : "No authors yet."}
+          {search
+            ? "No authors match your filter."
+            : hideSingleAuthors
+            ? "No authors with more than one paper — uncheck “Hide single-paper authors” to show the rest."
+            : "No authors yet."}
         </p>
       ) : (
         <div className="flex flex-col divide-y" style={{ borderColor: "var(--color-border)" }}>
@@ -201,7 +222,7 @@ function AuthorDetailView({ authorId }: AuthorDetailViewProps) {
   }
 
   return (
-    <div className="max-w-3xl mx-auto px-6 py-8 space-y-8">
+    <div className="max-w-4xl mx-auto px-6 py-8 space-y-8">
       {/* Back */}
       <Button
         variant="ghost"
@@ -321,7 +342,7 @@ function AuthorDetailView({ authorId }: AuthorDetailViewProps) {
                 onClick={() => navigate(`/library/${paper.source_fk}`)}
               >
                 <span className="text-sm flex-1" style={{ color: "var(--color-text)" }}>
-                  {paper.title ?? paper.source_id}
+                  <MathText forceInline>{paper.title ?? paper.source_id}</MathText>
                 </span>
                 <span className="text-xs shrink-0 mt-0.5" style={{ color: "var(--color-muted)" }}>
                   v{paper.version}

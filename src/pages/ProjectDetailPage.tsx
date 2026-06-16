@@ -6,7 +6,7 @@ import { useUiStore, type ExportFormatKey } from "../stores/ui";
 import {
   getProject,
   updateProject,
-  addPaperToProject,
+  addPapersToProject,
   removePaperFromProject,
   archiveProject,
   restoreProject,
@@ -27,6 +27,7 @@ import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/input";
 import { Spinner } from "../components/ui/spinner";
 import { normalizeAuthors } from "../lib/papers";
+import { MathText } from "../lib/tex";
 
 // ---------------------------------------------------------------------------
 // Edit Project Dialog
@@ -257,16 +258,18 @@ function AddPapersDialog({
     setSubmitting(true);
     setError(null);
     try {
-      const results = await Promise.allSettled(
-        [...selectedIds].map((id) => addPaperToProject(projectId, id))
-      );
+      const { failed } = await addPapersToProject(projectId, [...selectedIds]);
       await queryClient.invalidateQueries({ queryKey: ["project", String(projectId)] });
-      const failed = results.filter((r) => r.status === "rejected");
+      // The ["projects"] list query backs the note scope picker / badges on the
+      // paper detail page; keep its membership (source_ids) fresh.
+      await queryClient.invalidateQueries({ queryKey: ["projects"] });
       if (failed.length > 0) {
         setError(`Failed to add ${failed.length} paper${failed.length !== 1 ? "s" : ""}`);
       } else {
         onClose();
       }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to add papers");
     } finally {
       setSubmitting(false);
     }
@@ -317,7 +320,7 @@ function AddPapersDialog({
                     className="text-sm font-medium leading-snug line-clamp-2"
                     style={{ color: "var(--color-text)" }}
                   >
-                    {paper.title}
+                    <MathText forceInline>{paper.title}</MathText>
                   </span>
                   <span
                     className="text-xs truncate"
@@ -366,9 +369,12 @@ interface PaperRowProps {
   paper: Paper;
   checked: boolean;
   onToggle: () => void;
+  /** Project being viewed; passed as nav state so the note scope picker
+   *  on the paper detail page pre-selects it (ADR 0003). */
+  projectId: number;
 }
 
-function PaperRow({ paper, checked, onToggle }: PaperRowProps) {
+function PaperRow({ paper, checked, onToggle, projectId }: PaperRowProps) {
   const navigate = useNavigate();
   const authors = Array.isArray(paper.authors)
     ? paper.authors.slice(0, 3).join(", ")
@@ -388,13 +394,17 @@ function PaperRow({ paper, checked, onToggle }: PaperRowProps) {
       />
       <div
         className="flex-1 min-w-0 cursor-pointer"
-        onClick={() => navigate(`/library/${paper.source_fk}`)}
+        onClick={() =>
+          navigate(`/library/${paper.source_fk}`, {
+            state: { fromProjectId: projectId },
+          })
+        }
       >
         <p
           className="text-sm font-medium leading-snug line-clamp-2"
           style={{ color: "var(--color-text)" }}
         >
-          {paper.title}
+          <MathText forceInline>{paper.title}</MathText>
         </p>
         {authors && (
           <p className="text-xs mt-0.5 truncate" style={{ color: "var(--color-muted)" }}>
@@ -607,6 +617,9 @@ export default function ProjectDetailPage() {
         clear();
       }
       await queryClient.invalidateQueries({ queryKey: ["project", id] });
+      // Keep the ["projects"] list (source_ids) fresh for the paper detail
+      // note scope picker / badges.
+      await queryClient.invalidateQueries({ queryKey: ["projects"] });
     } finally {
       setRemoving(false);
     }
@@ -875,6 +888,7 @@ export default function ProjectDetailPage() {
                 paper={paper}
                 checked={selectedIds.has(paper.source_id)}
                 onToggle={() => toggle(paper.source_id)}
+                projectId={projectId}
               />
             ))
           )}

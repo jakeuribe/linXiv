@@ -1,6 +1,12 @@
+# Workspace root is src-tauri (NOT the repo root): upstream's integrations.rs
+# resolves sidecar binaries relative to current_exe(), so the cargo target/
+# directory must stay at src-tauri/target (ADR 0016 / drift report 2026-06-05).
+[workspace]
+members = ["."]
+
 [package]
 name = "linxiv-app"
-version = "0.1.0"
+version = "0.1.2"
 description = "linXiv desktop app"
 authors = ["jakeuribe"]
 edition = "2021"
@@ -15,8 +21,10 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["unstable"] }
 tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-shell = "2"
+tauri-plugin-texbrain = { git = "https://github.com/linxiv-dev/tex-brain-linxiv-plugin" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
@@ -24,6 +32,9 @@ reqwest = { version = "0.12", features = ["json", "blocking"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [profile.release]
 codegen-units = 1

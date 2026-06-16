@@ -9,7 +9,7 @@ import {
   Link2,
   Settings,
   Tag,
-  FileText,
+  FileCode,
   Users,
   PanelLeftClose,
   PanelLeftOpen,
@@ -37,7 +37,12 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/doi", label: "DOI", icon: <Link2 size={16} />, pageKey: "doi" },
   { to: "/tags", label: "Tags", icon: <Tag size={16} />, pageKey: "tags" },
   { to: "/authors", label: "Authors", icon: <Users size={16} /> },
-  { to: "/notes", label: "Notes", icon: <FileText size={16} />, pageKey: "notes" },
+  // The editor takes the Notes slot: editor projects ARE frontmatter-flagged
+  // notes (see service/editor_project.py), so the tab is governed by the
+  // existing "notes" sidebar toggle (ADR 0004) and will evolve into the full
+  // Notes page once note handling lands. (The old /notes stub route stays
+  // reachable by URL but had no page behind it.)
+  { to: "/editor", label: "Editor", icon: <FileCode size={16} />, pageKey: "notes" },
   { to: "/settings", label: "Settings", icon: <Settings size={16} /> },
 ];
 
@@ -167,7 +172,7 @@ export function Sidebar() {
       </div>
 
       {/* Navigation */}
-      <nav className="flex-1 px-2 flex flex-col gap-0.5">
+      <nav className="flex-1 px-3 flex flex-col gap-1">
         {NAV_ITEMS.filter(({ pageKey }) => !pageKey || sidebarPages[pageKey]).map(({ to, label, icon, end }) => (
           <NavLink
             key={to}
@@ -179,7 +184,7 @@ export function Sidebar() {
               alignItems: "center",
               justifyContent: sidebarCollapsed ? "center" : "flex-start",
               gap: 8,
-              padding: sidebarCollapsed ? "8px 0" : "6px 10px",
+              padding: sidebarCollapsed ? "8px 0" : "8px 12px",
               borderRadius: 6,
               fontSize: 13,
               fontWeight: 500,

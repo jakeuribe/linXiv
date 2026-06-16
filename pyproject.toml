@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "linxiv"
-version = "0.1.0"
+version = "0.1.2"
 description = "Discover, manage, and visualize academic papers from arXiv"
 requires-python = ">=3.10"
 dependencies = [
@@ -43,6 +43,7 @@ include = [
 [dependency-groups]
 dev = [
     "pluggy>=1.6",
+    "pyinstaller>=6.20.0",
     "pytest>=8.3,<9",
 ]
 
