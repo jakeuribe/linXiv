@@ -350,9 +350,9 @@ class TestDBVersion:
         ).fetchone()
         assert row is not None
 
-    def test_version_is_0_1_1(self, migrated_db):
+    def test_version_is_0_1_2(self, migrated_db):
         row = migrated_db.execute(
-            "SELECT VERSION FROM DB_VERSION WHERE VERSION = '0.1.1'"
+            "SELECT VERSION FROM DB_VERSION WHERE VERSION = '0.1.2'"
         ).fetchone()
         assert row is not None
 
@@ -680,9 +680,9 @@ class TestRealDBMigration:
         violations = migrated_real_db.execute("PRAGMA foreign_key_check").fetchall()
         assert list(violations) == [], f"FK violations: {[dict(r) for r in violations]}"
 
-    def test_version_is_0_1_1(self, migrated_real_db):
+    def test_version_is_0_1_2(self, migrated_real_db):
         row = migrated_real_db.execute(
-            "SELECT VERSION FROM DB_VERSION WHERE VERSION = '0.1.1'"
+            "SELECT VERSION FROM DB_VERSION WHERE VERSION = '0.1.2'"
         ).fetchone()
         assert row is not None
 
