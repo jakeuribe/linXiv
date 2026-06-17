@@ -51,6 +51,8 @@ export function NoteEditor({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const wordCount = content.trim() === "" ? 0 : content.trim().split(/\s+/).length;
+
   const scopeProject =
     projectId == null ? null : projects.find((p) => p.id === projectId);
   const scopeLabel =
@@ -148,8 +150,12 @@ export function NoteEditor({
         value={content}
         onChange={(e) => setContent(e.target.value)}
         disabled={saving}
-        className="min-h-[120px]"
+        className="min-h-[160px] text-[13px] leading-[1.65]"
       />
+      <div className="flex items-center justify-between gap-2 font-mono text-[10.5px] uppercase tracking-[0.08em] text-ink3">
+        <span>{wordCount === 1 ? "1 word" : `${wordCount} words`}</span>
+        <span>{scopeLabel}</span>
+      </div>
       {error && (
         <p className="text-sm" style={{ color: "var(--color-danger)" }}>
           {error}
