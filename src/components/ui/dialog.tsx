@@ -23,17 +23,23 @@ export function Dialog({ open, onClose, title, children, size = "md" }: DialogPr
     <RadixDialog.Root open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
       <RadixDialog.Portal>
         <RadixDialog.Overlay
-          className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm animate-in fade-in"
+          className="fixed inset-0 z-40 backdrop-blur-sm animate-in fade-in"
+          style={{ backgroundColor: "rgba(0,0,0,0.45)" }}
         />
         <RadixDialog.Content
-          className={`fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] ${maxW} -translate-x-1/2 -translate-y-1/2 rounded-xl p-6 shadow-2xl animate-in fade-in zoom-in-95`}
+          className={`lx-rise fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100vh-3rem)] w-[calc(100%-2rem)] ${maxW} -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden`}
           style={{
             backgroundColor: "var(--color-panel)",
             border: "1px solid var(--color-border)",
             color: "var(--color-text)",
+            borderRadius: "16px",
+            boxShadow: "0 24px 70px rgba(0,0,0,0.30)",
           }}
         >
-          <div className="flex items-center justify-between mb-4">
+          <div
+            className="flex items-center justify-between px-5.5 py-4.5"
+            style={{ borderBottom: "1px solid var(--color-border)" }}
+          >
             <RadixDialog.Title
               className="text-base font-semibold"
               style={{ color: "var(--color-text)" }}
@@ -51,7 +57,7 @@ export function Dialog({ open, onClose, title, children, size = "md" }: DialogPr
               </button>
             </RadixDialog.Close>
           </div>
-          {children}
+          <div className="overflow-y-auto px-5.5 py-5">{children}</div>
         </RadixDialog.Content>
       </RadixDialog.Portal>
     </RadixDialog.Root>

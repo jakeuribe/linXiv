@@ -94,6 +94,36 @@ body,
   outline-offset: 2px;
 }
 
+/* Dialog entrance */
+@keyframes lx-rise {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) translateY(0);
+  }
+}
+.lx-rise {
+  animation: lx-rise 0.16s ease-out;
+}
+
+/* SelectionBar pill entrance */
+@keyframes lx-rise-pill {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+.lx-rise-pill {
+  animation: lx-rise-pill 0.16s ease-out;
+}
+
 /* ── Cupertino: frosted glass background gradients ────────────────────────── */
 
 [data-theme="cupertino"][data-mode="light"] body,
