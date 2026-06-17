@@ -15,6 +15,7 @@ import { Spinner } from "../components/ui/spinner";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "../components/ui/tabs";
+import { Card, MonoLabel } from "../components/ui/card";
 import { NoteCard } from "../components/notes/NoteCard";
 import { NoteEditor } from "../components/notes/NoteEditor";
 import { PaperMetadataEditor } from "../components/papers/PaperMetadataEditor";
@@ -333,7 +334,7 @@ export default function PaperDetailPage() {
             transition: "opacity 0.15s",
           }}
         >
-          <h1 className="text-xl font-semibold text-text leading-snug">
+          <h1 className="font-display text-[26px] text-text leading-snug">
             <MathText forceInline>{paper.title}</MathText>
           </h1>
 
@@ -425,8 +426,8 @@ export default function PaperDetailPage() {
           {/* Overview tab: abstract */}
           <TabsContent value="overview" className="pt-5">
             {paper.summary ? (
-              <div className="space-y-1.5">
-                <h2 className="text-sm font-semibold text-text">Abstract</h2>
+              <div className="space-y-2">
+                <MonoLabel as="h2">Abstract</MonoLabel>
                 <div className="text-muted text-sm leading-relaxed whitespace-pre-wrap">
                   <MathText forceInline>{paper.summary}</MathText>
                 </div>
@@ -439,7 +440,7 @@ export default function PaperDetailPage() {
           {/* Notes tab: forceMount keeps editor draft state alive across tab switches. */}
           <TabsContent value="notes" forceMount className="pt-5 space-y-4 data-[state=inactive]:hidden">
             <div className="flex items-center justify-between">
-              <h2 className="text-base font-semibold text-text">Notes</h2>
+              <MonoLabel as="h2">Notes</MonoLabel>
               {!showAddNote && !editingNote && (
                 <Button
                   variant="muted"
@@ -455,7 +456,7 @@ export default function PaperDetailPage() {
             </div>
 
             {showAddNote && !editingNote && (
-              <div className="bg-panel rounded-lg border border-border p-4">
+              <Card>
                 <NoteEditor
                   sourceId={paper.source_id}
                   projects={paperProjects}
@@ -464,11 +465,11 @@ export default function PaperDetailPage() {
                   onSave={handleNotesSaved}
                   onCancel={() => setShowAddNote(false)}
                 />
-              </div>
+              </Card>
             )}
 
             {editingNote && (
-              <div className="bg-panel rounded-lg border border-border p-4">
+              <Card>
                 {/* key by note id so switching edit targets remounts the editor
                     with fresh field state instead of reusing the instance. */}
                 <NoteEditor
@@ -479,7 +480,7 @@ export default function PaperDetailPage() {
                   onSave={handleNotesSaved}
                   onCancel={() => setEditingNoteId(null)}
                 />
-              </div>
+              </Card>
             )}
 
             {deleteNoteMutation.isError && (
@@ -529,29 +530,33 @@ export default function PaperDetailPage() {
           <TabsContent value="pdf" forceMount className="pt-5 space-y-4 data-[state=inactive]:hidden">
             {paper.has_pdf ? (
               <>
-                <div className="flex items-center gap-3 flex-wrap">
-                  {isTauri && (
-                    <Button variant="primary" onClick={handleOpenNative} disabled={openNativeLoading}>
-                      {openNativeLoading ? "Opening…" : "Open in system viewer"}
-                    </Button>
-                  )}
-                  {openNativeError && (
-                    <span className="text-xs" style={{ color: "var(--color-danger)" }}>
-                      {openNativeError}
-                    </span>
-                  )}
-                </div>
+                {(isTauri || openNativeError) && (
+                  <div className="inline-flex items-center gap-3 rounded-full bg-panel border border-border shadow-card px-4 py-2">
+                    {isTauri && (
+                      <Button variant="primary" size="sm" onClick={handleOpenNative} disabled={openNativeLoading}>
+                        {openNativeLoading ? "Opening…" : "Open in system viewer"}
+                      </Button>
+                    )}
+                    {openNativeError && (
+                      <span className="text-xs" style={{ color: "var(--color-danger)" }}>
+                        {openNativeError}
+                      </span>
+                    )}
+                  </div>
+                )}
 
                 {pdfTabActivated && (
-                  <iframe
-                    src={getPaperPdfUrl(
-                      paper.source_id,
-                      paper.version > 0 ? paper.version : undefined
-                    )}
-                    className="w-full rounded border border-border"
-                    style={{ height: "70vh" }}
-                    title="PDF viewer"
-                  />
+                  <div className="rounded-card overflow-hidden border border-border shadow-card bg-surface2">
+                    <iframe
+                      src={getPaperPdfUrl(
+                        paper.source_id,
+                        paper.version > 0 ? paper.version : undefined
+                      )}
+                      className="w-full block"
+                      style={{ height: "70vh" }}
+                      title="PDF viewer"
+                    />
+                  </div>
                 )}
               </>
             ) : (
@@ -593,7 +598,7 @@ export default function PaperDetailPage() {
                     {showPdfPreview && (
                       paper.url ? (
                         <>
-                          <div className="flex items-center gap-3 flex-wrap">
+                          <div className="inline-flex items-center gap-3 flex-wrap rounded-full bg-panel border border-border shadow-card px-4 py-2">
                             <Button
                               variant="primary"
                               size="sm"
@@ -620,7 +625,7 @@ export default function PaperDetailPage() {
                           </div>
                           <div
                             ref={pdfContainerRef}
-                            className="w-full rounded overflow-y-auto bg-[#525659]"
+                            className="w-full rounded-card overflow-y-auto bg-[#525659] border border-border shadow-card"
                             style={{ height: "70vh" }}
                           >
                             <Document
