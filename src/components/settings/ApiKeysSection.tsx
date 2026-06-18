@@ -2,7 +2,7 @@ import { useState } from "react";
 import { updateEnv } from "../../api/settings";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
-import { Section } from "./Section";
+import { SettingGroup, SettingGroupLabel, SettingRow } from "./SettingRow";
 
 function PasswordField({
   label,
@@ -18,50 +18,53 @@ function PasswordField({
   const [show, setShow] = useState(false);
 
   return (
-    <div className="flex flex-col gap-1 mb-4">
-      <label className="text-sm text-muted font-medium">{label}</label>
-      <div className="flex gap-2 items-center">
-        <div className="relative flex-1">
-          <Input
-            type={show ? "text" : "password"}
-            value={value}
-            onChange={(e) => onChange(e.target.value)}
-            className="pr-16"
-          />
-          <button
-            type="button"
-            className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted hover:text-text transition-colors"
-            onClick={() => setShow((s) => !s)}
-          >
-            {show ? "Hide" : "Show"}
-          </button>
-        </div>
-        <Button size="sm" onClick={onSave}>
-          Save
-        </Button>
+    <SettingRow label={label} description="Stored locally in your environment file.">
+      <div className="relative">
+        <Input
+          type={show ? "text" : "password"}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="pr-16"
+          style={{ width: 240 }}
+          aria-label={label}
+        />
+        <button
+          type="button"
+          className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted hover:text-text transition-colors"
+          onClick={() => setShow((s) => !s)}
+          aria-label={show ? `Hide ${label}` : `Show ${label}`}
+        >
+          {show ? "Hide" : "Show"}
+        </button>
       </div>
-    </div>
+      <Button size="sm" onClick={onSave}>
+        Save
+      </Button>
+    </SettingRow>
   );
 }
 
-export function ApiKeysSection({ defaultOpen = true }: { defaultOpen?: boolean } = {}) {
+export function ApiKeysSection() {
   const [geminiKey, setGeminiKey] = useState("");
   const [openaiKey, setOpenaiKey] = useState("");
 
   return (
-    <Section title="API Keys" defaultOpen={defaultOpen}>
-      <PasswordField
-        label="Gemini API Key"
-        value={geminiKey}
-        onChange={setGeminiKey}
-        onSave={() => updateEnv("GEMINI_API_KEY", geminiKey).catch(console.error)}
-      />
-      <PasswordField
-        label="OpenAI API Key"
-        value={openaiKey}
-        onChange={setOpenaiKey}
-        onSave={() => updateEnv("OPENAI_API_KEY", openaiKey).catch(console.error)}
-      />
-    </Section>
+    <div>
+      <SettingGroupLabel>API keys</SettingGroupLabel>
+      <SettingGroup>
+        <PasswordField
+          label="Gemini API Key"
+          value={geminiKey}
+          onChange={setGeminiKey}
+          onSave={() => updateEnv("GEMINI_API_KEY", geminiKey).catch(console.error)}
+        />
+        <PasswordField
+          label="OpenAI API Key"
+          value={openaiKey}
+          onChange={setOpenaiKey}
+          onSave={() => updateEnv("OPENAI_API_KEY", openaiKey).catch(console.error)}
+        />
+      </SettingGroup>
+    </div>
   );
 }

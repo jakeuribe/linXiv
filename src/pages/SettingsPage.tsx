@@ -1,4 +1,4 @@
-import { useId, useRef, useState, type RefObject } from "react";
+import { useState, type ReactNode } from "react";
 import { AppearanceSection } from "../components/settings/AppearanceSection";
 import { ApiKeysSection } from "../components/settings/ApiKeysSection";
 import { StorageSection } from "../components/settings/StorageSection";
@@ -12,110 +12,130 @@ import { TrashSection } from "../components/settings/TrashSection";
 import { AboutSection } from "../components/settings/AboutSection";
 import { EditorPluginSection } from "../components/settings/EditorPluginSection";
 
-function Divider() {
-  return <div className="border-t border-border -mx-2 mb-4" />;
+interface SettingsGroup {
+  id: string;
+  label: string;
+  icon: string;
+  render: () => ReactNode;
 }
 
-function AdvancedToggle({
-  open,
-  onToggle,
-  contentId,
-  buttonRef,
-}: {
-  open: boolean;
-  onToggle: () => void;
-  contentId: string;
-  buttonRef: RefObject<HTMLButtonElement>;
-}) {
-  return (
-    <h2>
-      <button
-        ref={buttonRef}
-        type="button"
-        onClick={onToggle}
-        aria-expanded={open}
-        aria-controls={contentId}
-        className="w-full flex items-center justify-between px-4 py-3 mb-4 rounded-lg border border-border bg-panel"
-      >
-        <span className="text-sm font-semibold text-muted uppercase tracking-wide">
-          Advanced
-        </span>
-        <span
-          aria-hidden="true"
-          className={`text-muted text-xs inline-block transition-transform duration-150 ${open ? "rotate-90" : "rotate-0"}`}
-        >
-          ▶
-        </span>
-      </button>
-    </h2>
-  );
-}
+const GROUPS: SettingsGroup[] = [
+  {
+    id: "appearance",
+    label: "Appearance",
+    icon: "◐",
+    render: () => <AppearanceSection />,
+  },
+  {
+    id: "library",
+    label: "Library",
+    icon: "▤",
+    render: () => (
+      <div className="flex flex-col gap-8">
+        <SearchSection />
+        <SidebarSection />
+        <ExportSection />
+      </div>
+    ),
+  },
+  {
+    id: "server",
+    label: "Server & data",
+    icon: "▥",
+    render: () => (
+      <div className="flex flex-col gap-8">
+        <StorageSection />
+        <TrashSection />
+      </div>
+    ),
+  },
+  {
+    id: "ai",
+    label: "AI & sources",
+    icon: "✦",
+    render: () => (
+      <div className="flex flex-col gap-8">
+        <ApiKeysSection />
+        <CrossRefSection />
+        <OpenAlexSection />
+      </div>
+    ),
+  },
+  {
+    id: "integrations",
+    label: "Integrations",
+    icon: "⚇",
+    render: () => (
+      <div className="flex flex-col gap-8">
+        <IntegrationsSection />
+        <EditorPluginSection />
+      </div>
+    ),
+  },
+  {
+    id: "about",
+    label: "About",
+    icon: "ⓘ",
+    render: () => <AboutSection />,
+  },
+];
 
 export default function SettingsPage() {
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-  const advancedId = useId();
-  const contentRef = useRef<HTMLDivElement>(null);
-  const toggleRef = useRef<HTMLButtonElement>(null);
-
-  function handleToggle() {
-    const wasOpen = advancedOpen;
-    setAdvancedOpen((o) => !o);
-    // Prevent focus from being stranded inside a newly-hidden region.
-    if (wasOpen && contentRef.current?.contains(document.activeElement)) {
-      toggleRef.current?.focus();
-    }
-  }
+  const [active, setActive] = useState(GROUPS[0].id);
+  const activeGroup = GROUPS.find((g) => g.id === active) ?? GROUPS[0];
 
   return (
-    <div className="overflow-y-auto h-full bg-bg">
-      <div className="mx-auto py-8 px-8 max-w-[800px]">
-        <h1 className="text-xl font-bold text-text mb-6">Settings</h1>
+    <div className="flex h-full flex-col bg-bg">
+      <div className="flex-none border-b border-border px-8 pt-7 pb-[14px]">
+        <h1 className="font-display text-[27px] font-semibold leading-tight tracking-[-0.015em] text-text">
+          Settings
+        </h1>
+      </div>
 
-        {/* Appearance is the primary section — intentionally left open by default */}
-        <AppearanceSection />
-        <Divider />
-        <CrossRefSection defaultOpen={false} />
-        <Divider />
-        <OpenAlexSection defaultOpen={false} />
-        <Divider />
+      <div className="grid min-h-0 flex-1" style={{ gridTemplateColumns: "212px 1fr" }}>
+        <nav
+          role="tablist"
+          aria-orientation="vertical"
+          aria-label="Settings groups"
+          className="flex flex-col gap-[3px] border-r border-border bg-surface2 px-3 py-4"
+        >
+          {GROUPS.map((group) => (
+            <button
+              key={group.id}
+              type="button"
+              role="tab"
+              id={`settings-tab-${group.id}`}
+              aria-controls="settings-tabpanel"
+              aria-selected={active === group.id}
+              onClick={() => setActive(group.id)}
+              className={[
+                "flex items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm transition-colors",
+                active === group.id
+                  ? "bg-panel font-medium text-text"
+                  : "text-muted hover:text-text",
+              ].join(" ")}
+            >
+              <span aria-hidden="true" className="w-[18px] text-center text-sm">
+                {group.icon}
+              </span>
+              {group.label}
+            </button>
+          ))}
+        </nav>
 
-        <AdvancedToggle
-          open={advancedOpen}
-          onToggle={handleToggle}
-          contentId={advancedId}
-          buttonRef={toggleRef}
-        />
-
-        {/*
-          Container is always in the DOM so aria-controls resolves on first
-          render. Children mount/unmount with the toggle — queries only run
-          while the panel is open.
-        */}
-        <div id={advancedId} ref={contentRef}>
-          {advancedOpen && (
-            <>
-              <ApiKeysSection defaultOpen={false} />
-              <Divider />
-              <StorageSection defaultOpen={false} />
-              <Divider />
-              <SearchSection defaultOpen={false} />
-              <Divider />
-              <SidebarSection defaultOpen={false} />
-              <Divider />
-              <ExportSection defaultOpen={false} />
-              <Divider />
-              <IntegrationsSection defaultOpen={false} />
-              <Divider />
-              <TrashSection defaultOpen={false} />
-            </>
-          )}
+        <div className="overflow-y-auto px-8 pb-14 pt-6">
+          <div className="mx-auto flex max-w-[760px] flex-col gap-10">
+            <section
+              key={activeGroup.id}
+              id="settings-tabpanel"
+              role="tabpanel"
+              aria-labelledby={`settings-tab-${activeGroup.id}`}
+            >
+              <h2 className="sr-only">{activeGroup.label}</h2>
+              {activeGroup.render()}
+            </section>
+          </div>
         </div>
-
-        <Divider />
-        {/* Editor-plugin management sits beside the app update check (ADR 0017
-            "unified Check for updates"); top-level on purpose — plan finding 10. */}
-        <EditorPluginSection defaultOpen={false} />
-        <AboutSection />
       </div>
     </div>
   );

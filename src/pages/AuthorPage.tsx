@@ -78,7 +78,7 @@ function AuthorIndexView() {
   return (
     <div className="max-w-4xl mx-auto px-6 py-8 space-y-6">
       <div>
-        <h1 className="text-xl font-semibold" style={{ color: "var(--color-text)" }}>
+        <h1 className="font-display text-[27px] font-semibold leading-tight tracking-[-0.015em] text-text">
           Authors
         </h1>
         <p className="text-sm mt-1" style={{ color: "var(--color-muted)" }}>

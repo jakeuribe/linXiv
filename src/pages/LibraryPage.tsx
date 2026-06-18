@@ -2,7 +2,7 @@ import { useState, useRef, useMemo, useDeferredValue, useCallback } from "react"
 import { useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Upload } from "lucide-react";
+import { Upload, FileText, SearchX, FilterX } from "lucide-react";
 import { listPapers, deletePaper, searchLibrary } from "../api/papers";
 import { listProjects, addPapersToProject, createProject } from "../api/projects";
 import { useSelectionStore } from "../stores/selection";
@@ -17,6 +17,7 @@ import { Dialog } from "../components/ui/dialog";
 import { PaperCard } from "../components/papers/PaperCard";
 import { SelectionBar } from "../components/papers/SelectionBar";
 import { ImportDialog } from "../components/import/ImportDialog";
+import { EmptyState } from "../components/ui/empty-state";
 
 const PAPER_FETCH_LIMIT = 5000;
 const VIRTUALIZER_ESTIMATE_HEIGHT = 120;
@@ -273,37 +274,42 @@ export default function LibraryPage() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Toolbar */}
-      <div className="shrink-0 px-6 py-4 border-b border-border space-y-3">
-        <div className="flex items-center gap-3">
+      {/* Header block */}
+      <div className="shrink-0 border-b border-border" style={{ padding: "22px 30px 16px" }}>
+        <div className="flex items-end gap-3.5">
+          <div className="min-w-0">
+            <h1 className="font-display text-[27px] font-semibold leading-tight tracking-[-0.015em] text-text whitespace-nowrap">
+              Library
+            </h1>
+            <p className="text-muted" style={{ fontSize: 13, marginTop: 7 }}>
+              {paperCountLabel}
+              {ftsEnabled && ftsError && (
+                <span style={{ color: "var(--color-danger)" }} className="ml-2 text-xs">
+                  search error
+                </span>
+              )}
+            </p>
+          </div>
+          <div className="flex-1" />
+          <span className="flex items-center gap-1.5 text-muted text-sm shrink-0">
+            {ftsEnabled && ftsFetching && <Spinner size={12} />}
+          </span>
           <Input
             placeholder="Search by title, abstract, full text, or notes…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="max-w-sm"
+            className="max-w-xs"
           />
-          <span className="flex items-center gap-1.5 text-muted text-sm shrink-0">
-            {ftsEnabled && ftsFetching && <Spinner size={12} />}
-            {ftsEnabled && ftsError && (
-              <span style={{ color: "var(--color-danger)" }} className="text-xs">search error</span>
-            )}
-            {paperCountLabel}
-          </span>
-          <Button
-            variant="muted"
-            size="sm"
-            className="ml-auto"
-            onClick={() => setImportOpen(true)}
-          >
+          <Button variant="primary" size="sm" onClick={() => setImportOpen(true)}>
             <Upload size={13} className="mr-1" />Import
           </Button>
         </div>
         {deleteError && (
-          <p className="text-sm" style={{ color: "var(--color-danger)" }}>
+          <p className="text-sm mt-2" style={{ color: "var(--color-danger)" }}>
             {deleteError}
           </p>
         )}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.75 flex-wrap" style={{ marginTop: 16 }}>
           {FILTER_LABELS.map(({ mode, label }) => (
             <button
               type="button"
@@ -323,19 +329,47 @@ export default function LibraryPage() {
         </div>
       </div>
 
-      {/* Paper list — always mounted so the virtualizer retains scroll position */}
       <div
         ref={scrollRef}
-        className={`flex-1 overflow-y-auto px-6 pt-4 ${selectedIds.size > 0 ? "pb-20" : "pb-4"}`}
+        className={`flex-1 overflow-y-auto px-7.5 pt-4.5 ${selectedIds.size > 0 ? "pb-20" : "pb-10"}`}
       >
         {filtered.length === 0 ? (
-          <div className="flex items-center justify-center py-20">
-            <p className="text-muted text-sm">
-              {allPapers.length === 0
-                ? "No papers yet. Add some from the Search page."
-                : "No papers match your filter."}
-            </p>
-          </div>
+          allPapers.length === 0 ? (
+            <EmptyState
+              icon={<FileText size={28} strokeWidth={1.5} />}
+              title="Your library is empty"
+              description="Import papers from arXiv to start building your reading library."
+              actionLabel="Import from arXiv"
+              onAction={() => setImportOpen(true)}
+            />
+          ) : trimmedSearch.length > 0 && filterMode !== "all" ? (
+            <EmptyState
+              icon={<SearchX size={28} strokeWidth={1.5} />}
+              title="No matching papers"
+              description={`Nothing matches “${trimmedSearch}” with the current filter. Clear both to see everything.`}
+              actionLabel="Clear all"
+              onAction={() => {
+                setSearch("");
+                setFilterMode("all");
+              }}
+            />
+          ) : trimmedSearch.length > 0 ? (
+            <EmptyState
+              icon={<SearchX size={28} strokeWidth={1.5} />}
+              title="No matching papers"
+              description={`Nothing in your library matches “${trimmedSearch}”. Try a different term or clear the search.`}
+              actionLabel="Clear search"
+              onAction={() => setSearch("")}
+            />
+          ) : (
+            <EmptyState
+              icon={<FilterX size={28} strokeWidth={1.5} />}
+              title="No papers match this filter"
+              description="No papers in your library match the current filter. Reset it to see everything."
+              actionLabel="Clear filters"
+              onAction={() => setFilterMode("all")}
+            />
+          )
         ) : (
           <div
             style={{

@@ -7,8 +7,17 @@ import type { PresetName, ThemeColors, ThemeMode, ColorAlphas } from "../../lib/
 import { updateSettings } from "../../api/settings";
 import { useTexEnabled } from "../../lib/tex";
 import { Input } from "../ui/input";
-import { Section } from "./Section";
+import { Toggle } from "../ui/toggle";
+import { SettingGroup, SettingGroupLabel, SettingRow } from "./SettingRow";
 import { ZoomControl } from "./ZoomControl";
+import { Segmented } from "../ui/segmented";
+import { useUiStore } from "../../stores/ui";
+import type { Density } from "../../lib/density";
+
+const DENSITY_OPTIONS: { value: Density; label: string }[] = [
+  { value: "comfortable", label: "Comfortable" },
+  { value: "compact", label: "Compact" },
+];
 
 const PRESET_NAMES = Object.keys(PRESETS) as PresetName[];
 const BUILT_IN_LOWER = new Set(PRESET_NAMES.map((n) => n.toLowerCase()));
@@ -160,7 +169,7 @@ function ColorRow({
 
   function handleAlphaChange(val: number) {
     if (!hasOverride && presetIsHex) {
-      if (val === 100) return; // preset at full opacity is already the default
+      if (val === 100) return;
       setOverrideWithAlpha(colorKey, presetHex, val);
       scheduleSave();
     } else if (hasOverride) {
@@ -366,6 +375,8 @@ export function AppearanceSection() {
   const [overridesOpen, setOverridesOpen] = useState(false);
   const overridesPanelId = useId();
   const texEnabled = useTexEnabled();
+  const density = useUiStore((s) => s.density);
+  const setDensity = useUiStore((s) => s.setDensity);
   const {
     mutate: toggleTex,
     isPending: texPending,
@@ -385,10 +396,6 @@ export function AppearanceSection() {
     return () => {
       if (saveOverridesTimer.current) {
         clearTimeout(saveOverridesTimer.current);
-        // Best-effort flush: fires the save immediately if a debounce is still pending.
-        // The fetch completes even after unmount (local desktop API, no abort signal).
-        // Changes made in the last ~800ms before navigation may silently drop if the
-        // request fails — there is no completion guarantee.
         persistThemeOverrides();
       }
     };
@@ -412,7 +419,8 @@ export function AppearanceSection() {
   }
 
   return (
-    <Section title="Appearance">
+    <div>
+      <SettingGroupLabel>Visual direction</SettingGroupLabel>
       <p className="text-sm text-muted mb-3">Theme</p>
 
       <div className="flex flex-wrap gap-2 mb-2">
@@ -489,85 +497,90 @@ export function AppearanceSection() {
         ))}
       </div>
 
-      <div className="mb-4 pt-2 border-t border-border">
-        <ZoomControl />
-      </div>
+      <SettingGroupLabel className="mt-8">Interface</SettingGroupLabel>
+      <SettingGroup>
+        <SettingRow label="Zoom" description="Scale the entire interface up or down.">
+          <ZoomControl />
+        </SettingRow>
 
-      <button
-        type="button"
-        aria-expanded={overridesOpen}
-        aria-controls={overridesPanelId}
-        className="flex items-center gap-2 text-sm text-muted hover:text-text transition-colors mb-2"
-        onClick={() => setOverridesOpen((o) => !o)}
-      >
-        <span
-          aria-hidden="true"
-          className="text-xs"
-          style={{
-            display: "inline-block",
-            transform: overridesOpen ? "rotate(90deg)" : "rotate(0deg)",
-            transition: "transform 150ms",
-          }}
+        <SettingRow label="Density" description="Controls card and row spacing.">
+          <Segmented
+            options={DENSITY_OPTIONS}
+            value={density}
+            onChange={setDensity}
+            aria-label="Interface density"
+          />
+        </SettingRow>
+
+        <div
+          className="border-b border-border last:border-0"
+          style={{ paddingTop: "var(--row-pad-y)", paddingBottom: "var(--row-pad-y)" }}
         >
-          ▶
-        </span>
-        Color Overrides
-      </button>
+          <button
+            type="button"
+            aria-expanded={overridesOpen}
+            aria-controls={overridesPanelId}
+            className="flex items-center gap-2 text-sm font-medium text-text hover:text-accent transition-colors"
+            onClick={() => setOverridesOpen((o) => !o)}
+          >
+            <span
+              aria-hidden="true"
+              className="text-xs"
+              style={{
+                display: "inline-block",
+                transform: overridesOpen ? "rotate(90deg)" : "rotate(0deg)",
+                transition: "transform 150ms",
+              }}
+            >
+              ▶
+            </span>
+            Color overrides
+          </button>
 
-      <div
-        id={overridesPanelId}
-        className={overridesOpen ? "mt-2" : "hidden"}
-      >
-        <div className="flex items-center gap-3 mb-2">
-          <span style={{ width: "7rem", flexShrink: 0 }} />
-          <span className="text-xs text-muted" style={{ width: 112, flexShrink: 0 }}>Color</span>
-          <span className="text-xs text-muted flex-1">Opacity</span>
+          <div id={overridesPanelId} className={overridesOpen ? "mt-3" : "hidden"}>
+            <div className="flex items-center gap-3 mb-2">
+              <span style={{ width: "7rem", flexShrink: 0 }} />
+              <span className="text-xs text-muted" style={{ width: 112, flexShrink: 0 }}>Color</span>
+              <span className="text-xs text-muted flex-1">Opacity</span>
+            </div>
+            {COLOR_OVERRIDE_KEYS.map(({ key, label }) => (
+              <ColorRow
+                key={`${preset}-${mode}-${key}`}
+                label={label}
+                colorKey={key}
+                scheduleSave={scheduleSaveOverrides}
+              />
+            ))}
+            <div className="mt-3 pt-2 border-t border-border">
+              <SavePaletteInline
+                onSave={saveCustomPalette}
+                existingNames={existingPaletteNames}
+              />
+            </div>
+          </div>
         </div>
-        {COLOR_OVERRIDE_KEYS.map(({ key, label }) => (
-          <ColorRow
-            key={`${preset}-${mode}-${key}`}
-            label={label}
-            colorKey={key}
-            scheduleSave={scheduleSaveOverrides}
-          />
-        ))}
-        <div className="mt-3 pt-2 border-t border-border">
-          <SavePaletteInline
-            onSave={saveCustomPalette}
-            existingNames={existingPaletteNames}
-          />
-        </div>
-      </div>
 
-      <div className="flex items-center justify-between mt-6 pt-4 border-t border-border">
-        <div>
-          <span className="text-sm font-medium text-text">Render TeX / math</span>
-          <p className="text-xs text-muted mt-0.5">
-            Render $…$ LaTeX in titles, abstracts, and notes
-          </p>
-          {texError && (
-            <p className="text-xs text-danger mt-0.5">
-              {texError instanceof Error ? texError.message : "Failed to save setting"}
-            </p>
-          )}
-        </div>
-        <button
-          type="button"
-          role="switch"
-          aria-checked={texEnabled}
-          aria-label="Render TeX / math"
-          disabled={texPending}
-          aria-disabled={texPending}
-          onClick={() => toggleTex(!texEnabled)}
-          className="relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors disabled:cursor-not-allowed disabled:opacity-60"
-          style={{ background: texEnabled ? "var(--color-accent)" : "var(--color-border)" }}
+        <SettingRow
+          label="Render TeX / math"
+          description={
+            <>
+              Render $…$ LaTeX in titles, abstracts, and notes
+              {texError && (
+                <span className="block text-danger mt-0.5">
+                  {texError instanceof Error ? texError.message : "Failed to save setting"}
+                </span>
+              )}
+            </>
+          }
         >
-          <span
-            className="pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow-sm transition-transform"
-            style={{ transform: texEnabled ? "translateX(20px)" : "translateX(0)" }}
+          <Toggle
+            checked={texEnabled}
+            onChange={(next) => toggleTex(next)}
+            disabled={texPending}
+            aria-label="Render TeX / math"
           />
-        </button>
-      </div>
-    </Section>
+        </SettingRow>
+      </SettingGroup>
+    </div>
   );
 }

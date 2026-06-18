@@ -24,6 +24,8 @@ export const PRESETS = {
       muted: "#7777aa",
       success: "#4caf88",
       danger: "#e05c6c",
+      surface2: "rgba(21,21,36,0.25)",
+      ink3: "#5c5c85",
     },
     light: {
       bg: "#f0f4ff",
@@ -34,6 +36,8 @@ export const PRESETS = {
       muted: "#6677aa",
       success: "#3d9e76",
       danger: "#d64e5d",
+      surface2: "#eef2fb",
+      ink3: "#8896c0",
     },
   },
   Slate: {
@@ -46,6 +50,8 @@ export const PRESETS = {
       muted: "#868e96",
       success: "#51cf66",
       danger: "#ff6b6b",
+      surface2: "#1f2024",
+      ink3: "#6c757d",
     },
     light: {
       bg: "#f5f5f7",
@@ -56,6 +62,8 @@ export const PRESETS = {
       muted: "#6b7280",
       success: "#40c057",
       danger: "#fa5252",
+      surface2: "#eeeef1",
+      ink3: "#9097a0",
     },
   },
   Charcoal: {
@@ -68,6 +76,8 @@ export const PRESETS = {
       muted: "#888888",
       success: "#6abf69",
       danger: "#e57373",
+      surface2: "#1f1f1f",
+      ink3: "#6b6b6b",
     },
     light: {
       bg: "#f6f6f6",
@@ -78,6 +88,8 @@ export const PRESETS = {
       muted: "#666666",
       success: "#57a85a",
       danger: "#cc5252",
+      surface2: "#efefef",
+      ink3: "#8c8c8c",
     },
   },
   Forest: {
@@ -90,6 +102,8 @@ export const PRESETS = {
       muted: "#6b8f72",
       success: "#81c784",
       danger: "#ef9a9a",
+      surface2: "#101d14",
+      ink3: "#53705a",
     },
     light: {
       bg: "#f0f5f2",
@@ -100,6 +114,8 @@ export const PRESETS = {
       muted: "#527a5a",
       success: "#5aad5c",
       danger: "#e06060",
+      surface2: "#e8efea",
+      ink3: "#739579",
     },
   },
   Ember: {
@@ -112,6 +128,8 @@ export const PRESETS = {
       muted: "#a0897a",
       success: "#a5d6a7",
       danger: "#ef5350",
+      surface2: "#1f1409",
+      ink3: "#7d6a5c",
     },
     light: {
       bg: "#fdf5ee",
@@ -122,6 +140,8 @@ export const PRESETS = {
       muted: "#8a6a50",
       success: "#7ab87c",
       danger: "#d94040",
+      surface2: "#f6ece1",
+      ink3: "#a88f78",
     },
   },
   Cupertino: {
@@ -134,6 +154,8 @@ export const PRESETS = {
       muted: "#8e8e93",
       success: "#34c759",
       danger: "#ff3b30",
+      surface2: "rgba(120,120,128,0.12)",
+      ink3: "rgba(60,60,67,0.45)",
     },
     dark: {
       bg: "#1c1c1e",
@@ -144,13 +166,14 @@ export const PRESETS = {
       muted: "#8e8e93",
       success: "#34c759",
       danger: "#ff3b30",
+      surface2: "rgba(118,118,128,0.24)",
+      ink3: "rgba(235,235,245,0.45)",
     },
   },
 } as const;
 
 export type PresetName = keyof typeof PRESETS;
 
-// Exported so components can share a single source of truth for hex validation.
 export const VALID_HEX = /^#[0-9a-fA-F]{6}$/;
 
 
@@ -167,7 +190,8 @@ export function getColors(
   overrides: Partial<ThemeColors> = {},
   overrideAlphas: ColorAlphas = {}
 ): ThemeColors {
-  const base = { ...PRESETS[preset][mode] } as Record<keyof ThemeColors, string>;
+  const { surface2: _surface2, ink3: _ink3, ...rest } = PRESETS[preset][mode];
+  const base = { ...rest } as Record<keyof ThemeColors, string>;
   for (const k of Object.keys(overrides) as Array<keyof ThemeColors>) {
     const hex = overrides[k];
     if (hex && VALID_HEX.test(hex)) {
@@ -185,6 +209,7 @@ export function applyTheme(
   overrideAlphas: ColorAlphas = {}
 ): void {
   const colors = getColors(preset, mode, overrides, overrideAlphas);
+  const { surface2, ink3 } = PRESETS[preset][mode];
   const root = document.documentElement;
   root.setAttribute("data-theme", preset.toLowerCase());
   root.setAttribute("data-mode", mode);
@@ -196,4 +221,6 @@ export function applyTheme(
   root.style.setProperty("--color-muted", colors.muted);
   root.style.setProperty("--color-success", colors.success);
   root.style.setProperty("--color-danger", colors.danger);
+  root.style.setProperty("--color-surface-2", surface2);
+  root.style.setProperty("--color-ink-3", ink3);
 }

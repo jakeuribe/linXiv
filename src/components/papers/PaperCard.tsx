@@ -1,8 +1,7 @@
 import { memo } from "react";
 import type { Paper } from "../../types/api";
-import { Badge } from "../ui/badge";
 import { useSelectionStore } from "../../stores/selection";
-import { normalizeAuthors } from "../../lib/papers";
+import { normalizeAuthors, labelForSource } from "../../lib/papers";
 import { MathText } from "../../lib/tex";
 
 const MAX_AUTHORS_DISPLAY = 3;
@@ -32,23 +31,29 @@ export const PaperCard = memo(function PaperCard({
 
   const rawYear = paper.published ? new Date(paper.published).getFullYear() : null;
   const publishedYear = rawYear !== null && Number.isFinite(rawYear) ? rawYear : null;
+  const venueYear =
+    paper.journal_ref?.trim() || (publishedYear ? String(publishedYear) : "");
+
+  const sourceLabel = labelForSource(paper);
+  const hasMetaRow = Boolean(
+    paper.category || sourceLabel || venueYear || paper.has_pdf,
+  );
 
   return (
-    // Checkbox and navigation button are siblings — no interactive descendant ARIA violation.
-    // All children of <button> are <span> or <p> (phrasing content) — no block elements inside.
     <div
       className={[
-        "flex bg-panel rounded-lg border border-border transition-all",
+        "flex items-start gap-4 bg-panel border border-border shadow-card transition-all",
         isSelected ? "ring-1 ring-accent" : "",
       ].join(" ")}
+      style={{ borderRadius: "var(--card-radius)", padding: "var(--card-pad)" }}
     >
       {showCheckbox && (
-        <div className="shrink-0 pt-4 pl-4 flex items-start">
+        <div className="shrink-0 flex items-start">
           <input
             type="checkbox"
             checked={isSelected}
             onChange={() => toggle(paper.source_id)}
-            className="mt-0.5 accent-[var(--color-accent)] cursor-pointer"
+            className="mt-1 accent-[var(--color-accent)] cursor-pointer"
             aria-label={`Select ${paper.title}`}
           />
         </div>
@@ -57,71 +62,99 @@ export const PaperCard = memo(function PaperCard({
         type="button"
         aria-label={`Open ${paper.title}`}
         onClick={() => onNavigate(paper.source_fk)}
-        className={[
-          "flex-1 text-left py-4 pr-4 hover:brightness-110 cursor-pointer min-w-0",
-          showCheckbox ? "pl-2" : "pl-4",
-        ].join(" ")}
+        className="flex-1 text-left hover:brightness-110 cursor-pointer min-w-0"
       >
-        {/* Row 1: title + pdf badge */}
-        <span className="flex items-start gap-2">
-          <span className="flex-1 font-medium text-text leading-snug line-clamp-2">
-            <MathText forceInline>{paper.title}</MathText>
-          </span>
-          {paper.has_pdf && (
-            <Badge
-              className="shrink-0 ml-1"
+        {/* Meta row: category · arXiv id · venue/year · status badge */}
+        {hasMetaRow && (
+        <span className="flex items-center gap-2.5 mb-2">
+          {paper.category && (
+            <span
+              className="font-mono font-medium shrink-0"
               style={{
-                borderColor: "var(--color-success)",
+                fontSize: "10.5px",
+                padding: "2px 7px",
+                borderRadius: 5,
+                background: "color-mix(in srgb, var(--color-accent) 12%, transparent)",
+                color: "var(--color-accent)",
+              }}
+            >
+              {paper.category}
+            </span>
+          )}
+          {sourceLabel && (
+            <span className="font-mono text-ink3 min-w-0 truncate" style={{ fontSize: 11 }}>
+              {sourceLabel}
+            </span>
+          )}
+          {venueYear && (
+            <span
+              className="font-mono text-ink3 truncate"
+              style={{ fontSize: 11, maxWidth: "12rem" }}
+            >
+              {(paper.category || sourceLabel) && "· "}
+              {venueYear}
+            </span>
+          )}
+          <span className="flex-1" />
+          {paper.has_pdf && (
+            <span
+              className="font-mono font-medium shrink-0 inline-flex items-center"
+              style={{
+                fontSize: "10.5px",
+                padding: "2px 8px",
+                borderRadius: 20,
+                border: "1px solid var(--color-success)",
                 color: "var(--color-success)",
-                backgroundColor: "color-mix(in srgb, var(--color-success) 15%, transparent)",
+                background: "color-mix(in srgb, var(--color-success) 15%, transparent)",
               }}
             >
               PDF
-            </Badge>
+            </span>
           )}
         </span>
-
-        {/* Row 2: authors + date */}
-        <span className="flex items-center gap-2 mt-1.5 text-muted text-sm">
-          <span className="truncate">
-            {displayAuthors.join(", ")}
-            {hasMoreAuthors && " et al."}
-          </span>
-          {publishedYear && (
-            <>
-              <span className="text-border">·</span>
-              <span className="shrink-0">{publishedYear}</span>
-            </>
-          )}
-        </span>
-
-        {/* Row 3: category + tags */}
-        {(paper.category || displayTags.length > 0) && (
-          <span className="flex flex-wrap gap-1.5 mt-2">
-            {paper.category && (
-              <Badge
-                style={{
-                  borderColor: "var(--color-accent)",
-                  color: "var(--color-accent)",
-                  backgroundColor: "color-mix(in srgb, var(--color-accent) 12%, transparent)",
-                }}
-              >
-                {paper.category}
-              </Badge>
-            )}
-            {displayTags.map((tag) => (
-              <Badge key={tag}>{tag}</Badge>
-            ))}
-            {hiddenTagCount > 0 && (
-              <Badge>+{hiddenTagCount}</Badge>
-            )}
-          </span>
         )}
+
+        {/* Title (serif) */}
+        <span
+          className="block font-display font-semibold text-text line-clamp-2"
+          style={{ fontSize: 18, lineHeight: 1.25, letterSpacing: "-0.01em", marginBottom: 5 }}
+        >
+          <MathText forceInline>{paper.title}</MathText>
+        </span>
+
+        {/* Authors */}
+        <span className="block text-muted truncate" style={{ fontSize: "12.5px", marginBottom: 9 }}>
+          {displayAuthors.join(", ")}
+          {hasMoreAuthors && " et al."}
+        </span>
 
         {/* Abstract preview */}
         {paper.summary && (
-          <span className="block mt-2 text-muted text-sm line-clamp-2 leading-relaxed">
+          <span className="block text-muted line-clamp-2 leading-relaxed" style={{ fontSize: "12.5px" }}>
             <MathText forceInline>{paper.summary}</MathText>
+          </span>
+        )}
+
+        {/* Tag row */}
+        {displayTags.length > 0 && (
+          <span className="flex flex-wrap gap-1.5" style={{ marginTop: 11 }}>
+            {displayTags.map((tag) => (
+              <span
+                key={tag}
+                className="font-mono text-ink3"
+                style={{ fontSize: "10.5px", padding: "2px 8px", border: "1px solid var(--color-border)", borderRadius: 20 }}
+              >
+                {tag}
+              </span>
+            ))}
+            {hiddenTagCount > 0 && (
+              <span
+                className="font-mono text-ink3"
+                style={{ fontSize: "10.5px", padding: "2px 8px", border: "1px solid var(--color-border)", borderRadius: 20 }}
+              >
+                +{hiddenTagCount}
+              </span>
+            )}
           </span>
         )}
       </button>

@@ -239,7 +239,7 @@ export default function GraphPage() {
   return (
     <div className="w-full h-full flex flex-col">
       <div className="p-4 border-b border-border flex items-center gap-3">
-        <h1 className="text-lg font-semibold text-text">Knowledge Graph</h1>
+        <h1 className="font-display text-[27px] font-semibold leading-tight tracking-[-0.015em] text-text">Knowledge Graph</h1>
         <span className="text-sm text-muted">
           {selectedSourceIds.length > 0
             ? `${selectedSourceIds.length} paper${selectedSourceIds.length !== 1 ? "s" : ""} selected — Ctrl/Cmd+click to add more`
