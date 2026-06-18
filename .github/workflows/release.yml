@@ -21,9 +21,6 @@ jobs:
           - os: macos-latest
             platform: macos-arm64
             args: ""
-          - os: macos-13
-            platform: macos-x86_64
-            args: ""
           - os: windows-latest
             platform: windows-x86_64
             args: ""
