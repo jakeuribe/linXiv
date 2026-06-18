@@ -104,6 +104,9 @@ export const useUiStore = create<UiState>()(
         }
         return state;
       },
+      // The webview starts every launch at 100%; re-apply the saved zoom once
+      // the persisted value is loaded (and normalize it in case the stored
+      // number is out of range or corrupt).
       onRehydrateStorage: () => (state) => {
         if (state) {
           state.zoom = clampZoom(state.zoom);

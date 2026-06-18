@@ -2,6 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Inter (variable, self-hosted for offline use) — SIL OFL 1.1, see public/fonts/Inter-OFL.txt */
 @font-face {
   font-family: "Inter";
   font-style: normal;

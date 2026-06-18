@@ -93,6 +93,8 @@ export default function PaperDetailPage() {
 
   const versions = versionsData?.versions ?? [];
 
+  // all_projects=true so project-scoped notes are visible alongside global
+  // ones; each note carries its own scope, shown as a badge on the card.
   const { data: notesData, isLoading: notesLoading } = useQuery({
     queryKey: ["notes", paper?.source_id, { allProjects: true }],
     queryFn: () => getNotes(paper!.source_id, undefined, true),
