@@ -1,22 +1,11 @@
 import { memo } from "react";
 import type { Paper } from "../../types/api";
 import { useSelectionStore } from "../../stores/selection";
-import { normalizeAuthors } from "../../lib/papers";
+import { normalizeAuthors, labelForSource } from "../../lib/papers";
 import { MathText } from "../../lib/tex";
 
 const MAX_AUTHORS_DISPLAY = 3;
 const MAX_TAGS_DISPLAY = 4;
-
-function labelForSource(paper: Paper): string | null {
-  const id = paper.source_id;
-  if (paper.source === "arxiv" || id.startsWith("arxiv:"))
-    return `arXiv:${id.replace(/^arxiv:/, "")}`;
-  if (paper.source === "openalex" || id.startsWith("openalex:"))
-    return `OpenAlex:${id.replace(/^openalex:/, "")}`;
-  if (id.startsWith("doi:")) return `DOI:${id.replace(/^doi:/, "")}`;
-  if (id.startsWith("local:")) return "Local";
-  return id || null;
-}
 
 interface PaperCardProps {
   paper: Paper;

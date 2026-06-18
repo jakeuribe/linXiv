@@ -497,7 +497,7 @@ export function AppearanceSection() {
         ))}
       </div>
 
-      <SettingGroupLabel className="mt-6">Interface</SettingGroupLabel>
+      <SettingGroupLabel className="mt-8">Interface</SettingGroupLabel>
       <SettingGroup>
         <SettingRow label="Zoom" description="Scale the entire interface up or down.">
           <ZoomControl />

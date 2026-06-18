@@ -78,7 +78,7 @@ export default function DoiPage() {
   return (
     <div className="flex flex-col h-full overflow-y-auto">
       <div className="mx-auto w-full max-w-[640px] px-6 py-8">
-        <h1 className="text-lg font-semibold text-[var(--color-text)] mb-6">
+        <h1 className="font-display text-[27px] font-semibold leading-tight tracking-[-0.015em] text-text mb-6">
           Add Paper by DOI
         </h1>
 

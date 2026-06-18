@@ -72,6 +72,16 @@ body,
   -webkit-font-smoothing: antialiased;
 }
 
+/* MathJax SVG inline fix — Tailwind preflight sets svg { display: block } which
+   breaks inline math. Override just for MathJax containers: the SVG must be
+   inline (with its vertical-align from MathJax) so math stays in the text flow.
+   Display math (mjx-container[display="true"]) is already block at the container
+   level, so this override doesn't affect it. */
+mjx-container[jax="SVG"] > svg {
+  display: inline !important;
+  vertical-align: middle;
+}
+
 /* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 6px;

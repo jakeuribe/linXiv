@@ -31,11 +31,11 @@ const GROUPS: SettingsGroup[] = [
     label: "Library",
     icon: "▤",
     render: () => (
-      <>
+      <div className="flex flex-col gap-8">
         <SearchSection />
         <SidebarSection />
         <ExportSection />
-      </>
+      </div>
     ),
   },
   {
@@ -43,10 +43,10 @@ const GROUPS: SettingsGroup[] = [
     label: "Server & data",
     icon: "▥",
     render: () => (
-      <>
+      <div className="flex flex-col gap-8">
         <StorageSection />
         <TrashSection />
-      </>
+      </div>
     ),
   },
   {
@@ -54,11 +54,11 @@ const GROUPS: SettingsGroup[] = [
     label: "AI & sources",
     icon: "✦",
     render: () => (
-      <>
+      <div className="flex flex-col gap-8">
         <ApiKeysSection />
         <CrossRefSection />
         <OpenAlexSection />
-      </>
+      </div>
     ),
   },
   {
@@ -66,10 +66,10 @@ const GROUPS: SettingsGroup[] = [
     label: "Integrations",
     icon: "⚇",
     render: () => (
-      <>
+      <div className="flex flex-col gap-8">
         <IntegrationsSection />
         <EditorPluginSection />
-      </>
+      </div>
     ),
   },
   {
@@ -86,13 +86,10 @@ export default function SettingsPage() {
 
   return (
     <div className="flex h-full flex-col bg-bg">
-      <div className="flex-none border-b border-border px-8 pt-7 pb-[18px]">
+      <div className="flex-none border-b border-border px-8 pt-7 pb-[14px]">
         <h1 className="font-display text-[27px] font-semibold leading-tight tracking-[-0.015em] text-text">
           Settings
         </h1>
-        <p className="mt-[7px] text-sm text-muted">
-          Configure your self-hosted linXiv instance — everything stays on your machine.
-        </p>
       </div>
 
       <div className="grid min-h-0 flex-1" style={{ gridTemplateColumns: "212px 1fr" }}>

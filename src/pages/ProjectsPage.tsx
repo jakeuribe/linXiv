@@ -178,7 +178,7 @@ export default function ProjectsPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <h1 className="text-xl font-semibold" style={{ color: "var(--color-text)" }}>
+          <h1 className="font-display text-[27px] font-semibold leading-tight tracking-[-0.015em] text-text">
             {showArchived ? "Archived Projects" : "Projects"}
           </h1>
           {!showArchived && archivedCount > 0 && (

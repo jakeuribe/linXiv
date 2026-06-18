@@ -8,7 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "build:sidecar": "pyinstaller linxiv-api.spec --noconfirm && pyinstaller linxiv-cli.spec --noconfirm && pyinstaller linxiv-mcp.spec --noconfirm && python scripts/stage_sidecar.py",
+    "build:sidecar": "uv run --extra mcp pyinstaller linxiv-api.spec --noconfirm && uv run --extra mcp pyinstaller linxiv-cli.spec --noconfirm && uv run --extra mcp pyinstaller linxiv-mcp.spec --noconfirm && uv run --extra mcp python scripts/stage_sidecar.py",
     "build:all": "npm run build:sidecar && npm run tauri build"
   },
   "dependencies": {

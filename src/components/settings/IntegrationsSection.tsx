@@ -134,7 +134,7 @@ export function IntegrationsSection() {
         </p>
       )}
 
-      <SettingGroupLabel>Command line</SettingGroupLabel>
+      <SettingGroupLabel className="mt-8">Command line</SettingGroupLabel>
       <SettingGroup>
         <IntegrationRow
           label="linxiv CLI"
@@ -147,7 +147,7 @@ export function IntegrationsSection() {
         />
       </SettingGroup>
 
-      <SettingGroupLabel className="mt-6">MCP clients</SettingGroupLabel>
+      <SettingGroupLabel className="mt-8">MCP clients</SettingGroupLabel>
       {!isTauri ? (
         <SettingGroup>
           <IntegrationRow

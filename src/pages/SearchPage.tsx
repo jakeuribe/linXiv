@@ -303,7 +303,7 @@ const { data: settings } = useQuery({ queryKey: ["settings"], queryFn: getSettin
         className="shrink-0 px-6 pt-6 pb-4 border-b border-[var(--color-border)]"
         style={{ background: "var(--color-bg)" }}
       >
-        <h1 className="text-lg font-semibold text-[var(--color-text)] mb-4">
+        <h1 className="font-display text-[27px] font-semibold leading-tight tracking-[-0.015em] text-text mb-4">
           Search Papers
         </h1>
 
