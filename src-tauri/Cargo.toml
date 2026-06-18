@@ -6,7 +6,7 @@ members = ["."]
 
 [package]
 name = "linxiv-app"
-version = "0.1.2"
+version = "0.2.0"
 description = "linXiv desktop app"
 authors = ["jakeuribe"]
 edition = "2021"
