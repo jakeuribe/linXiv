@@ -31,6 +31,7 @@ export function StorageSection() {
   });
 
   const [pdfLimit, setPdfLimit] = useState<string>("");
+  const [pdfsExpanded, setPdfsExpanded] = useState(false);
 
   useEffect(() => {
     if (typeof settings?.pdf_save_limit_mb === "number") {
@@ -81,9 +82,12 @@ export function StorageSection() {
     <div>
       <SettingGroupLabel>Storage</SettingGroupLabel>
       <SettingGroup>
+        {/* TODO: pdf_save_limit_mb is defined in default_settings.json (default 1024 MB) but no
+            backend enforcement was found — the limit is not currently checked when downloading
+            or saving PDFs. Verify backend enforcement before treating this as a hard cap. */}
         <SettingRow
-          label="PDF storage limit (MB)"
-          description="Maximum disk space for locally saved PDFs."
+          label="Total PDF storage (MB)"
+          description="Maximum combined disk space for all locally saved PDFs."
         >
           {settingsLoading ? (
             <span className="flex items-center gap-2 text-sm text-muted">
@@ -99,7 +103,7 @@ export function StorageSection() {
                 onChange={(e) => setPdfLimit(e.target.value)}
                 min={1}
                 style={{ width: 120 }}
-                aria-label="PDF storage limit (MB)"
+                aria-label="Total PDF storage (MB)"
               />
               <Button size="sm" disabled={!limitValid || saving} onClick={() => save()}>
                 {saving ? "Saving…" : "Save"}
@@ -112,29 +116,60 @@ export function StorageSection() {
         </SettingRow>
       </SettingGroup>
 
-      <SettingGroupLabel className="mt-6">Saved PDFs</SettingGroupLabel>
-      <SettingGroup block>
-        {pdfsLoading ? (
-          <div className="flex items-center gap-2 py-1 text-sm text-muted">
-            <Spinner size={14} /> Loading…
-          </div>
-        ) : pdfsError ? (
-          <p className="text-xs text-danger">Could not load saved PDFs.</p>
-        ) : savedPdfs.length === 0 ? (
-          <p className="text-xs text-muted">No PDFs saved locally.</p>
-        ) : (
-          <ul className="flex flex-col divide-y" style={{ borderColor: "var(--color-border)" }}>
-            {savedPdfs.map((pdf) => (
-              <SavedPdfRow
-                key={pdf.source_id}
-                pdf={pdf}
-                onView={() => viewPdf(pdf)}
-                onDeleted={invalidateAfterDelete}
-              />
-            ))}
-          </ul>
-        )}
-      </SettingGroup>
+      <div className="mt-8 flex items-center gap-2">
+        <SettingGroupLabel className="mb-0">Saved PDFs</SettingGroupLabel>
+        <button
+          type="button"
+          aria-expanded={pdfsExpanded}
+          onClick={() => setPdfsExpanded((v) => !v)}
+          className="text-muted hover:text-text transition-colors"
+          aria-label={pdfsExpanded ? "Collapse saved PDFs list" : "Expand saved PDFs list"}
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 14 14"
+            fill="none"
+            aria-hidden="true"
+            style={{
+              transform: pdfsExpanded ? "rotate(180deg)" : "rotate(0deg)",
+              transition: "transform 150ms ease",
+            }}
+          >
+            <path
+              d="M2.5 5L7 9.5L11.5 5"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </button>
+      </div>
+      {pdfsExpanded && (
+        <SettingGroup block className="mt-2.5">
+          {pdfsLoading ? (
+            <div className="flex items-center gap-2 py-1 text-sm text-muted">
+              <Spinner size={14} /> Loading…
+            </div>
+          ) : pdfsError ? (
+            <p className="text-xs text-danger">Could not load saved PDFs.</p>
+          ) : savedPdfs.length === 0 ? (
+            <p className="text-xs text-muted">No PDFs saved locally.</p>
+          ) : (
+            <ul className="flex flex-col divide-y" style={{ borderColor: "var(--color-border)" }}>
+              {savedPdfs.map((pdf) => (
+                <SavedPdfRow
+                  key={pdf.source_id}
+                  pdf={pdf}
+                  onView={() => viewPdf(pdf)}
+                  onDeleted={invalidateAfterDelete}
+                />
+              ))}
+            </ul>
+          )}
+        </SettingGroup>
+      )}
     </div>
   );
 }

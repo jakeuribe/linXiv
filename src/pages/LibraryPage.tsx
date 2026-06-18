@@ -278,10 +278,7 @@ export default function LibraryPage() {
       <div className="shrink-0 border-b border-border" style={{ padding: "22px 30px 16px" }}>
         <div className="flex items-end gap-3.5">
           <div className="min-w-0">
-            <h1
-              className="font-display font-semibold text-text whitespace-nowrap"
-              style={{ fontSize: 27, letterSpacing: "-0.015em", lineHeight: 1.1 }}
-            >
+            <h1 className="font-display text-[27px] font-semibold leading-tight tracking-[-0.015em] text-text whitespace-nowrap">
               Library
             </h1>
             <p className="text-muted" style={{ fontSize: 13, marginTop: 7 }}>

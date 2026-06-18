@@ -48,7 +48,7 @@ function TagIndexView() {
   return (
     <div className="max-w-5xl mx-auto px-6 py-8 space-y-6">
       <div>
-        <h1 className="text-xl font-semibold text-text">Tags</h1>
+        <h1 className="font-display text-[27px] font-semibold leading-tight tracking-[-0.015em] text-text">Tags</h1>
         <p className="text-sm mt-1" style={{ color: "var(--color-muted)" }}>
           {tags.length} tag{tags.length !== 1 ? "s" : ""} across your library
         </p>

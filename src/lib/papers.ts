@@ -1,7 +1,22 @@
+import type { Paper } from "../types/api";
+
 export function normalizeAuthors(authors: string | string[]): string[] {
   // Split on semicolons to avoid corrupting "Last, First" name format.
   const raw = Array.isArray(authors) ? authors : authors.split(";");
   return raw.map((a) => a.trim()).filter(Boolean);
+}
+
+// Source ids may already carry a "arxiv:"/"openalex:"/"doi:" prefix, so strip it
+// before re-prefixing to avoid "arXiv:arxiv:..." double labels.
+export function labelForSource(paper: Paper): string | null {
+  const id = paper.source_id;
+  if (paper.source === "arxiv" || id.startsWith("arxiv:"))
+    return `arXiv:${id.replace(/^arxiv:/, "")}`;
+  if (paper.source === "openalex" || id.startsWith("openalex:"))
+    return `OpenAlex:${id.replace(/^openalex:/, "")}`;
+  if (id.startsWith("doi:")) return `DOI:${id.replace(/^doi:/, "")}`;
+  if (id.startsWith("local:")) return "Local";
+  return id || null;
 }
 
 // Covers modern arXiv IDs (YYMM.NNNNN) and legacy IDs (cs/0612047, math.GT/0309136, cond-mat.mes-hall/0309136).

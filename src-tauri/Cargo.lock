@@ -2046,6 +2046,7 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 name = "linxiv-app"
 version = "0.1.2"
 dependencies = [
+ "libc",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

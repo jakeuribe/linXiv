@@ -95,7 +95,7 @@ export default function HomePage() {
   const maxTagCount = topTags.length > 0 ? topTags[0].count : 0;
 
   return (
-    <div className="p-8 space-y-8 overflow-y-auto">
+    <div className="p-8 space-y-8">
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         <StatCard
           label="Papers"
@@ -149,7 +149,7 @@ export default function HomePage() {
           )}
         </section>
 
-        <section>
+        <section className="lg:sticky lg:top-8 self-start">
           <SectionTitle className="text-base mb-4">Tags — recent papers</SectionTitle>
           {topTags.length === 0 ? (
             <Card inset className="text-center">
