@@ -45,6 +45,8 @@ Upload your PDFs, create projects, manage notes, tags, and more to organize your
 - **Obsidian integration** — Auto-generate markdown notes with YAML frontmatter for your vault
 - **PDF & TeX downloads** — Batch download PDFs and TeX source tarballs
 
+<img src="assets/demo.gif" width="800" />
+
 ## Project Structure
 
 ```
@@ -242,6 +244,8 @@ Or add manually to `.claude/settings.json`:
 > ```
 
 Once registered, Claude can call the linXiv tools directly — for example `search_papers`, `fetch_paper`, and `list_papers`. Full tool documentation will be added soon.
+
+<img src="assets/claude_demo.gif" width="800" />
 
 ## Building the Tauri App
 
