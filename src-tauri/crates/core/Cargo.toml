@@ -18,6 +18,8 @@ rusqlite = { version = "0.40", features = ["bundled", "chrono", "serde_json"] }
 directories = "6"
 dotenvy = "0.15.7"
 tracing = "0.1"
+# .lxproj is a ZIP_DEFLATED archive (Python uses zipfile); deflate-only, no extras.
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tempfile = "3"

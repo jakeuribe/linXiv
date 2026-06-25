@@ -333,6 +333,49 @@ pub fn save_paper_metadata(
     Ok((meta.source_id.clone(), meta.version))
 }
 
+/// `db.add_paper_tags` — UNION `tags` onto a paper's existing tags across BOTH
+/// halves of dual tag storage: the JSON `PAPER_META.TAGS` list (all versions) and
+/// the relational `PAPER_TO_TAG` rows (re-synced per version). Dedup preserves
+/// first-seen order (Python `dict.fromkeys`). Returns the merged tag list. Errors
+/// if the paper has no latest version.
+pub fn add_paper_tags(conn: &mut Connection, source_id: &str, tags: &[String]) -> Result<Vec<String>> {
+    transaction(conn, |tx| {
+        let current: Option<Option<String>> = tx
+            .query_row(
+                "SELECT tags FROM latest_papers WHERE source_id = ?",
+                [source_id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?;
+        let Some(current_json) = current else {
+            return Err(CoreError::NotFound(format!("paper {source_id:?} not found")));
+        };
+        let mut merged = match current_json {
+            Some(s) => list_from_sql(&s)?,
+            None => Vec::new(),
+        };
+        for t in tags {
+            if !merged.contains(t) {
+                merged.push(t.clone());
+            }
+        }
+        tx.execute(
+            "UPDATE PAPER_META SET TAGS = ? WHERE PAPER_ID IN \
+             (SELECT PAPER_ID FROM PAPER WHERE SOURCE_ID = ?)",
+            params![list_to_sql(&merged), source_id],
+        )?;
+        let versions: Vec<(i64, i64)> = {
+            let mut stmt = tx.prepare("SELECT PAPER_ID, VERSION FROM PAPER WHERE SOURCE_ID = ?")?;
+            let rows = stmt.query_map([source_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        for (pid, ver) in versions {
+            sync_paper_tags(tx, pid, source_id, ver, Some(&merged))?;
+        }
+        Ok(merged)
+    })
+}
+
 /// `ensure_paper_root` — INSERT OR IGNORE the root (reactivating if deleted).
 /// Returns its SOURCE_FK.
 pub fn ensure_paper_root(conn: &mut Connection, source_id: &str) -> Result<i64> {

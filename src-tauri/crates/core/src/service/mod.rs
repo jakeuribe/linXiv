@@ -5,3 +5,7 @@ pub mod note;
 pub mod vault;
 pub mod editor_project;
 pub mod files;
+pub mod paper;
+pub mod project;
+pub mod paper_import;
+pub mod export_import;
