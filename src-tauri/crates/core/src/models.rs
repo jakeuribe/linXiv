@@ -351,6 +351,124 @@ pub struct TagDetails {
 }
 
 // ---------------------------------------------------------------------------
+// Service input DTOs (service/{author,tag,note,paper,project}.py *In classes)
+// ---------------------------------------------------------------------------
+
+/// D16 UNSET sentinel deserializer. Maps a JSON field's three states onto
+/// `Option<Option<T>>`: ABSENT -> `None` (unchanged), `null` -> `Some(None)`
+/// (clear), value -> `Some(Some(v))`. Pair with `#[serde(default, ...)]` so an
+/// absent key yields `None` (plain `Option<Option<T>>` would swallow `null`
+/// into `None`, collapsing clear and unchanged). Mirrors `project.py::Unset`.
+fn de_unset<'de, T, D>(de: D) -> std::result::Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: serde::Deserializer<'de>,
+{
+    Ok(Some(Option::<T>::deserialize(de)?))
+}
+
+/// `service/author.py::AuthorIn`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AuthorIn {
+    pub full_name: String,
+    #[serde(default)]
+    pub first_name: Option<String>,
+    #[serde(default)]
+    pub last_name: Option<String>,
+    #[serde(default)]
+    pub orcid: Option<String>,
+}
+
+/// `service/tag.py::TagIn`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct TagIn {
+    pub label: String,
+}
+
+/// `service/note.py::NoteIn`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct NoteIn {
+    pub source_fk: i64,
+    pub title: String,
+    pub content: String,
+    #[serde(default)]
+    pub paper_id: Option<i64>,
+    #[serde(default)]
+    pub project_fk: Option<i64>,
+}
+
+/// `service/note.py::NoteUpdateIn`. title/content are non-nullable columns:
+/// absent and null both mean "unchanged" (plain `Option`), so no UNSET sentinel
+/// here — mirrors Python where `None` means "not provided". Service enforces
+/// "at least one of title/content provided" (Python `__post_init__`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct NoteUpdateIn {
+    pub note_id: i64,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub content: Option<String>,
+}
+
+/// `service/paper.py::PaperIn`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PaperIn {
+    pub title: String,
+    pub published: NaiveDate,
+    #[serde(default)]
+    pub source_id: Option<String>,
+    #[serde(default)]
+    pub version: Option<i64>,
+    #[serde(default)]
+    pub authors: Option<Vec<String>>,
+    #[serde(default)]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub doi: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+/// `service/project.py::ProjectIn`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProjectIn {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub color: Option<i32>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub source_fks: Vec<i64>,
+}
+
+/// `service/project.py::update(...)` as a PATCH DTO. `color` is the D16 UNSET
+/// case: absent -> unchanged, `null` -> clear, value -> set (mirrors the
+/// `color: int | None | Unset = UNSET` signature). Other fields are plain
+/// `Option` (absent/null -> unchanged).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProjectUpdateIn {
+    pub project_fk: i64,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default, deserialize_with = "de_unset")]
+    pub color: Option<Option<i32>>,
+    #[serde(default)]
+    pub project_tags: Option<Vec<String>>,
+    #[serde(default)]
+    pub status: Option<Status>,
+}
+
+// ---------------------------------------------------------------------------
 // Checks — the only non-trivial logic here is SearchResultOut::from_metadata
 // (namespace strip, date.min sentinel, "" coalescing of url/category).
 // ---------------------------------------------------------------------------
@@ -449,5 +567,20 @@ mod tests {
         let pc = s.find("paper_count").unwrap();
         let st = s.find("\"status\"").unwrap();
         assert!(fks < pc && pc < st);
+    }
+
+    #[test]
+    fn project_update_color_distinguishes_absent_null_value() {
+        // ABSENT key -> None (unchanged)
+        let absent: ProjectUpdateIn = serde_json::from_str(r#"{"project_fk":1}"#).unwrap();
+        assert_eq!(absent.color, None);
+        // explicit null -> Some(None) (clear)
+        let null: ProjectUpdateIn =
+            serde_json::from_str(r#"{"project_fk":1,"color":null}"#).unwrap();
+        assert_eq!(null.color, Some(None));
+        // value -> Some(Some(v)) (set)
+        let val: ProjectUpdateIn =
+            serde_json::from_str(r#"{"project_fk":1,"color":42}"#).unwrap();
+        assert_eq!(val.color, Some(Some(42)));
     }
 }

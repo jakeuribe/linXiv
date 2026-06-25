@@ -23,6 +23,20 @@ pub fn list_tags(conn: &Connection) -> Result<Vec<TagDetails>> {
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
 
+/// `config/queries.py::list_tags_by_paper` — DISTINCT tags linked to a paper via
+/// PAPER_TO_TAG (on PAPER_ID), ordered by label. Mirrors `_TAGS_BY_PAPER_BASE_SQL`.
+pub fn list_tags_by_paper(conn: &Connection, paper_id: i64) -> Result<Vec<TagDetails>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT t.TAG_FK, t.TAG FROM TAG t \
+         JOIN PAPER_TO_TAG ptt ON ptt.TAG_FK = t.TAG_FK \
+         WHERE ptt.PAPER_ID = ? ORDER BY t.TAG",
+    )?;
+    let rows = stmt.query_map([paper_id], |r| {
+        Ok(TagDetails { tag_id: r.get(0)?, label: r.get(1)? })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
 /// `storage/tags.py::get_tag` — single tag by id, or `None` if absent.
 pub fn get_tag(conn: &Connection, tag_id: i64) -> Result<Option<TagDetails>> {
     conn.query_row(
