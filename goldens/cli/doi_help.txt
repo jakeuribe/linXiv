@@ -1,0 +1,9 @@
+usage: linxiv doi [-h] {resolve,save} ...
+
+positional arguments:
+  {resolve,save}
+    resolve       Resolve DOI to metadata (no save)
+    save          Resolve DOI and save paper to library
+
+options:
+  -h, --help      show this help message and exit

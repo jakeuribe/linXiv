@@ -1,0 +1,10 @@
+usage: linxiv search [-h] [--source {arxiv,openalex,crossref}] [--max MAX]
+                     query
+
+positional arguments:
+  query                 Search query string
+
+options:
+  -h, --help            show this help message and exit
+  --source {arxiv,openalex,crossref}
+  --max MAX             Max results

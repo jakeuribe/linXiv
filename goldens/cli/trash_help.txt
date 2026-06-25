@@ -1,0 +1,14 @@
+usage: linxiv trash [-h]
+                    {list,restore,hard-delete,restore-project,hard-delete-project} ...
+
+positional arguments:
+  {list,restore,hard-delete,restore-project,hard-delete-project}
+    list                List soft-deleted papers and projects
+    restore             Restore a soft-deleted paper
+    hard-delete         Permanently delete a paper
+    restore-project     Restore a soft-deleted project
+    hard-delete-project
+                        Permanently delete a project
+
+options:
+  -h, --help            show this help message and exit

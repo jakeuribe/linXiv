@@ -1,0 +1,9 @@
+usage: linxiv settings [-h] {get,update} ...
+
+positional arguments:
+  {get,update}
+    get         Show all current settings
+    update      Set a setting value
+
+options:
+  -h, --help    show this help message and exit

@@ -1,0 +1,8 @@
+usage: linxiv list [-h] [--limit LIMIT] [--offset OFFSET]
+                   [--category CATEGORY]
+
+options:
+  -h, --help           show this help message and exit
+  --limit LIMIT        Max papers to return
+  --offset OFFSET      Offset for pagination
+  --category CATEGORY  Filter by category

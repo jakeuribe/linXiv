@@ -1,0 +1,17 @@
+usage: linxiv tag [-h]
+                  {add,remove,list,list-all,create,delete,add-project,remove-project,list-project} ...
+
+positional arguments:
+  {add,remove,list,list-all,create,delete,add-project,remove-project,list-project}
+    add                 Add tags to a paper
+    remove              Remove tags from a paper
+    list                List tags on a paper
+    list-all            List all tags in the database
+    create              Create a tag
+    delete              Delete a tag by ID
+    add-project         Add tags to a project
+    remove-project      Remove tags from a project
+    list-project        List tags on a project
+
+options:
+  -h, --help            show this help message and exit
