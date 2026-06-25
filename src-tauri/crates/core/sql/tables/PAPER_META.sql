@@ -1,0 +1,21 @@
+CREATE TABLE IF NOT EXISTS PAPER_META(
+    PAPER_ID          INTEGER NOT NULL,
+    URL               TEXT,
+    PUBLISHED         DATE,
+    UPDATED           DATE,
+    CATEGORIES        LIST,
+    DOI               TEXT,
+    JOURNAL_REF       TEXT,
+    COMMENT           TEXT,
+    SUMMARY           TEXT,
+    PROVIDER          TEXT DEFAULT 'arxiv',
+    PDF_PATH          TEXT,
+    FULL_TEXT         TEXT,
+    DOWNLOADED_SOURCE BOOL DEFAULT 0,
+    AUTHORS           LIST,
+    TAGS              LIST,
+    CREATED_AT        TIMESTAMP NOT NULL DEFAULT (datetime('now')),
+    UPDATED_AT        TIMESTAMP NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (PAPER_ID),
+    FOREIGN KEY (PAPER_ID) REFERENCES PAPER(PAPER_ID) ON DELETE CASCADE
+);

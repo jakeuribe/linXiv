@@ -1,0 +1,12 @@
+[package]
+name = "linxiv-cli"
+version = "0.2.0"
+edition = "2021"
+
+[[bin]]
+name = "linxiv-cli"
+path = "src/main.rs"
+
+[dependencies]
+linxiv-core = { path = "../core" }
+clap = { version = "4.6", features = ["derive"] }

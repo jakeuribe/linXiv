@@ -1,0 +1,20 @@
+[package]
+name = "linxiv-core"
+version = "0.2.0"
+edition = "2021"
+
+[lib]
+name = "linxiv_core"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+thiserror = "2.0.18"
+anyhow = "1.0.99"
+chrono = { version = "0.4", features = ["serde"] }
+# bundled = statically compiles SQLite with FTS5 + JSON1 (no system libsqlite3 dep).
+rusqlite = { version = "0.40", features = ["bundled", "chrono", "serde_json"] }
+directories = "6"
+dotenvy = "0.15.7"
+tracing = "0.1"

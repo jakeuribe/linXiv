@@ -1,0 +1,11 @@
+[package]
+name = "linxiv-mcp"
+version = "0.2.0"
+edition = "2021"
+
+[[bin]]
+name = "linxiv-mcp"
+path = "src/main.rs"
+
+[dependencies]
+linxiv-core = { path = "../core" }

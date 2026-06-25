@@ -2,7 +2,7 @@
 # resolves sidecar binaries relative to current_exe(), so the cargo target/
 # directory must stay at src-tauri/target (ADR 0016 / drift report 2026-06-05).
 [workspace]
-members = ["."]
+members = [".", "crates/core", "crates/cli", "crates/mcp"]
 
 [package]
 name = "linxiv-app"
@@ -40,5 +40,6 @@ libc = "0.2"
 codegen-units = 1
 lto = true
 opt-level = "s"
+# D30 will flip this to "unwind" (catch_unwind crash isolation); abort for now.
 panic = "abort"
 strip = true
