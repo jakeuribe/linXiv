@@ -3,8 +3,11 @@
 These files are the **frozen output contract** for the strangler-fig Rust port
 (`docs/rust-port-plan.md` §7 Phase 0, §10, **D31**). They are byte-for-byte
 captures of the Python CLI's stdout, recorded **before** any Python code is
-deleted. The Rust CLI must reproduce them (canonicalized JSON for `.json`,
-exact text for `.txt`) before the corresponding Python surface is removed.
+deleted. The `.json` goldens are the **byte-for-byte (canonicalized) parity
+contract** the Rust CLI must reproduce. The `.txt` `--help` goldens are a
+**structural reference only** — clap cannot reproduce argparse help verbatim
+(different section headers, wrapping), so compare command/flag *presence*, not
+exact text — before the corresponding Python surface is removed.
 
 > D31: "Capture Python HTTP/format goldens in Phase 0 regardless — the
 > app/command surface is verified against those frozen goldens after HTTP
