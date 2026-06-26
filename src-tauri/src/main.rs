@@ -1,11 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod integrations;
-mod protocol;
-mod route;
-mod state;
-
-use state::AppState;
+use linxiv_app::state::AppState;
+use linxiv_app::{integrations, protocol, route};
 
 use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
