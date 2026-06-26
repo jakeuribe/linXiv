@@ -65,8 +65,13 @@ async fn serve<R: Runtime>(app: &AppHandle<R>, req: Request<Vec<u8>>) -> Respons
         ["pdf"] => serve_local_pdf(app, query),
         ["pdf-proxy"] => serve_proxy(query).await,
         // The graph iframe is plain HTML/JS (no `invoke`), so it fetches its data
-        // over this scheme: bridge `/api/*` GETs into the in-process router as JSON.
-        ["api", ..] => serve_api_json(app, &req).await,
+        // over this scheme. Bridge ONLY the four GET endpoints it reads (see
+        // public/graph/graph.js) into the in-process router as JSON — not all of
+        // `/api/*` — so the scheme exposes no more than the iframe needs.
+        ["api", "graph"]
+        | ["api", "graph", "project-options"]
+        | ["api", "categories"]
+        | ["api", "tags"] => serve_api_json(app, &req).await,
         _ => empty(StatusCode::NOT_FOUND),
     }
 }
