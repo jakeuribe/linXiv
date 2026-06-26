@@ -908,12 +908,14 @@ window.addEventListener('message', function(e) {
 });
 
 // ── Data fetch + bootstrap ───────────────────────────────────────────────────
-// http(s) = dev (Vite proxy handles /api), tauri: = production app
-// (backend at 127.0.0.1:8000), file: = Qt bridge (no fetch — skip).
+// http(s) = dev (Vite proxy handles /api), tauri: = production app (the in-process
+// backend serves /api/* over the linxiv:// scheme — see src-tauri protocol.rs;
+// this iframe can't use Tauri invoke, so it fetches that URL like a normal HTTP
+// endpoint), file: = Qt bridge (no fetch — skip).
 
 function _resolveGraphBase() {
     const proto = window.location.protocol;
-    if (proto === 'tauri:') return 'http://127.0.0.1:8000';
+    if (proto === 'tauri:') return 'linxiv://localhost';
     if (proto === 'http:' || proto === 'https:') return window.location.origin;
     return null;
 }

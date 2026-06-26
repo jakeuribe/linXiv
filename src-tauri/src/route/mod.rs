@@ -29,6 +29,7 @@ use crate::state::AppState;
 
 mod authors;
 mod editor;
+mod graph;
 mod notes;
 mod papers;
 pub(crate) mod pdfs; // resolve_local_pdf reused by the linxiv:// protocol handler
@@ -167,7 +168,7 @@ pub async fn route(state: &AppState, req: ApiRequest) -> Result<Value, ApiError>
             }
         )+};
     }
-    try_groups!(uploads, pdfs, papers, projects, notes, tags, authors, sources, search, settings, trash, editor);
+    try_groups!(uploads, pdfs, papers, projects, notes, tags, authors, sources, search, settings, trash, editor, graph);
 
     Err(ApiError::not_routed())
 }
