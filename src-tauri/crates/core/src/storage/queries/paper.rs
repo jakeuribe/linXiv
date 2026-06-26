@@ -376,6 +376,47 @@ pub fn add_paper_tags(conn: &mut Connection, source_id: &str, tags: &[String]) -
     })
 }
 
+/// `db.remove_paper_tags` — remove `tags` from a paper across BOTH halves of dual
+/// tag storage: the JSON `PAPER_META.TAGS` list (all versions) and the relational
+/// `PAPER_TO_TAG` rows (re-synced per version). Returns the remaining tag list.
+/// Errors if the paper has no latest version. Symmetric with `add_paper_tags`.
+pub fn remove_paper_tags(conn: &mut Connection, source_id: &str, tags: &[String]) -> Result<Vec<String>> {
+    let remove: std::collections::HashSet<&str> = tags.iter().map(String::as_str).collect();
+    transaction(conn, |tx| {
+        let current: Option<Option<String>> = tx
+            .query_row(
+                "SELECT tags FROM latest_papers WHERE source_id = ?",
+                [source_id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?;
+        let Some(current_json) = current else {
+            return Err(CoreError::NotFound(format!("paper {source_id:?} not found")));
+        };
+        let updated: Vec<String> = match current_json {
+            Some(s) => list_from_sql(&s)?
+                .into_iter()
+                .filter(|t| !remove.contains(t.as_str()))
+                .collect(),
+            None => Vec::new(),
+        };
+        tx.execute(
+            "UPDATE PAPER_META SET TAGS = ? WHERE PAPER_ID IN \
+             (SELECT PAPER_ID FROM PAPER WHERE SOURCE_ID = ?)",
+            params![list_to_sql(&updated), source_id],
+        )?;
+        let versions: Vec<(i64, i64)> = {
+            let mut stmt = tx.prepare("SELECT PAPER_ID, VERSION FROM PAPER WHERE SOURCE_ID = ?")?;
+            let rows = stmt.query_map([source_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        for (pid, ver) in versions {
+            sync_paper_tags(tx, pid, source_id, ver, Some(&updated))?;
+        }
+        Ok(updated)
+    })
+}
+
 /// `ensure_paper_root` — INSERT OR IGNORE the root (reactivating if deleted).
 /// Returns its SOURCE_FK.
 pub fn ensure_paper_root(conn: &mut Connection, source_id: &str) -> Result<i64> {
@@ -915,6 +956,34 @@ mod tests {
         // Re-saving the same (source_id, version) is a no-op (INSERT OR IGNORE).
         save_paper_metadata(&mut conn, &m, None).unwrap();
         assert_eq!(get_all_versions(&conn, "arxiv:2204.12985").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn add_then_remove_paper_tags_syncs_both_halves() {
+        let mut conn = open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        seed(&conn); // 2 versions, PAPER_META.TAGS = ["ml"], no relational rows yet
+        let sid = "arxiv:2204.12985";
+        let label_rows = "SELECT COUNT(*) FROM PAPER_TO_TAG pt JOIN TAG t ON pt.TAG_FK = t.TAG_FK \
+                          WHERE pt.SOURCE_ID = ? AND t.TAG = ";
+
+        // add: union onto ["ml"], dedup first-seen order, across all versions + both halves.
+        let after_add = add_paper_tags(&mut conn, sid, &["nlp".into(), "ml".into()]).unwrap();
+        assert_eq!(after_add, vec!["ml".to_string(), "nlp".to_string()]);
+        assert_eq!(get_paper(&conn, sid, None).unwrap().unwrap().tags, after_add); // JSON half
+        // relational half synced for BOTH versions (2 rows per tag).
+        assert_eq!(count(&conn, &format!("{label_rows}'ml'"), sid), 2);
+        assert_eq!(count(&conn, &format!("{label_rows}'nlp'"), sid), 2);
+
+        // remove: drop "ml" from both halves; "nlp" survives.
+        let after_rm = remove_paper_tags(&mut conn, sid, &["ml".into()]).unwrap();
+        assert_eq!(after_rm, vec!["nlp".to_string()]);
+        assert_eq!(get_paper(&conn, sid, None).unwrap().unwrap().tags, vec!["nlp".to_string()]);
+        assert_eq!(count(&conn, &format!("{label_rows}'ml'"), sid), 0); // relational row gone
+        assert_eq!(count(&conn, &format!("{label_rows}'nlp'"), sid), 2);
+
+        // a missing paper errors (no latest version), matching add_paper_tags.
+        assert!(remove_paper_tags(&mut conn, "arxiv:nope", &["x".into()]).is_err());
     }
 
     #[test]

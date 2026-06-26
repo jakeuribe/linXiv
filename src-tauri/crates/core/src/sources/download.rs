@@ -84,7 +84,9 @@ async fn fetch_to_dest(
     url: &str,
     dest: &Path,
     max_bytes: u64,
-    host_ok: &dyn Fn(&Url) -> bool,
+    // `+ Sync` so `&dyn Fn` is `Send`: the rmcp `#[tool]` macro boxes the download_pdf future as
+    // `dyn Future + Send`, which requires every value held across an await (this guard) to be Send.
+    host_ok: &(dyn Fn(&Url) -> bool + Sync),
 ) -> Result<PathBuf> {
     let mut current =
         Url::parse(url).map_err(|e| CoreError::BadRequest(format!("Invalid URL: {e}")))?;
