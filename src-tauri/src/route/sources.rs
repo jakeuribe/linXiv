@@ -58,6 +58,32 @@ fn meta_json(meta: &PaperMetadata) -> Result<Value, ApiError> {
 fn default_max_results() -> i64 {
     25
 }
+
+/// FastAPI `Field(ge=1, le=100)` on `max_results`: out-of-range is a 422 (status
+/// matches; detail is our plain string). Critical — the raw value is cast to u32
+/// and sent upstream, so a negative would wrap to a huge unbounded page request.
+fn check_max_results(n: i64) -> Result<u32, ApiError> {
+    if (1..=100).contains(&n) {
+        Ok(n as u32)
+    } else {
+        Err(ApiError::new(422, "max_results must be between 1 and 100"))
+    }
+}
+
+/// FastAPI per-source `Literal` on `sort`: an out-of-set value is a 422 (Python
+/// app.py:737 arxiv / 1174 openalex), not a 502 from the source layer.
+fn check_sort(source: &str, sort: &str) -> Result<(), ApiError> {
+    let allowed: &[&str] = match source {
+        "arxiv" => &["relevance", "newest", "oldest", "lastUpdated"],
+        "openalex" => &["relevance", "newest", "oldest", "citations"],
+        _ => return Ok(()),
+    };
+    if allowed.contains(&sort) {
+        Ok(())
+    } else {
+        Err(ApiError::new(422, format!("Invalid sort value: {sort:?}")))
+    }
+}
 fn default_sort() -> String {
     "relevance".to_string()
 }
@@ -82,10 +108,12 @@ async fn arxiv_search(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiEr
     if b.query.is_empty() {
         return Err(ApiError::new(422, "query must not be empty"));
     }
+    let max_results = check_max_results(b.max_results)?;
+    check_sort("arxiv", &b.sort)?;
     let results = svc_fetch::search(
         "arxiv",
         b.query.trim(),
-        b.max_results as u32,
+        max_results,
         &b.sort,
         &config::data_dir(),
         &mailto(),
@@ -95,17 +123,16 @@ async fn arxiv_search(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiEr
 
     let saved = if b.save && !results.is_empty() {
         // ponytail: per-item save loop — core has no atomic `save_papers_metadata`.
-        // Ceiling: not one transaction, so an IntegrityError on item N leaves items
-        // <N committed while we report `saved=[]` (Python's batch rolls all back).
-        // Upgrade path: add a batched save_papers_metadata to core if it bites.
+        // Each save is INSERT OR IGNORE (idempotent no-op on an already-stored
+        // (source_id, version)), so re-saving cannot raise an IntegrityError; the
+        // ceiling is only that a genuine mid-loop DB error leaves prior items
+        // committed (Python's batch transaction rolls all back). Add a batched
+        // save_papers_metadata to core if that bites.
         state.with_conn(|conn| -> Result<Vec<String>, ApiError> {
             let mut out = Vec::new();
             for m in &results {
-                match svc_paper::save_paper_metadata(conn, m, None) {
-                    Ok((sid, _)) => out.push(strip_namespace(&sid)),
-                    Err(CoreError::Conflict(_)) => return Ok(Vec::new()), // swallow, like app.py
-                    Err(e) => return Err(e.into()),
-                }
+                let (sid, _) = svc_paper::save_paper_metadata(conn, m, None)?;
+                out.push(strip_namespace(&sid));
             }
             Ok(out)
         })?
@@ -117,8 +144,8 @@ async fn arxiv_search(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiEr
     Ok(json!({ "results": results, "saved_source_ids": saved }))
 }
 
-/// `POST /api/arxiv/fetch` (804–823). `404` not-found / `502` other / `409` on a
-/// save IntegrityError (CoreError::Conflict → 409 via `?`).
+/// `POST /api/arxiv/fetch` (804–823). `404` not-found / `502` other. The save is
+/// idempotent (INSERT OR IGNORE), so re-fetching a stored paper cannot conflict.
 async fn arxiv_fetch(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     #[derive(Deserialize)]
     struct Body {
@@ -160,10 +187,12 @@ async fn openalex_search(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     if b.query.is_empty() {
         return Err(ApiError::new(422, "query must not be empty"));
     }
+    let max_results = check_max_results(b.max_results)?;
+    check_sort("openalex", &b.sort)?;
     let results = svc_fetch::search(
         "openalex",
         b.query.trim(),
-        b.max_results as u32,
+        max_results,
         &b.sort,
         &config::data_dir(),
         &mailto(),
@@ -174,8 +203,8 @@ async fn openalex_search(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     Ok(json!({ "results": results }))
 }
 
-/// `POST /api/openalex/save` (1475–1489). `404`/`400`/`502` on fetch, `409` on a
-/// save IntegrityError. Returns the stripped stored source_id.
+/// `POST /api/openalex/save` (1475–1489). `404`/`400`/`502` on fetch. The save is
+/// idempotent (INSERT OR IGNORE). Returns the stripped stored source_id.
 async fn openalex_save(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     #[derive(Deserialize)]
     struct Body {
@@ -288,6 +317,26 @@ mod tests {
             let err = post(&state(), path, json!({ "query": "" })).await.unwrap_err();
             assert_eq!(err.status, 422);
         }
+    }
+
+    #[tokio::test]
+    async fn out_of_range_max_results_is_422_before_network() {
+        // 0, >100, and a negative (which would wrap to a huge u32) all 422.
+        for mr in [0i64, 200, -1] {
+            let err = post(&state(), "/api/arxiv/search", json!({ "query": "abc", "max_results": mr }))
+                .await
+                .unwrap_err();
+            assert_eq!(err.status, 422, "max_results={mr}");
+        }
+    }
+
+    #[tokio::test]
+    async fn out_of_set_sort_is_422_before_network() {
+        // `citations` is openalex-only; invalid for arxiv.
+        let err = post(&state(), "/api/arxiv/search", json!({ "query": "abc", "sort": "citations" }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, 422);
     }
 
     #[tokio::test]

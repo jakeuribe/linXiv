@@ -61,29 +61,10 @@ fn overlay_env(mut settings: Map<String, Value>, env: &[(&str, Option<String>)])
 
 #[cfg(test)]
 mod tests {
+    // The GET arm calls UserSettings::load() (real settings file) and the test
+    // rule forbids redirecting the data dir, so GET has no isolated test; the
+    // overlay logic — the only nontrivial part — is pinned by the unit tests below.
     use super::*;
-    use crate::route::route;
-    use crate::route::ApiRequest;
-    use linxiv_core::storage;
-
-    fn state() -> AppState {
-        let conn = storage::open_in_memory().unwrap();
-        storage::init_db(&conn).unwrap();
-        AppState::from_parts(conn, std::env::temp_dir(), std::env::temp_dir())
-    }
-
-    #[tokio::test]
-    async fn get_returns_a_flat_json_object() {
-        // load() reads the real settings file; we only assert the envelope shape
-        // (object, no wrapper key) — the overlay order is pinned in the unit tests.
-        let v = route(
-            &state(),
-            ApiRequest { method: "GET".into(), path: "/api/settings".into(), body: None },
-        )
-        .await
-        .unwrap();
-        assert!(v.is_object());
-    }
 
     #[test]
     fn overlay_appends_present_env_keys_in_order_after_settings() {

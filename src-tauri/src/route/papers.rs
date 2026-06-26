@@ -72,8 +72,21 @@ fn versions(state: &AppState, fk: &str) -> Result<Value, ApiError> {
 /// `GET /api/papers/sfk/{fk}?version=` — `api_get_paper_by_sfk`. Bare `to_dict()`.
 fn by_sfk(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let source_fk = path_i64(fk)?;
+    // FastAPI Query(default=None, ge=1): a present-but-non-integer or <1 version is
+    // a 422, not a silent fall-through to the latest version.
+    let version = match ctx.q("version") {
+        None => None,
+        Some(v) => {
+            let n: i64 =
+                v.parse().map_err(|_| ApiError::new(422, "version must be an integer >= 1"))?;
+            if n < 1 {
+                return Err(ApiError::new(422, "version must be an integer >= 1"));
+            }
+            Some(n)
+        }
+    };
     state.with_conn(|conn| -> Result<Value, ApiError> {
-        let paper = if let Some(version) = ctx.q_i64("version") {
+        let paper = if let Some(version) = version {
             // version branch: resolve source_id first, then the pinned version.
             let source_id = svc_paper::get_source_id(conn, source_fk)?
                 .ok_or_else(|| ApiError::new(404, "Paper not found"))?;
@@ -142,24 +155,41 @@ fn delete(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
 fn repair(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let source_fk = path_i64(fk)?;
     let b: RepairBody = ctx.parse_body()?;
+    // Mirror PaperRepairBody's pydantic validators (app.py 382-426) — these run
+    // before the handler in FastAPI, so they shape both the accepted-input set and
+    // what gets persisted. 422 on violation (status matches; detail is our plain
+    // string per the router-wide convention).
+    let title = b.title.trim().to_string();
+    if title.is_empty() {
+        return Err(ApiError::new(422, "title must not be blank"));
+    }
+    let authors = dedup_nonblank(&b.authors);
+    if authors.is_empty() {
+        return Err(ApiError::new(422, "at least one author is required"));
+    }
+    if matches!(b.doi.as_deref(), Some("")) {
+        return Err(ApiError::new(422, "doi must have at least 1 character"));
+    }
+    let summary = b.summary.trim().to_string();
+    let tags = b.tags.as_ref().map(|ts| dedup_nonblank(ts)).filter(|v| !v.is_empty());
     state.with_conn(|conn| -> Result<Value, ApiError> {
         let paper = svc_paper::get(conn, &sfk_key(source_fk))?
             .ok_or_else(|| ApiError::new(404, "Paper not found"))?;
         let meta = PaperMetadata {
             source_id: paper.source_id, // identity key; not changeable here (ADR-0008)
             version: paper.version,
-            title: b.title,
-            authors: b.authors,
+            title,
+            authors,
             published: b.published,
             updated: None,
-            summary: b.summary,
+            summary,
             category: b.category,
             categories: None,
             doi: b.doi,
             journal_ref: None,
             comment: None,
             url: b.url,
-            tags: b.tags,
+            tags,
             source: paper.source,
         };
         // ponytail: Python maps sqlite3.IntegrityError -> 409, but this endpoint
@@ -187,6 +217,7 @@ struct RepairBody {
     title: String,
     authors: Vec<String>,
     published: chrono::NaiveDate,
+    #[serde(default)]
     summary: String,
     #[serde(default)]
     category: Option<String>,
@@ -196,6 +227,19 @@ struct RepairBody {
     url: Option<String>,
     #[serde(default)]
     tags: Option<Vec<String>>,
+}
+
+/// Trim each entry, drop blanks, dedup preserving first-seen order — the shared
+/// normalization of PaperRepairBody's `authors` / `tags` validators.
+fn dedup_nonblank(items: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    items
+        .iter()
+        .filter_map(|s| {
+            let t = s.trim();
+            (!t.is_empty() && seen.insert(t.to_string())).then(|| t.to_string())
+        })
+        .collect()
 }
 
 fn sfk_key(source_fk: i64) -> Paper {
@@ -313,6 +357,33 @@ mod tests {
         let body = json!({"title":"T","authors":["A"],"published":"not-a-date","summary":"s"});
         let err = req(&state(), "PUT", "/api/papers/sfk/1", Some(body)).await.unwrap_err();
         assert_eq!(err.status, 422);
+    }
+
+    #[tokio::test]
+    async fn repair_validators_reject_blank_title_empty_authors_and_empty_doi() {
+        let st = state();
+        // validators run before the paper lookup, so these 422 even with no paper.
+        let blank_title = json!({"title":"   ","authors":["A"],"published":"2024-01-01"});
+        assert_eq!(req(&st, "PUT", "/api/papers/sfk/1", Some(blank_title)).await.unwrap_err().status, 422);
+        let no_authors = json!({"title":"T","authors":["  ",""],"published":"2024-01-01"});
+        assert_eq!(req(&st, "PUT", "/api/papers/sfk/1", Some(no_authors)).await.unwrap_err().status, 422);
+        let empty_doi = json!({"title":"T","authors":["A"],"published":"2024-01-01","doi":""});
+        assert_eq!(req(&st, "PUT", "/api/papers/sfk/1", Some(empty_doi)).await.unwrap_err().status, 422);
+    }
+
+    #[test]
+    fn dedup_nonblank_trims_drops_blanks_and_dedups_in_order() {
+        assert_eq!(
+            dedup_nonblank(&[" b ".into(), "a".into(), "".into(), "b".into(), "  ".into()]),
+            vec!["b".to_string(), "a".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn by_sfk_invalid_version_is_422() {
+        let st = state();
+        assert_eq!(req(&st, "GET", "/api/papers/sfk/1?version=abc", None).await.unwrap_err().status, 422);
+        assert_eq!(req(&st, "GET", "/api/papers/sfk/1?version=0", None).await.unwrap_err().status, 422);
     }
 
     #[tokio::test]

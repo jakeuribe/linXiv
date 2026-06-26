@@ -4,6 +4,7 @@
 
 use serde_json::{json, Value};
 
+use linxiv_core::models::Status;
 use linxiv_core::service::paper as svc_paper;
 use linxiv_core::service::project::{self as svc_project, Projects};
 use linxiv_core::service::tag::{self as svc_tag, Tag};
@@ -41,10 +42,14 @@ fn detail(state: &AppState, label: &str) -> Result<Value, ApiError> {
             .map(|p| serde_json::to_value(p).map_err(|e| ApiError::new(500, e.to_string())))
             .collect::<Result<_, _>>()?;
 
-        // ponytail: O(projects) scan — core has no list_projects_by_tag. Add one
-        // (TAG_FK→PROJECT_FK join) if project counts grow enough to matter.
+        // ponytail: O(active-projects) scan — core has no list_projects_by_tag. Add
+        // one (TAG_FK→PROJECT_FK join) if project counts grow enough to matter.
+        // Status::Active filter matches Python's `_LIST_PROJECTS_BY_TAG_SQL`
+        // (`AND pr.STATUS = 'active'`): PROJECT_TO_TAG rows survive soft-delete, so
+        // an unfiltered scan would leak archived/deleted projects the API excludes.
+        let active = Projects { project_fks: None, status: Some(Status::Active) };
         let mut projects = Vec::new();
-        for p in svc_project::get_many(conn, &Projects::default())? {
+        for p in svc_project::get_many(conn, &active)? {
             if !p.project_tags.iter().any(|t| t.eq_ignore_ascii_case(label)) {
                 continue;
             }

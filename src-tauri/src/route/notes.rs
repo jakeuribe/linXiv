@@ -62,6 +62,12 @@ fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
         content: String,
     }
     let b: Body = ctx.parse_body()?;
+    // Pydantic NoteCreate.source_id is Field(min_length=1): an empty source_id is a
+    // 422 before the handler. Without this, ensure_paper_root("") would create a
+    // junk PAPER_ROOTS row keyed on "". (Checked pre-trim, like pydantic.)
+    if b.source_id.is_empty() {
+        return Err(ApiError::new(422, "source_id must not be empty"));
+    }
     state.with_conn(|conn| {
         let source_fk = svc_paper::ensure_paper_root(conn, b.source_id.trim())?;
         let note_id = svc_note::create(
