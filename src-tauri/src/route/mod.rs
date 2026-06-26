@@ -27,6 +27,17 @@ use linxiv_core::service::{paper as svc_paper, tag as svc_tag};
 
 use crate::state::AppState;
 
+mod authors;
+mod editor;
+mod notes;
+mod papers;
+mod pdfs;
+mod projects;
+mod settings;
+mod sources;
+mod tags;
+mod trash;
+
 /// One webview→backend call. `body` is the parsed JSON request body (None for
 /// GET/DELETE without a body); file uploads do not come through here (they stay
 /// on the HTTP path until Phase 5c).
@@ -65,6 +76,41 @@ impl From<CoreError> for ApiError {
     }
 }
 
+/// One parsed request, handed to each resource group's `handle`. `segs` are the
+/// percent-decoded path segments (`["api","authors","42"]`); `body` is the parsed
+/// JSON request body. Group modules match on `(ctx.method, ctx.segs)`.
+pub(crate) struct ReqCtx<'a> {
+    pub method: &'a str,
+    pub segs: &'a [&'a str],
+    pub query: &'a HashMap<String, String>,
+    pub body: Option<&'a Value>,
+}
+
+impl ReqCtx<'_> {
+    pub fn q(&self, key: &str) -> Option<&str> {
+        self.query.get(key).map(String::as_str)
+    }
+    pub fn q_i64(&self, key: &str) -> Option<i64> {
+        self.q(key).and_then(|v| v.parse().ok())
+    }
+    pub fn q_bool(&self, key: &str) -> bool {
+        matches!(self.q(key), Some("true") | Some("1"))
+    }
+    /// Deserialize the JSON body into `T`, matching FastAPI's pydantic binding
+    /// (422 on a malformed/missing body).
+    pub fn parse_body<T: serde::de::DeserializeOwned>(&self) -> Result<T, ApiError> {
+        let v = self.body.cloned().unwrap_or(Value::Null);
+        serde_json::from_value(v).map_err(|e| ApiError::new(422, e.to_string()))
+    }
+}
+
+/// Parse an integer path segment (`{author_id}` etc.); 422 on a non-integer, the
+/// status FastAPI's path-param coercion returns.
+pub(crate) fn path_i64(seg: &str) -> Result<i64, ApiError> {
+    seg.parse()
+        .map_err(|_| ApiError::new(422, format!("Invalid path parameter: {seg:?}")))
+}
+
 /// The Tauri command the webview invokes. Thin wrapper over `route`.
 #[tauri::command]
 pub async fn api(
@@ -87,22 +133,41 @@ pub async fn route(state: &AppState, req: ApiRequest) -> Result<Value, ApiError>
         .collect();
     let query = parse_query(raw_query);
     let s: Vec<&str> = segs.iter().map(String::as_str).collect();
-    let _ = (&query, &req.body); // used by group arms once they land
+    let ctx = ReqCtx {
+        method: req.method.as_str(),
+        segs: &s,
+        query: &query,
+        body: req.body.as_ref(),
+    };
 
-    match (req.method.as_str(), s.as_slice()) {
-        ("GET", ["api", "health"]) => Ok(json!({
-            "ok": true,
-            "service": "linxiv-api",
-            "token": std::env::var("LINXIV_HEALTH_TOKEN").unwrap_or_default(),
-        })),
-        ("GET", ["api", "stats"]) => stats(state),
-        ("GET", ["api", "categories"]) => categories(state),
-
-        // Resource groups plug in here (Phase 5b):
-        //   ("GET", ["api", "papers"]) => papers::list(state, &query),
-        //   ("GET" | "POST" | "PATCH" | "DELETE", ["api", "projects", ..]) => projects::route(...),
-        _ => Err(ApiError::not_routed()),
+    // Flat top-level arms (no resource subtree).
+    match (ctx.method, ctx.segs) {
+        ("GET", ["api", "health"]) => {
+            return Ok(json!({
+                "ok": true,
+                "service": "linxiv-api",
+                "token": std::env::var("LINXIV_HEALTH_TOKEN").unwrap_or_default(),
+            }))
+        }
+        ("GET", ["api", "stats"]) => return stats(state),
+        ("GET", ["api", "categories"]) => return categories(state),
+        _ => {}
     }
+
+    // Resource groups: each owns its path subtree and returns None to pass. Arms
+    // match on exact (method, segment-count, literals), so order is independent —
+    // pdfs is listed before papers only for readability (it claims the more
+    // specific `/api/papers/{id}/pdf-path`).
+    macro_rules! try_groups {
+        ($($group:ident),+ $(,)?) => {$(
+            if let Some(r) = $group::handle(state, &ctx).await {
+                return r;
+            }
+        )+};
+    }
+    try_groups!(pdfs, papers, projects, notes, tags, authors, sources, settings, trash, editor);
+
+    Err(ApiError::not_routed())
 }
 
 // ── reference arms (the worked example every group arm copies) ───────────────
