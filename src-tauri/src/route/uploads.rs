@@ -7,7 +7,9 @@
 //! body. A malformed `file_b64` is a 400 (the upload never reaches core). All other
 //! status codes + `detail` strings byte-match the Python handlers above.
 
+use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
@@ -49,6 +51,16 @@ fn decode_b64(s: &str) -> Result<Vec<u8>, ApiError> {
         .map_err(|e| ApiError::new(400, format!("Invalid base64: {e}")))
 }
 
+/// Reject an over-limit upload from the base64 length BEFORE decoding, so a
+/// malicious IPC caller can't force hundreds of MB to be decoded into memory just
+/// to fail the post-decode size check. `len/4*3` is the decoded-size upper bound.
+fn reject_oversized_b64(file_b64: &str, msg: &str) -> Result<(), ApiError> {
+    if file_b64.len() / 4 * 3 > MAX_PDF_BYTES {
+        return Err(ApiError::new(413, msg.to_string()));
+    }
+    Ok(())
+}
+
 #[derive(Deserialize)]
 struct FileBody {
     file_b64: String,
@@ -58,6 +70,7 @@ struct FileBody {
 /// fetched for a saved paper. Order matches app.py: 404 paper → 413 size → 400 magic.
 fn attach_pdf(state: &AppState, source_id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let b: FileBody = ctx.parse_body()?;
+    reject_oversized_b64(&b.file_b64, "PDF exceeds size limit")?;
     let content = decode_b64(&b.file_b64)?;
     let pdf_dir = state.pdf_dir.clone();
     state.with_conn(|conn| -> Result<Value, ApiError> {
@@ -105,6 +118,7 @@ async fn import_pdf(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     if !filename.to_lowercase().ends_with(".pdf") {
         return Err(ApiError::new(400, "File must be a PDF"));
     }
+    reject_oversized_b64(&b.file_b64, "Upload rejected: file size exceeds 100 MB limit")?;
     let content = decode_b64(&b.file_b64)?;
     if content.len() > MAX_PDF_BYTES {
         return Err(ApiError::new(
@@ -119,8 +133,11 @@ async fn import_pdf(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     // ponytail: data_dir is a config read here (not in AppState) — the resolver
     // needs it for arXiv's rate-limit file, same as the sources arms.
     let data_dir = config::data_dir();
-    // PdfImport → 422, ProjectNotFound → 404, ProjectDeleted/PaperLink → 400 all
-    // flow through `?` (CoreError::http_status + Display match app.py's details).
+    // ProjectNotFound → 404, ProjectDeleted/PaperLink → 400 flow through `?`. NOTE:
+    // resolve_pdf_metadata degrades a pdfium extraction failure to empty metadata
+    // (it never errors), so app.py's PdfImportError → 422 path is unreachable here —
+    // a %PDF-but-corrupt file saves a minimal paper + 200 where app.py returns 422.
+    // Matching that needs core to surface PdfImport from the resolver (deferred).
     let resolved = resolve_pdf_metadata(&content, &data_dir).await?;
     let result = state.with_conn(|conn| {
         paper_import::import_pdf(conn, &pdf_dir, &content, project_id, |_| Ok(resolved.clone()))
@@ -150,6 +167,10 @@ fn import_bibtex(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> 
         }
         let metas = bibtex_import(&text)
             .map_err(|m| ApiError::new(400, format!("BibTeX parse error: {m}")))?;
+        // ponytail: per-item save (each opens its own transaction), the same ceiling
+        // as the arxiv-search save loop — a mid-batch DB failure leaves earlier
+        // entries committed, where app.py's save_papers_metadata is one atomic batch.
+        // Upgrade path: a batched core save_papers_metadata if it bites.
         let mut saved: Vec<String> = Vec::new();
         for meta in &metas {
             let (sid, _) = svc_paper::save_paper_metadata(conn, meta, None)?;
@@ -220,13 +241,27 @@ fn import_commit(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> 
     Ok(json!({ "project_id": project_fk }))
 }
 
-/// Spill upload bytes to a nanos-suffixed temp `.lxproj` (no tempfile dep; same
-/// pattern as `route/pdfs.rs` tests). Callers remove it on every path.
+/// Spill upload bytes to a temp `.lxproj`. Created O_EXCL (`create_new`) so a
+/// pre-planted symlink at the path can't be followed and clobbered (the `api`
+/// command is IPC-reachable) — on collision, retry with a fresh name. Callers
+/// remove it on every path.
 fn write_temp_lxproj(content: &[u8]) -> Result<PathBuf, ApiError> {
-    let n = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    let path = std::env::temp_dir().join(format!("linxiv_import_{n}.lxproj"));
-    std::fs::write(&path, content).map_err(|e| ApiError::new(500, e.to_string()))?;
-    Ok(path)
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let dir = std::env::temp_dir();
+    for _ in 0..16 {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let uniq = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = dir.join(format!("linxiv_import_{}_{}_{}.lxproj", std::process::id(), nanos, uniq));
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut f) => {
+                f.write_all(content).map_err(|e| ApiError::new(500, e.to_string()))?;
+                return Ok(path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(ApiError::new(500, e.to_string())),
+        }
+    }
+    Err(ApiError::new(500, "could not create a unique temp file"))
 }
 
 fn sid_key(source_id: &str) -> Paper {

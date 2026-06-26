@@ -3,6 +3,14 @@
 //! (pybtex) and `formats/markdown.py::ObsidianFormat.export_papers`. Hoisted here so
 //! the three thin binaries (Tauri app router, CLI, MCP) share one implementation
 //! instead of each carrying its own copy.
+//!
+//! Deferred pybtex/pybtex-import strictness gaps (carried over from the original
+//! CLI/MCP ports; not byte-exact vs Python, add if a golden needs it): export does
+//! not LaTeX-encode field values (`%`→`\%`, `&`→`\&`, …) the way pybtex's
+//! ulatex codec does, nor dedup case-insensitive citation keys; import
+//! (`format_person`) emits "Given Last" rather than pybtex's "Last, Given"
+//! normalization, drops literal braces, and accepts out-of-range years that
+//! Python's `date()` would reject.
 
 use std::collections::BTreeSet;
 

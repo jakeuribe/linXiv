@@ -61,9 +61,10 @@ fn export(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     };
     let pdf_dir = state.pdf_dir.clone();
     state.with_conn(|conn| -> Result<(), ApiError> {
-        // app.py maps a missing project (ValueError) -> 404; pre-check to match.
+        // app.py maps export_project's ValueError -> 404 with `str(e)` =
+        // "Project {fk} not found"; pre-check to produce the same status + message.
         if project::get(conn, &Project { project_fk: Some(project_fk) })?.is_none() {
-            return Err(ApiError::new(404, "Project not found"));
+            return Err(ApiError::new(404, format!("Project {project_fk} not found")));
         }
         export_import::export_project(conn, project_fk, Path::new(&dest), b.include_pdfs, &pdf_dir)?;
         Ok(())

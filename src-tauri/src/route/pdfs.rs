@@ -51,7 +51,14 @@ fn list_saved(state: &AppState) -> Result<Value, ApiError> {
             "size_bytes": meta.len(),
         }));
     }
-    out.sort_by(|a, b| b["size_bytes"].as_u64().cmp(&a["size_bytes"].as_u64()));
+    // size desc, then source_id asc — matches app.py (_LIST_PDFS_SQL orders by
+    // source_id, then a stable sort by size_bytes desc keeps that as the tiebreak).
+    out.sort_by(|a, b| {
+        b["size_bytes"]
+            .as_u64()
+            .cmp(&a["size_bytes"].as_u64())
+            .then_with(|| a["source_id"].as_str().cmp(&b["source_id"].as_str()))
+    });
     out.truncate(SAVED_PDF_LIST_CAP);
     Ok(json!({ "pdfs": out }))
 }

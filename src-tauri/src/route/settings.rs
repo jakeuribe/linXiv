@@ -28,11 +28,14 @@ pub(crate) async fn handle(_state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result
 }
 
 /// `PATCH /api/env` — `api_env_patch`. Allowlist-gated (400 otherwise). Python
-/// writes `.env`; the in-process app has no `.env` load, so we set the live process
-/// env var (so the GET /api/settings overlay + the source clients see it this
-/// session) and persist it through user settings.
-/// ponytail: `set_var` mutates global env — fine for a rare settings PATCH, not a
-/// hot path. Across-restart persistence is via user_settings.json, not `.env`.
+/// `set_key`s `.env` then mutates `os.environ`. The in-process app has no `.env`
+/// load path, so this sets the live process env var (the source clients + the GET
+/// overlay read those keys via `std::env::var`) and writes the value to user
+/// settings. `set_var` mutates global process env: a concurrent `GET /api/settings`
+/// reading the same key can race it (the values are short ASCII so the read sees
+/// old-or-new, never a torn string). The user_settings copy is NOT reloaded into
+/// the env at startup — cross-restart env persistence is part of the wider
+/// "Rust app never loads a persisted .env" gap, out of this route's scope.
 fn env_patch(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     #[derive(Deserialize)]
     struct Body {
