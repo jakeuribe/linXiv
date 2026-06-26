@@ -10,3 +10,13 @@ path = "src/main.rs"
 [dependencies]
 linxiv-core = { path = "../core" }
 clap = { version = "4.6", features = ["derive"] }
+# rt-multi-thread + macros: search/fetch/pdf-download/import call async core fns.
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+# preserve_order: json! object literals emit keys in insertion order (Python json.dump parity).
+serde_json = { version = "1", features = ["preserve_order"] }
+# Ctx.conn is rusqlite::Connection; 0.40 matches core so the type unifies (bundled
+# feature comes from core via Cargo feature unification).
+rusqlite = "0.40"
+regex = "1"
