@@ -6,7 +6,12 @@
 
 use std::collections::BTreeSet;
 
-use crate::models::PaperDetails;
+use biblatex::Bibliography;
+use chrono::NaiveDate;
+
+use crate::models::{PaperDetails, PaperMetadata};
+
+const FALLBACK_DATE: (i32, u32, u32) = (1900, 1, 1);
 
 /// One `@article` entry per paper, byte-matching pybtex `bib.to_string("bibtex")`:
 /// 4-space indent, `field = "value"`, no trailing comma on the last field, one
@@ -136,10 +141,72 @@ fn old_style_arxiv(sid: &str) -> bool {
         && num.chars().all(|c| c.is_ascii_digit())
 }
 
+// ── BibTeX import (`BibTeXFormat.import_string` / `_bib_to_metadata`) ────────
+
+/// Parse a BibTeX document into `PaperMetadata`. Mirrors `_bib_to_metadata`:
+/// source_id = doi or entry key, version 1, source "bibtex", year→Jan-1 date
+/// (falling back to 1900-01-01).
+pub fn bibtex_import(text: &str) -> Result<Vec<PaperMetadata>, String> {
+    let bib = Bibliography::parse(text).map_err(|e| format!("BibTeX parse error: {e}"))?;
+    let mut out = Vec::new();
+    for entry in bib.into_iter() {
+        let key = entry.key.clone();
+        let authors: Vec<String> =
+            entry.author().unwrap_or_default().iter().map(format_person).collect();
+        let doi = field(&entry, "doi");
+        let title = field(&entry, "title").unwrap_or_else(|| key.clone());
+        let summary = field(&entry, "abstract").unwrap_or_default();
+        let journal_ref = field(&entry, "journal").or_else(|| field(&entry, "booktitle"));
+        let url = field(&entry, "url");
+        let published = parse_year(&entry);
+        out.push(PaperMetadata {
+            source_id: doi.clone().unwrap_or_else(|| key.clone()),
+            version: 1,
+            title,
+            authors,
+            published,
+            updated: None,
+            summary,
+            category: None,
+            categories: None,
+            doi,
+            journal_ref,
+            comment: None,
+            url,
+            tags: None,
+            source: Some("bibtex".into()),
+        });
+    }
+    Ok(out)
+}
+
+/// A scalar field as plain text, or None when absent/empty.
+fn field(entry: &biblatex::Entry, key: &str) -> Option<String> {
+    entry.get_as::<String>(key).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+fn parse_year(entry: &biblatex::Entry) -> NaiveDate {
+    let year = entry
+        .get_as::<i64>("year")
+        .ok()
+        .or_else(|| field(entry, "year").and_then(|s| s.parse::<i64>().ok()));
+    year.and_then(|y| NaiveDate::from_ymd_opt(y as i32, 1, 1))
+        .unwrap_or_else(|| NaiveDate::from_ymd_opt(FALLBACK_DATE.0, FALLBACK_DATE.1, FALLBACK_DATE.2).unwrap())
+}
+
+/// "Given Last" display name (prefix/suffix folded in), trimmed.
+fn format_person(p: &biblatex::Person) -> String {
+    [p.given_name.as_str(), p.prefix.as_str(), p.name.as_str(), p.suffix.as_str()]
+        .iter()
+        .filter(|s| !s.is_empty())
+        .copied()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::NaiveDate;
 
     fn paper(source_id: &str, title: &str) -> PaperDetails {
         PaperDetails {
@@ -182,6 +249,23 @@ mod tests {
         assert!(md.contains("## [A Title](https://arxiv.org/abs/2204.12985)"));
         assert!(!md.contains("**Paper-ID:**")); // arXiv id → omitted
         assert!(md.contains("**Authors:** Ada"));
+    }
+
+    #[test]
+    fn bibtex_import_doi_wins_and_year_falls_back() {
+        let metas = bibtex_import(
+            "@article{smith2020, author = {John Smith and Jane Doe}, \
+             title = {A Title}, year = {2020}, doi = {10.1/x}, journal = {J}}",
+        )
+        .unwrap();
+        assert_eq!(metas.len(), 1);
+        assert_eq!(metas[0].source_id, "10.1/x"); // doi wins over key
+        assert_eq!(metas[0].authors, vec!["John Smith".to_string(), "Jane Doe".to_string()]);
+        assert_eq!(metas[0].source.as_deref(), Some("bibtex"));
+        // no year/doi → key as source_id, 1900-01-01 fallback
+        let m2 = &bibtex_import("@misc{k, title={T}}").unwrap()[0];
+        assert_eq!(m2.source_id, "k");
+        assert_eq!(m2.published, NaiveDate::from_ymd_opt(1900, 1, 1).unwrap());
     }
 
     #[test]

@@ -37,6 +37,9 @@ rusqlite = "0.40"
 anyhow = "1"
 # Date parse/format parity with core's NaiveDate fields in router arms.
 chrono = "0.4"
+# File-upload routes carry bytes as base64 in the JSON `api` body (the webview
+# can't put a multipart body through `invoke`).
+base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"

@@ -38,6 +38,7 @@ mod settings;
 mod sources;
 mod tags;
 mod trash;
+mod uploads;
 
 /// One webview→backend call. `body` is the parsed JSON request body (None for
 /// GET/DELETE without a body); file uploads do not come through here (they stay
@@ -166,7 +167,7 @@ pub async fn route(state: &AppState, req: ApiRequest) -> Result<Value, ApiError>
             }
         )+};
     }
-    try_groups!(pdfs, papers, projects, notes, tags, authors, sources, search, settings, trash, editor);
+    try_groups!(uploads, pdfs, papers, projects, notes, tags, authors, sources, search, settings, trash, editor);
 
     Err(ApiError::not_routed())
 }

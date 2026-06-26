@@ -9,7 +9,7 @@ import { getPaperBySfk, getPaperVersions, getPaperPdfUrl, getPdfProxyUrl } from 
 import { getNotes, deleteNote } from "../api/notes";
 import { listProjects } from "../api/projects";
 import { fetchArxiv } from "../api/search";
-import { apiFetch, isTauri } from "../api/client";
+import { apiFetch, bytesToBase64, isTauri } from "../api/client";
 import type { Note, Paper } from "../types/api";
 import { Spinner } from "../components/ui/spinner";
 import { Button } from "../components/ui/button";
@@ -124,9 +124,14 @@ export default function PaperDetailPage() {
     mutationFn: async (sourceId: string) => {
       if (!pdfPreviewDocRef.current) throw new Error("PDF not loaded");
       const bytes = await pdfPreviewDocRef.current.getData();
-      const form = new FormData();
-      form.append("file", new Blob([bytes.slice()], { type: "application/pdf" }), `${sourceId}.pdf`);
-      await apiFetch(`/api/papers/${encodeURIComponent(sourceId)}/pdf`, { method: "PUT", body: form });
+      const path = `/api/papers/${encodeURIComponent(sourceId)}/pdf`;
+      if (isTauri) {
+        await apiFetch(path, { method: "PUT", body: JSON.stringify({ file_b64: bytesToBase64(bytes) }) });
+      } else {
+        const form = new FormData();
+        form.append("file", new Blob([bytes.slice()], { type: "application/pdf" }), `${sourceId}.pdf`);
+        await apiFetch(path, { method: "PUT", body: form });
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["paper", "sfk", sfk] });
@@ -138,9 +143,15 @@ export default function PaperDetailPage() {
 
   const linkPdfMutation = useMutation({
     mutationFn: async ({ sourceId, file }: { sourceId: string; file: File }) => {
-      const form = new FormData();
-      form.append("file", file, file.name);
-      await apiFetch(`/api/papers/${encodeURIComponent(sourceId)}/pdf`, { method: "PUT", body: form });
+      const path = `/api/papers/${encodeURIComponent(sourceId)}/pdf`;
+      if (isTauri) {
+        const file_b64 = bytesToBase64(new Uint8Array(await file.arrayBuffer()));
+        await apiFetch(path, { method: "PUT", body: JSON.stringify({ file_b64 }) });
+      } else {
+        const form = new FormData();
+        form.append("file", file, file.name);
+        await apiFetch(path, { method: "PUT", body: form });
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["paper", "sfk", sfk] });

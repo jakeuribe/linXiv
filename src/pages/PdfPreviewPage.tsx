@@ -7,7 +7,7 @@ import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
 import { fetchArxiv } from "../api/search";
 import { appendSavedId } from "../api/searchState";
-import { apiFetch } from "../api/client";
+import { apiFetch, bytesToBase64, isTauri } from "../api/client";
 import { getPdfProxyUrl } from "../api/papers";
 import { Button } from "../components/ui/button";
 import { Spinner } from "../components/ui/spinner";
@@ -67,9 +67,14 @@ export default function PdfPreviewPage() {
       if (pdfDocRef.current) {
         try {
           const bytes = await pdfDocRef.current.getData();
-          const form = new FormData();
-          form.append("file", new Blob([bytes.slice()], { type: "application/pdf" }), `${sourceId}.pdf`);
-          await apiFetch(`/api/papers/${encodeURIComponent(sourceId)}/pdf`, { method: "PUT", body: form });
+          const path = `/api/papers/${encodeURIComponent(sourceId)}/pdf`;
+          if (isTauri) {
+            await apiFetch(path, { method: "PUT", body: JSON.stringify({ file_b64: bytesToBase64(bytes) }) });
+          } else {
+            const form = new FormData();
+            form.append("file", new Blob([bytes.slice()], { type: "application/pdf" }), `${sourceId}.pdf`);
+            await apiFetch(path, { method: "PUT", body: form });
+          }
         } catch (e) {
           console.error("PDF attach failed (non-fatal):", e);
         }

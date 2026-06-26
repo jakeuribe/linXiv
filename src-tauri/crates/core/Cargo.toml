@@ -34,6 +34,9 @@ quick-xml = "0.40"
 pdfium-render = { version = "0.8", features = ["thread_safe"] }
 tar = "0.4"
 flate2 = "1"
+# BibTeX import parser (pybtex's role). Used by formats::bibtex_import, shared by
+# the CLI/MCP/app-router import paths.
+biblatex = "0.12"
 
 [dev-dependencies]
 tempfile = "3"
