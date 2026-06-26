@@ -1,6 +1,5 @@
 //! Group `project` — cmd_project_* (incl. export/import) in `linxiv_cli.py`.
 
-use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use clap::{Subcommand, ValueEnum};
@@ -357,7 +356,7 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         ProjectCmd::ExportBibtex { project_id, dest } => {
             let details = resolve_or_exit(ctx, project_id);
             let papers = project_papers(ctx, &details.source_fks)?;
-            let bibtex = bibtex_export(&papers);
+            let bibtex = linxiv_core::formats::bibtex_export(&papers);
             let dest = with_default_ext(&dest, "bib");
             std::fs::write(&dest, bibtex)?;
             #[derive(Serialize)]
@@ -371,7 +370,7 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         ProjectCmd::ExportObsidian { project_id, dest } => {
             let details = resolve_or_exit(ctx, project_id);
             let papers = project_papers(ctx, &details.source_fks)?;
-            let md = obsidian_export(&papers);
+            let md = linxiv_core::formats::obsidian_export(&papers);
             let dest = with_default_ext(&dest, "md");
             std::fs::write(&dest, md)?;
             #[derive(Serialize)]
@@ -394,136 +393,3 @@ fn with_default_ext(dest: &str, ext: &str) -> PathBuf {
     p
 }
 
-// ── BibTeX / Obsidian formatters ─────────────────────────────────────────────
-// Leaf string<->data transforms with no DB access. Mirrors `formats/bibtex.py`
-// and `formats/markdown.py::ObsidianFormat`; the same port lives in linxiv-mcp's
-// `formats` module. ponytail: duplicated until a shared `formats` crate exists
-// (CLI cannot reach the mcp binary's module without a new dependency).
-
-/// `BibTeXFormat.export_papers` — one `@article` entry per paper, byte-matching
-/// pybtex `bib.to_string("bibtex")`: 4-space indent, `field = "value"`, no trailing
-/// comma on the last field, one blank line between entries, single trailing newline.
-/// ponytail: pybtex also LaTeX-encodes special chars (`%`->`\%`, accents); deferred
-/// with the rest of the pybtex-strictness gap, add an encoder if goldens need it.
-fn bibtex_export(papers: &[PaperDetails]) -> String {
-    let mut out = String::new();
-    for (i, p) in papers.iter().enumerate() {
-        if i > 0 {
-            out.push('\n');
-        }
-        let key = bib_key(&p.source_id);
-        let year = p.published.map(|d| d.format("%Y").to_string()).unwrap_or_default();
-        out.push_str(&format!("@article{{{key}"));
-        let mut fields: Vec<(&str, &str)> =
-            vec![("title", p.title.as_str()), ("year", year.as_str()), ("abstract", p.summary.as_deref().unwrap_or(""))];
-        if let Some(doi) = p.doi.as_deref().filter(|s| !s.is_empty()) {
-            fields.push(("doi", doi));
-        }
-        if let Some(journal) = p.journal_ref.as_deref().filter(|s| !s.is_empty()) {
-            fields.push(("journal", journal));
-        }
-        if let Some(url) = p.url.as_deref().filter(|s| !s.is_empty()) {
-            fields.push(("url", url));
-        }
-        for (name, value) in fields {
-            out.push_str(&format!(",\n    {name} = {}", bib_quote(value)));
-        }
-        out.push_str("\n}\n");
-    }
-    out
-}
-
-/// pybtex `Writer.quote`: `"value"` unless the value contains a `"`, then `{value}`.
-fn bib_quote(value: &str) -> String {
-    if value.contains('"') {
-        format!("{{{value}}}")
-    } else {
-        format!("\"{value}\"")
-    }
-}
-
-/// `(source_id or "unknown").replace("/","_").replace(".","_")`.
-fn bib_key(source_id: &str) -> String {
-    let base = if source_id.is_empty() { "unknown" } else { source_id };
-    base.replace(['/', '.'], "_")
-}
-
-/// `ObsidianFormat.export_papers` — YAML frontmatter + one `##` section per paper.
-fn obsidian_export(papers: &[PaperDetails]) -> String {
-    let mut all_tags: BTreeSet<String> = BTreeSet::new();
-    for p in papers {
-        for t in &p.tags {
-            all_tags.insert(t.clone());
-        }
-    }
-
-    let mut lines: Vec<String> = vec!["---".into(), format!("papers: {}", papers.len())];
-    if !all_tags.is_empty() {
-        lines.push("tags:".into());
-        for t in &all_tags {
-            lines.push(format!("  - {t}"));
-        }
-    }
-    lines.extend(["---".into(), "".into(), "# Selected Papers".into(), "".into()]);
-
-    for p in papers {
-        let sid = p.source_id.as_str();
-        // Python `p.get("title", sid)`: title key always present, so an empty title stays empty.
-        let title = p.title.as_str();
-        let authors = p.authors.join(", ");
-        let url = paper_url(sid, p.url.as_deref());
-        lines.push(format!("## [{title}]({url})"));
-        lines.push("".into());
-        if !is_arxiv_id(sid) {
-            lines.push(format!("**Paper-ID:** {sid}"));
-        }
-        if !authors.is_empty() {
-            lines.push(format!("**Authors:** {authors}"));
-        }
-        if let Some(cat) = p.category.as_deref().filter(|s| !s.is_empty()) {
-            lines.push(format!("**Category:** {cat}"));
-        }
-        if !p.tags.is_empty() {
-            lines.push(format!("**Tags:** {}", p.tags.join(", ")));
-        }
-        lines.push("".into());
-    }
-    lines.join("\n")
-}
-
-/// Best URL for a paper: stored url > arXiv abs link > empty.
-fn paper_url(sid: &str, stored_url: Option<&str>) -> String {
-    if let Some(u) = stored_url.filter(|s| !s.is_empty()) {
-        return u.to_string();
-    }
-    if is_arxiv_id(sid) {
-        return format!("https://arxiv.org/abs/{sid}");
-    }
-    String::new()
-}
-
-/// Port of `_ARXIV_ID_RE`: `^\d{4}\.\d{4,5}(v\d+)?$ | ^[a-z-]+/\d{7}$`.
-fn is_arxiv_id(sid: &str) -> bool {
-    new_style_arxiv(sid) || old_style_arxiv(sid)
-}
-
-fn new_style_arxiv(sid: &str) -> bool {
-    let head = match sid.split_once('v') {
-        Some((h, v)) if !v.is_empty() && v.chars().all(|c| c.is_ascii_digit()) => h,
-        Some(_) => return false,
-        None => sid,
-    };
-    let Some((a, b)) = head.split_once('.') else { return false };
-    a.len() == 4
-        && a.chars().all(|c| c.is_ascii_digit())
-        && (4..=5).contains(&b.len())
-        && b.chars().all(|c| c.is_ascii_digit())
-}
-
-fn old_style_arxiv(sid: &str) -> bool {
-    let Some((cat, num)) = sid.split_once('/') else { return false };
-    !cat.is_empty()
-        && cat.chars().all(|c| c.is_ascii_lowercase() || c == '-')
-        && num.len() == 7
-        && num.chars().all(|c| c.is_ascii_digit())
-}

@@ -1,5 +1,6 @@
 pub mod models;
 pub mod error;
+pub mod formats;
 pub mod config;
 pub mod storage;
 pub mod service;
