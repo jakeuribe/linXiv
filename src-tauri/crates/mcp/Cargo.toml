@@ -9,3 +9,23 @@ path = "src/main.rs"
 
 [dependencies]
 linxiv-core = { path = "../core" }
+# Same version core uses (0.40) so the Connection type unifies to one crate
+# instance — lets the binary name the type returned by storage::open.
+rusqlite = "0.40"
+# rmcp 1.8 (current). transport-io adds the stdio transport; default features
+# (macros + server) bring the #[tool]/#[tool_router]/#[tool_handler] macros and
+# the schemars-backed input-schema generation.
+rmcp = { version = "1.8.0", features = ["transport-io"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
+serde = { version = "1", features = ["derive"] }
+# preserve_order: tool results that are json! objects keep insertion order (Python parity).
+serde_json = { version = "1", features = ["preserve_order"] }
+# Tool input schemas: derive JsonSchema on param structs. Must match the
+# version rmcp 1.8 re-exports (schemars 1.0) so derives line up.
+schemars = "1.0"
+chrono = "0.4"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# BibTeX parsing for import_bibtex (pybtex's role in the Python port).
+biblatex = "0.12"
