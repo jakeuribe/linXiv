@@ -269,9 +269,6 @@ pub struct ProjectDetails {
     pub name: String,
     #[serde(default)]
     pub description: String,
-    // ponytail: UNSET sentinel — wire in Stage 2 service. The full PATCH
-    // color-clear (explicit-null vs. unchanged) needs Option<Option<i32>> on
-    // the update DTO, not on this full-row model (plan §5.2, D16).
     #[serde(default)]
     pub color: Option<i32>,
     #[serde(default)]

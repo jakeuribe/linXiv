@@ -2,7 +2,7 @@
 # resolves sidecar binaries relative to current_exe(), so the cargo target/
 # directory must stay at src-tauri/target (ADR 0016 / drift report 2026-06-05).
 [workspace]
-members = [".", "crates/core", "crates/cli", "crates/mcp", "crates/migrate"]
+members = [".", "crates/core", "crates/cli", "crates/mcp", "crates/migrate", "crates/share"]
 
 [package]
 name = "linxiv-app"
@@ -42,6 +42,9 @@ axum = "0.8"
 # command (replacing the HTTP hop to the Python sidecar). rusqlite is pinned to
 # core's version so the Connection type unifies to one crate instance.
 linxiv-core = { path = "crates/core" }
+# Phase-0 quarantined CRDT "shared projects" store, reached via the `share_api`
+# command. Reads canonical via linxiv-core; its own docs live under the share dir.
+linxiv-share = { path = "crates/share" }
 rusqlite = "0.40"
 anyhow = "1"
 # Date parse/format parity with core's NaiveDate fields in router arms.
@@ -49,6 +52,10 @@ chrono = "0.4"
 # File-upload routes carry bytes as base64 in the JSON `api` body (the webview
 # can't put a multipart body through `invoke`).
 base64 = "0.22"
+
+[dev-dependencies]
+# Share-dispatcher test injects a tempdir share dir (never the real data dir).
+tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"

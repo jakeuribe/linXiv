@@ -130,8 +130,6 @@ async fn import_pdf(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
         return Err(ApiError::new(400, "File does not appear to be a valid PDF"));
     }
     let pdf_dir = state.pdf_dir.clone();
-    // ponytail: data_dir is a config read here (not in AppState) — the resolver
-    // needs it for arXiv's rate-limit file, same as the sources arms.
     let data_dir = config::data_dir();
     // ProjectNotFound → 404, ProjectDeleted/PaperLink → 400 flow through `?`. NOTE:
     // resolve_pdf_metadata degrades a pdfium extraction failure to empty metadata
@@ -167,10 +165,6 @@ fn import_bibtex(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> 
         }
         let metas = bibtex_import(&text)
             .map_err(|m| ApiError::new(400, format!("BibTeX parse error: {m}")))?;
-        // ponytail: per-item save (each opens its own transaction), the same ceiling
-        // as the arxiv-search save loop — a mid-batch DB failure leaves earlier
-        // entries committed, where app.py's save_papers_metadata is one atomic batch.
-        // Upgrade path: a batched core save_papers_metadata if it bites.
         let mut saved: Vec<String> = Vec::new();
         for meta in &metas {
             let (sid, _) = svc_paper::save_paper_metadata(conn, meta, None)?;

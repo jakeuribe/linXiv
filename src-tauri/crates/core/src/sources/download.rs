@@ -5,14 +5,6 @@
 //! DI: the caller (`service::files::download_pdf`) computes the managed dest path under the
 //! injected `pdf_dir` and passes it in — this module never reads config. Tests pass a
 //! `tempfile::tempdir()` dest.
-//!
-//! ponytail: this owns a redirect-disabled `reqwest::Client` instead of `http::client()` +
-//! `http::get_guarded`. Reason: a *download* targets arbitrary public publisher hosts, so the
-//! guard is a per-hop PUBLIC-IP DNS check, not the fixed host *allowlist* `get_guarded` enforces.
-//! That policy can't be expressed through the shared allowlist client (whose redirect policy we
-//! also don't control), so the SSRF boundary is implemented here. There is no allowlist to
-//! duplicate. Upgrade path: if `http` ever grows a `get_public(url)` with a public-IP redirect
-//! policy, route through it and delete `build_client`/`fetch_to_dest`.
 
 use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
@@ -202,7 +194,6 @@ async fn fetch_to_dest(
 
 /// Unique sibling temp filename. pid + monotonic-ish nanos + a process-local counter — no rng
 /// crate needed, collision-proof for one process's downloads.
-// ponytail: pid+nanos+counter; swap for a uuid crate only if cross-process temp clashes appear.
 fn tmp_name() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = std::time::SystemTime::now()
@@ -216,9 +207,8 @@ fn tmp_name() -> String {
 /// True iff `url`'s host resolves *only* to public addresses. IP-literal hosts are checked
 /// directly (no DNS); domain hosts resolve via blocking `getaddrinfo` and ALL results must be
 /// public (any private/loopback/etc → reject), matching Python's `_is_safe_host`.
-// ponytail: blocking DNS on the async executor — fine for a one-shot download; wrap in
-// spawn_blocking if a batch ever floods it. DNS-rebind between check and connect is the same
-// known residual gap the Python version documents.
+// DNS-rebind between check and connect is the same known residual gap the Python
+// version documents.
 fn host_is_public(url: &Url) -> bool {
     let Some(host) = url.host_str() else {
         return false;

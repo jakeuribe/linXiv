@@ -114,8 +114,6 @@ fn first_nonempty(candidates: &[&str]) -> Option<String> {
 }
 
 /// `note.updated_at.isoformat()`.
-// ponytail: second-precision ISO; the DB stamps are second-precision so subseconds
-//   never appear. Switch to "%Y-%m-%dT%H:%M:%S%.f" if fractional stamps ever land.
 fn iso(note: &NoteDetails) -> Option<String> {
     note.updated_at
         .map(|dt| dt.format("%Y-%m-%dT%H:%M:%S").to_string())

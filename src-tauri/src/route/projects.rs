@@ -112,11 +112,6 @@ fn status_from_str(s: &str) -> Option<Status> {
 /// `app.py` builds each project dict the same way for list + get. Consumes the row
 /// (callers own it). Emits the 7 shared keys in order; the list arm appends
 /// `paper_count` after `status`, the get arm stops here.
-///
-/// ponytail: per-project `sfks_to_source_ids` here, plus `get_many`/`get` already
-/// fill `project_tags` per project — both N+1 over the result set. No bulk core fn
-/// exists (`list_project_source_ids_bulk`/`list_project_tags_bulk` are app.py-only);
-/// add one to core if a huge project list ever shows up hot.
 fn project_to_dict(conn: &Connection, p: ProjectDetails) -> Result<Value, ApiError> {
     let source_ids = svc_paper::sfks_to_source_ids(conn, &p.source_fks)?;
     let color_hex = p.color.map(project::color_to_hex);
@@ -139,8 +134,6 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
             "all" => Projects::default(),
             s => match status_from_str(s) {
                 Some(st) => Projects { status: Some(st), ..Default::default() },
-                // ponytail: app.py passes `status` verbatim to `STATUS = ?`, so an
-                // unrecognized value matches no rows. Match that, don't 422.
                 None => return Ok(Vec::new()),
             },
         };

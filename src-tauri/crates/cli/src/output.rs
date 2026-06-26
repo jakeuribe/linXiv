@@ -15,7 +15,7 @@ use linxiv_core::models::PaperMetadata;
 
 /// arXiv template, embedded so it ships with the binary. Only `arxiv` has one —
 /// other sources fall back to a JSON dump (see `render_paper`).
-const ARXIV_TEMPLATE: &str = include_str!("../../../../formats/arxiv_paper.md");
+const ARXIV_TEMPLATE: &str = include_str!("../assets/arxiv_paper.md");
 
 /// `_ARXIV_ID_RE` from `linxiv_cli.py`, verbatim.
 static ARXIV_ID_RE: LazyLock<Regex> = LazyLock::new(|| {

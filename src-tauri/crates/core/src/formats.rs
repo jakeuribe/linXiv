@@ -24,8 +24,6 @@ const FALLBACK_DATE: (i32, u32, u32) = (1900, 1, 1);
 /// One `@article` entry per paper, byte-matching pybtex `bib.to_string("bibtex")`:
 /// 4-space indent, `field = "value"`, no trailing comma on the last field, one
 /// blank line between entries, single trailing newline.
-/// ponytail: pybtex also LaTeX-encodes special chars (`%`->`\%`, accents); deferred
-/// with the rest of the pybtex-strictness gap, add an encoder if goldens need it.
 pub fn bibtex_export(papers: &[PaperDetails]) -> String {
     let mut out = String::new();
     for (i, p) in papers.iter().enumerate() {

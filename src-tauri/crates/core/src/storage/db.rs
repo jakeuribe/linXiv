@@ -31,10 +31,6 @@ pub fn open_in_memory() -> Result<Connection> {
     Ok(conn)
 }
 
-// ponytail: bare open() per call. The app-side r2d2 pool (each pooled conn must
-//   re-run the FK PRAGMA on checkout) is a later phase; CLI and MCP are
-//   short-lived single-connection processes and want exactly this.
-
 /// Run `f` inside a transaction, committing on `Ok` and rolling back on `Err`.
 /// Mirrors Python's `with _connect() as conn:` (commit on clean exit, rollback
 /// on exception) — the rusqlite `Transaction` rolls back on drop if not committed.

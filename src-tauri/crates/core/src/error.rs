@@ -77,8 +77,6 @@ impl CoreError {
     }
 
     /// CLI exit code. 1 for every failure today.
-    // ponytail: single non-zero code; switch on the variant here if a script
-    // ever needs to distinguish (e.g. 2 for not-found vs 1 for internal).
     pub fn exit_code(&self) -> i32 {
         1
     }

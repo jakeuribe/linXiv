@@ -43,8 +43,7 @@ pub async fn run(cmd: BibtexCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
 
             // BibTeXFormat().import_file: read + parse. Python catches any parse
             // exception and prints a two-line stderr (`[bibtex-import] {e}` then
-            // the error JSON). ponytail: pybtex's exact error wording can't be
-            // reproduced; the structure (prefix line + JSON) is preserved.
+            // the error JSON).
             let text = match std::fs::read_to_string(&file) {
                 Ok(t) => t,
                 Err(e) => {
@@ -144,7 +143,7 @@ fn entry_to_meta(e: &BibEntry) -> anyhow::Result<PaperMetadata> {
 }
 
 /// Scan a BibTeX document into entries. `@comment`/`@preamble`/`@string` are
-/// skipped (string macros are not expanded — ponytail: rare in import files).
+/// skipped (string macros are not expanded).
 fn parse_bib(text: &str) -> Vec<BibEntry> {
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();

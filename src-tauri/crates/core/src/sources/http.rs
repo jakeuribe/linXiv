@@ -150,7 +150,6 @@ fn record_ratelimit(data_dir: &Path) -> Result<()> {
 }
 
 /// Block until at least `MIN_SPACING` has elapsed since the previous arXiv GET.
-// ponytail: process-local spacer; the cross-process 429 cool-down is the file.
 async fn enforce_spacing() {
     static LAST: Mutex<Option<Instant>> = Mutex::new(None);
     let wait = {

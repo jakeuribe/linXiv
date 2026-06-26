@@ -36,8 +36,6 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
 
 /// `GET /api/papers?limit=&offset=` — `api_list_papers`.
 fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
-    // ponytail: FastAPI's Query(ge/le) 422s out-of-range; we clamp instead (the
-    // contract task's call) — the frontend never sends out-of-range values.
     let limit = ctx.q_i64("limit").unwrap_or(200).clamp(1, 5000);
     let offset = ctx.q_i64("offset").unwrap_or(0).max(0);
     let papers =
@@ -113,9 +111,9 @@ fn search(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     }
     let limit = ctx.q_i64("limit").unwrap_or(50).clamp(1, 100);
     let papers = state.with_conn(|conn| -> Result<Vec<_>, ApiError> {
-        // ponytail: core has no service::paper::search_papers; recompose Python's
-        // FTS+notes merge here (FTS first, then note-linked papers, dedup, cap).
-        // FTS syntax errors fall back to [] like Python's OperationalError catch.
+        // Recompose Python's FTS+notes merge here (FTS first, then note-linked
+        // papers, dedup, cap). FTS syntax errors fall back to [] like Python's
+        // OperationalError catch.
         let mut papers = store_search::search_full_text(conn, &q, limit).unwrap_or_default();
         let mut seen: HashSet<String> = papers.iter().map(|p| p.source_id.clone()).collect();
         for sfk in store_note::search_notes_source_fks(conn, &q, limit)? {
@@ -192,7 +190,7 @@ fn repair(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
             tags,
             source: paper.source,
         };
-        // ponytail: Python maps sqlite3.IntegrityError -> 409, but this endpoint
+        // Python maps sqlite3.IntegrityError -> 409, but this endpoint
         // never renames source_id so no UNIQUE conflict can arise; a stray rusqlite
         // error surfaces as CoreError::Internal (500). Reachable paths stay faithful.
         svc_paper::repair_paper(conn, source_fk, &meta)?;

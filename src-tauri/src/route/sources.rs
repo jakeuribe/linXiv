@@ -122,12 +122,6 @@ async fn arxiv_search(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiEr
     .map_err(upstream_502)?;
 
     let saved = if b.save && !results.is_empty() {
-        // ponytail: per-item save loop — core has no atomic `save_papers_metadata`.
-        // Each save is INSERT OR IGNORE (idempotent no-op on an already-stored
-        // (source_id, version)), so re-saving cannot raise an IntegrityError; the
-        // ceiling is only that a genuine mid-loop DB error leaves prior items
-        // committed (Python's batch transaction rolls all back). Add a batched
-        // save_papers_metadata to core if that bites.
         state.with_conn(|conn| -> Result<Vec<String>, ApiError> {
             let mut out = Vec::new();
             for m in &results {

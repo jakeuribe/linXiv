@@ -736,7 +736,6 @@ pub fn get_all_versions(conn: &Connection, source_id: &str) -> Result<Vec<PaperD
 
 /// PAPER_ROOTS row. No model exists (PAPER_ROOTS is storage-internal) and
 /// models.rs is out of scope this phase, so this local struct carries the row.
-// ponytail: promote to models.rs if a service consumer needs it as a domain type.
 #[derive(Debug, Clone, Serialize)]
 pub struct PaperRoot {
     pub source_fk: i64,
@@ -779,7 +778,6 @@ pub fn get_paper_root(conn: &Connection, source_id: &str) -> Result<Option<Paper
 
 /// A soft-deleted paper from the `deleted_papers` view. Local struct (no model;
 /// models.rs out of scope this phase).
-// ponytail: promote to models.rs if the trash UI needs it as a domain type.
 #[derive(Debug, Clone, Serialize)]
 pub struct DeletedPaper {
     pub source_fk: i64,

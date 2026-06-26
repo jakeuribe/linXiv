@@ -40,17 +40,6 @@ jobs:
             librsvg2-dev \
             patchelf
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-
-      - name: Install Python dependencies and PyInstaller
-        run: uv sync --extra mcp
-
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -65,7 +54,11 @@ jobs:
         with:
           workspaces: "src-tauri -> target"
 
-      - name: Build Python sidecars
+      # Native libpdfium for the in-process backend (CLI/MCP/app all link core).
+      - name: Fetch pdfium
+        run: bash scripts/fetch_pdfium.sh
+
+      - name: Stage Rust CLI/MCP binaries
         run: npm run build:sidecar
 
       - name: Build Tauri app and publish to GitHub Release

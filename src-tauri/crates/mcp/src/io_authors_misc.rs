@@ -4,7 +4,7 @@
 //! Bodies use `self.with_conn(|conn| ...)`; export tools also use
 //! `self.vault_root`. Call `linxiv_core::service::{export_import, author, paper,
 //! tag}`, `::sources` for DOI resolution, and `linxiv_core::config::UserSettings`
-//! for the settings tools. `import_bibtex` parses with the `biblatex` crate.
+//! for the settings tools. `import_bibtex` delegates to `linxiv_core::formats`.
 //! Replicate the Python dict shapes EXACTLY, e.g. export returns
 //! `{"path", "project_id"}`, get_stats returns
 //! `{"paper_count", "tag_count", "category_count", "pdf_count"}`, save_doi
@@ -28,11 +28,6 @@ use linxiv_core::service::{paper as svc_paper, tag as svc_tag};
 use linxiv_core::sources::doi_resolve;
 
 use crate::Server;
-
-// formats.rs (BibTeX + Obsidian transforms) ships in the scaffold but is not
-// wired into main.rs; this cluster is its only consumer, so own the module here.
-#[path = "formats.rs"]
-mod formats;
 
 /// Map a core error to the MCP error code Python's `ValueError` would surface:
 /// user-facing validation (`BadRequest`/`Validation`) → `invalid_params`,
@@ -223,7 +218,7 @@ impl Server {
         let ExportProjectDestParams { project_id, dest } = params.0;
         let body = self.with_conn(|conn| -> Result<String, ErrorData> {
             let papers = project_papers(conn, project_id)?;
-            Ok(formats::bibtex_export(&papers))
+            Ok(linxiv_core::formats::bibtex_export(&papers))
         })?;
         let out = with_default_ext(&dest, "bib");
         std::fs::write(&out, body)
@@ -239,7 +234,7 @@ impl Server {
         let ExportProjectDestParams { project_id, dest } = params.0;
         let body = self.with_conn(|conn| -> Result<String, ErrorData> {
             let papers = project_papers(conn, project_id)?;
-            Ok(formats::obsidian_export(&papers))
+            Ok(linxiv_core::formats::obsidian_export(&papers))
         })?;
         let out = with_default_ext(&dest, "md");
         std::fs::write(&out, body)
@@ -374,7 +369,7 @@ impl Server {
         let ImportBibtexParams { file, project_id } = params.0;
         let text = std::fs::read_to_string(&file)
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
-        let metas = formats::bibtex_import(&text)
+        let metas = linxiv_core::formats::bibtex_import(&text)
             .map_err(|m| ErrorData::invalid_params(m, None))?;
 
         let value = self.with_conn(|conn| -> Result<Value, ErrorData> {

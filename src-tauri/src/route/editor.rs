@@ -47,8 +47,6 @@ fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let b: Body = ctx.parse_body()?;
     // pydantic Field(min_length=1): an empty name is a 422 before the handler runs
     // (whitespace passes here, then core sanitizes it to "Untitled").
-    // ponytail: bare 422, not pydantic's structured error body — FastAPI's validation
-    //   envelope is not byte-reproducible anyway; the status is the contract.
     if b.project_name.is_empty() {
         return Err(ApiError::new(422, "project_name must not be empty"));
     }

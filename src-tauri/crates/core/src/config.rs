@@ -17,10 +17,7 @@ const USER_SETTINGS_FILE: &str = "user_settings.json";
 
 /// Bundled defaults, embedded at compile time from the canonical source file so the
 /// Rust defaults can never drift from `formats/default_settings.json`.
-// ponytail: compile-time embed instead of resources_dir()/current_exe() runtime resolution
-//   — defaults are static ship-with-binary data, so there is nothing to resolve at runtime.
-//   Add a runtime resource resolver only when a *mutable-at-runtime* bundled file appears.
-const BUNDLED_DEFAULTS: &str = include_str!("../../../../formats/default_settings.json");
+const BUNDLED_DEFAULTS: &str = include_str!("../assets/default_settings.json");
 
 fn map_io(e: std::io::Error) -> CoreError {
     CoreError::Internal(e.to_string())
@@ -39,12 +36,6 @@ fn map_json(e: serde_json::Error) -> CoreError {
 //   macOS   ~/Library/Application Support
 //   Windows %APPDATA% (Roaming)
 // then we append the identifier as a single path segment, exactly like Tauri.
-//
-// ponytail: NOT `ProjectDirs::from("com","linxiv","app").data_dir()` — that derives the leaf
-//   per-OS (Linux → ~/.local/share/app, Windows → %APPDATA%\linxiv\app\data) and only macOS's
-//   reverse-DNS leaf matches `com.linxiv.app`; it would diverge from Tauri on 2 of 3 OSes and
-//   break ADR-0014's single-source-of-truth. BaseDirs + join(identifier) is the byte-exact form.
-// ponytail: per-OS byte-equality test vs a known packaged-app path is still owed (D24).
 fn _default_data_dir() -> PathBuf {
     BaseDirs::new()
         .expect("no home directory: cannot resolve the OS data dir")
@@ -96,9 +87,6 @@ pub fn old_pdf_dir() -> PathBuf {
 /// (matching python-dotenv). Unlike Python's pinned `load_dotenv(ENV_PATH)` (repo
 /// `.env`), dotenvy walks up from CWD — fine for `cargo run` in the repo; prod keys
 /// come from the real environment / SQLite settings (D20).
-// ponytail: .env WRITE side (set_key for the 4 allowlisted keys CROSSREF_MAILTO /
-//   OPENALEX_MAILTO / GEMINI_API_KEY / OPENAI_API_KEY) is re-homed into SQLite settings in the
-//   storage layer (D20) — not implemented here, wrong layer.
 pub fn load_dotenv() -> Result<()> {
     match dotenvy::dotenv() {
         Ok(_) => Ok(()),
@@ -117,8 +105,6 @@ pub struct UserSettings {
 impl UserSettings {
     /// Load overrides from `data_dir()/user_settings.json` over the bundled defaults.
     /// A missing user file yields no overrides (pure defaults).
-    // ponytail: eager load, no lazy-reload. Re-read on file change only if a live external
-    //   editor of user_settings.json shows up; today every entry point is short-lived.
     pub fn load() -> Result<Self> {
         let defaults = parse_obj(BUNDLED_DEFAULTS)?;
         let path = data_dir().join(USER_SETTINGS_FILE);

@@ -36,6 +36,7 @@ pub(crate) mod pdfs; // resolve_local_pdf reused by the linxiv:// protocol handl
 mod projects;
 mod search;
 mod settings;
+pub mod share; // ShareState + share_api command, managed beside AppState in main.rs
 mod sources;
 mod tags;
 mod trash;
@@ -68,7 +69,7 @@ impl ApiError {
     /// port (Phase 5b) `client.ts` falls back to the coexisting Python sidecar on
     /// 501, so every intermediate commit ships a working app. Phase 6 deletes the
     /// fallback and this becomes a real 404.
-    fn not_routed() -> Self {
+    pub(crate) fn not_routed() -> Self {
         Self::new(501, "route not implemented in-process")
     }
 }
@@ -128,12 +129,7 @@ pub async fn api(
 /// `with_conn` closure to completion (no lock held across an await).
 pub async fn route(state: &AppState, req: ApiRequest) -> Result<Value, ApiError> {
     let (raw_path, raw_query) = req.path.split_once('?').unwrap_or((req.path.as_str(), ""));
-    let segs: Vec<String> = raw_path
-        .trim_matches('/')
-        .split('/')
-        .filter(|s| !s.is_empty())
-        .map(pct_decode)
-        .collect();
+    let segs = split_segments(raw_path);
     let query = parse_query(raw_query);
     let s: Vec<&str> = segs.iter().map(String::as_str).collect();
     let ctx = ReqCtx {
@@ -208,8 +204,19 @@ fn categories(state: &AppState) -> Result<Value, ApiError> {
 
 // ── path/query helpers ──────────────────────────────────────────────────────
 
+/// Split a raw request path into percent-decoded, non-empty segments. Shared with
+/// the `share_api` command so both front doors parse paths identically.
+pub(crate) fn split_segments(raw_path: &str) -> Vec<String> {
+    raw_path
+        .trim_matches('/')
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .map(pct_decode)
+        .collect()
+}
+
 /// Parse a raw `k=v&k2=v2` query string, percent-decoding keys and values.
-fn parse_query(raw: &str) -> HashMap<String, String> {
+pub(crate) fn parse_query(raw: &str) -> HashMap<String, String> {
     raw.split('&')
         .filter(|s| !s.is_empty())
         .map(|pair| {
@@ -220,7 +227,7 @@ fn parse_query(raw: &str) -> HashMap<String, String> {
 }
 
 /// Decode `%XX` escapes (and nothing else — `encodeURIComponent` never emits `+`
-/// for space). ponytail: ~10 lines vs. pulling in `urlencoding` for one call site.
+/// for space).
 /// Shared with the `linxiv://` protocol handler.
 pub(crate) fn pct_decode(s: &str) -> String {
     let b = s.as_bytes();

@@ -107,10 +107,7 @@ pub fn safe_path(vault_root: &Path, relpath: &str) -> Result<PathBuf> {
     }
     // Containment belt: parts are already `..`/absolute-free, so the lexical
     // prefix check always holds — but it stays as the explicit trust-boundary
-    // assert (Python's is_relative_to). ponytail: lexical not canonicalize —
-    // no API op here can create a symlink to escape with, and the target may
-    // not exist yet (writeFile creates it); add canonicalization if a future op
-    // ever materializes symlinks inside the vault.
+    // assert (Python's is_relative_to).
     if !parts.is_empty() && !target.starts_with(vault_root) {
         return Err(CoreError::BadRequest("path escapes the vault root".into()));
     }
@@ -309,8 +306,6 @@ pub fn delete_vault(vault_root: &Path) {
 }
 
 // ── base64 (standard alphabet, padded) ──────────────────────────────────────────
-// ponytail: inline ~20 lines — core has no base64 dep and Cargo.toml is off-limits.
-// Swap for the `base64` crate if another module needs it.
 
 fn b64_encode(data: &[u8]) -> String {
     const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

@@ -76,8 +76,7 @@ pub fn get_tags(conn: &Connection, tags: &Tags) -> Result<Vec<TagDetails>> {
 ///
 /// Python falls back to synthesising `tag_id = -1` rows when storage returns
 /// nothing, but that path is unreachable once `storage::list_tags` is the
-/// authoritative TAG-table read (same table the fallback scans). // ponytail:
-/// dropped the -1 fallback — it only produced sentinel rows the GUI can't act on.
+/// authoritative TAG-table read (same table the fallback scans).
 pub fn get_many(conn: &Connection, tags: &Tags) -> Result<Vec<TagDetails>> {
     get_tags(conn, tags)
 }

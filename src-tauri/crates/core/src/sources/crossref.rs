@@ -175,9 +175,6 @@ pub fn parse_search_body(body: &[u8]) -> Vec<PaperMetadata> {
 // Async fetch wrappers (against the sources::http seam).
 // ---------------------------------------------------------------------------
 
-// ponytail: polite-pool `mailto` skipped — the get_guarded seam takes no custom
-// headers; add a `?mailto=` query param here if CrossRef ever rate-limits us.
-
 /// Fetch CrossRef metadata for a DOI. `None` on any non-200 / network / parse
 /// error, matching the Python `except Exception: return None`.
 pub async fn fetch_by_doi(doi: &str) -> Option<PaperMetadata> {
@@ -209,8 +206,7 @@ pub async fn search_by_title(title: &str, limit: u32) -> Vec<PaperMetadata> {
 }
 
 /// Minimal query-component encoder (space + the handful of reserved chars that
-/// break a query string). ponytail: title text only; widen if we ever pass
-/// arbitrary user input with `&`/`#`/`%`.
+/// break a query string).
 fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for b in s.bytes() {

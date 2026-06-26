@@ -14,7 +14,7 @@
 //! Several Python `storage.db` reads have no dedicated Rust storage fn yet
 //! (`get_paper_by_id`, `get_paper_by_source_fk`, `get_categories`,
 //! `get_papers_by_json_tag`); they are composed here from existing storage fns
-//! rather than adding raw SQL to the service. See the `// ponytail:` notes.
+//! rather than adding raw SQL to the service.
 
 use crate::error::Result;
 use crate::models::{PaperDetails, PaperDetailsAll, PaperIn, PaperMetadata};
@@ -105,8 +105,6 @@ pub fn parse_entry_id(entry_id: &str) -> (String, i64) {
 
 /// `db.get_paper_by_id` — exact PAPER version by PK. Composed by scanning the
 /// all-versions list (same `papers` view the Python query hits).
-// ponytail: O(n) scan over latest+older rows; add an indexed storage fn only if
-// the library grows large enough for this to show up in a profile.
 fn paper_by_id(conn: &Connection, paper_id: i64) -> Result<Option<PaperDetails>> {
     Ok(store::list_papers(conn, false, None, 0, None)?
         .into_iter()
@@ -355,8 +353,6 @@ pub fn list_papers(
 }
 
 /// Sorted distinct primary categories across latest papers (`db.get_categories`).
-// ponytail: composed from list_papers + BTreeSet (binary collation == SQLite
-// default ORDER BY); a dedicated DISTINCT storage fn isn't worth it.
 pub fn get_categories(conn: &Connection) -> Result<Vec<String>> {
     let set: std::collections::BTreeSet<String> = store::list_papers(conn, true, None, 0, None)?
         .into_iter()

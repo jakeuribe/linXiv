@@ -230,8 +230,6 @@ pub fn get_project_notes(conn: &Connection, project_id: i64) -> Result<Vec<NoteD
 /// `storage/notes.py::note_counts_by_paper_for_project` — (SOURCE_FK, count) for
 /// each active paper in the project; papers with no notes get 0. Returns a Vec in
 /// PROJECT_TO_PAPER_FK order (Python returns an ordered dict).
-// ponytail: Vec<(fk,count)> not HashMap — preserves the query order Python's dict
-//   has; callers that only do lookups can `.into_iter().collect()`.
 pub fn note_counts_by_paper_for_project(
     conn: &Connection,
     project_id: i64,

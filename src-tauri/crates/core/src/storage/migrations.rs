@@ -163,12 +163,6 @@ fn author_full_name_index(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-// ponytail: the one-shot blue→green data migration (sql/migrations/migrate_data.sql
-//   — ATTACH old DB, namespace SOURCE_IDs, populate AUTHOR_FIRST/AUTHOR_LAST by a
-//   Python-side name split SQLite can't do) is NOT a startup migration and is not
-//   ported here. Port it as a one-time CLI subcommand when an upgrade path off the
-//   legacy `papers`/`projects`/`notes` schema is actually needed.
-
 #[cfg(test)]
 mod tests {
     use super::*;

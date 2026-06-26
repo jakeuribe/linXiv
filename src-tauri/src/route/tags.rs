@@ -42,8 +42,6 @@ fn detail(state: &AppState, label: &str) -> Result<Value, ApiError> {
             .map(|p| serde_json::to_value(p).map_err(|e| ApiError::new(500, e.to_string())))
             .collect::<Result<_, _>>()?;
 
-        // ponytail: O(active-projects) scan — core has no list_projects_by_tag. Add
-        // one (TAG_FK→PROJECT_FK join) if project counts grow enough to matter.
         // Status::Active filter matches Python's `_LIST_PROJECTS_BY_TAG_SQL`
         // (`AND pr.STATUS = 'active'`): PROJECT_TO_TAG rows survive soft-delete, so
         // an unfiltered scan would leak archived/deleted projects the API excludes.

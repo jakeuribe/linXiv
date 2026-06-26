@@ -33,9 +33,6 @@ use std::sync::Mutex;
 /// Serializes the pre-existence check + insert in `import_pdf` so two concurrent
 /// imports of the same upstream paper can't race on check-then-upsert. Mirrors
 /// Python's `threading.Lock`.
-// ponytail: process-global lock (single-process only, like the Python port).
-// Multi-process deployments need external serialization; revisit only if core
-// ever runs multi-process against one DB file.
 static IMPORT_ROOT_LOCK: Mutex<()> = Mutex::new(());
 
 /// Result of a successful `import_pdf` (Python `PaperImportResult`, defined in
@@ -280,8 +277,6 @@ fn rollback(conn: &mut Connection, tmp_path: &Path, st: &ImportState) {
 // The Rust project SERVICE is still an empty stub, so these are composed from the
 // project STORAGE layer here rather than reaching into a service that doesn't
 // exist. They are private and import-only.
-// ponytail: inline until service::project lands; then import_pdf should call
-// service::project::{ensure_membership_writable, link_imported} and these go away.
 
 /// Apply the membership-write guards without writing: missing → ProjectNotFound,
 /// soft-deleted → ProjectDeleted.
@@ -308,9 +303,6 @@ fn link_imported(conn: &mut Connection, project_fk: i64, source_id: &str) -> Res
 }
 
 /// Process-unique token for the temp upload filename. Avoids a `uuid` dependency.
-// ponytail: pid+nanos+counter is collision-free within a process; swap for uuid
-// only if cross-process temp-name collisions ever matter (they don't — same dir,
-// same process owns the rename).
 fn unique_token() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
