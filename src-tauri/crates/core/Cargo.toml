@@ -23,10 +23,13 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 # Sources: HTTP + async + XML/PDF/tar parsing. rustls-tls = no OpenSSL system dep.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "fs", "time"] }
-# lopdf for first-page text (extract_text on page 1 only) + the Info dict. Replaces
-# pdf-extract, whose renderer was ~480x slower than pypdf on large PDFs (D10 spike).
+# pdfium-render: native libpdfium for first-page text + Info dict. ~22x faster than
+# lopdf on large PDFs (0.3s vs 6.8s on a 76-page/29MB PDF) with cleaner text (proper
+# newlines). The native lib is fetched by scripts/fetch_pdfium.sh (D10). thread_safe
+# holds a process-global lock per Pdfium instance lifetime, so extraction binds a
+# short-lived per-call instance (see sources::pdf_metadata::bind_pdfium).
 quick-xml = "0.40"
-lopdf = "0.38"
+pdfium-render = { version = "0.8", features = ["thread_safe"] }
 tar = "0.4"
 flate2 = "1"
 
