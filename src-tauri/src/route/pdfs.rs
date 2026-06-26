@@ -7,17 +7,78 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
+use linxiv_core::service::files;
 use linxiv_core::service::paper::{self as svc_paper, pdf_on_disk_name, Paper};
 
 use crate::route::{ApiError, ReqCtx};
 use crate::state::AppState;
 
-/// Returns `Some(result)` only for `GET /api/papers/{id}/pdf-path`; `None` passes.
+const SAVED_PDF_LIST_CAP: usize = 200;
+
 pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<Value, ApiError>> {
     match (ctx.method, ctx.segs) {
         ("GET", ["api", "papers", id, "pdf-path"]) => Some(pdf_path(state, id, ctx)),
+        ("GET", ["api", "pdfs"]) => Some(list_saved(state)),
+        ("DELETE", ["api", "pdfs", id]) => Some(delete_saved(state, id)),
         _ => None,
     }
+}
+
+/// `GET /api/pdfs` — `api_list_saved_pdfs`. Latest-version papers whose PDF is on
+/// disk, with file sizes, largest first, capped at 200.
+fn list_saved(state: &AppState) -> Result<Value, ApiError> {
+    let pdf_dir = state.pdf_dir.clone();
+    // Pull the rows under the lock; stat the files outside it.
+    let rows = state.with_conn(|conn| {
+        svc_paper::list_papers(conn, true, None, 0, None).map(|ps| {
+            ps.into_iter()
+                .filter(|p| p.has_pdf)
+                .map(|p| (p.source_id, p.source_fk, p.title, p.version, p.pdf_path))
+                .collect::<Vec<_>>()
+        })
+    })?;
+    let mut out: Vec<Value> = Vec::new();
+    for (source_id, source_fk, title, version, pdf_path) in rows {
+        let Some(path) = resolve_local_pdf(&pdf_dir, pdf_path.as_deref(), &source_id, version) else {
+            continue;
+        };
+        let Ok(meta) = std::fs::metadata(&path) else { continue };
+        out.push(json!({
+            "source_id": source_id,
+            "source_fk": source_fk,
+            "title": title,
+            "version": version,
+            "size_bytes": meta.len(),
+        }));
+    }
+    out.sort_by(|a, b| b["size_bytes"].as_u64().cmp(&a["size_bytes"].as_u64()));
+    out.truncate(SAVED_PDF_LIST_CAP);
+    Ok(json!({ "pdfs": out }))
+}
+
+/// `DELETE /api/pdfs/{source_id}` — `api_delete_saved_pdf`. Drops every version's
+/// local PDF (409 if a file is outside the managed dir), keeping the paper record.
+fn delete_saved(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
+    let pdf_dir = state.pdf_dir.clone();
+    state.with_conn(|conn| -> Result<(), ApiError> {
+        let all = svc_paper::get_all(conn, &Paper { source_id: Some(source_id.to_string()), ..Default::default() })?
+            .ok_or_else(|| ApiError::new(404, "Paper not found"))?;
+        for ver in &all.versions {
+            let path = resolve_local_pdf(&pdf_dir, ver.pdf_path.as_deref(), source_id, ver.version);
+            if let Some(p) = &path {
+                if !files::delete_pdf(&pdf_dir, p) {
+                    return Err(ApiError::new(409, "PDF is outside managed storage"));
+                }
+            }
+            // Clear the flag/path before the next iteration may raise 409.
+            svc_paper::set_has_pdf(conn, source_id, ver.version, false)?;
+            if path.is_some() {
+                svc_paper::set_pdf_path(conn, source_id, "", Some(ver.version))?;
+            }
+        }
+        Ok(())
+    })?;
+    Ok(json!({ "deleted": true }))
 }
 
 /// `GET /api/papers/{source_id:path}/pdf-path?version=` — `api_paper_pdf_path`.

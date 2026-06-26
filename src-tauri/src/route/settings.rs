@@ -14,12 +14,41 @@ use crate::state::AppState;
 /// `_SETTINGS_ENV_KEYS` (app.py 1048-1049): env values merged into the GET body.
 const SETTINGS_ENV_KEYS: [&str; 2] = ["CROSSREF_MAILTO", "OPENALEX_MAILTO"];
 
+/// `_ALLOWED_ENV_KEYS` (app.py): the only keys `PATCH /api/env` may set.
+const ALLOWED_ENV_KEYS: [&str; 4] =
+    ["CROSSREF_MAILTO", "OPENALEX_MAILTO", "GEMINI_API_KEY", "OPENAI_API_KEY"];
+
 pub(crate) async fn handle(_state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<Value, ApiError>> {
     match (ctx.method, ctx.segs) {
         ("GET", ["api", "settings"]) => Some(get()),
         ("PATCH", ["api", "settings"]) => Some(patch(ctx)),
+        ("PATCH", ["api", "env"]) => Some(env_patch(ctx)),
         _ => None,
     }
+}
+
+/// `PATCH /api/env` — `api_env_patch`. Allowlist-gated (400 otherwise). Python
+/// writes `.env`; the in-process app has no `.env` load, so we set the live process
+/// env var (so the GET /api/settings overlay + the source clients see it this
+/// session) and persist it through user settings.
+/// ponytail: `set_var` mutates global env — fine for a rare settings PATCH, not a
+/// hot path. Across-restart persistence is via user_settings.json, not `.env`.
+fn env_patch(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
+    #[derive(Deserialize)]
+    struct Body {
+        key: String,
+        value: String,
+    }
+    let b: Body = ctx.parse_body()?;
+    if !ALLOWED_ENV_KEYS.contains(&b.key.as_str()) {
+        return Err(ApiError::new(
+            400,
+            format!("Key '{}' is not settable via this endpoint", b.key),
+        ));
+    }
+    std::env::set_var(&b.key, &b.value);
+    UserSettings::load()?.set(b.key, Value::String(b.value))?;
+    Ok(json!({ "ok": true }))
 }
 
 /// `GET /api/settings` — `api_settings_get`. Settings first, then each env key

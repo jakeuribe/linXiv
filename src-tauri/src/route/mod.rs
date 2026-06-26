@@ -33,6 +33,7 @@ mod notes;
 mod papers;
 pub(crate) mod pdfs; // resolve_local_pdf reused by the linxiv:// protocol handler
 mod projects;
+mod search;
 mod settings;
 mod sources;
 mod tags;
@@ -165,7 +166,7 @@ pub async fn route(state: &AppState, req: ApiRequest) -> Result<Value, ApiError>
             }
         )+};
     }
-    try_groups!(pdfs, papers, projects, notes, tags, authors, sources, settings, trash, editor);
+    try_groups!(pdfs, papers, projects, notes, tags, authors, sources, search, settings, trash, editor);
 
     Err(ApiError::not_routed())
 }

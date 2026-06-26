@@ -3,14 +3,19 @@
 //! and the exact JSON envelopes / status codes `app.py` returned. Core binding
 //! follows `mcp/src/projects_tags.rs`.
 
+use std::collections::HashSet;
+use std::path::Path;
+
 use rusqlite::Connection;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use linxiv_core::error::CoreError;
+use linxiv_core::formats;
 use linxiv_core::models::{ProjectDetails, ProjectIn, ProjectUpdateIn, Status};
 use linxiv_core::service::paper as svc_paper;
 use linxiv_core::service::project::{self, Project, Projects};
+use linxiv_core::service::export_import;
 
 use crate::route::{path_i64, ApiError, ReqCtx};
 use crate::state::AppState;
@@ -25,8 +30,72 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
         ("POST", ["api", "projects", id, "papers"]) => Some(add_paper(state, id, ctx)),
         ("POST", ["api", "projects", id, "papers", "bulk"]) => Some(add_papers_bulk(state, id, ctx)),
         ("DELETE", ["api", "projects", id, "papers", sid]) => Some(remove_paper(state, id, sid)),
+        ("POST", ["api", "projects", id, "export"]) => Some(export(state, id, ctx)),
+        ("GET", ["api", "projects", id, "export", "bibtex"]) => Some(export_text(state, id, ctx, Fmt::Bibtex)),
+        ("GET", ["api", "projects", id, "export", "obsidian"]) => Some(export_text(state, id, ctx, Fmt::Obsidian)),
         _ => None,
     }
+}
+
+#[derive(Clone, Copy)]
+enum Fmt {
+    Bibtex,
+    Obsidian,
+}
+
+/// `POST /api/projects/{id}/export` — `api_project_export` (dest_path branch only).
+/// Writes the `.lxproj` archive to `dest_path` and returns `{ok}`. The streaming
+/// (no-dest_path) branch is browser-only; the Tauri frontend always sends a path.
+fn export(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
+    let project_fk = path_i64(id)?;
+    #[derive(Deserialize)]
+    struct Body {
+        #[serde(default)]
+        dest_path: Option<String>,
+        #[serde(default)]
+        include_pdfs: bool,
+    }
+    let b: Body = ctx.parse_body()?;
+    let Some(dest) = b.dest_path.filter(|s| !s.is_empty()) else {
+        return Err(ApiError::new(400, "dest_path is required for in-process export"));
+    };
+    let pdf_dir = state.pdf_dir.clone();
+    state.with_conn(|conn| -> Result<(), ApiError> {
+        // app.py maps a missing project (ValueError) -> 404; pre-check to match.
+        if project::get(conn, &Project { project_fk: Some(project_fk) })?.is_none() {
+            return Err(ApiError::new(404, "Project not found"));
+        }
+        export_import::export_project(conn, project_fk, Path::new(&dest), b.include_pdfs, &pdf_dir)?;
+        Ok(())
+    })?;
+    Ok(json!({ "ok": true }))
+}
+
+/// `GET /api/projects/{id}/export/{bibtex,obsidian}?dest_path=` — the dest_path
+/// branch of the text exporters. Writes the formatted project to disk, `{ok}`.
+fn export_text(state: &AppState, id: &str, ctx: &ReqCtx<'_>, fmt: Fmt) -> Result<Value, ApiError> {
+    let project_fk = path_i64(id)?;
+    let Some(dest) = ctx.q("dest_path").filter(|s| !s.is_empty()) else {
+        return Err(ApiError::new(400, "dest_path is required for in-process export"));
+    };
+    let content = state.with_conn(|conn| -> Result<String, ApiError> {
+        let proj = project::get(conn, &Project { project_fk: Some(project_fk) })?
+            .ok_or_else(|| ApiError::new(404, "Project not found"))?;
+        let ids: HashSet<String> =
+            svc_paper::sfks_to_source_ids(conn, &proj.source_fks)?.into_iter().collect();
+        // Iterate the latest-papers view in its order, keeping the project's papers
+        // (matches app.py's `[p for p in list_paper_details(latest) if id in ids]`).
+        let papers: Vec<_> = svc_paper::list_papers(conn, true, None, 0, None)?
+            .into_iter()
+            .filter(|p| ids.contains(&p.source_id))
+            .collect();
+        Ok(match fmt {
+            Fmt::Bibtex => formats::bibtex_export(&papers),
+            Fmt::Obsidian => formats::obsidian_export(&papers),
+        })
+    })?;
+    std::fs::write(dest, content).map_err(|e| ApiError::new(500, e.to_string()))?;
+    Ok(json!({ "ok": true }))
 }
 
 /// `Status(s)` — the three lifecycle strings, else None (caller decides the error).
