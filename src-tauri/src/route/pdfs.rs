@@ -46,8 +46,9 @@ fn pdf_path(state: &AppState, source_id: &str, ctx: &ReqCtx<'_>) -> Result<Value
 
 /// Port of `_resolve_local_pdf` (app.py 124–135): the stored `pdf_path` if it
 /// exists on disk, else the standard managed location `pdf_dir/<on-disk-name>`
-/// (skipped for `ver <= 0`, which the download pipeline never writes).
-fn resolve_local_pdf(
+/// (skipped for `ver <= 0`, which the download pipeline never writes). Shared with
+/// the `linxiv://` PDF protocol handler (`crate::protocol`).
+pub(crate) fn resolve_local_pdf(
     pdf_dir: &Path,
     pdf_path: Option<&str>,
     source_id: &str,

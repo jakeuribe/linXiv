@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod integrations;
+mod protocol;
 mod route;
 mod state;
 
@@ -312,6 +313,12 @@ fn get_api_port() -> Result<u16, String> {
 
 fn main() {
     let app = tauri::Builder::default()
+        // linxiv:// serves PDF bytes to the webview in-process (replaces the HTTP
+        // /api/papers/{id}/pdf + /api/pdf/proxy endpoints, which invoke() can't stream).
+        .register_asynchronous_uri_scheme_protocol(
+            protocol::SCHEME,
+            |ctx, req, responder| protocol::handler(ctx, req, responder),
+        )
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())

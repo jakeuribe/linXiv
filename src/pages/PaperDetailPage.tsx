@@ -5,11 +5,11 @@ import { Document, Page, pdfjs } from "react-pdf";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
-import { getPaperBySfk, getPaperVersions, getPaperPdfUrl } from "../api/papers";
+import { getPaperBySfk, getPaperVersions, getPaperPdfUrl, getPdfProxyUrl } from "../api/papers";
 import { getNotes, deleteNote } from "../api/notes";
 import { listProjects } from "../api/projects";
 import { fetchArxiv } from "../api/search";
-import { apiFetch, BASE_URL, isTauri } from "../api/client";
+import { apiFetch, isTauri } from "../api/client";
 import type { Note, Paper } from "../types/api";
 import { Spinner } from "../components/ui/spinner";
 import { Button } from "../components/ui/button";
@@ -776,7 +776,7 @@ function PdfPane({
                   className="w-full h-full overflow-y-auto bg-[#525659]"
                 >
                   <Document
-                    file={useProxy ? `${BASE_URL}/api/pdf/proxy?url=${encodeURIComponent(paper.url)}` : paper.url}
+                    file={useProxy ? getPdfProxyUrl(paper.url) : paper.url}
                     onLoadSuccess={(pdf) => {
                       setPreviewNumPages(pdf.numPages);
                       pdfPreviewDocRef.current = pdf;

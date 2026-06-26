@@ -8,6 +8,7 @@ import "react-pdf/dist/Page/TextLayer.css";
 import { fetchArxiv } from "../api/search";
 import { appendSavedId } from "../api/searchState";
 import { apiFetch } from "../api/client";
+import { getPdfProxyUrl } from "../api/papers";
 import { Button } from "../components/ui/button";
 import { Spinner } from "../components/ui/spinner";
 import type { SearchResult } from "../types/api";
@@ -103,9 +104,7 @@ export default function PdfPreviewPage() {
   }
 
   const { result } = state;
-  const pdfSrc = useProxy
-    ? `/api/pdf/proxy?url=${encodeURIComponent(result.paper_url)}`
-    : result.paper_url;
+  const pdfSrc = useProxy ? getPdfProxyUrl(result.paper_url) : result.paper_url;
 
   return (
     <div className="flex flex-col h-full">

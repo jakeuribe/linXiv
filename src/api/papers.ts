@@ -1,5 +1,17 @@
-import { apiFetch, BASE_URL } from "./client";
+import { apiFetch, BASE_URL, isTauri } from "./client";
 import type { Paper, PaperVersionsResponse } from "../types/api";
+
+// The in-process app serves PDF bytes over the `linxiv://` custom scheme (the
+// invoke()-based transport can't stream binary). The webview host form differs by
+// platform (Tauri docs): linxiv://localhost on Linux/macOS, http://linxiv.localhost
+// on Windows. In browser dev there is no custom scheme — keep the HTTP URL so the
+// Vite proxy reaches the sidecar.
+function linxivUrl(path: string): string {
+  const isWindows =
+    typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent);
+  const base = isWindows ? "http://linxiv.localhost" : "linxiv://localhost";
+  return `${base}/${path}`;
+}
 
 export async function listPapers(
   limit = 200,
@@ -67,5 +79,17 @@ export async function searchLibrary(
  */
 export function getPaperPdfUrl(sourceId: string, version?: number): string {
   const query = version !== undefined ? `?version=${version}` : "";
-  return `${BASE_URL}/api/papers/${encodeURIComponent(sourceId)}/pdf${query}`;
+  const id = encodeURIComponent(sourceId);
+  if (isTauri) return linxivUrl(`papers/${id}/pdf${query}`);
+  return `${BASE_URL}/api/papers/${id}/pdf${query}`;
+}
+
+/**
+ * URL that streams an external (arXiv) PDF through the host-allowlisted proxy.
+ * Used by the preview pages' CORS fallback. linxiv:// in the app, HTTP in dev.
+ */
+export function getPdfProxyUrl(remoteUrl: string): string {
+  const url = encodeURIComponent(remoteUrl);
+  if (isTauri) return linxivUrl(`pdf-proxy?url=${url}`);
+  return `${BASE_URL}/api/pdf/proxy?url=${url}`;
 }

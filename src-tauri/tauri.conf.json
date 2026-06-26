@@ -24,8 +24,8 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; frame-src 'self' texbrain://localhost http://texbrain.localhost http://127.0.0.1:*; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* https://api.github.com https://github.com https://objects.githubusercontent.com https://release-assets.githubusercontent.com; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com",
-      "devCsp": "default-src 'self'; frame-src 'self' texbrain://localhost http://texbrain.localhost http://127.0.0.1:* http://localhost:*; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* http://localhost:* https://api.github.com; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com"
+      "csp": "default-src 'self'; frame-src 'self' texbrain://localhost http://texbrain.localhost http://127.0.0.1:* linxiv://localhost http://linxiv.localhost; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* linxiv://localhost http://linxiv.localhost https://api.github.com https://github.com https://objects.githubusercontent.com https://release-assets.githubusercontent.com; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com",
+      "devCsp": "default-src 'self'; frame-src 'self' texbrain://localhost http://texbrain.localhost http://127.0.0.1:* http://localhost:* linxiv://localhost http://linxiv.localhost; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* http://localhost:* linxiv://localhost http://linxiv.localhost https://api.github.com; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com"
     }
   },
   "bundle": {

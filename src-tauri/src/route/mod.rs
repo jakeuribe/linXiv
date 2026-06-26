@@ -31,7 +31,7 @@ mod authors;
 mod editor;
 mod notes;
 mod papers;
-mod pdfs;
+pub(crate) mod pdfs; // resolve_local_pdf reused by the linxiv:// protocol handler
 mod projects;
 mod settings;
 mod sources;
@@ -218,7 +218,8 @@ fn parse_query(raw: &str) -> HashMap<String, String> {
 
 /// Decode `%XX` escapes (and nothing else — `encodeURIComponent` never emits `+`
 /// for space). ponytail: ~10 lines vs. pulling in `urlencoding` for one call site.
-fn pct_decode(s: &str) -> String {
+/// Shared with the `linxiv://` protocol handler.
+pub(crate) fn pct_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
