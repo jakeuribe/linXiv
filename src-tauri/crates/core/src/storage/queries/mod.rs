@@ -13,6 +13,8 @@ pub mod note;
 pub mod paper;
 pub mod project;
 pub mod search;
+pub mod search_history;
+pub mod search_state;
 pub mod tag;
 
 pub use author::{get_author, get_many as get_authors};
