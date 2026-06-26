@@ -20,6 +20,14 @@ dotenvy = "0.15.7"
 tracing = "0.1"
 # .lxproj is a ZIP_DEFLATED archive (Python uses zipfile); deflate-only, no extras.
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# Sources: HTTP + async + XML/PDF/tar parsing. rustls-tls = no OpenSSL system dep.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "fs", "time"] }
+quick-xml = "0.40"
+pdf-extract = "0.10"
+tar = "0.4"
+flate2 = "1"
 
 [dev-dependencies]
 tempfile = "3"
+wiremock = "0.6"

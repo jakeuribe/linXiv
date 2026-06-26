@@ -150,6 +150,23 @@ where
     Ok(PaperImportResult { source_id: sid, title })
 }
 
+/// `import_pdf` with the production resolver wired in. Async because the resolver
+/// (`sources::pdf_metadata::resolve_pdf_metadata`) hits the network for arXiv/DOI/
+/// CrossRef enrichment; `data_dir` threads to arXiv's rate-limit file. We resolve
+/// FIRST, then hand the already-resolved `(meta, external)` to the sync `import_pdf`
+/// via a closure (its bytes arg is ignored) — so `import_pdf`'s seam, and the
+/// rollback-matrix tests over it, stay exactly as they are.
+pub async fn import_pdf_default(
+    conn: &mut Connection,
+    pdf_dir: &Path,
+    content: &[u8],
+    project_id: Option<i64>,
+    data_dir: &Path,
+) -> Result<PaperImportResult> {
+    let resolved = crate::sources::pdf_metadata::resolve_pdf_metadata(content, data_dir).await?;
+    import_pdf(conn, pdf_dir, content, project_id, |_| Ok(resolved.clone()))
+}
+
 /// The DB + FS write section. Any error here triggers the rollback matrix in
 /// `import_pdf`, so `st` is filled incrementally to record exactly what happened.
 /// Returns the resolved source_id on success.
@@ -496,6 +513,27 @@ mod tests {
 
         // save_paper_metadata auto-restored the root; rollback re-trashed it.
         assert!(paper::is_paper_deleted(&conn, "arxiv:dead").unwrap());
+    }
+
+    #[tokio::test]
+    async fn import_pdf_default_uses_real_resolver_and_mints_local_root() {
+        // Wiring check: the convenience entry resolves first (junk bytes extract
+        // no arXiv/DOI/title, so enrichment makes no network call), then mints a
+        // deterministic local:<sha> identity (None external).
+        let mut conn = mem();
+        let dir = tempdir().unwrap();
+        let data_dir = tempdir().unwrap();
+        let res = import_pdf_default(&mut conn, dir.path(), b"%PDF-1.4 junk", None, data_dir.path())
+            .await
+            .unwrap();
+        assert!(res.source_id.starts_with("local:"));
+        let p = paper::get(
+            &conn,
+            &paper::Paper { source_id: Some(res.source_id.clone()), ..Default::default() },
+        )
+        .unwrap()
+        .unwrap();
+        assert!(p.has_pdf);
     }
 
     #[test]

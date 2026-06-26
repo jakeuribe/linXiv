@@ -7,8 +7,8 @@
 //! `managed_pdf_dir()` from Python is dropped: under DI the caller already holds the
 //! resolved path, so the wrapper is a redundant identity (D17 — no forwarding wrappers).
 //!
-//! `download_pdf` (the SSRF-safe HTTP downloader) is DEFERRED to Phase 3 — it needs an
-//! HTTP client (reqwest), which does not belong in `core` yet. See `download_pdf` below.
+//! `download_pdf` (the SSRF-safe HTTP downloader) resolves the managed dest under the DI'd
+//! `pdf_dir` and delegates the network/SSRF work to `sources::download`. See below.
 
 use std::path::{Path, PathBuf};
 
@@ -105,13 +105,18 @@ pub fn delete_pdf(pdf_dir: &Path, path: &str) -> bool {
     true
 }
 
-/// SSRF-safe HTTP downloader — DEFERRED to Phase 3. Needs an HTTP client (scheme allowlist,
-/// host-resolves-to-public check, redirect guard, content-type + size caps, atomic tmp→dest
-/// rename) that pulls `reqwest` into `core`. Port `files.download_pdf` then.
-// ponytail: Phase 3 — sources/reqwest SSRF downloader. Do not add reqwest to core before then.
-#[allow(unused_variables)]
-pub fn download_pdf(pdf_dir: &Path, paper_id: &str, version: i64, url: &str) -> Result<PathBuf> {
-    todo!("Phase 3 — sources/reqwest SSRF downloader")
+/// SSRF-safe HTTP downloader: resolve the managed dest under the DI'd `pdf_dir`, then hand off
+/// to `sources::download::download_pdf` (scheme allowlist, host-resolves-to-public check, per-hop
+/// redirect re-check, content-type + size caps, atomic tmp→dest rename). Port of
+/// `files.download_pdf`.
+pub async fn download_pdf(
+    pdf_dir: &Path,
+    paper_id: &str,
+    version: i64,
+    url: &str,
+) -> Result<PathBuf> {
+    let dest = pdf_file(pdf_dir, paper_id, version);
+    crate::sources::download::download_pdf(&dest, url).await
 }
 
 #[cfg(test)]
@@ -205,5 +210,48 @@ mod tests {
         let escape = format!("{}/../secret.pdf", pdf_dir.display());
         assert!(!delete_pdf(&pdf_dir, &escape));
         assert!(outside.exists());
+    }
+
+    #[tokio::test]
+    async fn download_pdf_returns_managed_dest_when_present() {
+        // Valid PDF already at the managed (pdf_dir, paper_id, version) location → returned with
+        // no network call, proving the dest mapping. The full network happy-path lives in
+        // sources::download's wiremock tests; the public-IP SSRF guard rejects loopback, so a
+        // wiremock host can't drive the real guarded download without weakening that guard.
+        let dir = tempfile::tempdir().unwrap();
+        let pdf_dir = dir.path();
+        let body = b"%PDF-1.7 ok".to_vec();
+        fs::write(pdf_dir.join("2204.00001v3.pdf"), &body).unwrap();
+        let out = download_pdf(pdf_dir, "2204.00001", 3, "http://example.com/x.pdf")
+            .await
+            .unwrap();
+        assert_eq!(out, pdf_dir.join("2204.00001v3.pdf"));
+        assert_eq!(fs::read(&out).unwrap(), body);
+    }
+
+    #[tokio::test]
+    async fn download_pdf_refuses_ssrf_and_leaves_no_file() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        // wiremock binds 127.0.0.1; the SSRF public-IP guard must refuse it before any body lands.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/evil.pdf"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/pdf")
+                    .set_body_string("x"),
+            )
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let pdf_dir = dir.path();
+        let url = format!("{}/evil.pdf", server.uri());
+        let err = download_pdf(pdf_dir, "2204.00002", 1, &url).await.unwrap_err();
+        assert!(
+            matches!(err, crate::error::CoreError::Validation(ref m) if m.contains("disallowed")),
+            "loopback host must be refused by the SSRF guard, got {err}"
+        );
+        assert!(!pdf_dir.join("2204.00002v1.pdf").exists(), "no file on a refused download");
     }
 }
