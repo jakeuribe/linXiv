@@ -1,6 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod integrations;
+mod route;
+mod state;
+
+use state::AppState;
 
 use std::net::TcpListener;
 #[cfg(unix)]
@@ -320,6 +324,12 @@ fn main() {
             std::fs::create_dir_all(&data_dir)?;
             let data_dir_str = data_dir.to_string_lossy().to_string();
 
+            // In-process backend: open the DB once and manage it. The webview's
+            // apiFetch routes through the `api` command to linxiv-core (no HTTP
+            // hop). The Python sidecar below still spawns during Phase 5 for
+            // coexistence (D31); Phase 6 deletes it and the port/health machinery.
+            app.manage(AppState::new().map_err(|e| e.to_string())?);
+
             // Clean up any sidecars a previous launcher left orphaned (covers the
             // SIGKILL-on-rebuild case the on-exit reap can't see).
             #[cfg(unix)]
@@ -405,6 +415,7 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            route::api,
             get_api_port,
             open_pdf_in_system,
             integrations::is_cli_installed,

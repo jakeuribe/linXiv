@@ -32,10 +32,40 @@ export class ApiError extends Error {
   }
 }
 
+// In the packaged app the backend runs in-process: route through the `api`
+// Tauri command to linxiv-core instead of HTTP. A 501 from the router means that
+// route isn't ported in-process yet (staged port) — we fall back to the still-
+// running Python sidecar via the fetch path below. FormData uploads (3 routes)
+// and browser dev also keep that path: uploads migrate to dedicated commands in
+// Phase 5c, and the dev loop keeps the Vite proxy (D32). Phase 6 deletes both the
+// sidecar and this fallback once every route is in-process.
+const NOT_ROUTED = Symbol("not_routed");
+
+async function invokeApi<T>(
+  path: string,
+  init?: RequestInit
+): Promise<T | typeof NOT_ROUTED> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  const method = (init?.method ?? "GET").toUpperCase();
+  const body =
+    typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : null;
+  try {
+    return await invoke<T>("api", { req: { method, path, body } });
+  } catch (e) {
+    const err = e as { status?: number; detail?: string };
+    if (err.status === 501) return NOT_ROUTED; // not ported yet → fall back
+    throw new ApiError(err.status ?? 500, err.detail ?? "Request failed");
+  }
+}
+
 export async function apiFetch<T>(
   path: string,
   init?: RequestInit
 ): Promise<T> {
+  if (isTauri && !(init?.body instanceof FormData)) {
+    const routed = await invokeApi<T>(path, init);
+    if (routed !== NOT_ROUTED) return routed;
+  }
   const url = `${BASE_URL}${path}`;
   const isFormData = init?.body instanceof FormData;
   const response = await fetch(url, {

@@ -59,3 +59,4 @@ src-tauri/vendor/pdfium/
 
 # local workflow scratch (Phase-4 fan-out scripts)
 scratchpad-wf/
+scratchpad-wf5/

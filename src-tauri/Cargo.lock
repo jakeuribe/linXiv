@@ -2355,8 +2355,11 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 name = "linxiv-app"
 version = "0.2.0"
 dependencies = [
+ "anyhow",
  "libc",
+ "linxiv-core",
  "reqwest 0.12.28",
+ "rusqlite",
  "serde",
  "serde_json",
  "tauri",
