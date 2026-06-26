@@ -78,9 +78,14 @@ export async function searchLibrary(
  * the backend directly; in browser dev it goes through the Vite proxy.
  */
 export function getPaperPdfUrl(sourceId: string, version?: number): string {
-  const query = version !== undefined ? `?version=${version}` : "";
   const id = encodeURIComponent(sourceId);
-  if (isTauri) return linxivUrl(`papers/${id}/pdf${query}`);
+  // Tauri: id travels as a query param (a slash-bearing old-style id stays one
+  // token). Browser dev: the HTTP path the Vite proxy forwards to the sidecar.
+  if (isTauri) {
+    const v = version !== undefined ? `&version=${version}` : "";
+    return linxivUrl(`pdf?id=${id}${v}`);
+  }
+  const query = version !== undefined ? `?version=${version}` : "";
   return `${BASE_URL}/api/papers/${id}/pdf${query}`;
 }
 

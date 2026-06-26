@@ -5,13 +5,15 @@
 //!
 //! Webview URL form (Tauri docs): `linxiv://localhost/<path>` on Linux/macOS,
 //! `http://linxiv.localhost/<path>` on Windows — both reach `req.uri().path()`.
-//! Two routes:
-//!   `/papers/<source_id>/pdf?version=N`  → the locally-saved PDF bytes (404 if not
-//!                                           on disk); only used for saved papers.
-//!   `/pdf-proxy?url=<remote>`            → SSRF-guarded arXiv proxy (host allowlist
-//!                                           + per-redirect re-check, via core).
+//! Two routes (ids/urls travel as query params, never path segments, so an
+//! old-style `math-ph/0309136` id can't be mangled by URI slash normalization):
+//!   `/pdf?id=<source_id>&version=N` → the locally-saved PDF bytes (404 if not on
+//!                                     disk); only used for saved papers.
+//!   `/pdf-proxy?url=<remote>`       → SSRF-guarded arXiv proxy (host allowlist +
+//!                                     per-redirect re-check, via core).
 
 use std::borrow::Cow;
+use std::time::Duration;
 
 use tauri::http::{header, Request, Response, StatusCode};
 use tauri::{AppHandle, Manager, Runtime, UriSchemeContext, UriSchemeResponder};
@@ -25,6 +27,14 @@ use crate::state::AppState;
 
 /// The scheme name registered on the Tauri builder.
 pub const SCHEME: &str = "linxiv";
+
+/// Total ceiling on a proxied fetch (connect + transfer), like Python's
+/// `_PDF_PROXY_TIMEOUT`. The shared core client only has connect/per-read timeouts.
+const PROXY_TIMEOUT: Duration = Duration::from_secs(30);
+/// Cap the buffered proxy body (the URI-scheme responder takes a complete
+/// `Response`, so we can't stream — bound the memory instead). Matches the
+/// upload limit `_MAX_PDF_BYTES`.
+const MAX_PDF_BYTES: u64 = 100 * 1024 * 1024;
 
 /// Async protocol handler: hand the work to the runtime so the proxy route can
 /// `.await` the network without blocking the webview thread.
@@ -50,51 +60,76 @@ async fn serve<R: Runtime>(app: &AppHandle<R>, req: Request<Vec<u8>>) -> Respons
         .collect();
     let query = req.uri().query().unwrap_or("");
     match segs.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
-        ["papers", source_id, "pdf"] => serve_local_pdf(app, source_id, query),
+        ["pdf"] => serve_local_pdf(app, query),
         ["pdf-proxy"] => serve_proxy(query).await,
         _ => empty(StatusCode::NOT_FOUND),
     }
 }
 
-/// `/papers/<source_id>/pdf?version=N` — the saved PDF on disk. Mirrors
+/// `/pdf?id=<source_id>&version=N` — the saved PDF on disk. Mirrors
 /// `_resolve_local_pdf`; 404 if there is no local file (the consumers only call
 /// this for `has_pdf` papers, so the remote-redirect branch isn't needed here).
-fn serve_local_pdf<R: Runtime>(
-    app: &AppHandle<R>,
-    source_id: &str,
-    query: &str,
-) -> Response<Cow<'static, [u8]>> {
-    let version = query_get(query, "version").and_then(|v| v.parse::<i64>().ok());
+fn serve_local_pdf<R: Runtime>(app: &AppHandle<R>, query: &str) -> Response<Cow<'static, [u8]>> {
+    let Some(source_id) = query_get(query, "id") else {
+        return empty(StatusCode::BAD_REQUEST);
+    };
+    // Query(default=None, ge=1): a present-but-invalid version is a client error,
+    // not a silent fall-through to the latest version.
+    let version = match query_get(query, "version") {
+        None => None,
+        Some(v) => match v.parse::<i64>() {
+            Ok(n) if n >= 1 => Some(n),
+            _ => return empty(StatusCode::BAD_REQUEST),
+        },
+    };
     let state = app.state::<AppState>();
     let pdf_dir = state.pdf_dir.clone();
-    // Resolve the path under the DB lock; read the file bytes outside it.
-    let resolved = state.with_conn(|conn| {
-        let paper = svc_paper::get(
+    // Pull just the fields out under the DB lock; do the fs stats + read OUTSIDE it
+    // so a slow stat can't widen the connection's critical section.
+    let found = state.with_conn(|conn| {
+        svc_paper::get(
             conn,
-            &Paper { source_id: Some(source_id.to_string()), version, ..Default::default() },
+            &Paper { source_id: Some(source_id.clone()), version, ..Default::default() },
         )
         .ok()
-        .flatten()?;
-        let ver = version.unwrap_or(paper.version);
-        resolve_local_pdf(&pdf_dir, paper.pdf_path.as_deref(), &paper.source_id, ver)
+        .flatten()
+        .map(|p| (p.source_id, p.pdf_path, version.unwrap_or(p.version)))
     });
-    match resolved.and_then(|p| std::fs::read(p).ok()) {
+    let Some((sid, pdf_path, ver)) = found else {
+        return empty(StatusCode::NOT_FOUND);
+    };
+    match resolve_local_pdf(&pdf_dir, pdf_path.as_deref(), &sid, ver).and_then(|p| std::fs::read(p).ok())
+    {
         Some(bytes) => pdf_response(bytes),
         None => empty(StatusCode::NOT_FOUND),
     }
 }
 
 /// `/pdf-proxy?url=<remote>` — `api_pdf_proxy`. Host-allowlisted + redirect-guarded
-/// fetch through core; 400 host-not-allowed, 502 upstream.
+/// fetch through core, under a total timeout; 400 host-not-allowed, 502 upstream,
+/// 504 timeout, 413 oversized.
 async fn serve_proxy(query: &str) -> Response<Cow<'static, [u8]>> {
     let Some(url) = query_get(query, "url") else {
         return empty(StatusCode::BAD_REQUEST);
     };
-    match core_http::get_guarded(&url, core_http::ARXIV_HOSTS).await {
-        Ok(resp) if resp.status().is_success() => match resp.bytes().await {
-            Ok(bytes) => pdf_response(bytes.to_vec()),
-            Err(_) => empty(StatusCode::BAD_GATEWAY),
-        },
+    match tokio::time::timeout(PROXY_TIMEOUT, fetch_proxy(&url)).await {
+        Ok(resp) => resp,
+        Err(_) => empty(StatusCode::GATEWAY_TIMEOUT),
+    }
+}
+
+async fn fetch_proxy(url: &str) -> Response<Cow<'static, [u8]>> {
+    match core_http::get_guarded(url, core_http::ARXIV_HOSTS).await {
+        Ok(resp) if resp.status().is_success() => {
+            if resp.content_length().is_some_and(|n| n > MAX_PDF_BYTES) {
+                return empty(StatusCode::PAYLOAD_TOO_LARGE);
+            }
+            match resp.bytes().await {
+                Ok(bytes) if bytes.len() as u64 <= MAX_PDF_BYTES => pdf_response(bytes.to_vec()),
+                Ok(_) => empty(StatusCode::PAYLOAD_TOO_LARGE),
+                Err(_) => empty(StatusCode::BAD_GATEWAY),
+            }
+        }
         Ok(_) => empty(StatusCode::BAD_GATEWAY), // raise_for_status() equivalent
         Err(CoreError::BadRequest(_)) => empty(StatusCode::BAD_REQUEST), // host not allowed
         Err(_) => empty(StatusCode::BAD_GATEWAY),

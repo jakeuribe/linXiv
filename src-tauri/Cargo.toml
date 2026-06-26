@@ -48,6 +48,10 @@ libc = "0.2"
 codegen-units = 1
 lto = true
 opt-level = "s"
-# D30 will flip this to "unwind" (catch_unwind crash isolation); abort for now.
-panic = "abort"
+# D30: unwind so the PDF-extraction catch_unwind (sources/pdf_metadata.rs) can
+# degrade a libpdfium-binding Rust panic to "no metadata" instead of aborting the
+# whole app. The catch is inside the Rust→pdfium-render call, so nothing unwinds
+# across a C frame. (Native libpdfium *segfaults* are still uncatchable — a
+# subprocess/worker boundary for those is documented ship-hardening, not done here.)
+panic = "unwind"
 strip = true
