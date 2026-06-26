@@ -35,6 +35,8 @@ reqwest = { version = "0.12", features = ["json", "blocking"] }
 linxiv-core = { path = "crates/core" }
 rusqlite = "0.40"
 anyhow = "1"
+# Date parse/format parity with core's NaiveDate fields in router arms.
+chrono = "0.4"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"

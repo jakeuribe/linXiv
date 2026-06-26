@@ -2356,6 +2356,7 @@ name = "linxiv-app"
 version = "0.2.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "libc",
  "linxiv-core",
  "reqwest 0.12.28",
