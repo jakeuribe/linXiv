@@ -18,6 +18,9 @@ const SETTINGS_ENV_KEYS: [&str; 2] = ["CROSSREF_MAILTO", "OPENALEX_MAILTO"];
 const ALLOWED_ENV_KEYS: [&str; 4] =
     ["CROSSREF_MAILTO", "OPENALEX_MAILTO", "GEMINI_API_KEY", "OPENAI_API_KEY"];
 
+/// Keys `redact_secrets` strips from the GET body.
+const SECRET_ENV_KEYS: [&str; 2] = ["GEMINI_API_KEY", "OPENAI_API_KEY"];
+
 pub(crate) async fn handle(_state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<Value, ApiError>> {
     match (ctx.method, ctx.segs) {
         ("GET", ["api", "settings"]) => Some(get()),
@@ -57,7 +60,7 @@ fn env_patch(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
 /// `GET /api/settings` — `api_settings_get`. Settings first, then each env key
 /// overlaid (present env keys win; missing ones are skipped, as in app.py).
 fn get() -> Result<Value, ApiError> {
-    let settings = UserSettings::load()?.all();
+    let settings = redact_secrets(UserSettings::load()?.all());
     let env: Vec<(&str, Option<String>)> = SETTINGS_ENV_KEYS
         .iter()
         .map(|&k| (k, std::env::var(k).ok()))
@@ -79,6 +82,14 @@ fn patch(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     Ok(json!({ "ok": true }))
 }
 
+/// Remove `SECRET_ENV_KEYS` from the settings map.
+fn redact_secrets(mut settings: Map<String, Value>) -> Map<String, Value> {
+    for key in SECRET_ENV_KEYS {
+        settings.remove(key);
+    }
+    settings
+}
+
 /// Overlay env values onto the settings map: Python `settings[key] = value` for
 /// each present env var. Insert keeps an existing key's position and appends a
 /// new one (preserve_order Map == Python dict), so the merge order matches app.py.
@@ -95,7 +106,7 @@ fn overlay_env(mut settings: Map<String, Value>, env: &[(&str, Option<String>)])
 mod tests {
     // The GET arm calls UserSettings::load() (real settings file) and the test
     // rule forbids redirecting the data dir, so GET has no isolated test; the
-    // overlay logic — the only nontrivial part — is pinned by the unit tests below.
+    // redact/overlay helpers — the only nontrivial parts — are pinned below.
     use super::*;
 
     #[test]
@@ -108,6 +119,35 @@ mod tests {
             serde_json::to_string(&Value::Object(merged)).unwrap(),
             r#"{"theme":"dark","CROSSREF_MAILTO":"a@b.c"}"#
         );
+    }
+
+    #[test]
+    fn redact_drops_secret_keys_keeping_others_in_order() {
+        let mut base = Map::new();
+        base.insert("theme".into(), json!("dark"));
+        base.insert("GEMINI_API_KEY".into(), json!("g"));
+        base.insert("OPENAI_API_KEY".into(), json!("o"));
+        let redacted = redact_secrets(base);
+        // Then the GET overlay still adds the present mailto key after the survivors.
+        let env = [("CROSSREF_MAILTO", Some("a@b.c".to_string())), ("OPENALEX_MAILTO", None)];
+        let merged = overlay_env(redacted, &env);
+        assert_eq!(
+            serde_json::to_string(&Value::Object(merged)).unwrap(),
+            r#"{"theme":"dark","CROSSREF_MAILTO":"a@b.c"}"#
+        );
+    }
+
+    #[test]
+    fn every_allowed_env_key_is_settings_or_secret() {
+        // A new ALLOWED_ENV_KEYS entry must land in exactly one sub-array: an
+        // unclassified key would either be echoed by GET (if secret) or dropped
+        // from the overlay (if a mailto).
+        for k in ALLOWED_ENV_KEYS {
+            assert!(
+                SETTINGS_ENV_KEYS.contains(&k) ^ SECRET_ENV_KEYS.contains(&k),
+                "{k} must be in exactly one of SETTINGS_ENV_KEYS / SECRET_ENV_KEYS"
+            );
+        }
     }
 
     #[test]
