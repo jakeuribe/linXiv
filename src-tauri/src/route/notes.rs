@@ -41,7 +41,12 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
         };
         let notes = svc_note::get_many(
             conn,
-            &Notes { source_fk: Some(root.source_fk), project_fk, all_projects, ..Default::default() },
+            &Notes {
+                source_fk: Some(root.source_fk),
+                project_fk,
+                all_projects,
+                ..Default::default()
+            },
         )?;
         Ok(json!({ "notes": notes }))
     })
@@ -96,7 +101,14 @@ fn update(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     }
     let b: Body = ctx.parse_body()?;
     state.with_conn(|conn| {
-        if !svc_note::update(conn, &NoteUpdateIn { note_id, title: b.title, content: b.content })? {
+        if !svc_note::update(
+            conn,
+            &NoteUpdateIn {
+                note_id,
+                title: b.title,
+                content: b.content,
+            },
+        )? {
             return Err(ApiError::new(404, "Note not found"));
         }
         Ok(json!({ "ok": true }))
@@ -109,7 +121,12 @@ fn delete(state: &AppState, id: &str) -> Result<Value, ApiError> {
     let note_id = path_i64(id)?;
     let is_editor_project = state.with_conn(|conn| -> Result<bool, ApiError> {
         let is_editor = svc_editor::get_meta(conn, note_id)?.is_some();
-        if !svc_note::delete(conn, &Note { note_id: Some(note_id) })? {
+        if !svc_note::delete(
+            conn,
+            &Note {
+                note_id: Some(note_id),
+            },
+        )? {
             return Err(ApiError::new(404, "Note not found"));
         }
         Ok(is_editor)
@@ -133,13 +150,28 @@ mod tests {
         AppState::from_parts(conn, std::env::temp_dir(), std::env::temp_dir())
     }
 
-    async fn req(st: &AppState, method: &str, path: &str, body: Option<Value>) -> Result<Value, ApiError> {
-        route(st, ApiRequest { method: method.into(), path: path.into(), body }).await
+    async fn req(
+        st: &AppState,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Value, ApiError> {
+        route(
+            st,
+            ApiRequest {
+                method: method.into(),
+                path: path.into(),
+                body,
+            },
+        )
+        .await
     }
 
     #[tokio::test]
     async fn list_unknown_paper_returns_empty_not_404() {
-        let v = req(&state(), "GET", "/api/notes?source_id=arxiv:404", None).await.unwrap();
+        let v = req(&state(), "GET", "/api/notes?source_id=arxiv:404", None)
+            .await
+            .unwrap();
         assert_eq!(v, json!({ "notes": [] }));
     }
 
@@ -161,31 +193,45 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(created, json!({ "id": 1 }));
-        let listed = req(&st, "GET", "/api/notes?source_id=arxiv:1", None).await.unwrap();
+        let listed = req(&st, "GET", "/api/notes?source_id=arxiv:1", None)
+            .await
+            .unwrap();
         assert_eq!(listed["notes"].as_array().unwrap().len(), 1);
     }
 
     #[tokio::test]
     async fn update_missing_note_is_404() {
-        let err = req(&state(), "PATCH", "/api/notes/999", Some(json!({ "title": "x" })))
-            .await
-            .unwrap_err();
+        let err = req(
+            &state(),
+            "PATCH",
+            "/api/notes/999",
+            Some(json!({ "title": "x" })),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(err.status, 404);
         assert_eq!(err.detail, "Note not found");
     }
 
     #[tokio::test]
     async fn delete_missing_note_is_404() {
-        let err = req(&state(), "DELETE", "/api/notes/999", None).await.unwrap_err();
+        let err = req(&state(), "DELETE", "/api/notes/999", None)
+            .await
+            .unwrap_err();
         assert_eq!(err.status, 404);
         assert_eq!(err.detail, "Note not found");
     }
 
     #[tokio::test]
     async fn non_integer_id_is_422() {
-        let err = req(&state(), "PATCH", "/api/notes/abc", Some(json!({ "title": "x" })))
-            .await
-            .unwrap_err();
+        let err = req(
+            &state(),
+            "PATCH",
+            "/api/notes/abc",
+            Some(json!({ "title": "x" })),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(err.status, 422);
     }
 }

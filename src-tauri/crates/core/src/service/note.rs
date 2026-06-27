@@ -60,7 +60,12 @@ pub fn get_many(conn: &Connection, notes: &Notes) -> Result<Vec<NoteDetails>> {
         ));
     }
     if let Some(source_fk) = notes.source_fk {
-        Ok(q::get_notes(conn, source_fk, notes.project_fk, notes.all_projects)?)
+        Ok(q::get_notes(
+            conn,
+            source_fk,
+            notes.project_fk,
+            notes.all_projects,
+        )?)
     } else if let Some(paper_id) = notes.paper_id {
         Ok(q::get_notes_by_paper_id(conn, paper_id)?)
     } else if let Some(project_fk) = notes.project_fk {
@@ -110,7 +115,11 @@ pub fn update(conn: &Connection, note: &NoteUpdateIn) -> Result<bool> {
 }
 
 /// Count notes on a paper, optionally narrowed to a project.
-pub fn count_paper_notes(conn: &Connection, source_fk: i64, project_id: Option<i64>) -> Result<i64> {
+pub fn count_paper_notes(
+    conn: &Connection,
+    source_fk: i64,
+    project_id: Option<i64>,
+) -> Result<i64> {
     Ok(q::count_notes(conn, source_fk, project_id)?)
 }
 
@@ -133,8 +142,11 @@ mod tests {
             [],
         )
         .unwrap();
-        conn.execute("INSERT INTO PROJECT (PROJECT_FK, NAME) VALUES (10, 'P')", [])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO PROJECT (PROJECT_FK, NAME) VALUES (10, 'P')",
+            [],
+        )
+        .unwrap();
         conn
     }
 
@@ -160,7 +172,11 @@ mod tests {
         // partial update: None leaves title; Some replaces content.
         assert!(update(
             &conn,
-            &NoteUpdateIn { note_id: id, title: None, content: Some("body2".into()) },
+            &NoteUpdateIn {
+                note_id: id,
+                title: None,
+                content: Some("body2".into())
+            },
         )
         .unwrap());
         let got = get(&conn, &Note { note_id: Some(id) }).unwrap().unwrap();
@@ -186,7 +202,11 @@ mod tests {
         let conn = setup();
         let err = update(
             &conn,
-            &NoteUpdateIn { note_id: 1, title: None, content: None },
+            &NoteUpdateIn {
+                note_id: 1,
+                title: None,
+                content: None,
+            },
         )
         .unwrap_err();
         assert!(matches!(err, CoreError::Validation(_)));
@@ -202,29 +222,96 @@ mod tests {
             [],
         )
         .unwrap();
-        create(&conn, &NoteIn { source_fk: 1, title: "lib".into(), content: "x".into(), paper_id: None, project_fk: None }).unwrap();
-        create(&conn, &NoteIn { source_fk: 1, title: "proj".into(), content: "y".into(), paper_id: None, project_fk: Some(10) }).unwrap();
-        create(&conn, &NoteIn { source_fk: 1, title: "pinned".into(), content: "z".into(), paper_id: Some(100), project_fk: None }).unwrap();
+        create(
+            &conn,
+            &NoteIn {
+                source_fk: 1,
+                title: "lib".into(),
+                content: "x".into(),
+                paper_id: None,
+                project_fk: None,
+            },
+        )
+        .unwrap();
+        create(
+            &conn,
+            &NoteIn {
+                source_fk: 1,
+                title: "proj".into(),
+                content: "y".into(),
+                paper_id: None,
+                project_fk: Some(10),
+            },
+        )
+        .unwrap();
+        create(
+            &conn,
+            &NoteIn {
+                source_fk: 1,
+                title: "pinned".into(),
+                content: "z".into(),
+                paper_id: Some(100),
+                project_fk: None,
+            },
+        )
+        .unwrap();
 
         // source_fk + no project => library notes (PROJECT_FK NULL).
-        let lib = get_many(&conn, &Notes { source_fk: Some(1), ..Default::default() }).unwrap();
+        let lib = get_many(
+            &conn,
+            &Notes {
+                source_fk: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(lib.len(), 2); // lib + pinned, both PROJECT_FK NULL
 
         // all_projects => every note for the source.
-        let all = get_many(&conn, &Notes { source_fk: Some(1), all_projects: true, ..Default::default() }).unwrap();
+        let all = get_many(
+            &conn,
+            &Notes {
+                source_fk: Some(1),
+                all_projects: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(all.len(), 3);
 
         // project_fk alone.
-        let proj = get_many(&conn, &Notes { project_fk: Some(10), ..Default::default() }).unwrap();
+        let proj = get_many(
+            &conn,
+            &Notes {
+                project_fk: Some(10),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(proj.len(), 1);
 
         // paper_id alone.
-        let pinned = get_many(&conn, &Notes { paper_id: Some(100), ..Default::default() }).unwrap();
+        let pinned = get_many(
+            &conn,
+            &Notes {
+                paper_id: Some(100),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(pinned.len(), 1);
         assert_eq!(pinned[0].title, "pinned");
 
         // source_fk takes priority over paper_id — but the combo is rejected.
-        let err = get_many(&conn, &Notes { source_fk: Some(1), paper_id: Some(100), ..Default::default() }).unwrap_err();
+        let err = get_many(
+            &conn,
+            &Notes {
+                source_fk: Some(1),
+                paper_id: Some(100),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
         assert!(matches!(err, CoreError::Validation(_)));
     }
 
@@ -232,11 +319,27 @@ mod tests {
     fn get_many_rejects_bad_combos_and_empty() {
         let conn = setup();
         assert!(matches!(
-            get_many(&conn, &Notes { all_projects: true, project_fk: Some(10), ..Default::default() }).unwrap_err(),
+            get_many(
+                &conn,
+                &Notes {
+                    all_projects: true,
+                    project_fk: Some(10),
+                    ..Default::default()
+                }
+            )
+            .unwrap_err(),
             CoreError::Validation(_)
         ));
         assert!(matches!(
-            get_many(&conn, &Notes { all_projects: true, paper_id: Some(1), ..Default::default() }).unwrap_err(),
+            get_many(
+                &conn,
+                &Notes {
+                    all_projects: true,
+                    paper_id: Some(1),
+                    ..Default::default()
+                }
+            )
+            .unwrap_err(),
             CoreError::Validation(_)
         ));
         assert!(matches!(
@@ -248,9 +351,39 @@ mod tests {
     #[test]
     fn counts_and_list_all() {
         let conn = setup();
-        create(&conn, &NoteIn { source_fk: 1, title: "a".into(), content: "x".into(), paper_id: None, project_fk: Some(10) }).unwrap();
-        create(&conn, &NoteIn { source_fk: 1, title: "b".into(), content: "y".into(), paper_id: None, project_fk: None }).unwrap();
-        create(&conn, &NoteIn { source_fk: 2, title: "c".into(), content: "z".into(), paper_id: None, project_fk: Some(10) }).unwrap();
+        create(
+            &conn,
+            &NoteIn {
+                source_fk: 1,
+                title: "a".into(),
+                content: "x".into(),
+                paper_id: None,
+                project_fk: Some(10),
+            },
+        )
+        .unwrap();
+        create(
+            &conn,
+            &NoteIn {
+                source_fk: 1,
+                title: "b".into(),
+                content: "y".into(),
+                paper_id: None,
+                project_fk: None,
+            },
+        )
+        .unwrap();
+        create(
+            &conn,
+            &NoteIn {
+                source_fk: 2,
+                title: "c".into(),
+                content: "z".into(),
+                paper_id: None,
+                project_fk: Some(10),
+            },
+        )
+        .unwrap();
 
         assert_eq!(count_paper_notes(&conn, 1, None).unwrap(), 2);
         assert_eq!(count_paper_notes(&conn, 1, Some(10)).unwrap(), 1);

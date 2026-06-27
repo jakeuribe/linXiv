@@ -74,10 +74,22 @@ struct DeletedNote {
 pub async fn run(cmd: NoteCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
     let conn = &ctx.conn;
     match cmd {
-        NoteCmd::Create { source_id, content, title, project_id } => {
+        NoteCmd::Create {
+            source_id,
+            content,
+            title,
+            project_id,
+        } => {
             // Project existence is validated before paper resolution (Python order).
             if let Some(pid) = project_id {
-                if svc_project::get(conn, &Project { project_fk: Some(pid) })?.is_none() {
+                if svc_project::get(
+                    conn,
+                    &Project {
+                        project_fk: Some(pid),
+                    },
+                )?
+                .is_none()
+                {
                     fail(format!("Project {pid} not found"));
                 }
             }
@@ -96,21 +108,37 @@ pub async fn run(cmd: NoteCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                     project_fk: project_id,
                 },
             )?;
-            output(&CreatedNote { id: note_id, source_fk, project_id, title });
+            output(&CreatedNote {
+                id: note_id,
+                source_fk,
+                project_id,
+                title,
+            });
         }
         NoteCmd::Get { note_id } => {
-            match svc_note::get(conn, &Note { note_id: Some(note_id) })? {
+            match svc_note::get(
+                conn,
+                &Note {
+                    note_id: Some(note_id),
+                },
+            )? {
                 Some(details) => output(&details),
                 None => fail(format!("Note {note_id} not found")),
             }
         }
-        NoteCmd::List { source_id, project_id } => {
+        NoteCmd::List {
+            source_id,
+            project_id,
+        } => {
             let mut source_fk: Option<i64> = None;
             if let Some(raw) = source_id {
                 let sid = as_source_id(&raw, "arxiv");
                 match paper_q::get_paper_root(conn, &sid)? {
                     Some(root) => source_fk = Some(root.source_fk),
-                    None => fail(format!("Paper {} not found in DB", crate::output::pyrepr(&sid))),
+                    None => fail(format!(
+                        "Paper {} not found in DB",
+                        crate::output::pyrepr(&sid)
+                    )),
                 }
             }
             let notes = if source_fk.is_none() && project_id.is_none() {
@@ -118,27 +146,66 @@ pub async fn run(cmd: NoteCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             } else {
                 svc_note::get_many(
                     conn,
-                    &Notes { source_fk, project_fk: project_id, ..Default::default() },
+                    &Notes {
+                        source_fk,
+                        project_fk: project_id,
+                        ..Default::default()
+                    },
                 )?
             };
             output(&notes);
         }
-        NoteCmd::Update { note_id, title, content } => {
-            if svc_note::get(conn, &Note { note_id: Some(note_id) })?.is_none() {
+        NoteCmd::Update {
+            note_id,
+            title,
+            content,
+        } => {
+            if svc_note::get(
+                conn,
+                &Note {
+                    note_id: Some(note_id),
+                },
+            )?
+            .is_none()
+            {
                 fail(format!("Note {note_id} not found"));
             }
             if title.is_none() && content.is_none() {
                 fail("at least one of --title or --content must be provided");
             }
-            svc_note::update(conn, &NoteUpdateIn { note_id, title, content })?;
-            output(&UpdatedNote { id: note_id, updated: true });
+            svc_note::update(
+                conn,
+                &NoteUpdateIn {
+                    note_id,
+                    title,
+                    content,
+                },
+            )?;
+            output(&UpdatedNote {
+                id: note_id,
+                updated: true,
+            });
         }
         NoteCmd::Delete { note_id } => {
-            if svc_note::get(conn, &Note { note_id: Some(note_id) })?.is_none() {
+            if svc_note::get(
+                conn,
+                &Note {
+                    note_id: Some(note_id),
+                },
+            )?
+            .is_none()
+            {
                 fail(format!("Note {note_id} not found"));
             }
-            svc_note::delete(conn, &Note { note_id: Some(note_id) })?;
-            output(&DeletedNote { deleted_note_id: note_id });
+            svc_note::delete(
+                conn,
+                &Note {
+                    note_id: Some(note_id),
+                },
+            )?;
+            output(&DeletedNote {
+                deleted_note_id: note_id,
+            });
         }
     }
     Ok(())

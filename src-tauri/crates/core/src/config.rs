@@ -113,7 +113,10 @@ impl UserSettings {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Map::new(),
             Err(e) => return Err(map_io(e)),
         };
-        Ok(Self { defaults, overrides })
+        Ok(Self {
+            defaults,
+            overrides,
+        })
     }
 
     /// Override value if set, else the bundled default. `None` if the key exists nowhere.
@@ -182,15 +185,19 @@ mod tests {
         // Defaults present; no user file yet.
         let s = UserSettings::load().unwrap();
         assert_eq!(s.get("pdf_save_limit_mb").unwrap().as_i64().unwrap(), 1024);
-        assert_eq!(s.get("tex_rendering_enabled").unwrap().as_bool().unwrap(), true);
+        assert_eq!(
+            s.get("tex_rendering_enabled").unwrap().as_bool().unwrap(),
+            true
+        );
         assert!(s.get("nope").is_none());
 
         // Override + save persists ONLY the override, then reloads merged.
         let mut s = s;
         s.set("pdf_save_limit_mb", Value::from(42)).unwrap(); // write-through persists
-        let raw: Map<String, Value> =
-            serde_json::from_str(&std::fs::read_to_string(scratch.join(USER_SETTINGS_FILE)).unwrap())
-                .unwrap();
+        let raw: Map<String, Value> = serde_json::from_str(
+            &std::fs::read_to_string(scratch.join(USER_SETTINGS_FILE)).unwrap(),
+        )
+        .unwrap();
         assert_eq!(raw.len(), 1); // only the override written, not the defaults
         assert_eq!(raw["pdf_save_limit_mb"], Value::from(42));
 

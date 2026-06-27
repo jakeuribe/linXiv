@@ -101,8 +101,10 @@ mod tests {
             .unwrap();
         assert_eq!(fk, 1, "foreign_keys must be ON on every connection");
 
-        assert_eq!(list_from_sql(&list_to_sql(&["a".into(), "b".into()])).unwrap(),
-                   vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(
+            list_from_sql(&list_to_sql(&["a".into(), "b".into()])).unwrap(),
+            vec!["a".to_string(), "b".to_string()]
+        );
         let d = NaiveDate::from_ymd_opt(2024, 3, 5).unwrap();
         assert_eq!(date_from_sql(&date_to_sql(d)).unwrap(), d);
         // read tolerates both separators

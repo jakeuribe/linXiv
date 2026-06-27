@@ -15,6 +15,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use linxiv_core::config;
 use linxiv_core::error::CoreError;
 use linxiv_core::models::{NoteIn, NoteUpdateIn, Status};
 use linxiv_core::service::{
@@ -22,7 +23,6 @@ use linxiv_core::service::{
 };
 use linxiv_core::sources::pdf_metadata::resolve_pdf_metadata;
 use linxiv_core::storage::queries::paper as store_paper;
-use linxiv_core::config;
 
 use crate::Server;
 
@@ -165,7 +165,14 @@ impl Server {
                 },
             )
             .map_err(core_err)?;
-            match svc_note::get(conn, &svc_note::Note { note_id: Some(note_id) }).map_err(core_err)? {
+            match svc_note::get(
+                conn,
+                &svc_note::Note {
+                    note_id: Some(note_id),
+                },
+            )
+            .map_err(core_err)?
+            {
                 Some(n) => json_ok(&n),
                 None => json_ok(&json!({
                     "id": note_id,
@@ -183,7 +190,14 @@ impl Server {
         Parameters(p): Parameters<NoteIdParams>,
     ) -> Result<String, ErrorData> {
         self.with_conn(|conn| {
-            match svc_note::get(conn, &svc_note::Note { note_id: Some(p.note_id) }).map_err(core_err)? {
+            match svc_note::get(
+                conn,
+                &svc_note::Note {
+                    note_id: Some(p.note_id),
+                },
+            )
+            .map_err(core_err)?
+            {
                 Some(n) => json_ok(&n),
                 None => json_ok(&Value::Null),
             }
@@ -247,7 +261,14 @@ impl Server {
             if !ok {
                 return Err(invalid(format!("Note {} not found.", p.note_id)));
             }
-            match svc_note::get(conn, &svc_note::Note { note_id: Some(p.note_id) }).map_err(core_err)? {
+            match svc_note::get(
+                conn,
+                &svc_note::Note {
+                    note_id: Some(p.note_id),
+                },
+            )
+            .map_err(core_err)?
+            {
                 Some(n) => json_ok(&n),
                 None => json_ok(&json!({})),
             }
@@ -260,13 +281,24 @@ impl Server {
         Parameters(p): Parameters<NoteIdParams>,
     ) -> Result<String, ErrorData> {
         self.with_conn(|conn| {
-            if svc_note::get(conn, &svc_note::Note { note_id: Some(p.note_id) })
-                .map_err(core_err)?
-                .is_none()
+            if svc_note::get(
+                conn,
+                &svc_note::Note {
+                    note_id: Some(p.note_id),
+                },
+            )
+            .map_err(core_err)?
+            .is_none()
             {
                 return Err(invalid(format!("Note {} not found.", p.note_id)));
             }
-            svc_note::delete(conn, &svc_note::Note { note_id: Some(p.note_id) }).map_err(core_err)?;
+            svc_note::delete(
+                conn,
+                &svc_note::Note {
+                    note_id: Some(p.note_id),
+                },
+            )
+            .map_err(core_err)?;
             json_ok(&json!({ "deleted": p.note_id }))
         })
     }
@@ -345,7 +377,8 @@ impl Server {
                 }
             };
             let ver = paper.version;
-            let path = svc_files::pdf_path(&pdf_dir, &paper.source_id, ver, paper.pdf_path.as_deref());
+            let path =
+                svc_files::pdf_path(&pdf_dir, &paper.source_id, ver, paper.pdf_path.as_deref());
             json_ok(&json!({
                 "paper_id": p.paper_id,
                 "version": ver,
@@ -416,20 +449,28 @@ impl Server {
         })
     }
 
-    #[tool(description = "Permanently delete a trashed paper. Only works if the paper is in the trash.")]
+    #[tool(
+        description = "Permanently delete a trashed paper. Only works if the paper is in the trash."
+    )]
     pub async fn trash_hard_delete_paper(
         &self,
         Parameters(p): Parameters<PaperIdParams>,
     ) -> Result<String, ErrorData> {
         self.with_conn(|conn| {
             if !svc_paper::is_paper_deleted(conn, &p.paper_id).map_err(core_err)? {
-                return Err(invalid(format!("Paper {} not found in trash.", crate::util::pyrepr(&p.paper_id))));
+                return Err(invalid(format!(
+                    "Paper {} not found in trash.",
+                    crate::util::pyrepr(&p.paper_id)
+                )));
             }
             if store_paper::get_paper_root(conn, &p.paper_id)
                 .map_err(core_err)?
                 .is_none()
             {
-                return Err(invalid(format!("Paper {} not found.", crate::util::pyrepr(&p.paper_id))));
+                return Err(invalid(format!(
+                    "Paper {} not found.",
+                    crate::util::pyrepr(&p.paper_id)
+                )));
             }
             svc_paper::hard_delete(
                 conn,
@@ -443,44 +484,74 @@ impl Server {
         })
     }
 
-    #[tool(description = "Restore a project from the trash. Only works if the project is soft-deleted.")]
+    #[tool(
+        description = "Restore a project from the trash. Only works if the project is soft-deleted."
+    )]
     pub async fn restore_project_from_trash(
         &self,
         Parameters(p): Parameters<ProjectIdParams>,
     ) -> Result<String, ErrorData> {
         self.with_conn(|conn| {
-            let details = svc_project::get(conn, &svc_project::Project { project_fk: Some(p.project_id) })
-                .map_err(core_err)?;
+            let details = svc_project::get(
+                conn,
+                &svc_project::Project {
+                    project_fk: Some(p.project_id),
+                },
+            )
+            .map_err(core_err)?;
             let details = match details {
                 Some(d) => d,
                 None => return Err(invalid(format!("Project {} not found.", p.project_id))),
             };
             if details.status != Status::Deleted {
-                return Err(invalid(format!("Project {} is not in trash.", p.project_id)));
+                return Err(invalid(format!(
+                    "Project {} is not in trash.",
+                    p.project_id
+                )));
             }
-            svc_project::restore(conn, &svc_project::Project { project_fk: Some(p.project_id) })
-                .map_err(core_err)?;
+            svc_project::restore(
+                conn,
+                &svc_project::Project {
+                    project_fk: Some(p.project_id),
+                },
+            )
+            .map_err(core_err)?;
             json_ok(&json!({ "restored_project_id": p.project_id }))
         })
     }
 
-    #[tool(description = "Permanently delete a trashed project. Only works if the project is soft-deleted.")]
+    #[tool(
+        description = "Permanently delete a trashed project. Only works if the project is soft-deleted."
+    )]
     pub async fn hard_delete_project_from_trash(
         &self,
         Parameters(p): Parameters<ProjectIdParams>,
     ) -> Result<String, ErrorData> {
         self.with_conn(|conn| {
-            let details = svc_project::get(conn, &svc_project::Project { project_fk: Some(p.project_id) })
-                .map_err(core_err)?;
+            let details = svc_project::get(
+                conn,
+                &svc_project::Project {
+                    project_fk: Some(p.project_id),
+                },
+            )
+            .map_err(core_err)?;
             let details = match details {
                 Some(d) => d,
                 None => return Err(invalid(format!("Project {} not found.", p.project_id))),
             };
             if details.status != Status::Deleted {
-                return Err(invalid(format!("Project {} is not in trash.", p.project_id)));
+                return Err(invalid(format!(
+                    "Project {} is not in trash.",
+                    p.project_id
+                )));
             }
-            svc_project::hard_delete(conn, &svc_project::Project { project_fk: Some(p.project_id) })
-                .map_err(core_err)?;
+            svc_project::hard_delete(
+                conn,
+                &svc_project::Project {
+                    project_fk: Some(p.project_id),
+                },
+            )
+            .map_err(core_err)?;
             json_ok(&json!({ "hard_deleted_project_id": p.project_id }))
         })
     }
@@ -495,14 +566,18 @@ impl Server {
         // Pre-read guard: convert a missing project to the MCP ValueError before
         // touching the file (matches the Python ordering).
         if let Some(pid) = p.project_id {
-            self.with_conn(|conn| match svc_project::ensure_membership_writable(conn, pid) {
-                Err(CoreError::ProjectNotFound) => Err(invalid(format!("Project {pid} not found."))),
-                Err(e) => Err(core_err(e)),
-                Ok(()) => Ok(()),
-            })?;
+            self.with_conn(
+                |conn| match svc_project::ensure_membership_writable(conn, pid) {
+                    Err(CoreError::ProjectNotFound) => {
+                        Err(invalid(format!("Project {pid} not found.")))
+                    }
+                    Err(e) => Err(core_err(e)),
+                    Ok(()) => Ok(()),
+                },
+            )?;
         }
-        let content = std::fs::read(&p.file)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        let content =
+            std::fs::read(&p.file).map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         // Resolve metadata (network) OUTSIDE the lock, then do the sync DB+FS
         // import under it — mirrors `import_pdf_default` without holding the
         // mutex across the await.
@@ -514,9 +589,10 @@ impl Server {
                 Ok(resolved.clone())
             }) {
                 Ok(result) => json_ok(&result),
-                Err(CoreError::ProjectNotFound) => {
-                    Err(invalid(format!("Project {} not found.", p.project_id.unwrap_or_default())))
-                }
+                Err(CoreError::ProjectNotFound) => Err(invalid(format!(
+                    "Project {} not found.",
+                    p.project_id.unwrap_or_default()
+                ))),
                 Err(e @ CoreError::PaperLink(_)) => Err(invalid(e.to_string())),
                 Err(e) => Err(core_err(e)),
             }

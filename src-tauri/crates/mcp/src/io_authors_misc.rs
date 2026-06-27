@@ -34,9 +34,7 @@ use crate::Server;
 /// everything else (DB/FS) → `internal_error`.
 fn map_core(e: CoreError) -> ErrorData {
     match e {
-        CoreError::BadRequest(m) | CoreError::Validation(m) => {
-            ErrorData::invalid_params(m, None)
-        }
+        CoreError::BadRequest(m) | CoreError::Validation(m) => ErrorData::invalid_params(m, None),
         other => ErrorData::internal_error(other.to_string(), None),
     }
 }
@@ -52,17 +50,23 @@ fn project_papers(
     conn: &rusqlite::Connection,
     project_id: i64,
 ) -> Result<Vec<linxiv_core::models::PaperDetails>, ErrorData> {
-    let details = svc_project::get(conn, &Project { project_fk: Some(project_id) })
-        .map_err(map_core)?
-        .ok_or_else(|| {
-            ErrorData::invalid_params(format!("Project {project_id} not found."), None)
-        })?;
+    let details = svc_project::get(
+        conn,
+        &Project {
+            project_fk: Some(project_id),
+        },
+    )
+    .map_err(map_core)?
+    .ok_or_else(|| ErrorData::invalid_params(format!("Project {project_id} not found."), None))?;
     if details.source_fks.is_empty() {
         return Ok(Vec::new());
     }
     svc_paper::get_many(
         conn,
-        &svc_paper::Papers { source_fks: Some(details.source_fks), ..Default::default() },
+        &svc_paper::Papers {
+            source_fks: Some(details.source_fks),
+            ..Default::default()
+        },
     )
     .map_err(map_core)
 }
@@ -168,20 +172,30 @@ impl Server {
         &self,
         params: Parameters<ExportProjectParams>,
     ) -> Result<String, ErrorData> {
-        let ExportProjectParams { project_id, dest, include_pdfs } = params.0;
+        let ExportProjectParams {
+            project_id,
+            dest,
+            include_pdfs,
+        } = params.0;
         let pdf_dir = self.pdf_dir.clone();
         let path = self.with_conn(|conn| -> Result<String, ErrorData> {
-            if svc_project::get(conn, &Project { project_fk: Some(project_id) })
-                .map_err(map_core)?
-                .is_none()
+            if svc_project::get(
+                conn,
+                &Project {
+                    project_fk: Some(project_id),
+                },
+            )
+            .map_err(map_core)?
+            .is_none()
             {
                 return Err(ErrorData::invalid_params(
                     format!("Project {project_id} not found."),
                     None,
                 ));
             }
-            let out = svc_ei::export_project(conn, project_id, Path::new(&dest), include_pdfs, &pdf_dir)
-                .map_err(map_core)?;
+            let out =
+                svc_ei::export_project(conn, project_id, Path::new(&dest), include_pdfs, &pdf_dir)
+                    .map_err(map_core)?;
             Ok(out.to_string_lossy().into_owned())
         })?;
         json_ok(&json!({ "path": path, "project_id": project_id }))
@@ -192,7 +206,11 @@ impl Server {
         &self,
         params: Parameters<ImportProjectParams>,
     ) -> Result<String, ErrorData> {
-        let ImportProjectParams { zip_path, on_conflict, preview } = params.0;
+        let ImportProjectParams {
+            zip_path,
+            on_conflict,
+            preview,
+        } = params.0;
         let path = std::path::PathBuf::from(&zip_path);
         if preview {
             let result = svc_ei::preview_import(&path).map_err(map_core)?;
@@ -221,8 +239,7 @@ impl Server {
             Ok(linxiv_core::formats::bibtex_export(&papers))
         })?;
         let out = with_default_ext(&dest, "bib");
-        std::fs::write(&out, body)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        std::fs::write(&out, body).map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         json_ok(&json!({ "path": out.to_string_lossy(), "project_id": project_id }))
     }
 
@@ -237,16 +254,12 @@ impl Server {
             Ok(linxiv_core::formats::obsidian_export(&papers))
         })?;
         let out = with_default_ext(&dest, "md");
-        std::fs::write(&out, body)
-            .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        std::fs::write(&out, body).map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
         json_ok(&json!({ "path": out.to_string_lossy(), "project_id": project_id }))
     }
 
     #[tool(description = "Resolve a DOI to paper metadata without saving it to the library.")]
-    pub async fn resolve_doi(
-        &self,
-        params: Parameters<DoiParams>,
-    ) -> Result<String, ErrorData> {
+    pub async fn resolve_doi(&self, params: Parameters<DoiParams>) -> Result<String, ErrorData> {
         let meta = doi_resolve::resolve_doi(&params.0.doi, &config::data_dir())
             .await
             .map_err(map_core)?;
@@ -254,10 +267,7 @@ impl Server {
     }
 
     #[tool(description = "Resolve a DOI and save the resulting paper to the local library.")]
-    pub async fn save_doi(
-        &self,
-        params: Parameters<DoiParams>,
-    ) -> Result<String, ErrorData> {
+    pub async fn save_doi(&self, params: Parameters<DoiParams>) -> Result<String, ErrorData> {
         let meta = doi_resolve::resolve_doi(&params.0.doi, &config::data_dir())
             .await
             .map_err(map_core)?;
@@ -286,11 +296,17 @@ impl Server {
     ) -> Result<String, ErrorData> {
         let author_id = params.0.author_id;
         let value = self.with_conn(|conn| -> Result<Value, ErrorData> {
-            let author = svc_author::get(conn, &Author { author_id: Some(author_id), ..Default::default() })
-                .map_err(map_core)?
-                .ok_or_else(|| {
-                    ErrorData::invalid_params(format!("Author {author_id} not found."), None)
-                })?;
+            let author = svc_author::get(
+                conn,
+                &Author {
+                    author_id: Some(author_id),
+                    ..Default::default()
+                },
+            )
+            .map_err(map_core)?
+            .ok_or_else(|| {
+                ErrorData::invalid_params(format!("Author {author_id} not found."), None)
+            })?;
             let previews = svc_author::get_paper_previews(conn, author_id).map_err(map_core)?;
             let mut value = serde_json::to_value(&author)
                 .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
@@ -311,18 +327,31 @@ impl Server {
         &self,
         params: Parameters<UpdateAuthorParams>,
     ) -> Result<String, ErrorData> {
-        let UpdateAuthorParams { author_id, full_name, first_name, last_name, orcid } = params.0;
+        let UpdateAuthorParams {
+            author_id,
+            full_name,
+            first_name,
+            last_name,
+            orcid,
+        } = params.0;
         self.with_conn(|conn| -> Result<(), ErrorData> {
-            if svc_author::get(conn, &Author { author_id: Some(author_id), ..Default::default() })
-                .map_err(map_core)?
-                .is_none()
+            if svc_author::get(
+                conn,
+                &Author {
+                    author_id: Some(author_id),
+                    ..Default::default()
+                },
+            )
+            .map_err(map_core)?
+            .is_none()
             {
                 return Err(ErrorData::invalid_params(
                     format!("Author {author_id} not found."),
                     None,
                 ));
             }
-            if full_name.is_none() && first_name.is_none() && last_name.is_none() && orcid.is_none() {
+            if full_name.is_none() && first_name.is_none() && last_name.is_none() && orcid.is_none()
+            {
                 return Err(ErrorData::invalid_params(
                     "At least one of full_name, first_name, last_name, or orcid must be provided.",
                     None,
@@ -355,8 +384,14 @@ impl Server {
                     None,
                 ));
             }
-            svc_author::delete(conn, &Author { author_id: Some(author_id), ..Default::default() })
-                .map_err(map_core)
+            svc_author::delete(
+                conn,
+                &Author {
+                    author_id: Some(author_id),
+                    ..Default::default()
+                },
+            )
+            .map_err(map_core)
         })?;
         json_ok(&json!({ "deleted_author_id": author_id }))
     }
@@ -416,7 +451,9 @@ impl Server {
         json_ok(&value)
     }
 
-    #[tool(description = "Report library statistics: paper, tag, category, and downloaded-PDF counts.")]
+    #[tool(
+        description = "Report library statistics: paper, tag, category, and downloaded-PDF counts."
+    )]
     pub async fn get_stats(&self) -> Result<String, ErrorData> {
         self.with_conn(|conn| -> Result<String, ErrorData> {
             let papers = svc_paper::list_papers(conn, true, None, 0, None).map_err(map_core)?;
@@ -455,7 +492,9 @@ impl Server {
         // Parse the value as JSON when valid, else store it verbatim as a string.
         let parsed = serde_json::from_str::<Value>(&value).unwrap_or(Value::String(value));
         let mut settings = UserSettings::load().map_err(map_core)?;
-        settings.set(key.clone(), parsed.clone()).map_err(map_core)?;
+        settings
+            .set(key.clone(), parsed.clone())
+            .map_err(map_core)?;
         let mut out = serde_json::Map::new();
         out.insert(key, parsed);
         json_ok(&Value::Object(out))

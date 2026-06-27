@@ -161,7 +161,9 @@ impl Server {
         json_ok(&results)
     }
 
-    #[tool(description = "Fetch full metadata for a paper by id and save it to the local database.")]
+    #[tool(
+        description = "Fetch full metadata for a paper by id and save it to the local database."
+    )]
     pub async fn fetch_paper(
         &self,
         Parameters(FetchPaperParams { paper_id, source }): Parameters<FetchPaperParams>,
@@ -185,7 +187,9 @@ impl Server {
     ) -> Result<String, ErrorData> {
         // `list_paper_details` defaults latest_only=True.
         let papers = self
-            .with_conn(|conn| svc_paper::list_papers(conn, true, limit, offset, category.as_deref()))
+            .with_conn(|conn| {
+                svc_paper::list_papers(conn, true, limit, offset, category.as_deref())
+            })
             .map_err(core_err)?;
         json_ok(&papers)
     }
@@ -212,7 +216,10 @@ impl Server {
         self.with_conn(|conn| {
             if svc_paper::get(conn, &paper_key(&paper_id))?.is_none() {
                 return Ok(Err(ErrorData::invalid_params(
-                    format!("Paper {} not found in database.", crate::util::pyrepr(&paper_id)),
+                    format!(
+                        "Paper {} not found in database.",
+                        crate::util::pyrepr(&paper_id)
+                    ),
                     None,
                 )));
             }
@@ -272,7 +279,10 @@ impl Server {
         self.with_conn(|conn| {
             let Some(root) = store_paper::get_paper_root(conn, &paper_id)? else {
                 return Ok(Err(ErrorData::invalid_params(
-                    format!("Paper {} not found in database.", crate::util::pyrepr(&paper_id)),
+                    format!(
+                        "Paper {} not found in database.",
+                        crate::util::pyrepr(&paper_id)
+                    ),
                     None,
                 )));
             };
@@ -281,7 +291,10 @@ impl Server {
                 Ok(d) => d,
                 Err(_) => {
                     return Ok(Err(ErrorData::invalid_params(
-                        format!("Invalid date {}; use YYYY-MM-DD.", crate::util::pyrepr(&published)),
+                        format!(
+                            "Invalid date {}; use YYYY-MM-DD.",
+                            crate::util::pyrepr(&published)
+                        ),
                         None,
                     )))
                 }
@@ -324,7 +337,10 @@ impl Server {
             .with_conn(|conn| {
                 if !svc_paper::is_paper_deleted(conn, &paper_id)? {
                     return Ok(Err(ErrorData::invalid_params(
-                        format!("Paper {} not found in trash.", crate::util::pyrepr(&paper_id)),
+                        format!(
+                            "Paper {} not found in trash.",
+                            crate::util::pyrepr(&paper_id)
+                        ),
                         None,
                     )));
                 }
@@ -366,7 +382,10 @@ impl Server {
             .with_conn(|conn| svc_project::remove_paper_from_all_projects_by_id(conn, &paper_id))
             .map_err(core_err)?
             .ok_or_else(|| {
-                ErrorData::invalid_params(format!("Paper {} not found.", crate::util::pyrepr(&paper_id)), None)
+                ErrorData::invalid_params(
+                    format!("Paper {} not found.", crate::util::pyrepr(&paper_id)),
+                    None,
+                )
             })?;
         json_ok(&serde_json::json!({
             "paper_id": paper_id,

@@ -31,10 +31,16 @@ pub fn bibtex_export(papers: &[PaperDetails]) -> String {
             out.push('\n');
         }
         let key = bib_key(&p.source_id);
-        let year = p.published.map(|d| d.format("%Y").to_string()).unwrap_or_default();
+        let year = p
+            .published
+            .map(|d| d.format("%Y").to_string())
+            .unwrap_or_default();
         out.push_str(&format!("@article{{{key}"));
-        let mut fields: Vec<(&str, &str)> =
-            vec![("title", p.title.as_str()), ("year", year.as_str()), ("abstract", p.summary.as_deref().unwrap_or(""))];
+        let mut fields: Vec<(&str, &str)> = vec![
+            ("title", p.title.as_str()),
+            ("year", year.as_str()),
+            ("abstract", p.summary.as_deref().unwrap_or("")),
+        ];
         if let Some(doi) = p.doi.as_deref().filter(|s| !s.is_empty()) {
             fields.push(("doi", doi));
         }
@@ -63,7 +69,11 @@ fn bib_quote(value: &str) -> String {
 
 /// `(source_id or "unknown").replace("/","_").replace(".","_")`.
 fn bib_key(source_id: &str) -> String {
-    let base = if source_id.is_empty() { "unknown" } else { source_id };
+    let base = if source_id.is_empty() {
+        "unknown"
+    } else {
+        source_id
+    };
     base.replace(['/', '.'], "_")
 }
 
@@ -83,7 +93,12 @@ pub fn obsidian_export(papers: &[PaperDetails]) -> String {
             lines.push(format!("  - {t}"));
         }
     }
-    lines.extend(["---".into(), "".into(), "# Selected Papers".into(), "".into()]);
+    lines.extend([
+        "---".into(),
+        "".into(),
+        "# Selected Papers".into(),
+        "".into(),
+    ]);
 
     for p in papers {
         let sid = p.source_id.as_str();
@@ -132,7 +147,9 @@ fn new_style_arxiv(sid: &str) -> bool {
         Some(_) => return false,
         None => sid,
     };
-    let Some((a, b)) = head.split_once('.') else { return false };
+    let Some((a, b)) = head.split_once('.') else {
+        return false;
+    };
     a.len() == 4
         && a.chars().all(|c| c.is_ascii_digit())
         && (4..=5).contains(&b.len())
@@ -140,7 +157,9 @@ fn new_style_arxiv(sid: &str) -> bool {
 }
 
 fn old_style_arxiv(sid: &str) -> bool {
-    let Some((cat, num)) = sid.split_once('/') else { return false };
+    let Some((cat, num)) = sid.split_once('/') else {
+        return false;
+    };
     !cat.is_empty()
         && cat.chars().all(|c| c.is_ascii_lowercase() || c == '-')
         && num.len() == 7
@@ -157,8 +176,12 @@ pub fn bibtex_import(text: &str) -> Result<Vec<PaperMetadata>, String> {
     let mut out = Vec::new();
     for entry in bib.into_iter() {
         let key = entry.key.clone();
-        let authors: Vec<String> =
-            entry.author().unwrap_or_default().iter().map(format_person).collect();
+        let authors: Vec<String> = entry
+            .author()
+            .unwrap_or_default()
+            .iter()
+            .map(format_person)
+            .collect();
         let doi = field(&entry, "doi");
         let title = field(&entry, "title").unwrap_or_else(|| key.clone());
         let summary = field(&entry, "abstract").unwrap_or_default();
@@ -188,7 +211,11 @@ pub fn bibtex_import(text: &str) -> Result<Vec<PaperMetadata>, String> {
 
 /// A scalar field as plain text, or None when absent/empty.
 fn field(entry: &biblatex::Entry, key: &str) -> Option<String> {
-    entry.get_as::<String>(key).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    entry
+        .get_as::<String>(key)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 fn parse_year(entry: &biblatex::Entry) -> NaiveDate {
@@ -197,17 +224,24 @@ fn parse_year(entry: &biblatex::Entry) -> NaiveDate {
         .ok()
         .or_else(|| field(entry, "year").and_then(|s| s.parse::<i64>().ok()));
     year.and_then(|y| NaiveDate::from_ymd_opt(y as i32, 1, 1))
-        .unwrap_or_else(|| NaiveDate::from_ymd_opt(FALLBACK_DATE.0, FALLBACK_DATE.1, FALLBACK_DATE.2).unwrap())
+        .unwrap_or_else(|| {
+            NaiveDate::from_ymd_opt(FALLBACK_DATE.0, FALLBACK_DATE.1, FALLBACK_DATE.2).unwrap()
+        })
 }
 
 /// "Given Last" display name (prefix/suffix folded in), trimmed.
 fn format_person(p: &biblatex::Person) -> String {
-    [p.given_name.as_str(), p.prefix.as_str(), p.name.as_str(), p.suffix.as_str()]
-        .iter()
-        .filter(|s| !s.is_empty())
-        .copied()
-        .collect::<Vec<_>>()
-        .join(" ")
+    [
+        p.given_name.as_str(),
+        p.prefix.as_str(),
+        p.name.as_str(),
+        p.suffix.as_str(),
+    ]
+    .iter()
+    .filter(|s| !s.is_empty())
+    .copied()
+    .collect::<Vec<_>>()
+    .join(" ")
 }
 
 #[cfg(test)]
@@ -266,7 +300,10 @@ mod tests {
         .unwrap();
         assert_eq!(metas.len(), 1);
         assert_eq!(metas[0].source_id, "10.1/x"); // doi wins over key
-        assert_eq!(metas[0].authors, vec!["John Smith".to_string(), "Jane Doe".to_string()]);
+        assert_eq!(
+            metas[0].authors,
+            vec!["John Smith".to_string(), "Jane Doe".to_string()]
+        );
         assert_eq!(metas[0].source.as_deref(), Some("bibtex"));
         // no year/doi → key as source_id, 1900-01-01 fallback
         let m2 = &bibtex_import("@misc{k, title={T}}").unwrap()[0];

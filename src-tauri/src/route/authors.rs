@@ -104,7 +104,10 @@ fn detail_response(state: &AppState, author_id: i64) -> Result<Value, ApiError> 
 }
 
 fn author_ref(author_id: i64) -> Author {
-    Author { author_id: Some(author_id), ..Default::default() }
+    Author {
+        author_id: Some(author_id),
+        ..Default::default()
+    }
 }
 
 #[cfg(test)]
@@ -121,12 +124,23 @@ mod tests {
     }
 
     async fn req(st: &AppState, method: &str, path: &str) -> Result<Value, ApiError> {
-        route(st, ApiRequest { method: method.into(), path: path.into(), body: None }).await
+        route(
+            st,
+            ApiRequest {
+                method: method.into(),
+                path: path.into(),
+                body: None,
+            },
+        )
+        .await
     }
 
     #[tokio::test]
     async fn list_on_empty_db_wraps_empty_array() {
-        assert_eq!(req(&state(), "GET", "/api/authors").await.unwrap(), json!({ "authors": [] }));
+        assert_eq!(
+            req(&state(), "GET", "/api/authors").await.unwrap(),
+            json!({ "authors": [] })
+        );
     }
 
     #[tokio::test]
@@ -144,7 +158,9 @@ mod tests {
 
     #[tokio::test]
     async fn delete_missing_author_is_404() {
-        let err = req(&state(), "DELETE", "/api/authors/999").await.unwrap_err();
+        let err = req(&state(), "DELETE", "/api/authors/999")
+            .await
+            .unwrap_err();
         assert_eq!(err.status, 404);
     }
 }

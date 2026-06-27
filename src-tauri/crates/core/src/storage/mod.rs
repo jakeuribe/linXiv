@@ -13,7 +13,7 @@ pub mod schema;
 
 pub use db::{open, open_in_memory, transaction};
 pub use queries::*;
-pub use query::{Q, _in};
+pub use query::{_in, Q};
 
 use rusqlite::Connection;
 

@@ -92,14 +92,18 @@ pub enum FsResult {
 pub fn safe_path(vault_root: &Path, relpath: &str) -> Result<PathBuf> {
     let raw = relpath.replace('\\', "/");
     if raw.starts_with('/') {
-        return Err(CoreError::BadRequest("absolute paths are not allowed".into()));
+        return Err(CoreError::BadRequest(
+            "absolute paths are not allowed".into(),
+        ));
     }
     let parts: Vec<&str> = raw
         .split('/')
         .filter(|p| !p.is_empty() && *p != ".")
         .collect();
     if parts.iter().any(|p| *p == "..") {
-        return Err(CoreError::BadRequest("path traversal is not allowed".into()));
+        return Err(CoreError::BadRequest(
+            "path traversal is not allowed".into(),
+        ));
     }
     let mut target = vault_root.to_path_buf();
     for p in &parts {
@@ -117,12 +121,12 @@ pub fn safe_path(vault_root: &Path, relpath: &str) -> Result<PathBuf> {
 // ── extension-based text/binary classifier (matches the TeXbrain guest) ─────────
 
 const TEXT_EXTS: &[&str] = &[
-    "tex", "sty", "cls", "bib", "bst", "def", "cfg", "fd", "dtx", "ins", "ltx",
-    "txt", "bbx", "cbx", "lbx",
+    "tex", "sty", "cls", "bib", "bst", "def", "cfg", "fd", "dtx", "ins", "ltx", "txt", "bbx",
+    "cbx", "lbx",
 ];
 const BINARY_EXTS: &[&str] = &[
-    "png", "jpg", "jpeg", "pdf", "eps", "svg", "gif", "bmp", "tfm", "pfb", "vf",
-    "map", "enc", "otf", "ttf",
+    "png", "jpg", "jpeg", "pdf", "eps", "svg", "gif", "bmp", "tfm", "pfb", "vf", "map", "enc",
+    "otf", "ttf",
 ];
 
 /// `Some(true)`/`Some(false)` per the editor's extension sets; `None` for an
@@ -368,9 +372,15 @@ mod tests {
         let dir = tempdir().unwrap();
         let root = dir.path();
         assert_eq!(safe_path(root, "").unwrap(), root);
-        assert_eq!(safe_path(root, "a/b.tex").unwrap(), root.join("a").join("b.tex"));
+        assert_eq!(
+            safe_path(root, "a/b.tex").unwrap(),
+            root.join("a").join("b.tex")
+        );
         // "." and "" components are dropped, like Python.
-        assert_eq!(safe_path(root, "./a//b.tex").unwrap(), root.join("a").join("b.tex"));
+        assert_eq!(
+            safe_path(root, "./a//b.tex").unwrap(),
+            root.join("a").join("b.tex")
+        );
     }
 
     #[test]
@@ -430,7 +440,13 @@ mod tests {
     fn write_text_creates_parent_dirs() {
         let dir = tempdir().unwrap();
         let root = dir.path();
-        write_file(root, "deep/nested/main.tex", "\\documentclass{article}", false).unwrap();
+        write_file(
+            root,
+            "deep/nested/main.tex",
+            "\\documentclass{article}",
+            false,
+        )
+        .unwrap();
         assert_eq!(
             std::fs::read_to_string(root.join("deep/nested/main.tex")).unwrap(),
             "\\documentclass{article}"
@@ -465,9 +481,18 @@ mod tests {
                 assert_eq!(
                     entries,
                     vec![
-                        DirEntry { name: "a.tex".into(), kind: "file".into() },
-                        DirEntry { name: "b.tex".into(), kind: "file".into() },
-                        DirEntry { name: "sub".into(), kind: "directory".into() },
+                        DirEntry {
+                            name: "a.tex".into(),
+                            kind: "file".into()
+                        },
+                        DirEntry {
+                            name: "b.tex".into(),
+                            kind: "file".into()
+                        },
+                        DirEntry {
+                            name: "sub".into(),
+                            kind: "directory".into()
+                        },
                     ]
                 );
             }
@@ -510,7 +535,10 @@ mod tests {
         std::fs::write(root.join("top.tex"), "x").unwrap();
         assert_eq!(list_files(root).unwrap(), vec!["a/b/z.tex", "top.tex"]);
         // missing root -> empty.
-        assert_eq!(list_files(&root.join("nope")).unwrap(), Vec::<String>::new());
+        assert_eq!(
+            list_files(&root.join("nope")).unwrap(),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -521,19 +549,39 @@ mod tests {
         assert!(root.join("d").is_dir());
         run_fs_op(
             root,
-            &FsOp::WriteFile { path: "d/x.tex".into(), data: "hi".into(), binary: false },
+            &FsOp::WriteFile {
+                path: "d/x.tex".into(),
+                data: "hi".into(),
+                binary: false,
+            },
         )
         .unwrap();
-        let r = run_fs_op(root, &FsOp::ReadFile { path: "d/x.tex".into() }).unwrap();
-        assert_eq!(r, FsResult::ReadFile { data: "hi".into(), binary: false });
+        let r = run_fs_op(
+            root,
+            &FsOp::ReadFile {
+                path: "d/x.tex".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            r,
+            FsResult::ReadFile {
+                data: "hi".into(),
+                binary: false
+            }
+        );
     }
 
     #[test]
     fn fs_op_deserializes_from_wire_and_unknown_kind_fails() {
-        let op: FsOp = serde_json::from_str(r#"{"kind":"writeFile","path":"a.tex","data":"x"}"#).unwrap();
+        let op: FsOp =
+            serde_json::from_str(r#"{"kind":"writeFile","path":"a.tex","data":"x"}"#).unwrap();
         match op {
             FsOp::WriteFile { path, data, binary } => {
-                assert_eq!((path.as_str(), data.as_str(), binary), ("a.tex", "x", false));
+                assert_eq!(
+                    (path.as_str(), data.as_str(), binary),
+                    ("a.tex", "x", false)
+                );
             }
             other => panic!("got {other:?}"),
         }

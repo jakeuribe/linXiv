@@ -551,14 +551,24 @@ mod tests {
         let p = ProjectDetails {
             source_fks: vec![1, 2, 3],
             ..ProjectDetails {
-                id: Some(5), name: "n".into(), description: String::new(), color: None,
-                project_tags: vec![], source_fks: vec![], status: Status::Active,
-                created_at: None, updated_at: None, archived_at: None,
+                id: Some(5),
+                name: "n".into(),
+                description: String::new(),
+                color: None,
+                project_tags: vec![],
+                source_fks: vec![],
+                status: Status::Active,
+                created_at: None,
+                updated_at: None,
+                archived_at: None,
             }
         };
         let s = serde_json::to_string(&p).unwrap();
         // derived field present and correct (a derive(Serialize) would drop it)
-        assert_eq!(serde_json::from_str::<serde_json::Value>(&s).unwrap()["paper_count"], 3);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&s).unwrap()["paper_count"],
+            3
+        );
         // and emitted between source_fks and status, matching to_dict order
         let fks = s.find("source_fks").unwrap();
         let pc = s.find("paper_count").unwrap();
@@ -576,8 +586,7 @@ mod tests {
             serde_json::from_str(r#"{"project_fk":1,"color":null}"#).unwrap();
         assert_eq!(null.color, Some(None));
         // value -> Some(Some(v)) (set)
-        let val: ProjectUpdateIn =
-            serde_json::from_str(r#"{"project_fk":1,"color":42}"#).unwrap();
+        let val: ProjectUpdateIn = serde_json::from_str(r#"{"project_fk":1,"color":42}"#).unwrap();
         assert_eq!(val.color, Some(Some(42)));
     }
 }

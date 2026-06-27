@@ -74,7 +74,11 @@ fn arxiv_doi_id(doi: &str) -> Option<String> {
         && b[4] == b'.'
         && b[5..9].iter().all(u8::is_ascii_digit)
     {
-        let end = if b.len() >= 10 && b[9].is_ascii_digit() { 10 } else { 9 };
+        let end = if b.len() >= 10 && b[9].is_ascii_digit() {
+            10
+        } else {
+            9
+        };
         return Some(rest[..end].to_string());
     }
 
@@ -269,7 +273,10 @@ mod tests {
     fn strips_doi_url_prefixes_and_whitespace() {
         assert_eq!(strip_doi_url("https://doi.org/10.1000/xyz"), "10.1000/xyz");
         assert_eq!(strip_doi_url("http://doi.org/10.1000/xyz"), "10.1000/xyz");
-        assert_eq!(strip_doi_url("https://dx.doi.org/10.1000/xyz"), "10.1000/xyz");
+        assert_eq!(
+            strip_doi_url("https://dx.doi.org/10.1000/xyz"),
+            "10.1000/xyz"
+        );
         assert_eq!(strip_doi_url("10.1000/xyz"), "10.1000/xyz");
         assert_eq!(strip_doi_url("  10.1000/xyz  "), "10.1000/xyz");
     }
@@ -280,8 +287,12 @@ mod tests {
         assert!(is_ratelimited(&CoreError::Upstream(
             "arXiv returned 429 — rate limited; retry in 60s".into()
         )));
-        assert!(!is_ratelimited(&CoreError::Upstream("HTTP 404 Not Found".into())));
-        assert!(!is_ratelimited(&CoreError::Upstream("Connection reset".into())));
+        assert!(!is_ratelimited(&CoreError::Upstream(
+            "HTTP 404 Not Found".into()
+        )));
+        assert!(!is_ratelimited(&CoreError::Upstream(
+            "Connection reset".into()
+        )));
     }
 
     // ---- arxiv_doi_id ----
@@ -330,7 +341,10 @@ mod tests {
         assert_eq!(m.summary, "An abstract.");
         assert_eq!(m.source_id, "doi:10.1000/xyz");
         assert_eq!(m.doi, Some("10.1000/xyz".into()));
-        assert_eq!(m.url, Some("https://www.semanticscholar.org/paper/abc".into()));
+        assert_eq!(
+            m.url,
+            Some("https://www.semanticscholar.org/paper/abc".into())
+        );
         assert_eq!(m.published, NaiveDate::from_ymd_opt(2023, 5, 1).unwrap());
     }
 
@@ -376,7 +390,9 @@ mod tests {
     #[tokio::test]
     async fn resolve_rejects_empty_doi() {
         let dir = tempfile::tempdir().unwrap();
-        let err = resolve_doi("", dir.path()).await.expect_err("empty DOI must error");
+        let err = resolve_doi("", dir.path())
+            .await
+            .expect_err("empty DOI must error");
         assert_eq!(err.http_status(), 400);
         assert!(err.to_string().contains("Please enter a DOI"), "got {err}");
     }

@@ -63,7 +63,10 @@ pub struct ApiError {
 
 impl ApiError {
     pub fn new(status: u16, detail: impl Into<String>) -> Self {
-        Self { status, detail: detail.into() }
+        Self {
+            status,
+            detail: detail.into(),
+        }
     }
     /// Sentinel for "no in-process arm matched this route yet." During the staged
     /// port (Phase 5b) `client.ts` falls back to the coexisting Python sidecar on
@@ -117,10 +120,7 @@ pub(crate) fn path_i64(seg: &str) -> Result<i64, ApiError> {
 
 /// The Tauri command the webview invokes. Thin wrapper over `route`.
 #[tauri::command]
-pub async fn api(
-    state: tauri::State<'_, AppState>,
-    req: ApiRequest,
-) -> Result<Value, ApiError> {
+pub async fn api(state: tauri::State<'_, AppState>, req: ApiRequest) -> Result<Value, ApiError> {
     route(state.inner(), req).await
 }
 
@@ -164,7 +164,10 @@ pub async fn route(state: &AppState, req: ApiRequest) -> Result<Value, ApiError>
             }
         )+};
     }
-    try_groups!(uploads, pdfs, papers, projects, notes, tags, authors, sources, search, settings, trash, editor, graph);
+    try_groups!(
+        uploads, pdfs, papers, projects, notes, tags, authors, sources, search, settings, trash,
+        editor, graph
+    );
 
     Err(ApiError::not_routed())
 }
@@ -261,7 +264,15 @@ mod tests {
     }
 
     async fn get(st: &AppState, path: &str) -> Result<Value, ApiError> {
-        route(st, ApiRequest { method: "GET".into(), path: path.into(), body: None }).await
+        route(
+            st,
+            ApiRequest {
+                method: "GET".into(),
+                path: path.into(),
+                body: None,
+            },
+        )
+        .await
     }
 
     #[tokio::test]

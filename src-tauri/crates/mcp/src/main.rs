@@ -77,7 +77,9 @@ async fn main() -> anyhow::Result<()> {
     // stdout is the JSON-RPC channel; all logs must go to stderr.
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
         .init();
 
     let server = Server::new()?;

@@ -73,9 +73,18 @@ fn resolve_paper_or_exit(
     raw: &str,
 ) -> linxiv_core::models::PaperDetails {
     let source_id = as_source_id(raw, "arxiv");
-    match svc_paper::get(conn, &Paper { source_id: Some(source_id.clone()), ..Default::default() }) {
+    match svc_paper::get(
+        conn,
+        &Paper {
+            source_id: Some(source_id.clone()),
+            ..Default::default()
+        },
+    ) {
         Ok(Some(details)) => details,
-        Ok(None) => fail(format!("Paper {} not found in DB", crate::output::pyrepr(&source_id))),
+        Ok(None) => fail(format!(
+            "Paper {} not found in DB",
+            crate::output::pyrepr(&source_id)
+        )),
         Err(e) => fail(e),
     }
 }
@@ -92,20 +101,33 @@ pub async fn run(cmd: PdfCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                 version,
                 paper.pdf_path.as_deref(),
             );
-            output(&PdfLocation { source_id: paper.source_id, version, path });
+            output(&PdfLocation {
+                source_id: paper.source_id,
+                version,
+                path,
+            });
         }
-        PdfCmd::Download { source_id, url, version } => {
+        PdfCmd::Download {
+            source_id,
+            url,
+            version,
+        } => {
             let paper = resolve_paper_or_exit(&ctx.conn, &source_id);
             let version = version.filter(|&v| v != 0).unwrap_or(paper.version);
-            let path =
-                match svc_files::download_pdf(&ctx.pdf_dir, &paper.source_id, version, &url).await {
-                    Ok(p) => p,
-                    Err(e) => {
-                        eprintln!("[pdf] {e}");
-                        fail(e);
-                    }
-                };
-            output(&PdfLocation { source_id: paper.source_id, version, path: Some(path) });
+            let path = match svc_files::download_pdf(&ctx.pdf_dir, &paper.source_id, version, &url)
+                .await
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("[pdf] {e}");
+                    fail(e);
+                }
+            };
+            output(&PdfLocation {
+                source_id: paper.source_id,
+                version,
+                path: Some(path),
+            });
         }
         PdfCmd::Storage => {
             let mb = svc_files::pdf_storage_mb(&ctx.pdf_dir);
@@ -142,7 +164,10 @@ pub async fn run(cmd: PdfCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                     fail(e);
                 }
             };
-            output(&ImportedPdf { source_id: result.source_id, title: result.title });
+            output(&ImportedPdf {
+                source_id: result.source_id,
+                title: result.title,
+            });
         }
     }
     Ok(())

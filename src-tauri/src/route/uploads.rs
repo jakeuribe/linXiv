@@ -118,7 +118,10 @@ async fn import_pdf(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     if !filename.to_lowercase().ends_with(".pdf") {
         return Err(ApiError::new(400, "File must be a PDF"));
     }
-    reject_oversized_b64(&b.file_b64, "Upload rejected: file size exceeds 100 MB limit")?;
+    reject_oversized_b64(
+        &b.file_b64,
+        "Upload rejected: file size exceeds 100 MB limit",
+    )?;
     let content = decode_b64(&b.file_b64)?;
     if content.len() > MAX_PDF_BYTES {
         return Err(ApiError::new(
@@ -138,7 +141,9 @@ async fn import_pdf(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     // Matching that needs core to surface PdfImport from the resolver (deferred).
     let resolved = resolve_pdf_metadata(&content, &data_dir).await?;
     let result = state.with_conn(|conn| {
-        paper_import::import_pdf(conn, &pdf_dir, &content, project_id, |_| Ok(resolved.clone()))
+        paper_import::import_pdf(conn, &pdf_dir, &content, project_id, |_| {
+            Ok(resolved.clone())
+        })
     })?;
     Ok(json!({ "source_id": result.source_id, "title": result.title }))
 }
@@ -221,12 +226,18 @@ fn import_commit(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> 
         None | Some("merge") => OnConflict::Merge,
         Some("overwrite") => OnConflict::Overwrite,
         // app.py's `pattern="^(merge|overwrite)$"` query validator → 422.
-        Some(_) => return Err(ApiError::new(422, "on_conflict must be 'merge' or 'overwrite'")),
+        Some(_) => {
+            return Err(ApiError::new(
+                422,
+                "on_conflict must be 'merge' or 'overwrite'",
+            ))
+        }
     };
     let content = decode_b64(&b.file_b64)?;
     let pdf_dir = state.pdf_dir.clone();
     let tmp = write_temp_lxproj(&content)?;
-    let res = state.with_conn(|conn| export_import::commit_import(conn, &tmp, on_conflict, &pdf_dir));
+    let res =
+        state.with_conn(|conn| export_import::commit_import(conn, &tmp, on_conflict, &pdf_dir));
     std::fs::remove_file(&tmp).ok();
     let project_fk = res.map_err(|e| match e {
         CoreError::ProjectImport(m) => ApiError::new(422, m),
@@ -243,12 +254,25 @@ fn write_temp_lxproj(content: &[u8]) -> Result<PathBuf, ApiError> {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let dir = std::env::temp_dir();
     for _ in 0..16 {
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
         let uniq = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = dir.join(format!("linxiv_import_{}_{}_{}.lxproj", std::process::id(), nanos, uniq));
-        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+        let path = dir.join(format!(
+            "linxiv_import_{}_{}_{}.lxproj",
+            std::process::id(),
+            nanos,
+            uniq
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
             Ok(mut f) => {
-                f.write_all(content).map_err(|e| ApiError::new(500, e.to_string()))?;
+                f.write_all(content)
+                    .map_err(|e| ApiError::new(500, e.to_string()))?;
                 return Ok(path);
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -259,7 +283,10 @@ fn write_temp_lxproj(content: &[u8]) -> Result<PathBuf, ApiError> {
 }
 
 fn sid_key(source_id: &str) -> Paper {
-    Paper { source_id: Some(source_id.to_string()), ..Default::default() }
+    Paper {
+        source_id: Some(source_id.to_string()),
+        ..Default::default()
+    }
 }
 
 #[cfg(test)]
@@ -276,7 +303,15 @@ mod tests {
     }
 
     async fn post(st: &AppState, path: &str, body: Value) -> Result<Value, ApiError> {
-        route(st, ApiRequest { method: "POST".into(), path: path.into(), body: Some(body) }).await
+        route(
+            st,
+            ApiRequest {
+                method: "POST".into(),
+                path: path.into(),
+                body: Some(body),
+            },
+        )
+        .await
     }
 
     fn b64(bytes: &[u8]) -> String {
@@ -339,9 +374,13 @@ mod tests {
     #[tokio::test]
     async fn import_bibtex_one_entry_saves_one() {
         let bib = b"@article{k, title={A Title}, author={Ada Lovelace}, year={1843}}";
-        let out = post(&state(), "/api/papers/import/bibtex", json!({ "file_b64": b64(bib) }))
-            .await
-            .unwrap();
+        let out = post(
+            &state(),
+            "/api/papers/import/bibtex",
+            json!({ "file_b64": b64(bib) }),
+        )
+        .await
+        .unwrap();
         assert_eq!(out["saved_count"], json!(1));
         assert_eq!(out["source_ids"].as_array().unwrap().len(), 1);
     }

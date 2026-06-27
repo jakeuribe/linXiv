@@ -52,7 +52,9 @@ fn map_row(row: &Row) -> Result<PaperDetails> {
         pdf_path: row.get("pdf_path")?,
         source: row.get("source")?,
         full_text: row.get("full_text")?,
-        downloaded_source: bool_from_sql(row.get::<_, Option<i64>>("downloaded_source")?.unwrap_or(0)),
+        downloaded_source: bool_from_sql(
+            row.get::<_, Option<i64>>("downloaded_source")?.unwrap_or(0),
+        ),
         source_fk: row.get("source_fk")?,
     })
 }
@@ -62,7 +64,10 @@ fn opt_date(s: Option<String>) -> Result<Option<NaiveDate>> {
 }
 
 fn opt_list(s: Option<String>) -> Result<Vec<String>> {
-    Ok(s.as_deref().map(list_from_sql).transpose()?.unwrap_or_default())
+    Ok(s.as_deref()
+        .map(list_from_sql)
+        .transpose()?
+        .unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -71,10 +76,17 @@ mod tests {
     use crate::storage::{self, db};
 
     fn seed(conn: &Connection, source_id: &str, full_text: &str) {
-        conn.execute("INSERT INTO PAPER_ROOTS (SOURCE_ID) VALUES (?1)", [source_id])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO PAPER_ROOTS (SOURCE_ID) VALUES (?1)",
+            [source_id],
+        )
+        .unwrap();
         let source_fk: i64 = conn
-            .query_row("SELECT SOURCE_FK FROM PAPER_ROOTS WHERE SOURCE_ID = ?1", [source_id], |r| r.get(0))
+            .query_row(
+                "SELECT SOURCE_FK FROM PAPER_ROOTS WHERE SOURCE_ID = ?1",
+                [source_id],
+                |r| r.get(0),
+            )
             .unwrap();
         conn.execute(
             "INSERT INTO PAPER (SOURCE_ID, VERSION, TITLE, CATEGORY, HAS_PDF, SOURCE_FK) \
@@ -101,8 +113,16 @@ mod tests {
     fn matches_on_tex_source_and_maps_fields() {
         let conn = db::open_in_memory().unwrap();
         storage::init_db(&conn).unwrap();
-        seed(&conn, "arxiv:2204.12985", "the manifold hypothesis in latent space");
-        seed(&conn, "arxiv:1111.00000", "unrelated quantum chromodynamics");
+        seed(
+            &conn,
+            "arxiv:2204.12985",
+            "the manifold hypothesis in latent space",
+        );
+        seed(
+            &conn,
+            "arxiv:1111.00000",
+            "unrelated quantum chromodynamics",
+        );
 
         let hits = search_full_text(&conn, "manifold", 20).unwrap();
         assert_eq!(hits.len(), 1);
@@ -115,6 +135,11 @@ mod tests {
         assert_eq!(p.tags, vec!["ml".to_string()]);
         assert!(p.has_pdf);
 
-        assert_eq!(search_full_text(&conn, "nonexistentterm", 20).unwrap().len(), 0);
+        assert_eq!(
+            search_full_text(&conn, "nonexistentterm", 20)
+                .unwrap()
+                .len(),
+            0
+        );
     }
 }

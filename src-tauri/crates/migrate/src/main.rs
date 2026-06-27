@@ -25,6 +25,9 @@ fn main() -> anyhow::Result<()> {
             |r| r.get(0),
         )
         .unwrap_or_else(|_| "unknown".to_string());
-    println!("linxiv-migrate: schema up to date at {} (version {version})", path.display());
+    println!(
+        "linxiv-migrate: schema up to date at {} (version {version})",
+        path.display()
+    );
     Ok(())
 }

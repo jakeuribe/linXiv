@@ -122,6 +122,9 @@ mod tests {
         assert_eq!(CoreError::Conflict("dup".into()).http_status(), 409);
         assert_eq!(CoreError::Internal("boom".into()).http_status(), 500);
         assert_eq!(CoreError::ProjectNotFound.exit_code(), 1);
-        assert_eq!(CoreError::ProjectNotFound.to_json(), r#"{"error":"Project not found"}"#);
+        assert_eq!(
+            CoreError::ProjectNotFound.to_json(),
+            r#"{"error":"Project not found"}"#
+        );
     }
 }

@@ -39,7 +39,10 @@ pub fn get(conn: &Connection, tag: &Tag) -> Result<Option<TagDetails>> {
         for existing in list_all_tags(conn)? {
             // NOCASE is ASCII in sqlite default collation — match it with ASCII fold.
             if existing.eq_ignore_ascii_case(label) {
-                return Ok(Some(TagDetails { tag_id: -1, label: Some(existing) }));
+                return Ok(Some(TagDetails {
+                    tag_id: -1,
+                    label: Some(existing),
+                }));
             }
         }
     }
@@ -67,7 +70,11 @@ pub fn get_tags(conn: &Connection, tags: &Tags) -> Result<Vec<TagDetails>> {
         });
     }
     if let Some(label) = &tags.label {
-        rows.retain(|t| t.label.as_deref().is_some_and(|l| l.eq_ignore_ascii_case(label)));
+        rows.retain(|t| {
+            t.label
+                .as_deref()
+                .is_some_and(|l| l.eq_ignore_ascii_case(label))
+        });
     }
     Ok(rows)
 }
@@ -100,7 +107,10 @@ pub fn delete(conn: &Connection, tag: &Tag) -> Result<()> {
 /// `service/tag.py::list_all_tags` — every tag label, ordered by label
 /// (storage orders the rows). Null labels are dropped.
 pub fn list_all_tags(conn: &Connection) -> Result<Vec<String>> {
-    Ok(q::list_tags(conn)?.into_iter().filter_map(|t| t.label).collect())
+    Ok(q::list_tags(conn)?
+        .into_iter()
+        .filter_map(|t| t.label)
+        .collect())
 }
 
 #[cfg(test)]
@@ -121,9 +131,15 @@ mod tests {
     fn get_by_id_returns_real_row() {
         let mut conn = seeded();
         let id = q::create_tag(&mut conn, "Graphs").unwrap();
-        let got = get(&conn, &Tag { tag_id: Some(id), ..Default::default() })
-            .unwrap()
-            .unwrap();
+        let got = get(
+            &conn,
+            &Tag {
+                tag_id: Some(id),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(got.tag_id, id);
         assert_eq!(got.label.as_deref(), Some("Graphs"));
     }
@@ -131,15 +147,31 @@ mod tests {
     #[test]
     fn get_by_label_is_case_insensitive_sentinel() {
         let conn = seeded();
-        let got = get(&conn, &Tag { label: Some("neural".into()), ..Default::default() })
-            .unwrap()
-            .unwrap();
+        let got = get(
+            &conn,
+            &Tag {
+                label: Some("neural".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(got.tag_id, -1, "label-only path has no TAG_FK");
-        assert_eq!(got.label.as_deref(), Some("Neural"), "returns the stored casing");
+        assert_eq!(
+            got.label.as_deref(),
+            Some("Neural"),
+            "returns the stored casing"
+        );
         // missing label -> None
-        assert!(get(&conn, &Tag { label: Some("nope".into()), ..Default::default() })
-            .unwrap()
-            .is_none());
+        assert!(get(
+            &conn,
+            &Tag {
+                label: Some("nope".into()),
+                ..Default::default()
+            }
+        )
+        .unwrap()
+        .is_none());
         // empty Tag -> None
         assert!(get(&conn, &Tag::default()).unwrap().is_none());
     }
@@ -147,24 +179,49 @@ mod tests {
     #[test]
     fn list_all_tags_ordered() {
         let conn = seeded();
-        assert_eq!(list_all_tags(&conn).unwrap(), vec!["Neural", "RL", "Vision"]);
+        assert_eq!(
+            list_all_tags(&conn).unwrap(),
+            vec!["Neural", "RL", "Vision"]
+        );
     }
 
     #[test]
     fn upsert_dedups_case_insensitively() {
         let mut conn = seeded();
-        let id = upsert(&mut conn, &TagIn { label: "neural".into() }).unwrap();
+        let id = upsert(
+            &mut conn,
+            &TagIn {
+                label: "neural".into(),
+            },
+        )
+        .unwrap();
         // returns the existing Neural row, no new TAG inserted
-        let n: i64 = conn.query_row("SELECT COUNT(*) FROM TAG", [], |r| r.get(0)).unwrap();
-        assert_eq!(n, 3);
-        let neural = get(&conn, &Tag { tag_id: Some(id), ..Default::default() })
-            .unwrap()
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM TAG", [], |r| r.get(0))
             .unwrap();
+        assert_eq!(n, 3);
+        let neural = get(
+            &conn,
+            &Tag {
+                tag_id: Some(id),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(neural.label.as_deref(), Some("Neural"));
         // a genuinely new label inserts
-        let new_id = upsert(&mut conn, &TagIn { label: "Diffusion".into() }).unwrap();
+        let new_id = upsert(
+            &mut conn,
+            &TagIn {
+                label: "Diffusion".into(),
+            },
+        )
+        .unwrap();
         assert_ne!(new_id, id);
-        let n2: i64 = conn.query_row("SELECT COUNT(*) FROM TAG", [], |r| r.get(0)).unwrap();
+        let n2: i64 = conn
+            .query_row("SELECT COUNT(*) FROM TAG", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(n2, 4);
     }
 
@@ -172,7 +229,14 @@ mod tests {
     fn delete_removes_then_noops() {
         let mut conn = seeded();
         let id = q::create_tag(&mut conn, "Doomed").unwrap();
-        delete(&conn, &Tag { tag_id: Some(id), ..Default::default() }).unwrap();
+        delete(
+            &conn,
+            &Tag {
+                tag_id: Some(id),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert!(q::get_tag(&conn, id).unwrap().is_none());
         // no tag_id -> no-op, no error
         delete(&conn, &Tag::default()).unwrap();
@@ -186,14 +250,27 @@ mod tests {
         q::add_project_tags(&mut conn, 1, &["RL".into(), "Vision".into()]).unwrap();
 
         // label filter (NOCASE) -> the single Neural row, real id
-        let by_label = get_tags(&conn, &Tags { label: Some("NEURAL".into()), ..Default::default() })
-            .unwrap();
+        let by_label = get_tags(
+            &conn,
+            &Tags {
+                label: Some("NEURAL".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(by_label.len(), 1);
         assert_eq!(by_label[0].label.as_deref(), Some("Neural"));
         assert!(by_label[0].tag_id > 0);
 
         // project filter -> only the two linked tags, ordered by label
-        let by_proj = get_tags(&conn, &Tags { project_id: Some(1), ..Default::default() }).unwrap();
+        let by_proj = get_tags(
+            &conn,
+            &Tags {
+                project_id: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let labels: Vec<_> = by_proj.iter().filter_map(|t| t.label.clone()).collect();
         assert_eq!(labels, vec!["RL", "Vision"]);
 
@@ -201,7 +278,8 @@ mod tests {
         assert_eq!(get_many(&conn, &Tags::default()).unwrap().len(), 3);
 
         // paper_id filter -> the paper's REAL tags via PAPER_TO_TAG (Python parity).
-        conn.execute("INSERT INTO PAPER_ROOTS (SOURCE_ID) VALUES ('arxiv:1')", []).unwrap();
+        conn.execute("INSERT INTO PAPER_ROOTS (SOURCE_ID) VALUES ('arxiv:1')", [])
+            .unwrap();
         let src_fk = conn.last_insert_rowid();
         conn.execute(
             "INSERT INTO PAPER (SOURCE_ID, VERSION, TITLE, SOURCE_FK) VALUES ('arxiv:1', 1, 'T', ?1)",
@@ -210,12 +288,23 @@ mod tests {
         .unwrap();
         let paper_id = conn.last_insert_rowid();
         // link Neural + Vision (not RL) to the paper.
-        let neural = get(&conn, &Tag { label: Some("Neural".into()), ..Default::default() }).unwrap();
+        let neural = get(
+            &conn,
+            &Tag {
+                label: Some("Neural".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let neural_fk: i64 = conn
-            .query_row("SELECT TAG_FK FROM TAG WHERE TAG = 'Neural'", [], |r| r.get(0))
+            .query_row("SELECT TAG_FK FROM TAG WHERE TAG = 'Neural'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         let vision_fk: i64 = conn
-            .query_row("SELECT TAG_FK FROM TAG WHERE TAG = 'Vision'", [], |r| r.get(0))
+            .query_row("SELECT TAG_FK FROM TAG WHERE TAG = 'Vision'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         let _ = neural; // label-path sentinel, unused here
         conn.execute(
@@ -224,11 +313,29 @@ mod tests {
         )
         .unwrap();
 
-        let by_paper = get_tags(&conn, &Tags { paper_id: Some(paper_id), ..Default::default() }).unwrap();
+        let by_paper = get_tags(
+            &conn,
+            &Tags {
+                paper_id: Some(paper_id),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let labels: Vec<_> = by_paper.iter().filter_map(|t| t.label.clone()).collect();
         assert_eq!(labels, vec!["Neural", "Vision"]); // ORDER BY label, RL excluded
-        assert!(by_paper.iter().all(|t| t.tag_id > 0), "real TAG_FKs, not sentinels");
+        assert!(
+            by_paper.iter().all(|t| t.tag_id > 0),
+            "real TAG_FKs, not sentinels"
+        );
         // a paper with no links -> []
-        assert!(get_tags(&conn, &Tags { paper_id: Some(999), ..Default::default() }).unwrap().is_empty());
+        assert!(get_tags(
+            &conn,
+            &Tags {
+                paper_id: Some(999),
+                ..Default::default()
+            }
+        )
+        .unwrap()
+        .is_empty());
     }
 }

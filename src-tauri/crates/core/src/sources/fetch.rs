@@ -113,7 +113,9 @@ mod tests {
     #[tokio::test]
     async fn search_rejects_unknown_source_without_network() {
         let dir = std::path::Path::new("/nonexistent");
-        let err = search("scopus", "q", 5, "relevance", dir, "").await.unwrap_err();
+        let err = search("scopus", "q", 5, "relevance", dir, "")
+            .await
+            .unwrap_err();
         assert!(matches!(err, CoreError::Validation(_)));
     }
 }

@@ -246,7 +246,10 @@ pub fn note_counts_by_paper_for_project(
          ORDER BY pp.PROJECT_TO_PAPER_FK",
     )?;
     let rows = stmt.query_map([project_id], |r| {
-        Ok((r.get::<_, i64>("source_fk")?, r.get::<_, i64>("note_count")?))
+        Ok((
+            r.get::<_, i64>("source_fk")?,
+            r.get::<_, i64>("note_count")?,
+        ))
     })?;
     let mut out = Vec::new();
     for r in rows {
@@ -302,8 +305,11 @@ mod tests {
             [],
         )
         .unwrap();
-        conn.execute("INSERT INTO PROJECT (PROJECT_FK, NAME) VALUES (10, 'P')", [])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO PROJECT (PROJECT_FK, NAME) VALUES (10, 'P')",
+            [],
+        )
+        .unwrap();
 
         let ts = timestamp_to_sql(
             NaiveDate::from_ymd_opt(2024, 3, 5)
@@ -362,8 +368,11 @@ mod tests {
             [],
         )
         .unwrap();
-        conn.execute("INSERT INTO PROJECT (PROJECT_FK, NAME) VALUES (10, 'P')", [])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO PROJECT (PROJECT_FK, NAME) VALUES (10, 'P')",
+            [],
+        )
+        .unwrap();
         (1, 2, 10)
     }
 
@@ -479,6 +488,8 @@ mod tests {
         let pct = search_notes_source_fks(&conn, "50%", 50).unwrap();
         assert_eq!(pct, vec![1]);
         // a bare "%" would match all-if-wildcard; escaped it matches nothing.
-        assert!(search_notes_source_fks(&conn, "zzz%zzz", 50).unwrap().is_empty());
+        assert!(search_notes_source_fks(&conn, "zzz%zzz", 50)
+            .unwrap()
+            .is_empty());
     }
 }

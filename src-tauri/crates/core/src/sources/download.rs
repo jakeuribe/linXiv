@@ -136,7 +136,12 @@ async fn fetch_to_dest(
         .get(CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    let ct_main = ct.split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    let ct_main = ct
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
     if !ct_main.is_empty() && !ALLOWED_CONTENT_TYPES.contains(&ct_main.as_str()) {
         return Err(CoreError::Validation(format!(
             "Unexpected Content-Type '{ct_main}'; expected PDF."
@@ -253,11 +258,15 @@ fn is_public_addr(ip: IpAddr) -> bool {
             let seg0 = s[0];
             let unique_local = (seg0 & 0xfe00) == 0xfc00; // fc00::/7
             let link_local = (seg0 & 0xffc0) == 0xfe80; // fe80::/10
-            // Reserved ranges Python rejects via addr.is_reserved.
+                                                        // Reserved ranges Python rejects via addr.is_reserved.
             let documentation = seg0 == 0x2001 && s[1] == 0x0db8; // 2001:db8::/32
             let discard = seg0 == 0x0100 && s[1] == 0 && s[2] == 0 && s[3] == 0; // 100::/64
-            let nat64 = seg0 == 0x0064 && s[1] == 0xff9b && s[2] == 0 && s[3] == 0
-                && s[4] == 0 && s[5] == 0; // 64:ff9b::/96
+            let nat64 = seg0 == 0x0064
+                && s[1] == 0xff9b
+                && s[2] == 0
+                && s[3] == 0
+                && s[4] == 0
+                && s[5] == 0; // 64:ff9b::/96
             !(unique_local || link_local || documentation || discard || nat64)
         }
     }
@@ -266,7 +275,7 @@ fn is_public_addr(ip: IpAddr) -> bool {
 fn is_public_v4(v4: Ipv4Addr) -> bool {
     let o = v4.octets();
     let shared = o[0] == 100 && (o[1] & 0xc0) == 0x40; // 100.64.0.0/10 CGNAT
-    // Reserved ranges Python rejects via addr.is_reserved that the std is_* checks miss.
+                                                       // Reserved ranges Python rejects via addr.is_reserved that the std is_* checks miss.
     let reserved = o[0] >= 240 // 240.0.0.0/4 (reserved/future)
         || (o[0] == 198 && (o[1] & 0xfe) == 18) // 198.18.0.0/15 (benchmarking)
         || (o[0] == 192 && o[1] == 0 && o[2] == 0); // 192.0.0.0/24 (IETF protocol assignments)
@@ -298,7 +307,9 @@ mod tests {
         // Public → allowed.
         assert!(is_public_addr(v4("8.8.8.8")));
         assert!(is_public_addr(v4("1.1.1.1")));
-        assert!(is_public_addr(IpAddr::V6("2606:4700:4700::1111".parse().unwrap())));
+        assert!(is_public_addr(IpAddr::V6(
+            "2606:4700:4700::1111".parse().unwrap()
+        )));
 
         // Non-public → rejected (the SSRF blocklist).
         for bad in [
@@ -327,8 +338,10 @@ mod tests {
         assert!(!is_public_addr(IpAddr::V6("fe80::1".parse().unwrap()))); // link-local
         assert!(!is_public_addr(IpAddr::V6("fc00::1".parse().unwrap()))); // unique-local
         assert!(!is_public_addr(IpAddr::V6("ff02::1".parse().unwrap()))); // multicast
-        // IPv4-mapped loopback must be judged as the embedded v4.
-        assert!(!is_public_addr(IpAddr::V6("::ffff:127.0.0.1".parse().unwrap())));
+                                                                          // IPv4-mapped loopback must be judged as the embedded v4.
+        assert!(!is_public_addr(IpAddr::V6(
+            "::ffff:127.0.0.1".parse().unwrap()
+        )));
     }
 
     #[tokio::test]
@@ -336,9 +349,11 @@ mod tests {
         let client = build_client().unwrap();
         let dest = tempfile::tempdir().unwrap();
         let dest = dest.path().join("out.pdf");
-        let err = fetch_to_dest(&client, "file:///etc/passwd", &dest, MAX_PDF_BYTES, &|_| true)
-            .await
-            .unwrap_err();
+        let err = fetch_to_dest(&client, "file:///etc/passwd", &dest, MAX_PDF_BYTES, &|_| {
+            true
+        })
+        .await
+        .unwrap_err();
         assert!(matches!(err, CoreError::Validation(m) if m.contains("scheme")));
     }
 
@@ -405,11 +420,20 @@ mod tests {
         let client = build_client().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("o.pdf");
-        let err = fetch_to_dest(&client, &format!("{}/x", server.uri()), &dest, MAX_PDF_BYTES, &|_| true)
-            .await
-            .unwrap_err();
+        let err = fetch_to_dest(
+            &client,
+            &format!("{}/x", server.uri()),
+            &dest,
+            MAX_PDF_BYTES,
+            &|_| true,
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, CoreError::Validation(m) if m.contains("Content-Type")));
-        assert!(!dest.exists(), "no temp file should survive a rejected download");
+        assert!(
+            !dest.exists(),
+            "no temp file should survive a rejected download"
+        );
     }
 
     #[tokio::test]
@@ -428,10 +452,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("o.pdf");
         // max_bytes injected at 4 → the 64-byte body is over the cap.
-        let err = fetch_to_dest(&client, &format!("{}/big", server.uri()), &dest, 4, &|_| true)
-            .await
-            .unwrap_err();
-        assert!(matches!(err, CoreError::Validation(m) if m.contains("too large") || m.contains("exceeded")));
+        let err = fetch_to_dest(&client, &format!("{}/big", server.uri()), &dest, 4, &|_| {
+            true
+        })
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, CoreError::Validation(m) if m.contains("too large") || m.contains("exceeded"))
+        );
         assert!(!dest.exists());
     }
 
@@ -460,8 +488,14 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, CoreError::Upstream(ref m) if m.contains("HTTP 404")), "{err}");
-        assert!(!dest.exists(), "a non-2xx response must leave no file at dest");
+        assert!(
+            matches!(err, CoreError::Upstream(ref m) if m.contains("HTTP 404")),
+            "{err}"
+        );
+        assert!(
+            !dest.exists(),
+            "a non-2xx response must leave no file at dest"
+        );
     }
 
     #[tokio::test]
@@ -481,9 +515,15 @@ mod tests {
         // host_ok allows only the mock's loopback host; the redirect target must hit the real
         // public-IP guard and be vetoed → proves the check re-runs per hop, not just initially.
         let host_ok = |u: &Url| u.host_str() == Some("127.0.0.1") || host_is_public(u);
-        let err = fetch_to_dest(&client, &format!("{}/redir", server.uri()), &dest, MAX_PDF_BYTES, &host_ok)
-            .await
-            .unwrap_err();
+        let err = fetch_to_dest(
+            &client,
+            &format!("{}/redir", server.uri()),
+            &dest,
+            MAX_PDF_BYTES,
+            &host_ok,
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, CoreError::Validation(m) if m.contains("disallowed")));
     }
 }

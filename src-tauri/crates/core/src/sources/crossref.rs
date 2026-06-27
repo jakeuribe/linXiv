@@ -10,8 +10,8 @@
 use chrono::NaiveDate;
 use serde_json::Value;
 
-use crate::models::PaperMetadata;
 use super::http;
+use crate::models::PaperMetadata;
 
 const CROSSREF_BASE: &str = "https://api.crossref.org/works";
 /// CrossRef is reached over exactly one host; the http guard enforces it.
@@ -100,7 +100,10 @@ pub fn parse_work(msg: &Value, doi: &str) -> PaperMetadata {
     let paper_doi = if !doi.is_empty() {
         doi.to_string()
     } else {
-        msg.get("DOI").and_then(Value::as_str).unwrap_or("").to_string()
+        msg.get("DOI")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
     };
 
     // URL from the message, else a doi.org link, else None.
@@ -109,9 +112,7 @@ pub fn parse_work(msg: &Value, doi: &str) -> PaperMetadata {
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
-        .or_else(|| {
-            (!paper_doi.is_empty()).then(|| format!("https://doi.org/{paper_doi}"))
-        });
+        .or_else(|| (!paper_doi.is_empty()).then(|| format!("https://doi.org/{paper_doi}")));
 
     PaperMetadata {
         source_id: if paper_doi.is_empty() {
@@ -155,7 +156,11 @@ pub fn parse_search_body(body: &[u8]) -> Vec<PaperMetadata> {
     let Ok(v) = serde_json::from_slice::<Value>(body) else {
         return Vec::new();
     };
-    let Some(items) = v.get("message").and_then(|m| m.get("items")).and_then(Value::as_array) else {
+    let Some(items) = v
+        .get("message")
+        .and_then(|m| m.get("items"))
+        .and_then(Value::as_array)
+    else {
         return Vec::new();
     };
     items
@@ -301,9 +306,15 @@ mod tests {
     #[test]
     fn date_parts_year_only_and_year_month_default_to_1() {
         let yo = serde_json::json!({"title":["t"],"published":{"date-parts":[[2020]]}});
-        assert_eq!(parse_work(&yo, "d").published, NaiveDate::from_ymd_opt(2020, 1, 1).unwrap());
+        assert_eq!(
+            parse_work(&yo, "d").published,
+            NaiveDate::from_ymd_opt(2020, 1, 1).unwrap()
+        );
         let ym = serde_json::json!({"title":["t"],"published":{"date-parts":[[2020,7]]}});
-        assert_eq!(parse_work(&ym, "d").published, NaiveDate::from_ymd_opt(2020, 7, 1).unwrap());
+        assert_eq!(
+            parse_work(&ym, "d").published,
+            NaiveDate::from_ymd_opt(2020, 7, 1).unwrap()
+        );
     }
 
     #[test]

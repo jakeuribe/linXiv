@@ -15,8 +15,12 @@ use crate::state::AppState;
 const SETTINGS_ENV_KEYS: [&str; 2] = ["CROSSREF_MAILTO", "OPENALEX_MAILTO"];
 
 /// `_ALLOWED_ENV_KEYS` (app.py): the only keys `PATCH /api/env` may set.
-const ALLOWED_ENV_KEYS: [&str; 4] =
-    ["CROSSREF_MAILTO", "OPENALEX_MAILTO", "GEMINI_API_KEY", "OPENAI_API_KEY"];
+const ALLOWED_ENV_KEYS: [&str; 4] = [
+    "CROSSREF_MAILTO",
+    "OPENALEX_MAILTO",
+    "GEMINI_API_KEY",
+    "OPENAI_API_KEY",
+];
 
 /// Keys `redact_secrets` strips from the GET body.
 const SECRET_ENV_KEYS: [&str; 2] = ["GEMINI_API_KEY", "OPENAI_API_KEY"];
@@ -93,7 +97,10 @@ fn redact_secrets(mut settings: Map<String, Value>) -> Map<String, Value> {
 /// Overlay env values onto the settings map: Python `settings[key] = value` for
 /// each present env var. Insert keeps an existing key's position and appends a
 /// new one (preserve_order Map == Python dict), so the merge order matches app.py.
-fn overlay_env(mut settings: Map<String, Value>, env: &[(&str, Option<String>)]) -> Map<String, Value> {
+fn overlay_env(
+    mut settings: Map<String, Value>,
+    env: &[(&str, Option<String>)],
+) -> Map<String, Value> {
     for (key, value) in env {
         if let Some(v) = value {
             settings.insert((*key).to_string(), Value::String(v.clone()));
@@ -113,7 +120,10 @@ mod tests {
     fn overlay_appends_present_env_keys_in_order_after_settings() {
         let mut base = Map::new();
         base.insert("theme".into(), json!("dark"));
-        let env = [("CROSSREF_MAILTO", Some("a@b.c".to_string())), ("OPENALEX_MAILTO", None)];
+        let env = [
+            ("CROSSREF_MAILTO", Some("a@b.c".to_string())),
+            ("OPENALEX_MAILTO", None),
+        ];
         let merged = overlay_env(base, &env);
         assert_eq!(
             serde_json::to_string(&Value::Object(merged)).unwrap(),
@@ -129,7 +139,10 @@ mod tests {
         base.insert("OPENAI_API_KEY".into(), json!("o"));
         let redacted = redact_secrets(base);
         // Then the GET overlay still adds the present mailto key after the survivors.
-        let env = [("CROSSREF_MAILTO", Some("a@b.c".to_string())), ("OPENALEX_MAILTO", None)];
+        let env = [
+            ("CROSSREF_MAILTO", Some("a@b.c".to_string())),
+            ("OPENALEX_MAILTO", None),
+        ];
         let merged = overlay_env(redacted, &env);
         assert_eq!(
             serde_json::to_string(&Value::Object(merged)).unwrap(),
@@ -155,7 +168,10 @@ mod tests {
         let mut base = Map::new();
         base.insert("CROSSREF_MAILTO".into(), json!("old"));
         base.insert("theme".into(), json!("dark"));
-        let env = [("CROSSREF_MAILTO", Some("new".to_string())), ("OPENALEX_MAILTO", None)];
+        let env = [
+            ("CROSSREF_MAILTO", Some("new".to_string())),
+            ("OPENALEX_MAILTO", None),
+        ];
         let merged = overlay_env(base, &env);
         assert_eq!(
             serde_json::to_string(&Value::Object(merged)).unwrap(),

@@ -41,13 +41,27 @@ mod tests {
         AppState::from_parts(conn, std::env::temp_dir(), std::env::temp_dir())
     }
     async fn get(s: &AppState, p: &str) -> Result<Value, ApiError> {
-        route(s, ApiRequest { method: "GET".into(), path: p.into(), body: None }).await
+        route(
+            s,
+            ApiRequest {
+                method: "GET".into(),
+                path: p.into(),
+                body: None,
+            },
+        )
+        .await
     }
 
     #[tokio::test]
     async fn empty_graph_and_options_envelopes() {
         let s = st();
-        assert_eq!(get(&s, "/api/graph").await.unwrap(), json!({ "nodes": [], "edges": [] }));
-        assert_eq!(get(&s, "/api/graph/project-options").await.unwrap(), json!({ "projects": [] }));
+        assert_eq!(
+            get(&s, "/api/graph").await.unwrap(),
+            json!({ "nodes": [], "edges": [] })
+        );
+        assert_eq!(
+            get(&s, "/api/graph/project-options").await.unwrap(),
+            json!({ "projects": [] })
+        );
     }
 }

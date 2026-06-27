@@ -130,11 +130,7 @@ fn resolve_install_sidecar(app: &AppHandle, name: &str) -> Result<PathBuf, Strin
 /// AppImage is a Linux-only packaging format, so this path never executes on
 /// macOS or Windows (it still compiles there as part of the release build).
 #[cfg(not(debug_assertions))]
-fn appimage_stable_copy(
-    app: &AppHandle,
-    name: &str,
-    in_mount: &Path,
-) -> Result<PathBuf, String> {
+fn appimage_stable_copy(app: &AppHandle, name: &str, in_mount: &Path) -> Result<PathBuf, String> {
     if !in_mount.exists() {
         return Err(format!(
             "Sidecar binary '{}' was not found at {} inside the AppImage. \
@@ -173,7 +169,9 @@ fn appimage_stable_copy(
         // compensate for any perm loss in `copy` (there is none).
         use std::os::unix::fs::PermissionsExt;
         let chmod = || -> Result<(), String> {
-            let mut perms = std::fs::metadata(&tmp).map_err(|e| e.to_string())?.permissions();
+            let mut perms = std::fs::metadata(&tmp)
+                .map_err(|e| e.to_string())?
+                .permissions();
             perms.set_mode(perms.mode() | 0o111);
             std::fs::set_permissions(&tmp, perms).map_err(|e| e.to_string())
         };
@@ -212,8 +210,8 @@ fn cli_shim_path() -> Result<PathBuf, String> {
 
     #[cfg(target_os = "windows")]
     {
-        let local_app_data = std::env::var("LOCALAPPDATA")
-            .map_err(|_| "LOCALAPPDATA not set".to_string())?;
+        let local_app_data =
+            std::env::var("LOCALAPPDATA").map_err(|_| "LOCALAPPDATA not set".to_string())?;
         Ok(PathBuf::from(local_app_data)
             .join("Programs")
             .join("linxiv")
@@ -251,7 +249,10 @@ pub fn is_cli_installed() -> bool {
         return false;
     }
 
-    eprintln!("[linxiv] is_cli_installed: shim present at {}", shim.display());
+    eprintln!(
+        "[linxiv] is_cli_installed: shim present at {}",
+        shim.display()
+    );
     true
 }
 
@@ -278,7 +279,10 @@ pub fn install_cli(app: AppHandle) -> Result<(), String> {
 
     // Remove stale shim/symlink first so we can re-link.
     if shim.symlink_metadata().is_ok() {
-        eprintln!("[linxiv] install_cli: removing stale shim at {}", shim.display());
+        eprintln!(
+            "[linxiv] install_cli: removing stale shim at {}",
+            shim.display()
+        );
         std::fs::remove_file(&shim)
             .map_err(|e| format!("Failed to remove stale shim {}: {e}", shim.display()))?;
     }
@@ -287,7 +291,10 @@ pub fn install_cli(app: AppHandle) -> Result<(), String> {
     {
         std::os::unix::fs::symlink(&binary, &shim)
             .map_err(|e| format!("Failed to create symlink {}: {e}", shim.display()))?;
-        eprintln!("[linxiv] install_cli: symlink created at {}", shim.display());
+        eprintln!(
+            "[linxiv] install_cli: symlink created at {}",
+            shim.display()
+        );
         Ok(())
     }
 
@@ -312,7 +319,10 @@ pub fn uninstall_cli() -> Result<(), String> {
     let shim = cli_shim_path()?;
 
     if shim.symlink_metadata().is_ok() {
-        eprintln!("[linxiv] uninstall_cli: removing shim at {}", shim.display());
+        eprintln!(
+            "[linxiv] uninstall_cli: removing shim at {}",
+            shim.display()
+        );
         std::fs::remove_file(&shim)
             .map_err(|e| format!("Failed to remove shim {}: {e}", shim.display()))?;
     } else {
@@ -358,7 +368,10 @@ fn mcp_config_path(client_id: &str) -> Result<PathBuf, String> {
     match client_id {
         "claude" => {
             #[cfg(target_os = "linux")]
-            return Ok(home.join(".config").join("Claude").join("claude_desktop_config.json"));
+            return Ok(home
+                .join(".config")
+                .join("Claude")
+                .join("claude_desktop_config.json"));
 
             #[cfg(target_os = "macos")]
             return Ok(home
@@ -369,18 +382,14 @@ fn mcp_config_path(client_id: &str) -> Result<PathBuf, String> {
 
             #[cfg(target_os = "windows")]
             {
-                let appdata = std::env::var("APPDATA")
-                    .map_err(|_| "APPDATA not set".to_string())?;
+                let appdata =
+                    std::env::var("APPDATA").map_err(|_| "APPDATA not set".to_string())?;
                 return Ok(PathBuf::from(appdata)
                     .join("Claude")
                     .join("claude_desktop_config.json"));
             }
 
-            #[cfg(not(any(
-                target_os = "linux",
-                target_os = "macos",
-                target_os = "windows"
-            )))]
+            #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
             Err(format!("Unsupported OS for client '{}'", client_id))
         }
         "cursor" => {
@@ -389,8 +398,8 @@ fn mcp_config_path(client_id: &str) -> Result<PathBuf, String> {
 
             #[cfg(target_os = "windows")]
             {
-                let appdata = std::env::var("APPDATA")
-                    .map_err(|_| "APPDATA not set".to_string())?;
+                let appdata =
+                    std::env::var("APPDATA").map_err(|_| "APPDATA not set".to_string())?;
                 return Ok(PathBuf::from(appdata).join("Cursor").join("mcp.json"));
             }
         }
@@ -403,8 +412,8 @@ fn mcp_config_path(client_id: &str) -> Result<PathBuf, String> {
 
             #[cfg(target_os = "windows")]
             {
-                let appdata = std::env::var("APPDATA")
-                    .map_err(|_| "APPDATA not set".to_string())?;
+                let appdata =
+                    std::env::var("APPDATA").map_err(|_| "APPDATA not set".to_string())?;
                 return Ok(PathBuf::from(appdata)
                     .join("Codeium")
                     .join("Antigravity")
@@ -483,10 +492,7 @@ fn config_has_linxiv(path: &Path) -> bool {
         return false;
     }
     match read_mcp_config(path) {
-        Ok(v) => v
-            .get("mcpServers")
-            .and_then(|s| s.get("linxiv"))
-            .is_some(),
+        Ok(v) => v.get("mcpServers").and_then(|s| s.get("linxiv")).is_some(),
         Err(_) => false,
     }
 }

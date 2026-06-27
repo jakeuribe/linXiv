@@ -59,9 +59,7 @@ pub async fn run(cmd: TagCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             let source_id = as_source_id(&source_id, "arxiv");
             match paperq::add_paper_tags(&mut ctx.conn, &source_id, &tags) {
                 Ok(updated) => output(&json!({ "source_id": source_id, "tags": updated })),
-                Err(CoreError::NotFound(_)) => {
-                    fail(format!("Paper {source_id} not found in DB"))
-                }
+                Err(CoreError::NotFound(_)) => fail(format!("Paper {source_id} not found in DB")),
                 Err(e) => return Err(e.into()),
             }
         }
@@ -70,9 +68,7 @@ pub async fn run(cmd: TagCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             let source_id = as_source_id(&source_id, "arxiv");
             match paperq::remove_paper_tags(&mut ctx.conn, &source_id, &tags) {
                 Ok(updated) => output(&json!({ "source_id": source_id, "tags": updated })),
-                Err(CoreError::NotFound(_)) => {
-                    fail(format!("Paper {source_id} not found in DB"))
-                }
+                Err(CoreError::NotFound(_)) => fail(format!("Paper {source_id} not found in DB")),
                 Err(e) => return Err(e.into()),
             }
         }
@@ -81,7 +77,10 @@ pub async fn run(cmd: TagCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             let source_id = as_source_id(&source_id, "arxiv");
             let tags = svc_paper::get(
                 &ctx.conn,
-                &Paper { source_id: Some(source_id.clone()), ..Default::default() },
+                &Paper {
+                    source_id: Some(source_id.clone()),
+                    ..Default::default()
+                },
             )?
             .map(|d| d.tags)
             .unwrap_or_default();
@@ -93,12 +92,23 @@ pub async fn run(cmd: TagCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         }
         // cmd_tag_create
         TagCmd::Create { label } => {
-            let tag_id = svc_tag::upsert(&mut ctx.conn, &TagIn { label: label.clone() })?;
+            let tag_id = svc_tag::upsert(
+                &mut ctx.conn,
+                &TagIn {
+                    label: label.clone(),
+                },
+            )?;
             output(&json!({ "tag_id": tag_id, "label": label }));
         }
         // cmd_tag_delete
         TagCmd::Delete { tag_id } => {
-            svc_tag::delete(&ctx.conn, &Tag { tag_id: Some(tag_id), label: None })?;
+            svc_tag::delete(
+                &ctx.conn,
+                &Tag {
+                    tag_id: Some(tag_id),
+                    label: None,
+                },
+            )?;
             output(&json!({ "deleted_tag_id": tag_id }));
         }
         // cmd_tag_add_project: resolve-or-exit, then add.
@@ -127,7 +137,12 @@ fn resolve_project_or_exit(
     ctx: &Ctx,
     project_id: i64,
 ) -> anyhow::Result<linxiv_core::models::ProjectDetails> {
-    match svc_project::get(&ctx.conn, &Project { project_fk: Some(project_id) })? {
+    match svc_project::get(
+        &ctx.conn,
+        &Project {
+            project_fk: Some(project_id),
+        },
+    )? {
         Some(d) => Ok(d),
         None => fail(format!("Project {project_id} not found")),
     }

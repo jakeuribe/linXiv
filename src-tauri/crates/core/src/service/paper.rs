@@ -369,7 +369,11 @@ pub fn get_papers_by_tag(conn: &Connection, label: &str) -> Result<Vec<PaperDeta
         .into_iter()
         .filter(|p| p.tags.iter().any(|t| t.eq_ignore_ascii_case(label)))
         .collect();
-    out.sort_by(|a, b| b.published.cmp(&a.published).then(b.paper_id.cmp(&a.paper_id)));
+    out.sort_by(|a, b| {
+        b.published
+            .cmp(&a.published)
+            .then(b.paper_id.cmp(&a.paper_id))
+    });
     Ok(out)
 }
 
@@ -463,10 +467,27 @@ mod tests {
         save_paper_metadata(conn, &meta("arxiv:A", 1, "cs.LG", &["ml"]), None).unwrap();
         save_paper_metadata(conn, &meta("arxiv:A", 2, "cs.LG", &["ml"]), None).unwrap();
         let fk = ensure_paper_root(conn, "arxiv:A").unwrap();
-        let v1 = get(conn, &Paper { source_id: Some("arxiv:A".into()), version: Some(1), ..Default::default() })
-            .unwrap().unwrap().paper_id;
-        let v2 = get(conn, &Paper { source_id: Some("arxiv:A".into()), ..Default::default() })
-            .unwrap().unwrap().paper_id;
+        let v1 = get(
+            conn,
+            &Paper {
+                source_id: Some("arxiv:A".into()),
+                version: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap()
+        .paper_id;
+        let v2 = get(
+            conn,
+            &Paper {
+                source_id: Some("arxiv:A".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap()
+        .paper_id;
         (fk, v1, v2)
     }
 
@@ -476,18 +497,86 @@ mod tests {
         let (fk, v1, v2) = seed_two_versions(&mut conn);
 
         // source_fk -> latest version.
-        assert_eq!(get(&conn, &Paper { source_fk: Some(fk), ..Default::default() }).unwrap().unwrap().version, 2);
+        assert_eq!(
+            get(
+                &conn,
+                &Paper {
+                    source_fk: Some(fk),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+            .unwrap()
+            .version,
+            2
+        );
         // paper_id -> that exact version.
-        assert_eq!(get(&conn, &Paper { paper_id: Some(v1), ..Default::default() }).unwrap().unwrap().version, 1);
+        assert_eq!(
+            get(
+                &conn,
+                &Paper {
+                    paper_id: Some(v1),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+            .unwrap()
+            .version,
+            1
+        );
         // source_id + version -> pinned; source_id alone -> latest.
-        assert_eq!(get(&conn, &Paper { source_id: Some("arxiv:A".into()), version: Some(1), ..Default::default() }).unwrap().unwrap().version, 1);
-        assert_eq!(get(&conn, &Paper { source_id: Some("arxiv:A".into()), ..Default::default() }).unwrap().unwrap().version, 2);
+        assert_eq!(
+            get(
+                &conn,
+                &Paper {
+                    source_id: Some("arxiv:A".into()),
+                    version: Some(1),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+            .unwrap()
+            .version,
+            1
+        );
+        assert_eq!(
+            get(
+                &conn,
+                &Paper {
+                    source_id: Some("arxiv:A".into()),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+            .unwrap()
+            .version,
+            2
+        );
 
         // Priority paper_id > source_fk > source_id; version ignored for paper_id.
-        let p = get(&conn, &Paper { paper_id: Some(v2), source_fk: Some(999), source_id: Some("nope".into()), version: Some(1) }).unwrap().unwrap();
+        let p = get(
+            &conn,
+            &Paper {
+                paper_id: Some(v2),
+                source_fk: Some(999),
+                source_id: Some("nope".into()),
+                version: Some(1),
+            },
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(p.version, 2);
         // source_fk beats source_id.
-        let p = get(&conn, &Paper { source_fk: Some(fk), source_id: Some("nope".into()), ..Default::default() }).unwrap().unwrap();
+        let p = get(
+            &conn,
+            &Paper {
+                source_fk: Some(fk),
+                source_id: Some("nope".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(p.version, 2);
 
         assert!(get(&conn, &Paper::default()).unwrap().is_none());
@@ -500,20 +589,40 @@ mod tests {
         let (fk, v1, _v2) = seed_two_versions(&mut conn);
 
         for key in [
-            Paper { source_id: Some("arxiv:A".into()), ..Default::default() },
-            Paper { paper_id: Some(v1), ..Default::default() },
-            Paper { source_fk: Some(fk), ..Default::default() },
+            Paper {
+                source_id: Some("arxiv:A".into()),
+                ..Default::default()
+            },
+            Paper {
+                paper_id: Some(v1),
+                ..Default::default()
+            },
+            Paper {
+                source_fk: Some(fk),
+                ..Default::default()
+            },
         ] {
             let all = get_all(&conn, &key).unwrap().unwrap();
             assert_eq!(all.source_id, "arxiv:A");
             assert_eq!(all.latest_version, 2);
             assert_eq!(all.title, "T2"); // display from latest
-            assert_eq!(all.versions.iter().map(|v| v.version).collect::<Vec<_>>(), vec![1, 2]);
+            assert_eq!(
+                all.versions.iter().map(|v| v.version).collect::<Vec<_>>(),
+                vec![1, 2]
+            );
             // published comes from the OLDEST version (rows[0]).
             assert_eq!(all.published, NaiveDate::from_ymd_opt(2024, 1, 1));
         }
 
-        assert!(get_all(&conn, &Paper { paper_id: Some(424242), ..Default::default() }).unwrap().is_none());
+        assert!(get_all(
+            &conn,
+            &Paper {
+                paper_id: Some(424242),
+                ..Default::default()
+            }
+        )
+        .unwrap()
+        .is_none());
         assert!(get_all(&conn, &Paper::default()).unwrap().is_none());
     }
 
@@ -523,26 +632,77 @@ mod tests {
         save_paper_metadata(&mut conn, &meta("arxiv:A", 1, "cs.LG", &["ml"]), None).unwrap();
         save_paper_metadata(&mut conn, &meta("arxiv:B", 1, "math.CO", &["theory"]), None).unwrap();
         let fk_a = ensure_paper_root(&mut conn, "arxiv:A").unwrap();
-        let pid_b = get(&conn, &Paper { source_id: Some("arxiv:B".into()), ..Default::default() }).unwrap().unwrap().paper_id;
+        let pid_b = get(
+            &conn,
+            &Paper {
+                source_id: Some("arxiv:B".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap()
+        .paper_id;
 
         // No filters -> both latest papers.
         assert_eq!(get_many(&conn, &Papers::default()).unwrap().len(), 2);
         // Empty lists are no-ops, not "match nothing".
-        assert_eq!(get_many(&conn, &Papers { paper_ids: Some(vec![]), source_ids: Some(vec![]), tags: Some(vec![]), source_fks: Some(vec![]), ..Default::default() }).unwrap().len(), 2);
+        assert_eq!(
+            get_many(
+                &conn,
+                &Papers {
+                    paper_ids: Some(vec![]),
+                    source_ids: Some(vec![]),
+                    tags: Some(vec![]),
+                    source_fks: Some(vec![]),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+            .len(),
+            2
+        );
         // source_ids filter.
-        let r = get_many(&conn, &Papers { source_ids: Some(vec!["arxiv:B".into()]), ..Default::default() }).unwrap();
+        let r = get_many(
+            &conn,
+            &Papers {
+                source_ids: Some(vec!["arxiv:B".into()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].source_id, "arxiv:B");
         // tags filter (any-match).
-        let r = get_many(&conn, &Papers { tags: Some(vec!["ml".into()]), ..Default::default() }).unwrap();
+        let r = get_many(
+            &conn,
+            &Papers {
+                tags: Some(vec!["ml".into()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].source_id, "arxiv:A");
         // paper_ids filter.
-        let r = get_many(&conn, &Papers { paper_ids: Some(vec![pid_b]), ..Default::default() }).unwrap();
+        let r = get_many(
+            &conn,
+            &Papers {
+                paper_ids: Some(vec![pid_b]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].source_id, "arxiv:B");
         // source_fks filter (resolved via paper root).
-        let r = get_many(&conn, &Papers { source_fks: Some(vec![fk_a]), ..Default::default() }).unwrap();
+        let r = get_many(
+            &conn,
+            &Papers {
+                source_fks: Some(vec![fk_a]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].source_id, "arxiv:A");
     }
@@ -566,7 +726,15 @@ mod tests {
         let (sid, ver) = upsert(&mut conn, &p, Some(&["shared".into()])).unwrap();
         assert_eq!((sid.as_str(), ver), ("local:abc", 1)); // version None/0 -> 1
 
-        let got = get(&conn, &Paper { source_id: Some("local:abc".into()), ..Default::default() }).unwrap().unwrap();
+        let got = get(
+            &conn,
+            &Paper {
+                source_id: Some("local:abc".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(got.title, "Manual");
         assert_eq!(got.authors, vec!["Carol".to_string()]);
         // upsert tags + extra tags merged.
@@ -574,7 +742,10 @@ mod tests {
 
         save_paper_metadata(&mut conn, &meta("arxiv:Z", 1, "cs.LG", &["other"]), None).unwrap();
         // categories: sorted distinct.
-        assert_eq!(get_categories(&conn).unwrap(), vec!["cs.AI".to_string(), "cs.LG".to_string()]);
+        assert_eq!(
+            get_categories(&conn).unwrap(),
+            vec!["cs.AI".to_string(), "cs.LG".to_string()]
+        );
         // by_tag case-insensitive.
         let hits = get_papers_by_tag(&conn, "mine").unwrap();
         assert_eq!(hits.len(), 1);
@@ -592,7 +763,10 @@ mod tests {
         let hits = get_papers_by_tag(&conn, "shared").unwrap();
         assert_eq!(hits.len(), 2);
         // Same published date -> deterministic paper_id DESC (B saved after A).
-        assert!(hits[0].paper_id > hits[1].paper_id, "same-date papers ordered by paper_id DESC");
+        assert!(
+            hits[0].paper_id > hits[1].paper_id,
+            "same-date papers ordered by paper_id DESC"
+        );
     }
 
     #[test]
@@ -600,12 +774,23 @@ mod tests {
         let mut conn = mem();
         let (fk, v1, _v2) = seed_two_versions(&mut conn);
         // Link to a project so restore returns its membership.
-        conn.execute("INSERT INTO PROJECT (NAME, STATUS) VALUES ('P', 'active')", []).unwrap();
+        conn.execute(
+            "INSERT INTO PROJECT (NAME, STATUS) VALUES ('P', 'active')",
+            [],
+        )
+        .unwrap();
         let proj = conn.last_insert_rowid();
         proj_store::add_papers(&conn, proj, &[fk]).unwrap();
 
         // Soft-delete resolved via paper_id.
-        delete(&mut conn, &Paper { paper_id: Some(v1), ..Default::default() }).unwrap();
+        delete(
+            &mut conn,
+            &Paper {
+                paper_id: Some(v1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert!(is_paper_deleted(&conn, "arxiv:A").unwrap());
         let deleted = list_deleted(&conn).unwrap();
         assert_eq!(deleted.len(), 1);
@@ -613,13 +798,35 @@ mod tests {
         assert_eq!(deleted[0].project_fks, vec![proj]); // enriched
 
         // Restore resolved via source_fk -> returns project_fks.
-        let (_pdf, fks) = restore(&mut conn, &Paper { source_fk: Some(fk), ..Default::default() }).unwrap();
+        let (_pdf, fks) = restore(
+            &mut conn,
+            &Paper {
+                source_fk: Some(fk),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(fks, vec![proj]);
         assert!(!is_paper_deleted(&conn, "arxiv:A").unwrap());
 
         // Hard-delete resolved via source_id.
-        hard_delete(&mut conn, &Paper { source_id: Some("arxiv:A".into()), ..Default::default() }).unwrap();
-        assert!(get(&conn, &Paper { source_id: Some("arxiv:A".into()), ..Default::default() }).unwrap().is_none());
+        hard_delete(
+            &mut conn,
+            &Paper {
+                source_id: Some("arxiv:A".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(get(
+            &conn,
+            &Paper {
+                source_id: Some("arxiv:A".into()),
+                ..Default::default()
+            }
+        )
+        .unwrap()
+        .is_none());
 
         // No-key ops are no-ops.
         assert!(delete(&mut conn, &Paper::default()).unwrap().is_none());
@@ -631,16 +838,46 @@ mod tests {
         save_paper_metadata(&mut conn, &meta("arxiv:p", 1, "cs.LG", &[]), None).unwrap();
 
         set_has_pdf(&conn, "arxiv:p", 1, true).unwrap();
-        assert!(get(&conn, &Paper { source_id: Some("arxiv:p".into()), version: Some(1), ..Default::default() }).unwrap().unwrap().has_pdf);
+        assert!(
+            get(
+                &conn,
+                &Paper {
+                    source_id: Some("arxiv:p".into()),
+                    version: Some(1),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+            .unwrap()
+            .has_pdf
+        );
 
         set_pdf_path(&conn, "arxiv:p", "/tmp/a.pdf", Some(1)).unwrap();
         mark_pdf_saved(&mut conn, "arxiv:p", "/tmp/b.pdf", 1).unwrap();
-        let got = get(&conn, &Paper { source_id: Some("arxiv:p".into()), version: Some(1), ..Default::default() }).unwrap().unwrap();
+        let got = get(
+            &conn,
+            &Paper {
+                source_id: Some("arxiv:p".into()),
+                version: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(got.pdf_path.as_deref(), Some("/tmp/b.pdf"));
         assert!(got.has_pdf);
 
         set_full_text(&mut conn, "arxiv:p", 1, "the full tex body").unwrap();
-        let got = get(&conn, &Paper { source_id: Some("arxiv:p".into()), version: Some(1), ..Default::default() }).unwrap().unwrap();
+        let got = get(
+            &conn,
+            &Paper {
+                source_id: Some("arxiv:p".into()),
+                version: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(got.full_text.as_deref(), Some("the full tex body"));
         assert!(got.downloaded_source);
     }
@@ -650,18 +887,33 @@ mod tests {
         let mut conn = mem();
         save_paper_metadata(&mut conn, &meta("arxiv:v", 1, "cs.LG", &[]), None).unwrap();
         let fk = ensure_paper_root(&mut conn, "arxiv:v").unwrap();
-        assert_eq!(get_source_id(&conn, fk).unwrap().as_deref(), Some("arxiv:v"));
-        assert_eq!(sfks_to_source_ids(&conn, &[fk, 9_999]).unwrap(), vec!["arxiv:v".to_string()]);
+        assert_eq!(
+            get_source_id(&conn, fk).unwrap().as_deref(),
+            Some("arxiv:v")
+        );
+        assert_eq!(
+            sfks_to_source_ids(&conn, &[fk, 9_999]).unwrap(),
+            vec!["arxiv:v".to_string()]
+        );
     }
 
     #[test]
     fn pure_filename_and_parse_helpers() {
         assert_eq!(pdf_filename_safe("arxiv:2204.12985"), "arxiv_2204.12985");
-        assert_eq!(pdf_filename_safe(r#"a/b\c:d*e?f"g<h>i|j"#), "a_b_c_d_e_f_g_h_i_j");
+        assert_eq!(
+            pdf_filename_safe(r#"a/b\c:d*e?f"g<h>i|j"#),
+            "a_b_c_d_e_f_g_h_i_j"
+        );
         // On-disk format: no underscore before 'v'.
-        assert_eq!(pdf_on_disk_name("arxiv:2204.12985", 4), "arxiv_2204.12985v4.pdf");
+        assert_eq!(
+            pdf_on_disk_name("arxiv:2204.12985", 4),
+            "arxiv_2204.12985v4.pdf"
+        );
 
-        assert_eq!(parse_entry_id("http://arxiv.org/abs/2204.12985v4"), ("2204.12985".to_string(), 4));
+        assert_eq!(
+            parse_entry_id("http://arxiv.org/abs/2204.12985v4"),
+            ("2204.12985".to_string(), 4)
+        );
         assert_eq!(parse_entry_id("2204.12985"), ("2204.12985".to_string(), 1)); // no version -> 1
         assert_eq!(parse_entry_id("1v2v3"), ("1v2".to_string(), 3)); // last trailing v<digits>
         assert_eq!(parse_entry_id("1v2x"), ("1v2x".to_string(), 1)); // non-digit tail -> no version

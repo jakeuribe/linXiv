@@ -48,14 +48,20 @@ fn row_to_paper(row: &Row) -> Result<PaperDetails> {
         pdf_path: row.get("pdf_path")?,
         source: row.get("source")?,
         full_text: row.get("full_text")?,
-        downloaded_source: bool_from_sql(row.get::<_, Option<i64>>("downloaded_source")?.unwrap_or(0)),
+        downloaded_source: bool_from_sql(
+            row.get::<_, Option<i64>>("downloaded_source")?.unwrap_or(0),
+        ),
         source_fk: row.get("source_fk")?,
     })
 }
 
 /// `storage/db.py::get_paper` — a specific version, or the latest if `None`.
 /// `conn` is an opened storage::db connection (FK PRAGMA already ON).
-pub fn get_paper(conn: &Connection, source_id: &str, version: Option<i64>) -> Result<Option<PaperDetails>> {
+pub fn get_paper(
+    conn: &Connection,
+    source_id: &str,
+    version: Option<i64>,
+) -> Result<Option<PaperDetails>> {
     // Python `if version:` treats 0 as falsy too -> fall through to latest.
     let (sql, params): (&str, Vec<Value>) = match version.filter(|v| *v != 0) {
         Some(v) => (
@@ -175,7 +181,10 @@ fn author_fk_for_name(tx: &Transaction, full_name: &str) -> Result<i64> {
     {
         return Ok(fk);
     }
-    tx.execute("INSERT INTO AUTHOR (AUTHOR_FULL_NAME) VALUES (?)", [full_name])?;
+    tx.execute(
+        "INSERT INTO AUTHOR (AUTHOR_FULL_NAME) VALUES (?)",
+        [full_name],
+    )?;
     Ok(tx.last_insert_rowid())
 }
 
@@ -200,8 +209,7 @@ fn tag_fk_for_label(tx: &Transaction, label: &str) -> Result<i64> {
 /// paper references any more (ADR-0009: hard-delete leaves orphans, this does not).
 fn sync_paper_authors(tx: &Transaction, paper_id: i64, authors: &[String]) -> Result<()> {
     let old_fks: Vec<i64> = {
-        let mut stmt =
-            tx.prepare("SELECT AUTHOR_FK FROM PAPER_TO_AUTHOR WHERE PAPER_ID = ?")?;
+        let mut stmt = tx.prepare("SELECT AUTHOR_FK FROM PAPER_TO_AUTHOR WHERE PAPER_ID = ?")?;
         let rows = stmt.query_map([paper_id], |r| r.get::<_, i64>(0))?;
         rows.collect::<rusqlite::Result<_>>()?
     };
@@ -284,7 +292,13 @@ fn write_paper_version(
     let changed = tx.execute(
         "INSERT OR IGNORE INTO PAPER (SOURCE_ID, VERSION, TITLE, CATEGORY, HAS_PDF, SOURCE_FK) \
          VALUES (?, ?, ?, ?, 0, ?)",
-        params![meta.source_id, meta.version, meta.title, meta.category, source_fk],
+        params![
+            meta.source_id,
+            meta.version,
+            meta.title,
+            meta.category,
+            source_fk
+        ],
     )?;
     if changed == 0 {
         return Ok(());
@@ -316,7 +330,13 @@ fn write_paper_version(
         [paper_id],
     )?;
     sync_paper_authors(tx, paper_id, &meta.authors)?;
-    sync_paper_tags(tx, paper_id, &meta.source_id, meta.version, merged_tags.as_deref())?;
+    sync_paper_tags(
+        tx,
+        paper_id,
+        &meta.source_id,
+        meta.version,
+        merged_tags.as_deref(),
+    )?;
     Ok(())
 }
 
@@ -338,7 +358,11 @@ pub fn save_paper_metadata(
 /// the relational `PAPER_TO_TAG` rows (re-synced per version). Dedup preserves
 /// first-seen order (Python `dict.fromkeys`). Returns the merged tag list. Errors
 /// if the paper has no latest version.
-pub fn add_paper_tags(conn: &mut Connection, source_id: &str, tags: &[String]) -> Result<Vec<String>> {
+pub fn add_paper_tags(
+    conn: &mut Connection,
+    source_id: &str,
+    tags: &[String],
+) -> Result<Vec<String>> {
     transaction(conn, |tx| {
         let current: Option<Option<String>> = tx
             .query_row(
@@ -348,7 +372,9 @@ pub fn add_paper_tags(conn: &mut Connection, source_id: &str, tags: &[String]) -
             )
             .optional()?;
         let Some(current_json) = current else {
-            return Err(CoreError::NotFound(format!("paper {source_id:?} not found")));
+            return Err(CoreError::NotFound(format!(
+                "paper {source_id:?} not found"
+            )));
         };
         let mut merged = match current_json {
             Some(s) => list_from_sql(&s)?,
@@ -380,7 +406,11 @@ pub fn add_paper_tags(conn: &mut Connection, source_id: &str, tags: &[String]) -
 /// tag storage: the JSON `PAPER_META.TAGS` list (all versions) and the relational
 /// `PAPER_TO_TAG` rows (re-synced per version). Returns the remaining tag list.
 /// Errors if the paper has no latest version. Symmetric with `add_paper_tags`.
-pub fn remove_paper_tags(conn: &mut Connection, source_id: &str, tags: &[String]) -> Result<Vec<String>> {
+pub fn remove_paper_tags(
+    conn: &mut Connection,
+    source_id: &str,
+    tags: &[String],
+) -> Result<Vec<String>> {
     let remove: std::collections::HashSet<&str> = tags.iter().map(String::as_str).collect();
     transaction(conn, |tx| {
         let current: Option<Option<String>> = tx
@@ -391,7 +421,9 @@ pub fn remove_paper_tags(conn: &mut Connection, source_id: &str, tags: &[String]
             )
             .optional()?;
         let Some(current_json) = current else {
-            return Err(CoreError::NotFound(format!("paper {source_id:?} not found")));
+            return Err(CoreError::NotFound(format!(
+                "paper {source_id:?} not found"
+            )));
         };
         let updated: Vec<String> = match current_json {
             Some(s) => list_from_sql(&s)?
@@ -724,8 +756,7 @@ pub fn is_paper_deleted(conn: &Connection, source_id: &str) -> Result<bool> {
 
 /// `get_all_versions` — every stored (active) version, oldest-first.
 pub fn get_all_versions(conn: &Connection, source_id: &str) -> Result<Vec<PaperDetails>> {
-    let mut stmt =
-        conn.prepare("SELECT * FROM papers WHERE source_id = ? ORDER BY version ASC")?;
+    let mut stmt = conn.prepare("SELECT * FROM papers WHERE source_id = ? ORDER BY version ASC")?;
     let mut rows = stmt.query([source_id])?;
     let mut out = Vec::new();
     while let Some(row) = rows.next()? {
@@ -755,12 +786,28 @@ fn opt_ts(s: Option<String>) -> Result<Option<NaiveDateTime>> {
 
 /// `get_paper_root` — the PAPER_ROOTS row for a source_id, or None.
 pub fn get_paper_root(conn: &Connection, source_id: &str) -> Result<Option<PaperRoot>> {
-    let raw: Option<(i64, String, String, Option<String>, Option<String>, Option<String>)> = conn
+    let raw: Option<(
+        i64,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )> = conn
         .query_row(
             "SELECT SOURCE_FK, SOURCE_ID, STATUS, DELETED_AT, CREATED_AT, UPDATED_AT \
              FROM PAPER_ROOTS WHERE SOURCE_ID = ?",
             [source_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                ))
+            },
         )
         .optional()?;
     match raw {
@@ -792,8 +839,7 @@ pub struct DeletedPaper {
 
 /// `list_deleted_papers` — all soft-deleted papers, newest-deleted first.
 pub fn list_deleted_papers(conn: &Connection) -> Result<Vec<DeletedPaper>> {
-    let mut stmt =
-        conn.prepare("SELECT * FROM deleted_papers ORDER BY deleted_at DESC")?;
+    let mut stmt = conn.prepare("SELECT * FROM deleted_papers ORDER BY deleted_at DESC")?;
     let mut rows = stmt.query([])?;
     let mut out = Vec::new();
     while let Some(row) = rows.next()? {
@@ -826,8 +872,11 @@ mod tests {
     use rusqlite::params;
 
     fn seed(conn: &Connection) {
-        conn.execute("INSERT INTO PAPER_ROOTS (SOURCE_ID) VALUES ('arxiv:2204.12985')", [])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO PAPER_ROOTS (SOURCE_ID) VALUES ('arxiv:2204.12985')",
+            [],
+        )
+        .unwrap();
         let fk = conn.last_insert_rowid();
         for (ver, title, pub_date) in [(1, "V1", "2024-01-01"), (2, "V2", "2024-03-05")] {
             conn.execute(
@@ -858,14 +907,19 @@ mod tests {
         assert_eq!(latest.title, "V2");
         assert_eq!(latest.published, NaiveDate::from_ymd_opt(2024, 3, 5));
         assert_eq!(latest.authors, vec!["Alice".to_string(), "Bob".to_string()]);
-        assert_eq!(latest.categories, vec!["cs.LG".to_string(), "cs.AI".to_string()]);
+        assert_eq!(
+            latest.categories,
+            vec!["cs.LG".to_string(), "cs.AI".to_string()]
+        );
         assert_eq!(latest.tags, vec!["ml".to_string()]);
         assert!(latest.has_pdf);
         assert!(!latest.downloaded_source);
         assert_eq!(latest.source.as_deref(), Some("arxiv")); // PROVIDER default
 
         // Some(1) -> that exact version via papers view.
-        let v1 = get_paper(&conn, "arxiv:2204.12985", Some(1)).unwrap().unwrap();
+        let v1 = get_paper(&conn, "arxiv:2204.12985", Some(1))
+            .unwrap()
+            .unwrap();
         assert_eq!(v1.version, 1);
         assert_eq!(v1.title, "V1");
 
@@ -888,11 +942,24 @@ mod tests {
         assert_eq!(all.len(), 2);
 
         // Category filter passes the seeded category, misses on a wrong one.
-        assert_eq!(list_papers(&conn, true, None, 0, Some("cs.LG")).unwrap().len(), 1);
-        assert_eq!(list_papers(&conn, true, None, 0, Some("nope")).unwrap().len(), 0);
+        assert_eq!(
+            list_papers(&conn, true, None, 0, Some("cs.LG"))
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            list_papers(&conn, true, None, 0, Some("nope"))
+                .unwrap()
+                .len(),
+            0
+        );
 
         // limit/offset apply to the (all-versions) filtered result.
-        assert_eq!(list_papers(&conn, false, Some(1), 1, None).unwrap().len(), 1);
+        assert_eq!(
+            list_papers(&conn, false, Some(1), 1, None).unwrap().len(),
+            1
+        );
     }
 
     // ── Write tests ───────────────────────────────────────────────────────────
@@ -927,8 +994,8 @@ mod tests {
         init_db(&conn).unwrap();
 
         let m = meta("arxiv:2204.12985", 1);
-        let (sid, ver) = save_paper_metadata(&mut conn, &m, Some(&["extra".into(), "ml".into()]))
-            .unwrap();
+        let (sid, ver) =
+            save_paper_metadata(&mut conn, &m, Some(&["extra".into(), "ml".into()])).unwrap();
         assert_eq!((sid.as_str(), ver), ("arxiv:2204.12985", 1));
 
         // Re-read via the read path: relational + JSON both populated.
@@ -947,13 +1014,20 @@ mod tests {
             2
         );
         assert_eq!(
-            count(&conn, "SELECT COUNT(*) FROM PAPER_TO_TAG WHERE SOURCE_ID = ?", "arxiv:2204.12985"),
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM PAPER_TO_TAG WHERE SOURCE_ID = ?",
+                "arxiv:2204.12985"
+            ),
             2 // ml + extra
         );
 
         // Re-saving the same (source_id, version) is a no-op (INSERT OR IGNORE).
         save_paper_metadata(&mut conn, &m, None).unwrap();
-        assert_eq!(get_all_versions(&conn, "arxiv:2204.12985").unwrap().len(), 1);
+        assert_eq!(
+            get_all_versions(&conn, "arxiv:2204.12985").unwrap().len(),
+            1
+        );
     }
 
     #[test]
@@ -968,15 +1042,21 @@ mod tests {
         // add: union onto ["ml"], dedup first-seen order, across all versions + both halves.
         let after_add = add_paper_tags(&mut conn, sid, &["nlp".into(), "ml".into()]).unwrap();
         assert_eq!(after_add, vec!["ml".to_string(), "nlp".to_string()]);
-        assert_eq!(get_paper(&conn, sid, None).unwrap().unwrap().tags, after_add); // JSON half
-        // relational half synced for BOTH versions (2 rows per tag).
+        assert_eq!(
+            get_paper(&conn, sid, None).unwrap().unwrap().tags,
+            after_add
+        ); // JSON half
+           // relational half synced for BOTH versions (2 rows per tag).
         assert_eq!(count(&conn, &format!("{label_rows}'ml'"), sid), 2);
         assert_eq!(count(&conn, &format!("{label_rows}'nlp'"), sid), 2);
 
         // remove: drop "ml" from both halves; "nlp" survives.
         let after_rm = remove_paper_tags(&mut conn, sid, &["ml".into()]).unwrap();
         assert_eq!(after_rm, vec!["nlp".to_string()]);
-        assert_eq!(get_paper(&conn, sid, None).unwrap().unwrap().tags, vec!["nlp".to_string()]);
+        assert_eq!(
+            get_paper(&conn, sid, None).unwrap().unwrap().tags,
+            vec!["nlp".to_string()]
+        );
         assert_eq!(count(&conn, &format!("{label_rows}'ml'"), sid), 0); // relational row gone
         assert_eq!(count(&conn, &format!("{label_rows}'nlp'"), sid), 2);
 
@@ -993,7 +1073,14 @@ mod tests {
 
         // Put full_text into FTS under the old id.
         set_full_text(&mut conn, "arxiv:OLD", 1, Some("hello tex")).unwrap();
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM papers_fts WHERE paper_id = ?", "arxiv:OLD"), 1);
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM papers_fts WHERE paper_id = ?",
+                "arxiv:OLD"
+            ),
+            1
+        );
 
         let mut m2 = meta("arxiv:NEW", 1);
         m2.title = "Repaired".into();
@@ -1008,15 +1095,34 @@ mod tests {
         assert_eq!(p.authors, vec!["Carol".to_string()]);
         assert_eq!(p.tags, vec!["t1".to_string(), "t2".to_string()]);
         assert_eq!(
-            count(&conn, "SELECT COUNT(*) FROM PAPER_TO_TAG WHERE SOURCE_ID = ?", "arxiv:NEW"),
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM PAPER_TO_TAG WHERE SOURCE_ID = ?",
+                "arxiv:NEW"
+            ),
             2
         );
         // FTS row moved old -> new, none left behind.
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM papers_fts WHERE paper_id = ?", "arxiv:OLD"), 0);
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM papers_fts WHERE paper_id = ?", "arxiv:NEW"), 1);
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM papers_fts WHERE paper_id = ?",
+                "arxiv:OLD"
+            ),
+            0
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM papers_fts WHERE paper_id = ?",
+                "arxiv:NEW"
+            ),
+            1
+        );
         // Old author GC'd (no paper references "Alice"/"Bob" any more).
         assert_eq!(
-            conn.query_row("SELECT COUNT(*) FROM AUTHOR", [], |r| r.get::<_, i64>(0)).unwrap(),
+            conn.query_row("SELECT COUNT(*) FROM AUTHOR", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
             1
         );
     }
@@ -1028,11 +1134,20 @@ mod tests {
         save_paper_metadata(&mut conn, &meta("arxiv:p", 1), None).unwrap();
 
         set_has_pdf(&conn, "arxiv:p", 1, true).unwrap();
-        assert!(get_paper(&conn, "arxiv:p", Some(1)).unwrap().unwrap().has_pdf);
+        assert!(
+            get_paper(&conn, "arxiv:p", Some(1))
+                .unwrap()
+                .unwrap()
+                .has_pdf
+        );
 
         set_pdf_path(&conn, "arxiv:p", "/tmp/a.pdf", Some(1)).unwrap();
         assert_eq!(
-            get_paper(&conn, "arxiv:p", Some(1)).unwrap().unwrap().pdf_path.as_deref(),
+            get_paper(&conn, "arxiv:p", Some(1))
+                .unwrap()
+                .unwrap()
+                .pdf_path
+                .as_deref(),
             Some("/tmp/a.pdf")
         );
 
@@ -1070,7 +1185,14 @@ mod tests {
 
         // Refresh is DELETE+INSERT, so no duplicate rows accumulate.
         set_full_text(&mut conn, "arxiv:ft", 1, Some("rewritten")).unwrap();
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM papers_fts WHERE paper_id = ?", "arxiv:ft"), 1);
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM papers_fts WHERE paper_id = ?",
+                "arxiv:ft"
+            ),
+            1
+        );
     }
 
     #[test]
@@ -1084,25 +1206,56 @@ mod tests {
         soft_delete_paper(&mut conn, "arxiv:d").unwrap();
         assert!(get_paper(&conn, "arxiv:d", None).unwrap().is_none());
         assert!(is_paper_deleted(&conn, "arxiv:d").unwrap());
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM papers_fts WHERE paper_id = ?", "arxiv:d"), 0);
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM papers_fts WHERE paper_id = ?",
+                "arxiv:d"
+            ),
+            0
+        );
         assert_eq!(list_deleted_papers(&conn).unwrap().len(), 1);
-        assert_eq!(get_paper_root(&conn, "arxiv:d").unwrap().unwrap().status, "deleted");
+        assert_eq!(
+            get_paper_root(&conn, "arxiv:d").unwrap().unwrap().status,
+            "deleted"
+        );
 
         // Restore: active again, FTS rebuilt from stored full_text.
         restore_paper(&mut conn, "arxiv:d").unwrap();
         assert!(!is_paper_deleted(&conn, "arxiv:d").unwrap());
         assert!(get_paper(&conn, "arxiv:d", None).unwrap().is_some());
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM papers_fts WHERE paper_id = ?", "arxiv:d"), 1);
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM papers_fts WHERE paper_id = ?",
+                "arxiv:d"
+            ),
+            1
+        );
 
         // Hard delete: root gone, children cascade-deleted, FTS gone.
         hard_delete_paper(&mut conn, "arxiv:d").unwrap();
         assert!(get_paper_root(&conn, "arxiv:d").unwrap().is_none());
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM PAPER WHERE SOURCE_ID = ?", "arxiv:d"), 0);
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM PAPER WHERE SOURCE_ID = ?",
+                "arxiv:d"
+            ),
+            0
+        );
         assert_eq!(
             count(&conn, "SELECT COUNT(*) FROM PAPER_TO_AUTHOR pta WHERE pta.PAPER_ID IN (SELECT PAPER_ID FROM PAPER WHERE SOURCE_ID = ?)", "arxiv:d"),
             0
         );
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM papers_fts WHERE paper_id = ?", "arxiv:d"), 0);
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM papers_fts WHERE paper_id = ?",
+                "arxiv:d"
+            ),
+            0
+        );
     }
 
     #[test]
@@ -1113,12 +1266,21 @@ mod tests {
         save_paper_metadata(&mut conn, &meta("arxiv:v", 2), None).unwrap();
 
         let fk = ensure_paper_root(&mut conn, "arxiv:v").unwrap();
-        assert_eq!(get_source_id(&conn, fk).unwrap().as_deref(), Some("arxiv:v"));
+        assert_eq!(
+            get_source_id(&conn, fk).unwrap().as_deref(),
+            Some("arxiv:v")
+        );
         assert_eq!(get_source_id(&conn, 999_999).unwrap(), None);
-        assert_eq!(sfks_to_source_ids(&conn, &[fk, 999_999]).unwrap(), vec!["arxiv:v".to_string()]);
+        assert_eq!(
+            sfks_to_source_ids(&conn, &[fk, 999_999]).unwrap(),
+            vec!["arxiv:v".to_string()]
+        );
 
         let versions = get_all_versions(&conn, "arxiv:v").unwrap();
-        assert_eq!(versions.iter().map(|p| p.version).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(
+            versions.iter().map(|p| p.version).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
 
         // ensure_paper_root reactivates a soft-deleted root.
         soft_delete_paper(&mut conn, "arxiv:v").unwrap();

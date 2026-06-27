@@ -31,10 +31,15 @@ fn list(state: &AppState) -> Result<Value, ApiError> {
 /// a case-insensitive scan of all projects (no `list_projects_by_tag` in core).
 fn detail(state: &AppState, label: &str) -> Result<Value, ApiError> {
     state.with_conn(|conn| -> Result<Value, ApiError> {
-        let canonical =
-            svc_tag::get(conn, &Tag { label: Some(label.to_string()), ..Default::default() })?
-                .and_then(|t| t.label)
-                .unwrap_or_else(|| label.to_string());
+        let canonical = svc_tag::get(
+            conn,
+            &Tag {
+                label: Some(label.to_string()),
+                ..Default::default()
+            },
+        )?
+        .and_then(|t| t.label)
+        .unwrap_or_else(|| label.to_string());
 
         let papers = svc_paper::get_papers_by_tag(conn, label)?;
         let papers: Vec<Value> = papers
@@ -45,7 +50,10 @@ fn detail(state: &AppState, label: &str) -> Result<Value, ApiError> {
         // Status::Active filter matches Python's `_LIST_PROJECTS_BY_TAG_SQL`
         // (`AND pr.STATUS = 'active'`): PROJECT_TO_TAG rows survive soft-delete, so
         // an unfiltered scan would leak archived/deleted projects the API excludes.
-        let active = Projects { project_fks: None, status: Some(Status::Active) };
+        let active = Projects {
+            project_fks: None,
+            status: Some(Status::Active),
+        };
         let mut projects = Vec::new();
         for p in svc_project::get_many(conn, &active)? {
             if !p.project_tags.iter().any(|t| t.eq_ignore_ascii_case(label)) {
@@ -81,18 +89,32 @@ mod tests {
     }
 
     async fn get(st: &AppState, path: &str) -> Result<Value, ApiError> {
-        route(st, ApiRequest { method: "GET".into(), path: path.into(), body: None }).await
+        route(
+            st,
+            ApiRequest {
+                method: "GET".into(),
+                path: path.into(),
+                body: None,
+            },
+        )
+        .await
     }
 
     #[tokio::test]
     async fn list_on_empty_db_wraps_empty_array() {
-        assert_eq!(get(&state(), "/api/tags").await.unwrap(), json!({ "tags": [] }));
+        assert_eq!(
+            get(&state(), "/api/tags").await.unwrap(),
+            json!({ "tags": [] })
+        );
     }
 
     #[tokio::test]
     async fn detail_unknown_label_falls_back_to_raw_label() {
         // No tag, no papers, no projects — canonical label is the raw segment.
         let v = get(&state(), "/api/tags/Neural%20Nets").await.unwrap();
-        assert_eq!(v, json!({ "label": "Neural Nets", "papers": [], "projects": [] }));
+        assert_eq!(
+            v,
+            json!({ "label": "Neural Nets", "papers": [], "projects": [] })
+        );
     }
 }

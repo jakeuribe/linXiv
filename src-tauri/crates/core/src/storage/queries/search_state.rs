@@ -93,7 +93,16 @@ mod tests {
         assert_eq!(load_state(&conn).unwrap(), None);
 
         let clauses = json!([{ "field": "all", "value": "manifold" }]);
-        save_state(&conn, &clauses, "arxiv", 25, &json!([{ "source_id": "x" }]), &json!(["x"]), None).unwrap();
+        save_state(
+            &conn,
+            &clauses,
+            "arxiv",
+            25,
+            &json!([{ "source_id": "x" }]),
+            &json!(["x"]),
+            None,
+        )
+        .unwrap();
 
         let st = load_state(&conn).unwrap().unwrap();
         assert_eq!(st["clauses"], clauses);
@@ -102,13 +111,30 @@ mod tests {
         assert_eq!(st["saved_ids"], json!(["x"]));
         assert_eq!(st["sort_prefs"], Value::Null);
         // key order is the wire contract.
-        assert!(st.as_object().unwrap().keys().eq(
-            ["clauses", "source", "max_results", "results", "saved_ids", "sort_prefs", "updated_at"]
-        ));
+        assert!(st.as_object().unwrap().keys().eq([
+            "clauses",
+            "source",
+            "max_results",
+            "results",
+            "saved_ids",
+            "sort_prefs",
+            "updated_at"
+        ]));
 
         // upsert: a second save overwrites the single row, not a second insert.
-        save_state(&conn, &json!([]), "openalex", 50, &json!([]), &json!([]), Some(&json!({ "by": "date" }))).unwrap();
-        let cnt: i64 = conn.query_row("SELECT COUNT(*) FROM SEARCH_STATE", [], |r| r.get(0)).unwrap();
+        save_state(
+            &conn,
+            &json!([]),
+            "openalex",
+            50,
+            &json!([]),
+            &json!([]),
+            Some(&json!({ "by": "date" })),
+        )
+        .unwrap();
+        let cnt: i64 = conn
+            .query_row("SELECT COUNT(*) FROM SEARCH_STATE", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(cnt, 1);
         let st2 = load_state(&conn).unwrap().unwrap();
         assert_eq!(st2["source"], json!("openalex"));

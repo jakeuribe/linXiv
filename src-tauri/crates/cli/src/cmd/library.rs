@@ -127,12 +127,8 @@ pub async fn run(cmd: LibraryCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         // cmd_list: latest-version rows, optional category/limit/offset filter.
         // Python dumps the RAW `latest_papers` view rows, not curated structs.
         LibraryCmd::List(args) => {
-            let papers = list_papers_raw(
-                &ctx.conn,
-                args.limit,
-                args.offset,
-                args.category.as_deref(),
-            )?;
+            let papers =
+                list_papers_raw(&ctx.conn, args.limit, args.offset, args.category.as_deref())?;
             output(&papers);
         }
     }

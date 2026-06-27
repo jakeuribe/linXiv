@@ -348,7 +348,10 @@ Second line of the abstract.
             parse_arxiv_id("https://arxiv.org/abs/2204.12985v2"),
             ("arxiv:2204.12985".into(), 2)
         );
-        assert_eq!(parse_arxiv_id("2204.12985v3"), ("arxiv:2204.12985".into(), 3));
+        assert_eq!(
+            parse_arxiv_id("2204.12985v3"),
+            ("arxiv:2204.12985".into(), 3)
+        );
         // no version -> default 1
         assert_eq!(parse_arxiv_id("2204.12985"), ("arxiv:2204.12985".into(), 1));
         // five+ digit id
@@ -373,13 +376,21 @@ Second line of the abstract.
         assert_eq!(p.authors, vec!["Alice Smith", "Bob Jones"]);
         // dates are date-only
         assert_eq!(p.published, NaiveDate::from_ymd_opt(2022, 4, 27).unwrap());
-        assert_eq!(p.updated, Some(NaiveDate::from_ymd_opt(2023, 8, 14).unwrap()));
+        assert_eq!(
+            p.updated,
+            Some(NaiveDate::from_ymd_opt(2023, 8, 14).unwrap())
+        );
         // summary: entities unescaped, surrounding ws trimmed, body kept
-        assert!(p.summary.starts_with("We propose a new architecture & show it works."));
+        assert!(p
+            .summary
+            .starts_with("We propose a new architecture & show it works."));
         assert!(p.summary.contains("Second line"));
         // arxiv: ext elements
         assert_eq!(p.category.as_deref(), Some("cs.LG"));
-        assert_eq!(p.categories.as_deref(), Some(&["cs.LG".to_string(), "cs.AI".to_string()][..]));
+        assert_eq!(
+            p.categories.as_deref(),
+            Some(&["cs.LG".to_string(), "cs.AI".to_string()][..])
+        );
         assert_eq!(p.journal_ref.as_deref(), Some("J. Test 12 (2022) 1-15"));
         assert_eq!(p.comment.as_deref(), Some("15 pages, 3 figures"));
         // bare arxiv:doi preferred over the doi.org link form

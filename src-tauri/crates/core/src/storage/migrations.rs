@@ -108,9 +108,15 @@ fn tag_label_unique_index(conn: &Connection) -> Result<()> {
             remapped = true;
             // UPDATE OR IGNORE absorbs the link onto the canonical FK; the DELETE
             // sweeps any link that could not move (canonical link already existed).
-            conn.execute("UPDATE OR IGNORE PROJECT_TO_TAG SET TAG_FK = ?1 WHERE TAG_FK = ?2", [canon, *fk])?;
+            conn.execute(
+                "UPDATE OR IGNORE PROJECT_TO_TAG SET TAG_FK = ?1 WHERE TAG_FK = ?2",
+                [canon, *fk],
+            )?;
             conn.execute("DELETE FROM PROJECT_TO_TAG WHERE TAG_FK = ?1", [*fk])?;
-            conn.execute("UPDATE OR IGNORE PAPER_TO_TAG SET TAG_FK = ?1 WHERE TAG_FK = ?2", [canon, *fk])?;
+            conn.execute(
+                "UPDATE OR IGNORE PAPER_TO_TAG SET TAG_FK = ?1 WHERE TAG_FK = ?2",
+                [canon, *fk],
+            )?;
             conn.execute("DELETE FROM PAPER_TO_TAG WHERE TAG_FK = ?1", [*fk])?;
             conn.execute("DELETE FROM TAG WHERE TAG_FK = ?1", [*fk])?;
         }

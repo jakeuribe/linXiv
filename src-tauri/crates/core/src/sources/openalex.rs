@@ -43,7 +43,13 @@ fn user_agent(mailto: &str) -> String {
 fn sanitize_search_query(query: &str) -> String {
     let spaced: String = query
         .chars()
-        .map(|c| if matches!(c, '|' | '!' | '*' | '?') { ' ' } else { c })
+        .map(|c| {
+            if matches!(c, '|' | '!' | '*' | '?') {
+                ' '
+            } else {
+                c
+            }
+        })
         .collect();
     spaced.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -120,7 +126,10 @@ fn work_to_metadata(work: &Value) -> Result<PaperMetadata> {
         })
         .unwrap_or_default();
 
-    let pub_str = work.get("publication_date").and_then(Value::as_str).unwrap_or("");
+    let pub_str = work
+        .get("publication_date")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let published = if pub_str.is_empty() {
         date_min()
     } else {
@@ -150,7 +159,11 @@ fn work_to_metadata(work: &Value) -> Result<PaperMetadata> {
     Ok(PaperMetadata {
         source_id: format!("openalex:{openalex_id}"),
         version: 1,
-        title: work.get("title").and_then(Value::as_str).unwrap_or("").to_string(),
+        title: work
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
         authors,
         published,
         updated: None,
@@ -170,7 +183,11 @@ fn work_to_metadata(work: &Value) -> Result<PaperMetadata> {
 fn parse_search_results(body: &Value) -> Vec<PaperMetadata> {
     body.get("results")
         .and_then(Value::as_array)
-        .map(|arr| arr.iter().filter_map(|w| work_to_metadata(w).ok()).collect())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|w| work_to_metadata(w).ok())
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -242,7 +259,10 @@ async fn fetch_by_id_at(
     source_id: &str,
     mailto: &str,
 ) -> Result<PaperMetadata> {
-    let mut bare = source_id.strip_prefix("openalex:").unwrap_or(source_id).to_string();
+    let mut bare = source_id
+        .strip_prefix("openalex:")
+        .unwrap_or(source_id)
+        .to_string();
     // Normalise any URL form (API or landing page) to a bare Work ID.
     if bare.starts_with("http://") || bare.starts_with("https://") {
         bare = bare.rsplit('/').next().unwrap_or("").to_string();
@@ -324,13 +344,19 @@ mod tests {
     #[test]
     fn reconstructs_simple_sentence() {
         let inv = json!({"The": [0], "quick": [1], "fox": [2]});
-        assert_eq!(reconstruct_abstract(Some(&inv)).as_deref(), Some("The quick fox"));
+        assert_eq!(
+            reconstruct_abstract(Some(&inv)).as_deref(),
+            Some("The quick fox")
+        );
     }
 
     #[test]
     fn handles_word_at_multiple_positions() {
         let inv = json!({"the": [0, 3], "cat": [1], "sat": [2]});
-        assert_eq!(reconstruct_abstract(Some(&inv)).as_deref(), Some("the cat sat the"));
+        assert_eq!(
+            reconstruct_abstract(Some(&inv)).as_deref(),
+            Some("the cat sat the")
+        );
     }
 
     #[test]
@@ -343,7 +369,10 @@ mod tests {
     #[test]
     fn preserves_punctuation_as_words() {
         let inv = json!({"Hello": [0], "world.": [1]});
-        assert_eq!(reconstruct_abstract(Some(&inv)).as_deref(), Some("Hello world."));
+        assert_eq!(
+            reconstruct_abstract(Some(&inv)).as_deref(),
+            Some("Hello world.")
+        );
     }
 
     // ── sanitize_search_query ─────────────────────────────────────────────
@@ -420,7 +449,8 @@ mod tests {
             {"author": {"display_name": "Alice"}},
             {"author": {}},
             {"author": {"display_name": "Bob"}}
-        ]}))).unwrap();
+        ]})))
+        .unwrap();
         assert_eq!(m.authors, vec!["Alice".to_string(), "Bob".to_string()]);
     }
 
@@ -428,7 +458,8 @@ mod tests {
     fn category_from_primary_topic_subfield() {
         let m = work_to_metadata(&work(json!({
             "primary_topic": {"subfield": {"display_name": "Machine Learning"}}
-        }))).unwrap();
+        })))
+        .unwrap();
         assert_eq!(m.category.as_deref(), Some("Machine Learning"));
         // None primary_topic -> no category.
         let m = work_to_metadata(&work(json!({}))).unwrap();
@@ -457,7 +488,8 @@ mod tests {
     fn abstract_and_doi_url() {
         let m = work_to_metadata(&work(json!({
             "abstract_inverted_index": {"Hello": [0], "world": [1]}
-        }))).unwrap();
+        })))
+        .unwrap();
         assert_eq!(m.summary, "Hello world");
 
         let m = work_to_metadata(&work(json!({"doi": "https://doi.org/10.1000/xyz"}))).unwrap();
@@ -506,9 +538,16 @@ mod tests {
             .mount(&server)
             .await;
 
-        let out = search_at(&server.uri(), &["127.0.0.1"], "deep learning", 10, "newest", "me@x.io")
-            .await
-            .expect("200 search parses");
+        let out = search_at(
+            &server.uri(),
+            &["127.0.0.1"],
+            "deep learning",
+            10,
+            "newest",
+            "me@x.io",
+        )
+        .await
+        .expect("200 search parses");
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].source_id, "openalex:W3123456789");
     }

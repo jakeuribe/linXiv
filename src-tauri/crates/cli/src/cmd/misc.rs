@@ -52,11 +52,15 @@ pub async fn run(cmd: MiscCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             output(&svc_paper::get_categories(&ctx.conn)?);
         }
         // cmd_settings_get
-        MiscCmd::Settings { cmd: SettingsCmd::Get } => {
+        MiscCmd::Settings {
+            cmd: SettingsCmd::Get,
+        } => {
             output(&ctx.settings.all());
         }
         // cmd_settings_update: JSON-parse the value, else keep it as a string.
-        MiscCmd::Settings { cmd: SettingsCmd::Update { key, value } } => {
+        MiscCmd::Settings {
+            cmd: SettingsCmd::Update { key, value },
+        } => {
             let parsed: Value =
                 serde_json::from_str(&value).unwrap_or_else(|_| Value::String(value.clone()));
             ctx.settings.set(key.clone(), parsed.clone())?;

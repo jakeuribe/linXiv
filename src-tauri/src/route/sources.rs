@@ -208,13 +208,18 @@ async fn openalex_save(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiE
     if b.source_id.is_empty() {
         return Err(ApiError::new(422, "source_id must not be empty"));
     }
-    let meta = svc_fetch::fetch_by_id("openalex", b.source_id.trim(), &config::data_dir(), &mailto())
-        .await
-        .map_err(|e| match e {
-            CoreError::OpenAlexNotFound(m) => ApiError::new(404, m),
-            CoreError::OpenAlexInput(m) => ApiError::new(400, m),
-            other => ApiError::new(502, other.to_string()),
-        })?;
+    let meta = svc_fetch::fetch_by_id(
+        "openalex",
+        b.source_id.trim(),
+        &config::data_dir(),
+        &mailto(),
+    )
+    .await
+    .map_err(|e| match e {
+        CoreError::OpenAlexNotFound(m) => ApiError::new(404, m),
+        CoreError::OpenAlexInput(m) => ApiError::new(400, m),
+        other => ApiError::new(502, other.to_string()),
+    })?;
     let (stored, _) = state.with_conn(|conn| svc_paper::save_paper_metadata(conn, &meta, None))?;
     Ok(json!({ "saved": true, "source_id": strip_namespace(&stored) }))
 }
@@ -262,7 +267,15 @@ mod tests {
     }
 
     async fn post(st: &AppState, path: &str, body: Value) -> Result<Value, ApiError> {
-        route(st, ApiRequest { method: "POST".into(), path: path.into(), body: Some(body) }).await
+        route(
+            st,
+            ApiRequest {
+                method: "POST".into(),
+                path: path.into(),
+                body: Some(body),
+            },
+        )
+        .await
     }
 
     /// Build a synthetic PaperMetadata through serde (the app crate has no chrono dep).
@@ -297,8 +310,12 @@ mod tests {
 
     #[test]
     fn to_search_result_blanks_date_min_and_defaults_nulls() {
-        let v = serde_json::to_value(to_search_result(meta("0001-01-01", Value::Null, Value::Null)))
-            .unwrap();
+        let v = serde_json::to_value(to_search_result(meta(
+            "0001-01-01",
+            Value::Null,
+            Value::Null,
+        )))
+        .unwrap();
         assert_eq!(v["published"], json!(""));
         assert_eq!(v["paper_url"], json!(""));
         assert_eq!(v["primary_category"], json!(""));
@@ -308,7 +325,9 @@ mod tests {
     #[tokio::test]
     async fn empty_query_is_422_before_any_network() {
         for path in ["/api/arxiv/search", "/api/openalex/search"] {
-            let err = post(&state(), path, json!({ "query": "" })).await.unwrap_err();
+            let err = post(&state(), path, json!({ "query": "" }))
+                .await
+                .unwrap_err();
             assert_eq!(err.status, 422);
         }
     }
@@ -317,9 +336,13 @@ mod tests {
     async fn out_of_range_max_results_is_422_before_network() {
         // 0, >100, and a negative (which would wrap to a huge u32) all 422.
         for mr in [0i64, 200, -1] {
-            let err = post(&state(), "/api/arxiv/search", json!({ "query": "abc", "max_results": mr }))
-                .await
-                .unwrap_err();
+            let err = post(
+                &state(),
+                "/api/arxiv/search",
+                json!({ "query": "abc", "max_results": mr }),
+            )
+            .await
+            .unwrap_err();
             assert_eq!(err.status, 422, "max_results={mr}");
         }
     }
@@ -327,20 +350,28 @@ mod tests {
     #[tokio::test]
     async fn out_of_set_sort_is_422_before_network() {
         // `citations` is openalex-only; invalid for arxiv.
-        let err = post(&state(), "/api/arxiv/search", json!({ "query": "abc", "sort": "citations" }))
-            .await
-            .unwrap_err();
+        let err = post(
+            &state(),
+            "/api/arxiv/search",
+            json!({ "query": "abc", "sort": "citations" }),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(err.status, 422);
     }
 
     #[tokio::test]
     async fn empty_source_id_and_doi_are_422_before_any_network() {
         for path in ["/api/arxiv/fetch", "/api/openalex/save"] {
-            let err = post(&state(), path, json!({ "source_id": "" })).await.unwrap_err();
+            let err = post(&state(), path, json!({ "source_id": "" }))
+                .await
+                .unwrap_err();
             assert_eq!(err.status, 422);
         }
         for path in ["/api/doi/resolve", "/api/doi/save"] {
-            let err = post(&state(), path, json!({ "doi": "" })).await.unwrap_err();
+            let err = post(&state(), path, json!({ "doi": "" }))
+                .await
+                .unwrap_err();
             assert_eq!(err.status, 422);
         }
     }

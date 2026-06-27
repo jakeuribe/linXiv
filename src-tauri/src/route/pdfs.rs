@@ -39,10 +39,13 @@ fn list_saved(state: &AppState) -> Result<Value, ApiError> {
     })?;
     let mut out: Vec<Value> = Vec::new();
     for (source_id, source_fk, title, version, pdf_path) in rows {
-        let Some(path) = resolve_local_pdf(&pdf_dir, pdf_path.as_deref(), &source_id, version) else {
+        let Some(path) = resolve_local_pdf(&pdf_dir, pdf_path.as_deref(), &source_id, version)
+        else {
             continue;
         };
-        let Ok(meta) = std::fs::metadata(&path) else { continue };
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
         out.push(json!({
             "source_id": source_id,
             "source_fk": source_fk,
@@ -68,8 +71,14 @@ fn list_saved(state: &AppState) -> Result<Value, ApiError> {
 fn delete_saved(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
     let pdf_dir = state.pdf_dir.clone();
     state.with_conn(|conn| -> Result<(), ApiError> {
-        let all = svc_paper::get_all(conn, &Paper { source_id: Some(source_id.to_string()), ..Default::default() })?
-            .ok_or_else(|| ApiError::new(404, "Paper not found"))?;
+        let all = svc_paper::get_all(
+            conn,
+            &Paper {
+                source_id: Some(source_id.to_string()),
+                ..Default::default()
+            },
+        )?
+        .ok_or_else(|| ApiError::new(404, "Paper not found"))?;
         for ver in &all.versions {
             let path = resolve_local_pdf(&pdf_dir, ver.pdf_path.as_deref(), source_id, ver.version);
             if let Some(p) = &path {
@@ -102,7 +111,11 @@ fn pdf_path(state: &AppState, source_id: &str, ctx: &ReqCtx<'_>) -> Result<Value
     state.with_conn(|conn| {
         let paper = svc_paper::get(
             conn,
-            &Paper { source_id: Some(source_id.to_string()), version, ..Default::default() },
+            &Paper {
+                source_id: Some(source_id.to_string()),
+                version,
+                ..Default::default()
+            },
         )?
         .ok_or_else(|| ApiError::new(404, "Paper not found"))?;
         let ver = version.unwrap_or(paper.version);
@@ -147,7 +160,15 @@ mod tests {
     }
 
     async fn get(st: &AppState, path: &str) -> Result<Value, ApiError> {
-        route(st, ApiRequest { method: "GET".into(), path: path.into(), body: None }).await
+        route(
+            st,
+            ApiRequest {
+                method: "GET".into(),
+                path: path.into(),
+                body: None,
+            },
+        )
+        .await
     }
 
     /// Unique scratch dir (no tempfile dep): nanos-suffixed under the system temp.
@@ -163,14 +184,18 @@ mod tests {
 
     #[tokio::test]
     async fn missing_paper_is_404() {
-        let err = get(&state(), "/api/papers/2204.12985/pdf-path").await.unwrap_err();
+        let err = get(&state(), "/api/papers/2204.12985/pdf-path")
+            .await
+            .unwrap_err();
         assert_eq!(err.status, 404);
         assert_eq!(err.detail, "Paper not found");
     }
 
     #[tokio::test]
     async fn bad_version_is_422() {
-        let err = get(&state(), "/api/papers/2204.12985/pdf-path?version=0").await.unwrap_err();
+        let err = get(&state(), "/api/papers/2204.12985/pdf-path?version=0")
+            .await
+            .unwrap_err();
         assert_eq!(err.status, 422);
     }
 

@@ -128,7 +128,12 @@ pub enum ProjectCmd {
 
 /// `_resolve_project_or_exit`: fetch by id or fail with the exact Python message.
 fn resolve_or_exit(ctx: &Ctx, project_id: i64) -> linxiv_core::models::ProjectDetails {
-    match project::get(&ctx.conn, &project::Project { project_fk: Some(project_id) }) {
+    match project::get(
+        &ctx.conn,
+        &project::Project {
+            project_fk: Some(project_id),
+        },
+    ) {
         Ok(Some(p)) => p,
         Ok(None) => fail(format!("Project {project_id} not found")),
         Err(e) => fail(e),
@@ -150,7 +155,10 @@ fn project_papers(ctx: &Ctx, source_fks: &[i64]) -> CoreResult<Vec<PaperDetails>
     }
     paper::get_many(
         &ctx.conn,
-        &paper::Papers { source_fks: Some(source_fks.to_vec()), ..Default::default() },
+        &paper::Papers {
+            source_fks: Some(source_fks.to_vec()),
+            ..Default::default()
+        },
     )
 }
 
@@ -160,7 +168,10 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             let core_status = status.map(|s| s.to_status());
             let mut projects = project::get_many(
                 &ctx.conn,
-                &project::Projects { status: core_status, ..Default::default() },
+                &project::Projects {
+                    status: core_status,
+                    ..Default::default()
+                },
             )?;
             if core_status.is_none() {
                 projects.retain(|p| p.status != Status::Deleted);
@@ -195,7 +206,12 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             output(&details);
         }
 
-        ProjectCmd::Create { name, description, color, tags } => {
+        ProjectCmd::Create {
+            name,
+            description,
+            color,
+            tags,
+        } => {
             // Python `color_from_hex(args.color) if args.color else None`: empty string -> no color.
             let color = match &color {
                 Some(hex) if !hex.is_empty() => Some(project::color_from_hex(hex)?),
@@ -217,10 +233,21 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                 name: String,
                 status: &'static str,
             }
-            output(&Out { id, name, status: "active" });
+            output(&Out {
+                id,
+                name,
+                status: "active",
+            });
         }
 
-        ProjectCmd::Update { project_id, name, description, color, tags, status } => {
+        ProjectCmd::Update {
+            project_id,
+            name,
+            description,
+            color,
+            tags,
+            status,
+        } => {
             // Mirror `_resolve_project_or_exit` before mutating.
             resolve_or_exit(ctx, project_id);
             let res = (|| -> CoreResult<()> {
@@ -247,29 +274,52 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
 
         ProjectCmd::Delete { project_id } => {
             resolve_or_exit(ctx, project_id);
-            project::delete(&ctx.conn, &project::Project { project_fk: Some(project_id) })?;
+            project::delete(
+                &ctx.conn,
+                &project::Project {
+                    project_fk: Some(project_id),
+                },
+            )?;
             output(&json!({ "deleted_project_id": project_id }));
         }
 
         ProjectCmd::Archive { project_id } => {
             resolve_or_exit(ctx, project_id);
-            project::archive(&ctx.conn, &project::Project { project_fk: Some(project_id) })?;
+            project::archive(
+                &ctx.conn,
+                &project::Project {
+                    project_fk: Some(project_id),
+                },
+            )?;
             output(&json!({ "archived_project_id": project_id }));
         }
 
         ProjectCmd::Restore { project_id } => {
             resolve_or_exit(ctx, project_id);
-            project::restore(&ctx.conn, &project::Project { project_fk: Some(project_id) })?;
+            project::restore(
+                &ctx.conn,
+                &project::Project {
+                    project_fk: Some(project_id),
+                },
+            )?;
             output(&json!({ "restored_project_id": project_id }));
         }
 
         ProjectCmd::HardDelete { project_id } => {
             resolve_or_exit(ctx, project_id);
-            project::hard_delete(&mut ctx.conn, &project::Project { project_fk: Some(project_id) })?;
+            project::hard_delete(
+                &mut ctx.conn,
+                &project::Project {
+                    project_fk: Some(project_id),
+                },
+            )?;
             output(&json!({ "hard_deleted_project_id": project_id }));
         }
 
-        ProjectCmd::AddPaper { project_id, source_id } => {
+        ProjectCmd::AddPaper {
+            project_id,
+            source_id,
+        } => {
             let source_id = as_source_id(&source_id, "arxiv");
             let failed = match project::add_papers(&ctx.conn, project_id, &[source_id.clone()]) {
                 Ok(failed) => failed,
@@ -287,10 +337,16 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                 project_id: i64,
                 source_id: String,
             }
-            output(&Out { project_id, source_id });
+            output(&Out {
+                project_id,
+                source_id,
+            });
         }
 
-        ProjectCmd::RemovePaper { project_id, source_id } => {
+        ProjectCmd::RemovePaper {
+            project_id,
+            source_id,
+        } => {
             let source_id = as_source_id(&source_id, "arxiv");
             let failed = match project::remove_papers(&ctx.conn, project_id, &[source_id.clone()]) {
                 Ok(failed) => failed,
@@ -309,10 +365,18 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                 source_id: String,
                 removed: bool,
             }
-            output(&Out { project_id, source_id, removed: true });
+            output(&Out {
+                project_id,
+                source_id,
+                removed: true,
+            });
         }
 
-        ProjectCmd::Export { project_id, dest, pdfs } => {
+        ProjectCmd::Export {
+            project_id,
+            dest,
+            pdfs,
+        } => {
             let out = match export_import::export_project(
                 &ctx.conn,
                 project_id,
@@ -328,10 +392,17 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                 path: String,
                 project_id: i64,
             }
-            output(&Out { path: out.display().to_string(), project_id });
+            output(&Out {
+                path: out.display().to_string(),
+                project_id,
+            });
         }
 
-        ProjectCmd::Import { zip_path, preview, on_conflict } => {
+        ProjectCmd::Import {
+            zip_path,
+            preview,
+            on_conflict,
+        } => {
             let zip = Path::new(&zip_path);
             if preview {
                 let prev = match export_import::preview_import(zip) {
@@ -364,7 +435,10 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                 path: String,
                 project_id: i64,
             }
-            output(&Out { path: dest.display().to_string(), project_id });
+            output(&Out {
+                path: dest.display().to_string(),
+                project_id,
+            });
         }
 
         ProjectCmd::ExportObsidian { project_id, dest } => {
@@ -378,7 +452,10 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                 path: String,
                 project_id: i64,
             }
-            output(&Out { path: dest.display().to_string(), project_id });
+            output(&Out {
+                path: dest.display().to_string(),
+                project_id,
+            });
         }
     }
     Ok(())
@@ -392,4 +469,3 @@ fn with_default_ext(dest: &str, ext: &str) -> PathBuf {
     }
     p
 }
-

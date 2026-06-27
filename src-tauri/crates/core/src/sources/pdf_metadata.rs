@@ -662,15 +662,27 @@ mod tests {
 
     #[test]
     fn arxiv_scanner() {
-        assert_eq!(extract_arxiv_id("arXiv:2411.10406v2").as_deref(), Some("2411.10406v2"));
-        assert_eq!(extract_arxiv_id("arXiv:2204.12985").as_deref(), Some("2204.12985"));
-        assert_eq!(extract_arxiv_id("arxiv:2204.12985v1").as_deref(), Some("2204.12985v1"));
+        assert_eq!(
+            extract_arxiv_id("arXiv:2411.10406v2").as_deref(),
+            Some("2411.10406v2")
+        );
+        assert_eq!(
+            extract_arxiv_id("arXiv:2204.12985").as_deref(),
+            Some("2204.12985")
+        );
+        assert_eq!(
+            extract_arxiv_id("arxiv:2204.12985v1").as_deref(),
+            Some("2204.12985v1")
+        );
         assert_eq!(
             extract_arxiv_id("Submitted to arXiv:2411.10406v2 for review").as_deref(),
             Some("2411.10406v2")
         );
         assert_eq!(extract_arxiv_id("No arXiv ID here."), None);
-        assert_eq!(extract_arxiv_id("arXiv:2204.12345v1").as_deref(), Some("2204.12345v1"));
+        assert_eq!(
+            extract_arxiv_id("arXiv:2204.12345v1").as_deref(),
+            Some("2204.12345v1")
+        );
     }
 
     #[test]
@@ -693,7 +705,10 @@ mod tests {
             title_similarity("Attention Is All You Need", "Attention Is All You Need"),
             1.0
         );
-        assert_eq!(title_similarity("Alpha Beta Gamma", "Delta Epsilon Zeta"), 0.0);
+        assert_eq!(
+            title_similarity("Alpha Beta Gamma", "Delta Epsilon Zeta"),
+            0.0
+        );
         let s = title_similarity("Deep Learning Models", "Deep Neural Learning");
         assert!(s > 0.0 && s < 1.0);
         assert_eq!(title_similarity("Hello World", "hello world"), 1.0);
@@ -749,18 +764,26 @@ mod tests {
     #[tokio::test]
     async fn resolve_partial_record_shape() {
         let dir = tempfile::tempdir().unwrap();
-        let (m, ext) = resolve_pdf_metadata(b"some pdf bytes", dir.path()).await.unwrap();
+        let (m, ext) = resolve_pdf_metadata(b"some pdf bytes", dir.path())
+            .await
+            .unwrap();
         assert_eq!(ext, None);
         assert_eq!(m.source.as_deref(), Some("pdf"));
         assert!(m.source_id.starts_with("local:"));
         // deterministic id == local:<sha256[:16]>
-        assert_eq!(m.source_id, format!("local:{}", &hex(&sha256(b"some pdf bytes"))[..16]));
+        assert_eq!(
+            m.source_id,
+            format!("local:{}", &hex(&sha256(b"some pdf bytes"))[..16])
+        );
     }
 
     // ---- D10 SPIKE: real committed PDFs (pdfium extraction, no network) ----
 
     fn read_test_pdf(name: &str) -> Vec<u8> {
-        let p = format!("{}/../../../tests/test_file/{name}", env!("CARGO_MANIFEST_DIR"));
+        let p = format!(
+            "{}/../../../tests/test_file/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        );
         std::fs::read(&p).unwrap_or_else(|e| panic!("read {p}: {e}"))
     }
 
@@ -809,7 +832,10 @@ mod tests {
             "title swallowed the page: {} chars",
             title.chars().count()
         );
-        assert!(title.starts_with("Note on the construction"), "got: {title:?}");
+        assert!(
+            title.starts_with("Note on the construction"),
+            "got: {title:?}"
+        );
     }
 
     // Regression for the thread_local deadlock: pdfium-render's thread_safe holds a
@@ -847,7 +873,9 @@ mod tests {
         // resolve still yields a partial record (deterministic local id); no
         // arXiv/DOI/title extracted, so enrichment makes no network call.
         let dir = tempfile::tempdir().unwrap();
-        let (meta, ext) = resolve_pdf_metadata(b"%PDF junk", dir.path()).await.unwrap();
+        let (meta, ext) = resolve_pdf_metadata(b"%PDF junk", dir.path())
+            .await
+            .unwrap();
         assert!(meta.source_id.starts_with("local:"));
         assert_eq!(ext, None);
     }

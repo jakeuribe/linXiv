@@ -4,7 +4,11 @@
 /// quotes, switching to double only when the string holds a `'` but no `"`. Rust's `{:?}`
 /// always uses double quotes, so it diverges byte-for-byte on every id in an error message.
 pub fn pyrepr(s: &str) -> String {
-    let quote = if s.contains('\'') && !s.contains('"') { '"' } else { '\'' };
+    let quote = if s.contains('\'') && !s.contains('"') {
+        '"'
+    } else {
+        '\''
+    };
     let mut out = String::with_capacity(s.len() + 2);
     out.push(quote);
     for c in s.chars() {

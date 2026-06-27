@@ -6,8 +6,7 @@ use crate::storage::db;
 
 /// `_TAG_FK_BY_LABEL_SQL` — label match is COLLATE NOCASE, mirroring the UNIQUE
 /// index `idx_tag_label_unique`. Used by every get-or-create path below.
-const TAG_FK_BY_LABEL_SQL: &str =
-    "SELECT TAG_FK FROM TAG WHERE TAG = ? COLLATE NOCASE LIMIT 1";
+const TAG_FK_BY_LABEL_SQL: &str = "SELECT TAG_FK FROM TAG WHERE TAG = ? COLLATE NOCASE LIMIT 1";
 
 /// `storage/tags.py::list_tags` (no paper/project/label filter) — every tag,
 /// ordered by label. TAG.TAG is UNIQUE NOCASE, so the rows are already distinct.
@@ -20,7 +19,8 @@ pub fn list_tags(conn: &Connection) -> Result<Vec<TagDetails>> {
             label: row.get(1)?,
         })
     })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 /// `config/queries.py::list_tags_by_paper` — DISTINCT tags linked to a paper via
@@ -32,9 +32,13 @@ pub fn list_tags_by_paper(conn: &Connection, paper_id: i64) -> Result<Vec<TagDet
          WHERE ptt.PAPER_ID = ? ORDER BY t.TAG",
     )?;
     let rows = stmt.query_map([paper_id], |r| {
-        Ok(TagDetails { tag_id: r.get(0)?, label: r.get(1)? })
+        Ok(TagDetails {
+            tag_id: r.get(0)?,
+            label: r.get(1)?,
+        })
     })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 /// `storage/tags.py::get_tag` — single tag by id, or `None` if absent.
@@ -42,7 +46,12 @@ pub fn get_tag(conn: &Connection, tag_id: i64) -> Result<Option<TagDetails>> {
     conn.query_row(
         "SELECT TAG_FK, TAG FROM TAG WHERE TAG_FK = ?",
         [tag_id],
-        |row| Ok(TagDetails { tag_id: row.get(0)?, label: row.get(1)? }),
+        |row| {
+            Ok(TagDetails {
+                tag_id: row.get(0)?,
+                label: row.get(1)?,
+            })
+        },
     )
     .optional()
     .map_err(Into::into)
@@ -82,7 +91,11 @@ pub fn get_project_tags(conn: &Connection, project_id: i64) -> Result<Vec<String
     let rows = stmt.query_map([project_id], |r| r.get::<_, Option<String>>(1))?;
     // TAG is nullable; Python keeps None rows, but linked tags always carry a
     // label in practice — drop nulls rather than surface a None label.
-    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?.into_iter().flatten().collect())
+    Ok(rows
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect())
 }
 
 /// `storage/tags.py::add_project_tags` — get-or-create each (trimmed, deduped
@@ -158,8 +171,10 @@ mod tests {
     fn list_tags_returns_all_ordered_by_label() {
         let conn = db::open_in_memory().unwrap();
         storage::init_db(&conn).unwrap();
-        conn.execute("INSERT INTO TAG (TAG) VALUES ('zeta')", []).unwrap();
-        conn.execute("INSERT INTO TAG (TAG) VALUES ('alpha')", []).unwrap();
+        conn.execute("INSERT INTO TAG (TAG) VALUES ('zeta')", [])
+            .unwrap();
+        conn.execute("INSERT INTO TAG (TAG) VALUES ('alpha')", [])
+            .unwrap();
 
         let tags = list_tags(&conn).unwrap();
         assert_eq!(tags.len(), 2);
@@ -176,10 +191,15 @@ mod tests {
         let id = create_tag(&mut conn, "Neural").unwrap();
         assert!(id > 0);
         // re-read the row actually exists
-        assert_eq!(get_tag(&conn, id).unwrap().unwrap().label.as_deref(), Some("Neural"));
+        assert_eq!(
+            get_tag(&conn, id).unwrap().unwrap().label.as_deref(),
+            Some("Neural")
+        );
         // dup (different case) returns the same id, no second row
         assert_eq!(create_tag(&mut conn, "neural").unwrap(), id);
-        let n: i64 = conn.query_row("SELECT COUNT(*) FROM TAG", [], |r| r.get(0)).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM TAG", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(n, 1);
     }
 
@@ -196,7 +216,8 @@ mod tests {
     fn add_and_remove_project_tags_roundtrip() {
         let mut conn = db::open_in_memory().unwrap();
         storage::init_db(&conn).unwrap();
-        conn.execute("INSERT INTO PROJECT (PROJECT_FK, NAME) VALUES (1, 'p')", []).unwrap();
+        conn.execute("INSERT INTO PROJECT (PROJECT_FK, NAME) VALUES (1, 'p')", [])
+            .unwrap();
 
         // trim + case-dedup: "  ML ", "ml", "" collapse to one tag
         let out = add_project_tags(
@@ -209,21 +230,31 @@ mod tests {
 
         // tags exist relationally
         let links: i64 = conn
-            .query_row("SELECT COUNT(*) FROM PROJECT_TO_TAG WHERE PROJECT_FK = 1", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM PROJECT_TO_TAG WHERE PROJECT_FK = 1",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(links, 2);
 
         // idempotent add does not duplicate links
         add_project_tags(&mut conn, 1, &["ML".into()]).unwrap();
         let links2: i64 = conn
-            .query_row("SELECT COUNT(*) FROM PROJECT_TO_TAG WHERE PROJECT_FK = 1", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM PROJECT_TO_TAG WHERE PROJECT_FK = 1",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(links2, 2);
 
         // remove one (NOCASE) — link gone, TAG row stays
         let remaining = remove_project_tags(&mut conn, 1, &["ml".into()]).unwrap();
         assert_eq!(remaining, vec!["RL".to_string()]);
-        let tag_rows: i64 = conn.query_row("SELECT COUNT(*) FROM TAG", [], |r| r.get(0)).unwrap();
+        let tag_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM TAG", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(tag_rows, 2, "remove unlinks, never deletes the TAG row");
     }
 }

@@ -153,8 +153,14 @@ impl Server {
             let projects = match status {
                 Some(s) => {
                     let st = parse_status(&s)?;
-                    project::get_many(conn, &Projects { status: Some(st), ..Default::default() })
-                        .map_err(core_err)?
+                    project::get_many(
+                        conn,
+                        &Projects {
+                            status: Some(st),
+                            ..Default::default()
+                        },
+                    )
+                    .map_err(core_err)?
                 }
                 None => project::get_many(conn, &Projects::default())
                     .map_err(core_err)?
@@ -173,7 +179,14 @@ impl Server {
     ) -> Result<String, ErrorData> {
         let id = _params.0.project_id;
         self.with_conn(|conn| {
-            match project::get(conn, &Project { project_fk: Some(id) }).map_err(core_err)? {
+            match project::get(
+                conn,
+                &Project {
+                    project_fk: Some(id),
+                },
+            )
+            .map_err(core_err)?
+            {
                 Some(d) => jval(d),
                 None => jval(Value::Null),
             }
@@ -195,7 +208,14 @@ impl Server {
                 source_fks: Vec::new(),
             };
             let fk = project::create(conn, &pin).map_err(core_err)?;
-            match project::get(conn, &Project { project_fk: Some(fk) }).map_err(core_err)? {
+            match project::get(
+                conn,
+                &Project {
+                    project_fk: Some(fk),
+                },
+            )
+            .map_err(core_err)?
+            {
                 Some(d) => jval(d),
                 None => jval(json!({ "id": fk, "name": name })),
             }
@@ -207,11 +227,23 @@ impl Server {
         &self,
         _params: Parameters<UpdateProjectParams>,
     ) -> Result<String, ErrorData> {
-        let UpdateProjectParams { project_id, name, description, color, tags, status } = _params.0;
+        let UpdateProjectParams {
+            project_id,
+            name,
+            description,
+            color,
+            tags,
+            status,
+        } = _params.0;
         self.with_conn(|conn| {
-            if project::get(conn, &Project { project_fk: Some(project_id) })
-                .map_err(core_err)?
-                .is_none()
+            if project::get(
+                conn,
+                &Project {
+                    project_fk: Some(project_id),
+                },
+            )
+            .map_err(core_err)?
+            .is_none()
             {
                 return Err(project_not_found(project_id));
             }
@@ -233,7 +265,14 @@ impl Server {
                 status,
             };
             project::update(conn, &upd).map_err(core_err)?;
-            match project::get(conn, &Project { project_fk: Some(project_id) }).map_err(core_err)? {
+            match project::get(
+                conn,
+                &Project {
+                    project_fk: Some(project_id),
+                },
+            )
+            .map_err(core_err)?
+            {
                 Some(d) => jval(d),
                 None => jval(json!({})),
             }
@@ -247,10 +286,24 @@ impl Server {
     ) -> Result<String, ErrorData> {
         let id = _params.0.project_id;
         self.with_conn(|conn| {
-            if project::get(conn, &Project { project_fk: Some(id) }).map_err(core_err)?.is_none() {
+            if project::get(
+                conn,
+                &Project {
+                    project_fk: Some(id),
+                },
+            )
+            .map_err(core_err)?
+            .is_none()
+            {
                 return Err(project_not_found(id));
             }
-            project::delete(conn, &Project { project_fk: Some(id) }).map_err(core_err)?;
+            project::delete(
+                conn,
+                &Project {
+                    project_fk: Some(id),
+                },
+            )
+            .map_err(core_err)?;
             jval(json!({ "deleted": id }))
         })
     }
@@ -260,7 +313,10 @@ impl Server {
         &self,
         _params: Parameters<ProjectPaperParams>,
     ) -> Result<String, ErrorData> {
-        let ProjectPaperParams { project_id, paper_id } = _params.0;
+        let ProjectPaperParams {
+            project_id,
+            paper_id,
+        } = _params.0;
         self.with_conn(|conn| {
             let failed = match project::add_papers(conn, project_id, &[paper_id.clone()]) {
                 Ok(f) => f,
@@ -273,11 +329,16 @@ impl Server {
                     None,
                 ));
             }
-            let count = project::get(conn, &Project { project_fk: Some(project_id) })
-                .map_err(core_err)?
-                .ok_or_else(|| project_not_found(project_id))?
-                .source_fks
-                .len();
+            let count = project::get(
+                conn,
+                &Project {
+                    project_fk: Some(project_id),
+                },
+            )
+            .map_err(core_err)?
+            .ok_or_else(|| project_not_found(project_id))?
+            .source_fks
+            .len();
             jval(json!({ "project_id": project_id, "paper_id": paper_id, "paper_count": count }))
         })
     }
@@ -287,7 +348,10 @@ impl Server {
         &self,
         _params: Parameters<ProjectPaperParams>,
     ) -> Result<String, ErrorData> {
-        let ProjectPaperParams { project_id, paper_id } = _params.0;
+        let ProjectPaperParams {
+            project_id,
+            paper_id,
+        } = _params.0;
         self.with_conn(|conn| {
             let failed = match project::remove_papers(conn, project_id, &[paper_id.clone()]) {
                 Ok(f) => f,
@@ -300,11 +364,16 @@ impl Server {
                     None,
                 ));
             }
-            let count = project::get(conn, &Project { project_fk: Some(project_id) })
-                .map_err(core_err)?
-                .ok_or_else(|| project_not_found(project_id))?
-                .source_fks
-                .len();
+            let count = project::get(
+                conn,
+                &Project {
+                    project_fk: Some(project_id),
+                },
+            )
+            .map_err(core_err)?
+            .ok_or_else(|| project_not_found(project_id))?
+            .source_fks
+            .len();
             jval(json!({ "project_id": project_id, "paper_id": paper_id, "paper_count": count }))
         })
     }
@@ -316,10 +385,24 @@ impl Server {
     ) -> Result<String, ErrorData> {
         let id = _params.0.project_id;
         self.with_conn(|conn| {
-            if project::get(conn, &Project { project_fk: Some(id) }).map_err(core_err)?.is_none() {
+            if project::get(
+                conn,
+                &Project {
+                    project_fk: Some(id),
+                },
+            )
+            .map_err(core_err)?
+            .is_none()
+            {
                 return Err(project_not_found(id));
             }
-            project::archive(conn, &Project { project_fk: Some(id) }).map_err(core_err)?;
+            project::archive(
+                conn,
+                &Project {
+                    project_fk: Some(id),
+                },
+            )
+            .map_err(core_err)?;
             jval(json!({ "archived_project_id": id }))
         })
     }
@@ -331,10 +414,24 @@ impl Server {
     ) -> Result<String, ErrorData> {
         let id = _params.0.project_id;
         self.with_conn(|conn| {
-            if project::get(conn, &Project { project_fk: Some(id) }).map_err(core_err)?.is_none() {
+            if project::get(
+                conn,
+                &Project {
+                    project_fk: Some(id),
+                },
+            )
+            .map_err(core_err)?
+            .is_none()
+            {
                 return Err(project_not_found(id));
             }
-            project::restore(conn, &Project { project_fk: Some(id) }).map_err(core_err)?;
+            project::restore(
+                conn,
+                &Project {
+                    project_fk: Some(id),
+                },
+            )
+            .map_err(core_err)?;
             jval(json!({ "restored_project_id": id }))
         })
     }
@@ -346,10 +443,24 @@ impl Server {
     ) -> Result<String, ErrorData> {
         let id = _params.0.project_id;
         self.with_conn(|conn| {
-            if project::get(conn, &Project { project_fk: Some(id) }).map_err(core_err)?.is_none() {
+            if project::get(
+                conn,
+                &Project {
+                    project_fk: Some(id),
+                },
+            )
+            .map_err(core_err)?
+            .is_none()
+            {
                 return Err(project_not_found(id));
             }
-            project::hard_delete(conn, &Project { project_fk: Some(id) }).map_err(core_err)?;
+            project::hard_delete(
+                conn,
+                &Project {
+                    project_fk: Some(id),
+                },
+            )
+            .map_err(core_err)?;
             jval(json!({ "hard_deleted_project_id": id }))
         })
     }
@@ -361,9 +472,14 @@ impl Server {
     ) -> Result<String, ErrorData> {
         let ProjectTagsParams { project_id, tags } = _params.0;
         self.with_conn(|conn| {
-            if project::get(conn, &Project { project_fk: Some(project_id) })
-                .map_err(core_err)?
-                .is_none()
+            if project::get(
+                conn,
+                &Project {
+                    project_fk: Some(project_id),
+                },
+            )
+            .map_err(core_err)?
+            .is_none()
             {
                 return Err(project_not_found(project_id));
             }
@@ -379,9 +495,14 @@ impl Server {
     ) -> Result<String, ErrorData> {
         let ProjectTagsParams { project_id, tags } = _params.0;
         self.with_conn(|conn| {
-            if project::get(conn, &Project { project_fk: Some(project_id) })
-                .map_err(core_err)?
-                .is_none()
+            if project::get(
+                conn,
+                &Project {
+                    project_fk: Some(project_id),
+                },
+            )
+            .map_err(core_err)?
+            .is_none()
             {
                 return Err(project_not_found(project_id));
             }
@@ -397,7 +518,14 @@ impl Server {
     ) -> Result<String, ErrorData> {
         let id = _params.0.project_id;
         self.with_conn(|conn| {
-            match project::get(conn, &Project { project_fk: Some(id) }).map_err(core_err)? {
+            match project::get(
+                conn,
+                &Project {
+                    project_fk: Some(id),
+                },
+            )
+            .map_err(core_err)?
+            {
                 Some(d) => jval(json!({ "project_id": id, "tags": d.project_tags })),
                 None => Err(project_not_found(id)),
             }
@@ -417,10 +545,16 @@ impl Server {
         let paper_id = _params.0.paper_id;
         self.with_conn(|conn| {
             // Python `get_paper_tags` returns [] for an absent paper (no error).
-            let tags = paper::get(conn, &Paper { source_id: Some(paper_id.clone()), ..Default::default() })
-                .map_err(core_err)?
-                .map(|p| p.tags)
-                .unwrap_or_default();
+            let tags = paper::get(
+                conn,
+                &Paper {
+                    source_id: Some(paper_id.clone()),
+                    ..Default::default()
+                },
+            )
+            .map_err(core_err)?
+            .map(|p| p.tags)
+            .unwrap_or_default();
             jval(json!({ "paper_id": paper_id, "tags": tags }))
         })
     }
@@ -432,9 +566,15 @@ impl Server {
     ) -> Result<String, ErrorData> {
         let PaperTagsParams { paper_id, tags } = _params.0;
         self.with_conn(|conn| {
-            if paper::get(conn, &Paper { source_id: Some(paper_id.clone()), ..Default::default() })
-                .map_err(core_err)?
-                .is_none()
+            if paper::get(
+                conn,
+                &Paper {
+                    source_id: Some(paper_id.clone()),
+                    ..Default::default()
+                },
+            )
+            .map_err(core_err)?
+            .is_none()
             {
                 return Err(ErrorData::invalid_params(
                     format!("Paper {paper_id:?} not found in database."),
@@ -453,9 +593,15 @@ impl Server {
     ) -> Result<String, ErrorData> {
         let PaperTagsParams { paper_id, tags } = _params.0;
         self.with_conn(|conn| {
-            if paper::get(conn, &Paper { source_id: Some(paper_id.clone()), ..Default::default() })
-                .map_err(core_err)?
-                .is_none()
+            if paper::get(
+                conn,
+                &Paper {
+                    source_id: Some(paper_id.clone()),
+                    ..Default::default()
+                },
+            )
+            .map_err(core_err)?
+            .is_none()
             {
                 return Err(ErrorData::invalid_params(
                     format!("Paper {paper_id:?} not found in database."),
@@ -474,7 +620,13 @@ impl Server {
     ) -> Result<String, ErrorData> {
         let label = _params.0.label;
         self.with_conn(|conn| {
-            let tag_id = tag::upsert(conn, &TagIn { label: label.clone() }).map_err(core_err)?;
+            let tag_id = tag::upsert(
+                conn,
+                &TagIn {
+                    label: label.clone(),
+                },
+            )
+            .map_err(core_err)?;
             if tag_id < 0 {
                 return Err(ErrorData::internal_error(
                     format!("Failed to create or locate tag {label:?}."),
@@ -492,13 +644,29 @@ impl Server {
     ) -> Result<String, ErrorData> {
         let tag_id = _params.0.tag_id;
         self.with_conn(|conn| {
-            if tag::get(conn, &Tag { tag_id: Some(tag_id), ..Default::default() })
-                .map_err(core_err)?
-                .is_none()
+            if tag::get(
+                conn,
+                &Tag {
+                    tag_id: Some(tag_id),
+                    ..Default::default()
+                },
+            )
+            .map_err(core_err)?
+            .is_none()
             {
-                return Err(ErrorData::invalid_params(format!("Tag {tag_id} not found."), None));
+                return Err(ErrorData::invalid_params(
+                    format!("Tag {tag_id} not found."),
+                    None,
+                ));
             }
-            tag::delete(conn, &Tag { tag_id: Some(tag_id), ..Default::default() }).map_err(core_err)?;
+            tag::delete(
+                conn,
+                &Tag {
+                    tag_id: Some(tag_id),
+                    ..Default::default()
+                },
+            )
+            .map_err(core_err)?;
             jval(json!({ "deleted": tag_id }))
         })
     }

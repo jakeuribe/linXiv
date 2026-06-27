@@ -50,8 +50,15 @@ pub fn augmented_graph_data(conn: &Connection, exclude_single_authors: bool) -> 
     let (paper_nodes, author_nodes, mut edges) = graph_data(conn, exclude_single_authors)?;
 
     // paper SOURCE_FK -> sorted active project ids.
-    let active = project::get_many(conn, &Projects { project_fks: None, status: Some(Status::Active) })?;
-    let mut paper_to_projects: std::collections::HashMap<i64, Vec<i64>> = std::collections::HashMap::new();
+    let active = project::get_many(
+        conn,
+        &Projects {
+            project_fks: None,
+            status: Some(Status::Active),
+        },
+    )?;
+    let mut paper_to_projects: std::collections::HashMap<i64, Vec<i64>> =
+        std::collections::HashMap::new();
     for proj in &active {
         if let Some(pid) = proj.id {
             for &sfk in &proj.source_fks {
@@ -61,8 +68,10 @@ pub fn augmented_graph_data(conn: &Connection, exclude_single_authors: bool) -> 
     }
 
     // tag_node_id -> display label; insertion guards dedup edges.
-    let mut tag_labels: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
-    let mut seen_tag_edges: std::collections::HashSet<(i64, String)> = std::collections::HashSet::new();
+    let mut tag_labels: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    let mut seen_tag_edges: std::collections::HashSet<(i64, String)> =
+        std::collections::HashSet::new();
     let mut tag_edges: Vec<Value> = Vec::new();
     let mut out_nodes: Vec<Value> = Vec::with_capacity(paper_nodes.len() + author_nodes.len());
 
@@ -78,7 +87,9 @@ pub fn augmented_graph_data(conn: &Connection, exclude_single_authors: bool) -> 
                 continue;
             }
             let tag_node_id = format!("tag::{}", tag.to_lowercase());
-            tag_labels.entry(tag_node_id.clone()).or_insert_with(|| tag.to_string());
+            tag_labels
+                .entry(tag_node_id.clone())
+                .or_insert_with(|| tag.to_string());
             if seen_tag_edges.insert((id, tag_node_id.clone())) {
                 tag_edges.push(json!({ "source": id, "target": tag_node_id }));
             }
@@ -189,7 +200,13 @@ fn graph_data(
 /// `project_filter_options` — active project chips, sorted by id. Returns the list
 /// (the route wraps it in `{projects: …}`).
 pub fn project_filter_options(conn: &Connection) -> Result<Vec<Value>> {
-    let mut active = project::get_many(conn, &Projects { project_fks: None, status: Some(Status::Active) })?;
+    let mut active = project::get_many(
+        conn,
+        &Projects {
+            project_fks: None,
+            status: Some(Status::Active),
+        },
+    )?;
     active.retain(|p| p.id.is_some());
     active.sort_by_key(|p| p.id.unwrap());
     Ok(active
@@ -211,9 +228,17 @@ mod tests {
     use crate::storage::{self, db};
 
     fn seed_paper(conn: &Connection, source_id: &str, authors_json: &str, tags_json: &str) -> i64 {
-        conn.execute("INSERT INTO PAPER_ROOTS (SOURCE_ID) VALUES (?1)", [source_id]).unwrap();
+        conn.execute(
+            "INSERT INTO PAPER_ROOTS (SOURCE_ID) VALUES (?1)",
+            [source_id],
+        )
+        .unwrap();
         let sfk: i64 = conn
-            .query_row("SELECT SOURCE_FK FROM PAPER_ROOTS WHERE SOURCE_ID = ?1", [source_id], |r| r.get(0))
+            .query_row(
+                "SELECT SOURCE_FK FROM PAPER_ROOTS WHERE SOURCE_ID = ?1",
+                [source_id],
+                |r| r.get(0),
+            )
             .unwrap();
         conn.execute(
             "INSERT INTO PAPER (SOURCE_ID, VERSION, TITLE, CATEGORY, HAS_PDF, SOURCE_FK) \
@@ -235,7 +260,12 @@ mod tests {
     fn augmented_graph_has_paper_author_tag_nodes_and_edges() {
         let conn = db::open_in_memory().unwrap();
         storage::init_db(&conn).unwrap();
-        let sfk = seed_paper(&conn, "arxiv:2204.1", r#"["Ada Lovelace","Alan Turing"]"#, r#"["ML","nlp"]"#);
+        let sfk = seed_paper(
+            &conn,
+            "arxiv:2204.1",
+            r#"["Ada Lovelace","Alan Turing"]"#,
+            r#"["ML","nlp"]"#,
+        );
 
         let g = augmented_graph_data(&conn, false).unwrap();
         let nodes = g["nodes"].as_array().unwrap();
@@ -252,17 +282,24 @@ mod tests {
         assert_eq!(paper["has_pdf"], json!(true));
 
         // author edge keys author::<name>; one author + one tag edge per paper.
-        assert!(edges.iter().any(|e| e["source"] == json!(sfk) && e["target"] == json!("author::Ada Lovelace")));
+        assert!(edges
+            .iter()
+            .any(|e| e["source"] == json!(sfk) && e["target"] == json!("author::Ada Lovelace")));
         assert!(edges.iter().any(|e| e["target"] == json!("tag::ml")));
         // tag node id is lowercased, label preserved.
-        assert!(nodes.iter().any(|n| n["id"] == json!("tag::ml") && n["label"] == json!("ML")));
+        assert!(nodes
+            .iter()
+            .any(|n| n["id"] == json!("tag::ml") && n["label"] == json!("ML")));
     }
 
     #[test]
     fn empty_db_is_empty_graph_and_options() {
         let conn = db::open_in_memory().unwrap();
         storage::init_db(&conn).unwrap();
-        assert_eq!(augmented_graph_data(&conn, false).unwrap(), json!({ "nodes": [], "edges": [] }));
+        assert_eq!(
+            augmented_graph_data(&conn, false).unwrap(),
+            json!({ "nodes": [], "edges": [] })
+        );
         assert_eq!(project_filter_options(&conn).unwrap(), Vec::<Value>::new());
     }
 }

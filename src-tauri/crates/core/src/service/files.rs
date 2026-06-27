@@ -22,7 +22,13 @@ const UNSAFE_FNAME_CHARS: &[char] = &['/', '\\', ':', '*', '?', '"', '<', '>', '
 fn safe_name(paper_id: &str) -> String {
     paper_id
         .chars()
-        .map(|c| if UNSAFE_FNAME_CHARS.contains(&c) { '_' } else { c })
+        .map(|c| {
+            if UNSAFE_FNAME_CHARS.contains(&c) {
+                '_'
+            } else {
+                c
+            }
+        })
         .collect()
 }
 
@@ -199,7 +205,10 @@ mod tests {
         assert!(!inside.exists());
 
         // A missing file *inside* the managed dir is an idempotent success.
-        assert!(delete_pdf(&pdf_dir, pdf_dir.join("gone.pdf").to_str().unwrap()));
+        assert!(delete_pdf(
+            &pdf_dir,
+            pdf_dir.join("gone.pdf").to_str().unwrap()
+        ));
 
         // A file OUTSIDE the managed dir is refused and left intact.
         let outside = write_pdf(dir.path(), "secret.pdf", 4);
@@ -247,11 +256,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let pdf_dir = dir.path();
         let url = format!("{}/evil.pdf", server.uri());
-        let err = download_pdf(pdf_dir, "2204.00002", 1, &url).await.unwrap_err();
+        let err = download_pdf(pdf_dir, "2204.00002", 1, &url)
+            .await
+            .unwrap_err();
         assert!(
             matches!(err, crate::error::CoreError::Validation(ref m) if m.contains("disallowed")),
             "loopback host must be refused by the SSRF guard, got {err}"
         );
-        assert!(!pdf_dir.join("2204.00002v1.pdf").exists(), "no file on a refused download");
+        assert!(
+            !pdf_dir.join("2204.00002v1.pdf").exists(),
+            "no file on a refused download"
+        );
     }
 }

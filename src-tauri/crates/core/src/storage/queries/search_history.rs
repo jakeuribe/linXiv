@@ -66,7 +66,9 @@ mod tests {
     fn blank_term_and_prefix_are_noops() {
         let c = conn();
         add_term(&c, "   ", 200).unwrap();
-        let cnt: i64 = c.query_row("SELECT COUNT(*) FROM SEARCH_HISTORY", [], |r| r.get(0)).unwrap();
+        let cnt: i64 = c
+            .query_row("SELECT COUNT(*) FROM SEARCH_HISTORY", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(cnt, 0);
         assert_eq!(get_suggestions(&c, "  ", 10).unwrap(), Vec::<String>::new());
     }
@@ -80,11 +82,19 @@ mod tests {
         add_term(&c, "quantum", 200).unwrap();
 
         let s = get_suggestions(&c, "man", 10).unwrap();
-        assert_eq!(s, vec!["manifold hypothesis".to_string(), "Manifold learning".to_string()]);
+        assert_eq!(
+            s,
+            vec![
+                "manifold hypothesis".to_string(),
+                "Manifold learning".to_string()
+            ]
+        );
         // case-insensitive prefix
         assert_eq!(get_suggestions(&c, "MAN", 10).unwrap().len(), 2);
         // exact, case-sensitive dedup: the two distinct-case "manifold ..." stay distinct rows
-        let total: i64 = c.query_row("SELECT COUNT(*) FROM SEARCH_HISTORY", [], |r| r.get(0)).unwrap();
+        let total: i64 = c
+            .query_row("SELECT COUNT(*) FROM SEARCH_HISTORY", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(total, 3);
     }
 
@@ -94,7 +104,9 @@ mod tests {
         for t in ["a", "b", "c"] {
             add_term(&c, t, 2).unwrap(); // cap 2 → oldest pruned each insert
         }
-        let cnt: i64 = c.query_row("SELECT COUNT(*) FROM SEARCH_HISTORY", [], |r| r.get(0)).unwrap();
+        let cnt: i64 = c
+            .query_row("SELECT COUNT(*) FROM SEARCH_HISTORY", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(cnt, 2);
     }
 }

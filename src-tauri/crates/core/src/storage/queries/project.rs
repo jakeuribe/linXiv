@@ -41,7 +41,9 @@ fn status_from_sql(s: &str) -> Result<Status> {
         "active" => Ok(Status::Active),
         "archived" => Ok(Status::Archived),
         "deleted" => Ok(Status::Deleted),
-        other => Err(CoreError::Internal(format!("unknown project status {other:?}"))),
+        other => Err(CoreError::Internal(format!(
+            "unknown project status {other:?}"
+        ))),
     }
 }
 
@@ -78,7 +80,11 @@ fn to_model(raw: RawProject) -> Result<ProjectDetails> {
         status: status_from_sql(&raw.status)?,
         created_at: Some(timestamp_from_sql(&raw.created_at)?),
         updated_at: Some(timestamp_from_sql(&raw.updated_at)?),
-        archived_at: raw.archived_at.as_deref().map(timestamp_from_sql).transpose()?,
+        archived_at: raw
+            .archived_at
+            .as_deref()
+            .map(timestamp_from_sql)
+            .transpose()?,
     })
 }
 
@@ -101,7 +107,11 @@ fn load_source_fks(conn: &Connection, project_fk: i64) -> Result<Vec<i64>> {
 /// Python (default true): when false, `source_fks` stays empty and the caller
 /// fills counts via the bulk loader (port of `list_project_source_ids_bulk` in
 /// storage/config/queries.py, deferred to the service phase).
-pub fn get_project(conn: &Connection, project_id: i64, load_sources: bool) -> Result<Option<ProjectDetails>> {
+pub fn get_project(
+    conn: &Connection,
+    project_id: i64,
+    load_sources: bool,
+) -> Result<Option<ProjectDetails>> {
     let raw = conn
         .query_row(
             &format!("SELECT {SELECT_COLS} WHERE PROJECT_FK = ?"),
@@ -126,12 +136,19 @@ pub fn get_project(conn: &Connection, project_id: i64, load_sources: bool) -> Re
 /// query — the list/graph paths pass false and fill counts via the bulk loader
 /// (port of `list_project_source_ids_bulk`, deferred to the service phase), which
 /// avoids the N+1.
-pub fn list_projects(conn: &Connection, condition: Option<Q>, load_sources: bool) -> Result<Vec<ProjectDetails>> {
+pub fn list_projects(
+    conn: &Connection,
+    condition: Option<Q>,
+    load_sources: bool,
+) -> Result<Vec<ProjectDetails>> {
     let sql = match &condition {
         None => format!("SELECT {SELECT_COLS}"),
         Some(q) => format!("SELECT {SELECT_COLS} WHERE {}", q.sql),
     };
-    let params = condition.as_ref().map(|q| q.params_slice()).unwrap_or_default();
+    let params = condition
+        .as_ref()
+        .map(|q| q.params_slice())
+        .unwrap_or_default();
 
     let mut stmt = conn.prepare(&sql)?;
     let raws = stmt
@@ -190,7 +207,15 @@ pub fn update_project_fields(
     let n = conn.execute(
         "UPDATE PROJECT SET NAME = ?1, DESCRIPTION = ?2, COLOR = ?3, STATUS = ?4, \
          UPDATED_AT = ?5, ARCHIVED_AT = ?6 WHERE PROJECT_FK = ?7",
-        params![name, description, color, status_to_sql(status), now, archived_at.map(timestamp_to_sql), project_fk],
+        params![
+            name,
+            description,
+            color,
+            status_to_sql(status),
+            now,
+            archived_at.map(timestamp_to_sql),
+            project_fk
+        ],
     )?;
     Ok(n > 0)
 }
@@ -202,9 +227,13 @@ pub fn update_project_fields(
 /// service-layer insert+membership composer (Python `save()` on insert) must run
 /// `insert_project` and this in the SAME transaction.
 pub fn save_source_fks(tx: &Transaction, project_fk: i64, source_fks: &[i64]) -> Result<()> {
-    tx.execute("DELETE FROM PROJECT_TO_PAPER WHERE PROJECT_FK = ?1", [project_fk])?;
-    let mut stmt =
-        tx.prepare("INSERT OR IGNORE INTO PROJECT_TO_PAPER (PROJECT_FK, SOURCE_FK) VALUES (?1, ?2)")?;
+    tx.execute(
+        "DELETE FROM PROJECT_TO_PAPER WHERE PROJECT_FK = ?1",
+        [project_fk],
+    )?;
+    let mut stmt = tx.prepare(
+        "INSERT OR IGNORE INTO PROJECT_TO_PAPER (PROJECT_FK, SOURCE_FK) VALUES (?1, ?2)",
+    )?;
     for &sfk in source_fks {
         stmt.execute(params![project_fk, sfk])?;
     }
@@ -214,8 +243,9 @@ pub fn save_source_fks(tx: &Transaction, project_fk: i64, source_fks: &[i64]) ->
 /// Incremental add — INSERT OR IGNORE per row (idx_project_to_paper_unique makes
 /// dupes a no-op). Python `Project.add_papers`.
 pub fn add_papers(conn: &Connection, project_fk: i64, source_fks: &[i64]) -> Result<()> {
-    let mut stmt =
-        conn.prepare("INSERT OR IGNORE INTO PROJECT_TO_PAPER (PROJECT_FK, SOURCE_FK) VALUES (?1, ?2)")?;
+    let mut stmt = conn.prepare(
+        "INSERT OR IGNORE INTO PROJECT_TO_PAPER (PROJECT_FK, SOURCE_FK) VALUES (?1, ?2)",
+    )?;
     for &sfk in source_fks {
         stmt.execute(params![project_fk, sfk])?;
     }
@@ -236,7 +266,11 @@ pub fn remove_papers(conn: &Connection, project_fk: i64, source_fks: &[i64]) -> 
 /// `Project.replace_papers` → `_save_source_fks` inside one transaction.
 pub fn replace_papers(conn: &mut Connection, project_fk: i64, source_fks: &[i64]) -> Result<()> {
     let mut seen = std::collections::HashSet::new();
-    let deduped: Vec<i64> = source_fks.iter().copied().filter(|s| seen.insert(*s)).collect();
+    let deduped: Vec<i64> = source_fks
+        .iter()
+        .copied()
+        .filter(|s| seen.insert(*s))
+        .collect();
     transaction(conn, |tx| save_source_fks(tx, project_fk, &deduped))
 }
 
@@ -255,14 +289,18 @@ pub fn get_paper_project_fks(conn: &Connection, source_fk: i64) -> Result<Vec<i6
 pub fn remove_paper_from_all_projects(conn: &mut Connection, source_fk: i64) -> Result<Vec<i64>> {
     transaction(conn, |tx| {
         let fks: Vec<i64> = {
-            let mut stmt = tx.prepare("SELECT PROJECT_FK FROM PROJECT_TO_PAPER WHERE SOURCE_FK = ?1")?;
+            let mut stmt =
+                tx.prepare("SELECT PROJECT_FK FROM PROJECT_TO_PAPER WHERE SOURCE_FK = ?1")?;
             let v = stmt
                 .query_map([source_fk], |r| r.get::<_, i64>(0))?
                 .collect::<rusqlite::Result<Vec<i64>>>()?;
             v
         };
         if !fks.is_empty() {
-            tx.execute("DELETE FROM PROJECT_TO_PAPER WHERE SOURCE_FK = ?1", [source_fk])?;
+            tx.execute(
+                "DELETE FROM PROJECT_TO_PAPER WHERE SOURCE_FK = ?1",
+                [source_fk],
+            )?;
         }
         Ok(fks)
     })
@@ -273,9 +311,18 @@ pub fn remove_paper_from_all_projects(conn: &mut Connection, source_fk: i64) -> 
 /// leaves orphan TAG rows, per ADR-0009. No-ops cleanly if the project is absent.
 pub fn hard_delete_project(conn: &mut Connection, project_fk: i64) -> Result<()> {
     transaction(conn, |tx| {
-        tx.execute("DELETE FROM PROJECT_TO_PAPER WHERE PROJECT_FK = ?1", [project_fk])?;
-        tx.execute("DELETE FROM PROJECT_TO_TAG WHERE PROJECT_FK = ?1", [project_fk])?;
-        tx.execute("UPDATE NOTE SET PROJECT_FK = NULL WHERE PROJECT_FK = ?1", [project_fk])?;
+        tx.execute(
+            "DELETE FROM PROJECT_TO_PAPER WHERE PROJECT_FK = ?1",
+            [project_fk],
+        )?;
+        tx.execute(
+            "DELETE FROM PROJECT_TO_TAG WHERE PROJECT_FK = ?1",
+            [project_fk],
+        )?;
+        tx.execute(
+            "UPDATE NOTE SET PROJECT_FK = NULL WHERE PROJECT_FK = ?1",
+            [project_fk],
+        )?;
         tx.execute("DELETE FROM PROJECT WHERE PROJECT_FK = ?1", [project_fk])?;
         Ok(())
     })
@@ -307,7 +354,9 @@ mod tests {
         storage::init_db(&conn).unwrap();
         seed(&conn);
 
-        let p = get_project(&conn, 1, true).unwrap().expect("project exists");
+        let p = get_project(&conn, 1, true)
+            .unwrap()
+            .expect("project exists");
         assert_eq!(p.id, Some(1));
         assert_eq!(p.name, "My Proj");
         assert_eq!(p.description, "desc");
@@ -334,8 +383,12 @@ mod tests {
         let lite = list_projects(&conn, None, false).unwrap();
         assert!(lite.iter().all(|p| p.source_fks.is_empty()));
 
-        let active =
-            list_projects(&conn, Some(Q::new("STATUS = ?", "active".to_string())), true).unwrap();
+        let active = list_projects(
+            &conn,
+            Some(Q::new("STATUS = ?", "active".to_string())),
+            true,
+        )
+        .unwrap();
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].id, Some(1));
         assert_eq!(active[0].source_fks, vec![12, 10]);
@@ -358,22 +411,40 @@ mod tests {
         assert_eq!(p.name, "P");
         assert_eq!(p.color, Some(0x00ff00));
         assert_eq!(p.status, Status::Active);
-        assert_eq!(p.created_at, p.updated_at, "insert stamps both timestamps to now");
+        assert_eq!(
+            p.created_at, p.updated_at,
+            "insert stamps both timestamps to now"
+        );
 
         // membership via add/replace.
         add_papers(&conn, id, &[10, 11]).unwrap();
-        assert_eq!(get_project(&conn, id, true).unwrap().unwrap().source_fks, vec![10, 11]);
+        assert_eq!(
+            get_project(&conn, id, true).unwrap().unwrap().source_fks,
+            vec![10, 11]
+        );
         replace_papers(&mut conn, id, &[11, 11, 10]).unwrap(); // dedup, reorder
-        assert_eq!(get_project(&conn, id, true).unwrap().unwrap().source_fks, vec![11, 10]);
+        assert_eq!(
+            get_project(&conn, id, true).unwrap().unwrap().source_fks,
+            vec![11, 10]
+        );
         remove_papers(&conn, id, &[11]).unwrap();
-        assert_eq!(get_project(&conn, id, true).unwrap().unwrap().source_fks, vec![10]);
+        assert_eq!(
+            get_project(&conn, id, true).unwrap().unwrap().source_fks,
+            vec![10]
+        );
 
         // fields-only update must NOT touch membership.
-        assert!(update_project_fields(&conn, id, "P2", "d2", None, Status::Archived, None).unwrap());
+        assert!(
+            update_project_fields(&conn, id, "P2", "d2", None, Status::Archived, None).unwrap()
+        );
         let p = get_project(&conn, id, true).unwrap().unwrap();
         assert_eq!(p.name, "P2");
         assert_eq!(p.status, Status::Archived);
-        assert_eq!(p.source_fks, vec![10], "fields-only update left membership intact");
+        assert_eq!(
+            p.source_fks,
+            vec![10],
+            "fields-only update left membership intact"
+        );
         assert!(!update_project_fields(&conn, 999, "x", "", None, Status::Active, None).unwrap());
 
         // a note + tag link, then hard_delete: project gone, note kept but unscoped.
@@ -394,11 +465,19 @@ mod tests {
         assert!(get_project(&conn, id, true).unwrap().is_none());
         assert!(get_paper_project_fks(&conn, 10).unwrap().is_empty());
         let note_proj: Option<i64> = conn
-            .query_row("SELECT PROJECT_FK FROM NOTE WHERE SOURCE_FK = 10", [], |r| r.get(0))
+            .query_row(
+                "SELECT PROJECT_FK FROM NOTE WHERE SOURCE_FK = 10",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(note_proj, None, "note kept, PROJECT_FK NULLed (ADR-0009)");
         let tag_links: i64 = conn
-            .query_row("SELECT COUNT(*) FROM PROJECT_TO_TAG WHERE PROJECT_FK = ?1", [id], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM PROJECT_TO_TAG WHERE PROJECT_FK = ?1",
+                [id],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(tag_links, 0, "hard_delete removed PROJECT_TO_TAG links");
 
@@ -429,6 +508,8 @@ mod tests {
         // unrelated paper 20 (in project 1) survives.
         assert_eq!(get_paper_project_fks(&conn, 20).unwrap(), vec![1]);
         // empty case: a paper in no project returns [] without error.
-        assert!(remove_paper_from_all_projects(&mut conn, 999).unwrap().is_empty());
+        assert!(remove_paper_from_all_projects(&mut conn, 999)
+            .unwrap()
+            .is_empty());
     }
 }

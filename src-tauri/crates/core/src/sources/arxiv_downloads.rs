@@ -393,7 +393,11 @@ mod tests {
     #[test]
     fn extract_returns_tex_content() {
         let dir = tempfile::tempdir().unwrap();
-        let p = write_tarball(dir.path(), "src.tar.gz", &[("main.tex", "Hello world in TeX.")]);
+        let p = write_tarball(
+            dir.path(),
+            "src.tar.gz",
+            &[("main.tex", "Hello world in TeX.")],
+        );
         assert!(extract_source(&p).contains("Hello world in TeX."));
     }
 

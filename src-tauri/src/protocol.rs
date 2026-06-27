@@ -51,7 +51,10 @@ pub fn handler<R: Runtime>(
     });
 }
 
-async fn serve<R: Runtime>(app: &AppHandle<R>, req: Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
+async fn serve<R: Runtime>(
+    app: &AppHandle<R>,
+    req: Request<Vec<u8>>,
+) -> Response<Cow<'static, [u8]>> {
     let segs: Vec<String> = req
         .uri()
         .path()
@@ -61,7 +64,12 @@ async fn serve<R: Runtime>(app: &AppHandle<R>, req: Request<Vec<u8>>) -> Respons
         .map(pct_decode)
         .collect();
     let query = req.uri().query().unwrap_or("");
-    match segs.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+    match segs
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
         ["pdf"] => serve_local_pdf(app, query),
         ["pdf-proxy"] => serve_proxy(query).await,
         // The graph iframe is plain HTML/JS (no `invoke`), so it fetches its data
@@ -91,12 +99,17 @@ async fn serve_api_json<R: Runtime>(
         Some(q) => format!("{}?{}", req.uri().path(), q),
         None => req.uri().path().to_string(),
     };
-    let api_req = ApiRequest { method: req.method().as_str().to_string(), path, body: None };
+    let api_req = ApiRequest {
+        method: req.method().as_str().to_string(),
+        path,
+        body: None,
+    };
     let state = app.state::<AppState>();
     match route(&state, api_req).await {
         Ok(value) => json_response(StatusCode::OK, &value),
         Err(e) => {
-            let status = StatusCode::from_u16(e.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            let status =
+                StatusCode::from_u16(e.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             json_response(status, &json!({ "detail": e.detail }))
         }
     }
@@ -134,7 +147,11 @@ fn serve_local_pdf<R: Runtime>(app: &AppHandle<R>, query: &str) -> Response<Cow<
     let found = state.with_conn(|conn| {
         svc_paper::get(
             conn,
-            &Paper { source_id: Some(source_id.clone()), version, ..Default::default() },
+            &Paper {
+                source_id: Some(source_id.clone()),
+                version,
+                ..Default::default()
+            },
         )
         .ok()
         .flatten()
@@ -143,7 +160,8 @@ fn serve_local_pdf<R: Runtime>(app: &AppHandle<R>, query: &str) -> Response<Cow<
     let Some((sid, pdf_path, ver)) = found else {
         return empty(StatusCode::NOT_FOUND);
     };
-    match resolve_local_pdf(&pdf_dir, pdf_path.as_deref(), &sid, ver).and_then(|p| std::fs::read(p).ok())
+    match resolve_local_pdf(&pdf_dir, pdf_path.as_deref(), &sid, ver)
+        .and_then(|p| std::fs::read(p).ok())
     {
         Some(bytes) => pdf_response(bytes),
         None => empty(StatusCode::NOT_FOUND),
@@ -216,7 +234,10 @@ mod tests {
         assert_eq!(query_get("version=3", "version").as_deref(), Some("3"));
         // an encoded arXiv url survives intact (its own ?&= are %-escaped)
         let q = "url=https%3A%2F%2Farxiv.org%2Fpdf%2F2204.12985";
-        assert_eq!(query_get(q, "url").as_deref(), Some("https://arxiv.org/pdf/2204.12985"));
+        assert_eq!(
+            query_get(q, "url").as_deref(),
+            Some("https://arxiv.org/pdf/2204.12985")
+        );
         assert_eq!(query_get("a=1&b=2", "b").as_deref(), Some("2"));
         assert_eq!(query_get("a=1", "missing"), None);
     }

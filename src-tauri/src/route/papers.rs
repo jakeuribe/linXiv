@@ -25,7 +25,9 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
         ("GET", ["api", "papers", "sfk", fk, "versions"]) => Some(versions(state, fk)),
         ("GET", ["api", "papers", "sfk", fk]) => Some(by_sfk(state, fk, ctx)),
         ("PUT", ["api", "papers", "sfk", fk]) => Some(repair(state, fk, ctx)),
-        ("DELETE", ["api", "papers", "sfk", fk, "projects"]) => Some(remove_from_projects(state, fk)),
+        ("DELETE", ["api", "papers", "sfk", fk, "projects"]) => {
+            Some(remove_from_projects(state, fk))
+        }
         // `search` must precede the generic `{source_id}` arm (both 3 segments).
         ("GET", ["api", "papers", "search"]) => Some(search(state, ctx)),
         ("GET", ["api", "papers", id]) => Some(get_one(state, id)),
@@ -75,8 +77,9 @@ fn by_sfk(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     let version = match ctx.q("version") {
         None => None,
         Some(v) => {
-            let n: i64 =
-                v.parse().map_err(|_| ApiError::new(422, "version must be an integer >= 1"))?;
+            let n: i64 = v
+                .parse()
+                .map_err(|_| ApiError::new(422, "version must be an integer >= 1"))?;
             if n < 1 {
                 return Err(ApiError::new(422, "version must be an integer >= 1"));
             }
@@ -88,8 +91,11 @@ fn by_sfk(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
             // version branch: resolve source_id first, then the pinned version.
             let source_id = svc_paper::get_source_id(conn, source_fk)?
                 .ok_or_else(|| ApiError::new(404, "Paper not found"))?;
-            let key =
-                Paper { source_id: Some(source_id), version: Some(version), ..Default::default() };
+            let key = Paper {
+                source_id: Some(source_id),
+                version: Some(version),
+                ..Default::default()
+            };
             svc_paper::get(conn, &key)?
                 .ok_or_else(|| ApiError::new(404, format!("Version {version} not stored")))?
         } else {
@@ -169,7 +175,11 @@ fn repair(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
         return Err(ApiError::new(422, "doi must have at least 1 character"));
     }
     let summary = b.summary.trim().to_string();
-    let tags = b.tags.as_ref().map(|ts| dedup_nonblank(ts)).filter(|v| !v.is_empty());
+    let tags = b
+        .tags
+        .as_ref()
+        .map(|ts| dedup_nonblank(ts))
+        .filter(|v| !v.is_empty());
     state.with_conn(|conn| -> Result<Value, ApiError> {
         let paper = svc_paper::get(conn, &sfk_key(source_fk))?
             .ok_or_else(|| ApiError::new(404, "Paper not found"))?;
@@ -241,11 +251,17 @@ fn dedup_nonblank(items: &[String]) -> Vec<String> {
 }
 
 fn sfk_key(source_fk: i64) -> Paper {
-    Paper { source_fk: Some(source_fk), ..Default::default() }
+    Paper {
+        source_fk: Some(source_fk),
+        ..Default::default()
+    }
 }
 
 fn sid_key(source_id: &str) -> Paper {
-    Paper { source_id: Some(source_id.to_string()), ..Default::default() }
+    Paper {
+        source_id: Some(source_id.to_string()),
+        ..Default::default()
+    }
 }
 
 /// Serialize a domain struct == Python `to_dict()`; an encode failure is a 500.
@@ -271,31 +287,48 @@ mod tests {
         path: &str,
         body: Option<Value>,
     ) -> Result<Value, ApiError> {
-        route(st, ApiRequest { method: method.into(), path: path.into(), body }).await
+        route(
+            st,
+            ApiRequest {
+                method: method.into(),
+                path: path.into(),
+                body,
+            },
+        )
+        .await
     }
 
     #[tokio::test]
     async fn list_on_empty_db_wraps_empty_array() {
-        assert_eq!(req(&state(), "GET", "/api/papers", None).await.unwrap(), json!({ "papers": [] }));
+        assert_eq!(
+            req(&state(), "GET", "/api/papers", None).await.unwrap(),
+            json!({ "papers": [] })
+        );
     }
 
     #[tokio::test]
     async fn get_missing_paper_is_404() {
-        let err = req(&state(), "GET", "/api/papers/arxiv:nope", None).await.unwrap_err();
+        let err = req(&state(), "GET", "/api/papers/arxiv:nope", None)
+            .await
+            .unwrap_err();
         assert_eq!(err.status, 404);
         assert_eq!(err.detail, "Paper not found");
     }
 
     #[tokio::test]
     async fn delete_missing_paper_is_404() {
-        let err = req(&state(), "DELETE", "/api/papers/arxiv:nope", None).await.unwrap_err();
+        let err = req(&state(), "DELETE", "/api/papers/arxiv:nope", None)
+            .await
+            .unwrap_err();
         assert_eq!(err.status, 404);
         assert_eq!(err.detail, "Paper not found");
     }
 
     #[tokio::test]
     async fn versions_missing_is_404() {
-        let err = req(&state(), "GET", "/api/papers/sfk/999/versions", None).await.unwrap_err();
+        let err = req(&state(), "GET", "/api/papers/sfk/999/versions", None)
+            .await
+            .unwrap_err();
         assert_eq!(err.status, 404);
         assert_eq!(err.detail, "Paper not found");
     }
@@ -304,40 +337,57 @@ mod tests {
     async fn by_sfk_missing_is_404_both_branches() {
         let st = state();
         assert_eq!(
-            req(&st, "GET", "/api/papers/sfk/999", None).await.unwrap_err().detail,
+            req(&st, "GET", "/api/papers/sfk/999", None)
+                .await
+                .unwrap_err()
+                .detail,
             "Paper not found"
         );
         // version branch: unknown sfk -> "Paper not found" (source_id resolves to None).
         assert_eq!(
-            req(&st, "GET", "/api/papers/sfk/999?version=2", None).await.unwrap_err().detail,
+            req(&st, "GET", "/api/papers/sfk/999?version=2", None)
+                .await
+                .unwrap_err()
+                .detail,
             "Paper not found"
         );
     }
 
     #[tokio::test]
     async fn non_integer_sfk_is_422() {
-        let err = req(&state(), "GET", "/api/papers/sfk/abc/versions", None).await.unwrap_err();
+        let err = req(&state(), "GET", "/api/papers/sfk/abc/versions", None)
+            .await
+            .unwrap_err();
         assert_eq!(err.status, 422);
     }
 
     #[tokio::test]
     async fn search_short_query_is_422() {
-        let err = req(&state(), "GET", "/api/papers/search?q=ab", None).await.unwrap_err();
+        let err = req(&state(), "GET", "/api/papers/search?q=ab", None)
+            .await
+            .unwrap_err();
         assert_eq!(err.status, 422);
-        assert_eq!(err.detail, "Query must contain at least 3 non-whitespace characters");
+        assert_eq!(
+            err.detail,
+            "Query must contain at least 3 non-whitespace characters"
+        );
     }
 
     #[tokio::test]
     async fn search_whitespace_only_query_is_422() {
         // q is trimmed before the length check (matches app.py `q.strip()`).
-        let err = req(&state(), "GET", "/api/papers/search?q=%20%20a%20%20", None).await.unwrap_err();
+        let err = req(&state(), "GET", "/api/papers/search?q=%20%20a%20%20", None)
+            .await
+            .unwrap_err();
         assert_eq!(err.status, 422);
     }
 
     #[tokio::test]
     async fn search_empty_db_wraps_empty_array() {
         assert_eq!(
-            req(&state(), "GET", "/api/papers/search?q=manifold", None).await.unwrap(),
+            req(&state(), "GET", "/api/papers/search?q=manifold", None)
+                .await
+                .unwrap(),
             json!({ "papers": [] })
         );
     }
@@ -345,7 +395,9 @@ mod tests {
     #[tokio::test]
     async fn repair_missing_paper_is_404() {
         let body = json!({"title":"T","authors":["A"],"published":"2024-01-01","summary":"s"});
-        let err = req(&state(), "PUT", "/api/papers/sfk/999", Some(body)).await.unwrap_err();
+        let err = req(&state(), "PUT", "/api/papers/sfk/999", Some(body))
+            .await
+            .unwrap_err();
         assert_eq!(err.status, 404);
         assert_eq!(err.detail, "Paper not found");
     }
@@ -353,7 +405,9 @@ mod tests {
     #[tokio::test]
     async fn repair_bad_date_is_422() {
         let body = json!({"title":"T","authors":["A"],"published":"not-a-date","summary":"s"});
-        let err = req(&state(), "PUT", "/api/papers/sfk/1", Some(body)).await.unwrap_err();
+        let err = req(&state(), "PUT", "/api/papers/sfk/1", Some(body))
+            .await
+            .unwrap_err();
         assert_eq!(err.status, 422);
     }
 
@@ -362,11 +416,29 @@ mod tests {
         let st = state();
         // validators run before the paper lookup, so these 422 even with no paper.
         let blank_title = json!({"title":"   ","authors":["A"],"published":"2024-01-01"});
-        assert_eq!(req(&st, "PUT", "/api/papers/sfk/1", Some(blank_title)).await.unwrap_err().status, 422);
+        assert_eq!(
+            req(&st, "PUT", "/api/papers/sfk/1", Some(blank_title))
+                .await
+                .unwrap_err()
+                .status,
+            422
+        );
         let no_authors = json!({"title":"T","authors":["  ",""],"published":"2024-01-01"});
-        assert_eq!(req(&st, "PUT", "/api/papers/sfk/1", Some(no_authors)).await.unwrap_err().status, 422);
+        assert_eq!(
+            req(&st, "PUT", "/api/papers/sfk/1", Some(no_authors))
+                .await
+                .unwrap_err()
+                .status,
+            422
+        );
         let empty_doi = json!({"title":"T","authors":["A"],"published":"2024-01-01","doi":""});
-        assert_eq!(req(&st, "PUT", "/api/papers/sfk/1", Some(empty_doi)).await.unwrap_err().status, 422);
+        assert_eq!(
+            req(&st, "PUT", "/api/papers/sfk/1", Some(empty_doi))
+                .await
+                .unwrap_err()
+                .status,
+            422
+        );
     }
 
     #[test]
@@ -380,14 +452,28 @@ mod tests {
     #[tokio::test]
     async fn by_sfk_invalid_version_is_422() {
         let st = state();
-        assert_eq!(req(&st, "GET", "/api/papers/sfk/1?version=abc", None).await.unwrap_err().status, 422);
-        assert_eq!(req(&st, "GET", "/api/papers/sfk/1?version=0", None).await.unwrap_err().status, 422);
+        assert_eq!(
+            req(&st, "GET", "/api/papers/sfk/1?version=abc", None)
+                .await
+                .unwrap_err()
+                .status,
+            422
+        );
+        assert_eq!(
+            req(&st, "GET", "/api/papers/sfk/1?version=0", None)
+                .await
+                .unwrap_err()
+                .status,
+            422
+        );
     }
 
     #[tokio::test]
     async fn remove_from_projects_empty_is_ok() {
         assert_eq!(
-            req(&state(), "DELETE", "/api/papers/sfk/999/projects", None).await.unwrap(),
+            req(&state(), "DELETE", "/api/papers/sfk/999/projects", None)
+                .await
+                .unwrap(),
             json!({ "ok": true, "removed_from": [] })
         );
     }

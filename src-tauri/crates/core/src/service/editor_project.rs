@@ -212,11 +212,19 @@ pub fn create_project(
 ) -> Result<CreatedProject> {
     let name = {
         let n = sanitize_line(project_name);
-        if n.is_empty() { "Untitled".to_string() } else { n }
+        if n.is_empty() {
+            "Untitled".to_string()
+        } else {
+            n
+        }
     };
     let main = {
         let m = sanitize_line(main_file);
-        if m.is_empty() { "main.tex".to_string() } else { m }
+        if m.is_empty() {
+            "main.tex".to_string()
+        } else {
+            m
+        }
     };
     // Validate the main file is a safe, contained relative path BEFORE creating the
     // note, so a bad name fails clean rather than orphaning a note with no vault.
@@ -225,7 +233,11 @@ pub fn create_project(
 
     // `(source_id or STANDALONE).strip()` — only "" (not whitespace) is falsy.
     let raw = source_id.unwrap_or("");
-    let source_id = if raw.is_empty() { STANDALONE_SOURCE_ID } else { raw };
+    let source_id = if raw.is_empty() {
+        STANDALONE_SOURCE_ID
+    } else {
+        raw
+    };
     let source_fk = paper::ensure_paper_root(conn, source_id.trim())?;
 
     let note_id = note::create(
@@ -242,11 +254,20 @@ pub fn create_project(
     // Scaffold the vault; on failure roll back the note so no flagged project is left
     // without a vault.
     if let Err(e) = vault::write_file(&vault_root(vault_dir, note_id), &main, DEFAULT_TEX, false) {
-        let _ = note::delete(conn, &Note { note_id: Some(note_id) });
+        let _ = note::delete(
+            conn,
+            &Note {
+                note_id: Some(note_id),
+            },
+        );
         return Err(e);
     }
 
-    Ok(CreatedProject { note_id, project_name: name, main_file: main })
+    Ok(CreatedProject {
+        note_id,
+        project_name: name,
+        main_file: main,
+    })
 }
 
 /// `(note, frontmatter)` for an editor-project note, or `None` if the note is missing
@@ -255,7 +276,12 @@ pub fn get_meta(
     conn: &rusqlite::Connection,
     note_id: i64,
 ) -> Result<Option<(NoteDetails, HashMap<String, String>)>> {
-    let note = match note::get(conn, &Note { note_id: Some(note_id) })? {
+    let note = match note::get(
+        conn,
+        &Note {
+            note_id: Some(note_id),
+        },
+    )? {
         Some(n) => n,
         None => return Ok(None),
     };
@@ -306,7 +332,11 @@ pub fn get_doc(
     ])
     .unwrap_or_else(|| format!("project {note_id}"));
 
-    Ok(Some(DocOpenPayload { main_file: main, files: HashMap::new(), project_name }))
+    Ok(Some(DocOpenPayload {
+        main_file: main,
+        files: HashMap::new(),
+        project_name,
+    }))
 }
 
 #[cfg(test)]
@@ -438,7 +468,9 @@ mod tests {
         // The note is a real editor project, attached to the sentinel root.
         let (note, meta) = get_meta(&conn, created.note_id).unwrap().unwrap();
         assert!(is_editor_project(&meta));
-        let sid = paper::get_source_id(&conn, note.source_fk).unwrap().unwrap();
+        let sid = paper::get_source_id(&conn, note.source_fk)
+            .unwrap()
+            .unwrap();
         assert_eq!(sid, STANDALONE_SOURCE_ID);
 
         // The starter file is really on disk under the note's vault root.
@@ -449,7 +481,9 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&f).unwrap(), DEFAULT_TEX);
 
         // get_doc returns the recorded main file + an empty files map.
-        let doc = get_doc(&conn, vault.path(), created.note_id).unwrap().unwrap();
+        let doc = get_doc(&conn, vault.path(), created.note_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(doc.main_file, "main.tex");
         assert!(doc.files.is_empty());
         assert_eq!(doc.project_name, "My Paper");
@@ -459,8 +493,8 @@ mod tests {
     fn create_rejects_unsafe_main_before_touching_db() {
         let mut conn = db();
         let vault = tempfile::tempdir().unwrap();
-        let err = create_project(&mut conn, vault.path(), "X", "../escape.tex", None, None)
-            .unwrap_err();
+        let err =
+            create_project(&mut conn, vault.path(), "X", "../escape.tex", None, None).unwrap_err();
         // vault::safe_path maps traversal to BadRequest (HTTP 400).
         assert!(matches!(err, CoreError::BadRequest(_)));
         // No note was created (validation happens before any insert).
@@ -485,8 +519,7 @@ mod tests {
     fn get_doc_falls_back_to_present_tex() {
         let mut conn = db();
         let vault = tempfile::tempdir().unwrap();
-        let created =
-            create_project(&mut conn, vault.path(), "P", "main.tex", None, None).unwrap();
+        let created = create_project(&mut conn, vault.path(), "P", "main.tex", None, None).unwrap();
 
         // Simulate an in-editor rename: remove main.tex, drop a different .tex.
         let root = vault.path().join(format!("note_{}", created.note_id));
@@ -494,7 +527,9 @@ mod tests {
         std::fs::write(root.join("zebra.tex"), b"\\documentclass{article}").unwrap();
 
         // Recorded main (main.tex) is gone -> falls back to the present .tex.
-        let doc = get_doc(&conn, vault.path(), created.note_id).unwrap().unwrap();
+        let doc = get_doc(&conn, vault.path(), created.note_id)
+            .unwrap()
+            .unwrap();
         assert_eq!(doc.main_file, "zebra.tex");
     }
 
@@ -503,7 +538,7 @@ mod tests {
         let conn = db();
         seed_notes(&conn);
         assert!(get_meta(&conn, 9999).unwrap().is_none()); // missing
-        // The plain note is not an editor project.
+                                                           // The plain note is not an editor project.
         let plain = note::list_all(&conn)
             .unwrap()
             .into_iter()

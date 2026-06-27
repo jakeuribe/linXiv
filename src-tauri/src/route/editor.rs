@@ -82,7 +82,10 @@ fn doc(state: &AppState, id: &str) -> Result<Value, ApiError> {
 fn vault_fs(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let note_id = path_i64(id)?;
     let op: FsOp = ctx.parse_body()?;
-    if state.with_conn(|conn| editor_project::get_meta(conn, note_id))?.is_none() {
+    if state
+        .with_conn(|conn| editor_project::get_meta(conn, note_id))?
+        .is_none()
+    {
         return Err(ApiError::new(404, "Editor project not found"));
     }
     let vault_root = state.vault_root.join(format!("note_{note_id}"));
@@ -116,7 +119,8 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let p = std::env::temp_dir().join(format!("linxiv_editor_test_{}_{t}_{n}", std::process::id()));
+        let p =
+            std::env::temp_dir().join(format!("linxiv_editor_test_{}_{t}_{n}", std::process::id()));
         std::fs::create_dir_all(&p).unwrap();
         p
     }
@@ -127,14 +131,29 @@ mod tests {
         AppState::from_parts(conn, std::env::temp_dir(), unique_tmp())
     }
 
-    async fn req(st: &AppState, method: &str, path: &str, body: Option<Value>) -> Result<Value, ApiError> {
-        route(st, ApiRequest { method: method.into(), path: path.into(), body }).await
+    async fn req(
+        st: &AppState,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Value, ApiError> {
+        route(
+            st,
+            ApiRequest {
+                method: method.into(),
+                path: path.into(),
+                body,
+            },
+        )
+        .await
     }
 
     #[tokio::test]
     async fn list_on_empty_db_wraps_empty_array() {
         assert_eq!(
-            req(&state(), "GET", "/api/editor/projects", None).await.unwrap(),
+            req(&state(), "GET", "/api/editor/projects", None)
+                .await
+                .unwrap(),
             json!({ "projects": [] })
         );
     }
@@ -142,25 +161,40 @@ mod tests {
     #[tokio::test]
     async fn create_then_doc_roundtrips_over_temp_vault() {
         let st = state();
-        let created = req(&st, "POST", "/api/editor/projects", Some(json!({ "project_name": "My Paper" })))
-            .await
-            .unwrap();
+        let created = req(
+            &st,
+            "POST",
+            "/api/editor/projects",
+            Some(json!({ "project_name": "My Paper" })),
+        )
+        .await
+        .unwrap();
         assert_eq!(created["projectName"], "My Paper");
         assert_eq!(created["mainFile"], "main.tex");
         let note_id = created["noteId"].as_i64().unwrap();
 
-        let doc = req(&st, "GET", &format!("/api/editor/projects/{note_id}/doc"), None)
-            .await
-            .unwrap();
+        let doc = req(
+            &st,
+            "GET",
+            &format!("/api/editor/projects/{note_id}/doc"),
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(doc["mainFile"], "main.tex");
         assert_eq!(doc["projectName"], "My Paper");
     }
 
     #[tokio::test]
     async fn create_empty_name_is_422() {
-        let err = req(&state(), "POST", "/api/editor/projects", Some(json!({ "project_name": "" })))
-            .await
-            .unwrap_err();
+        let err = req(
+            &state(),
+            "POST",
+            "/api/editor/projects",
+            Some(json!({ "project_name": "" })),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(err.status, 422);
     }
 
@@ -198,31 +232,51 @@ mod tests {
     #[tokio::test]
     async fn vault_fs_list_and_mkdir_on_real_project() {
         let st = state();
-        let created = req(&st, "POST", "/api/editor/projects", Some(json!({ "project_name": "P" })))
-            .await
-            .unwrap();
+        let created = req(
+            &st,
+            "POST",
+            "/api/editor/projects",
+            Some(json!({ "project_name": "P" })),
+        )
+        .await
+        .unwrap();
         let note_id = created["noteId"].as_i64().unwrap();
 
         // Fresh vault holds only the scaffolded main.tex.
-        let listed = req(&st, "POST", &format!("/api/editor/vault/{note_id}/fs"), Some(json!({ "kind": "list", "path": "" })))
-            .await
-            .unwrap();
+        let listed = req(
+            &st,
+            "POST",
+            &format!("/api/editor/vault/{note_id}/fs"),
+            Some(json!({ "kind": "list", "path": "" })),
+        )
+        .await
+        .unwrap();
         assert_eq!(listed["kind"], "list");
         assert_eq!(listed["entries"][0]["name"], "main.tex");
 
         // mkdir returns the bare ok result.
-        let made = req(&st, "POST", &format!("/api/editor/vault/{note_id}/fs"), Some(json!({ "kind": "mkdir", "path": "chapters" })))
-            .await
-            .unwrap();
+        let made = req(
+            &st,
+            "POST",
+            &format!("/api/editor/vault/{note_id}/fs"),
+            Some(json!({ "kind": "mkdir", "path": "chapters" })),
+        )
+        .await
+        .unwrap();
         assert_eq!(made, json!({ "kind": "ok" }));
     }
 
     #[tokio::test]
     async fn vault_fs_traversal_is_400() {
         let st = state();
-        let created = req(&st, "POST", "/api/editor/projects", Some(json!({ "project_name": "P" })))
-            .await
-            .unwrap();
+        let created = req(
+            &st,
+            "POST",
+            "/api/editor/projects",
+            Some(json!({ "project_name": "P" })),
+        )
+        .await
+        .unwrap();
         let note_id = created["noteId"].as_i64().unwrap();
         let err = req(
             &st,

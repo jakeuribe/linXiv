@@ -77,10 +77,16 @@ fn sync_tags(conn: &mut Connection, project_id: i64, new_tags: &[String]) -> Res
     let current = tq::get_project_tags(conn, project_id)?;
     let new_lower: HashSet<String> = normalized.iter().map(|t| t.to_lowercase()).collect();
     let cur_lower: HashSet<String> = current.iter().map(|t| t.to_lowercase()).collect();
-    let to_remove: Vec<String> =
-        current.iter().filter(|t| !new_lower.contains(&t.to_lowercase())).cloned().collect();
-    let to_add: Vec<String> =
-        normalized.iter().filter(|t| !cur_lower.contains(&t.to_lowercase())).cloned().collect();
+    let to_remove: Vec<String> = current
+        .iter()
+        .filter(|t| !new_lower.contains(&t.to_lowercase()))
+        .cloned()
+        .collect();
+    let to_add: Vec<String> = normalized
+        .iter()
+        .filter(|t| !cur_lower.contains(&t.to_lowercase()))
+        .cloned()
+        .collect();
     if !to_remove.is_empty() {
         tq::remove_project_tags(conn, project_id, &to_remove)?;
     }
@@ -149,8 +155,14 @@ pub fn create(conn: &mut Connection, project: &ProjectIn) -> Result<i64> {
         return Err(CoreError::Validation("name cannot be blank".into()));
     }
     let id = transaction(conn, |tx| {
-        let id =
-            pq::insert_project(tx, name, &project.description, project.color, Status::Active, None)?;
+        let id = pq::insert_project(
+            tx,
+            name,
+            &project.description,
+            project.color,
+            Status::Active,
+            None,
+        )?;
         pq::save_source_fks(tx, id, &project.source_fks)?;
         Ok(id)
     })?;
@@ -172,10 +184,11 @@ pub fn create(conn: &mut Connection, project: &ProjectIn) -> Result<i64> {
 /// sync and the field UPDATE are separate transactions, so a failure between them leaves
 /// tags changed and fields not.
 pub fn update(conn: &mut Connection, upd: &ProjectUpdateIn) -> Result<()> {
-    let mut p =
-        pq::get_project(conn, upd.project_fk, false)?.ok_or(CoreError::ProjectNotFound)?;
+    let mut p = pq::get_project(conn, upd.project_fk, false)?.ok_or(CoreError::ProjectNotFound)?;
     if p.status == Status::Deleted && upd.status != Some(Status::Active) {
-        return Err(CoreError::ProjectDeleted("cannot update a deleted project".into()));
+        return Err(CoreError::ProjectDeleted(
+            "cannot update a deleted project".into(),
+        ));
     }
     let mut dirty = false;
     if let Some(name) = &upd.name {
@@ -196,9 +209,8 @@ pub fn update(conn: &mut Connection, upd: &ProjectUpdateIn) -> Result<()> {
         dirty = true;
     }
     if let Some(tags) = &upd.project_tags {
-        let id = p
-            .id
-            .ok_or_else(|| CoreError::Internal("Project has no id after fetch".into()))?;
+        let id =
+            p.id.ok_or_else(|| CoreError::Internal("Project has no id after fetch".into()))?;
         // Separate transaction; bumps dirty so UPDATED_AT reflects the tag change.
         sync_tags(conn, id, tags)?;
         dirty = true;
@@ -236,8 +248,17 @@ pub fn update(conn: &mut Connection, upd: &ProjectUpdateIn) -> Result<()> {
 
 /// Fields-only save preserving the loaded status/archived_at (Python `p.save()`).
 fn save_fields(conn: &Connection, p: &ProjectDetails) -> Result<()> {
-    let fk = p.id.ok_or_else(|| CoreError::Internal("Project has no id".into()))?;
-    pq::update_project_fields(conn, fk, &p.name, &p.description, p.color, p.status, p.archived_at)?;
+    let fk =
+        p.id.ok_or_else(|| CoreError::Internal("Project has no id".into()))?;
+    pq::update_project_fields(
+        conn,
+        fk,
+        &p.name,
+        &p.description,
+        p.color,
+        p.status,
+        p.archived_at,
+    )?;
     Ok(())
 }
 
@@ -248,9 +269,9 @@ fn save_fields(conn: &Connection, p: &ProjectDetails) -> Result<()> {
 pub fn ensure_membership_writable(conn: &Connection, project_fk: i64) -> Result<()> {
     match pq::get_project(conn, project_fk, false)? {
         None => Err(CoreError::ProjectNotFound),
-        Some(p) if p.status == Status::Deleted => {
-            Err(CoreError::ProjectDeleted("cannot update a deleted project".into()))
-        }
+        Some(p) if p.status == Status::Deleted => Err(CoreError::ProjectDeleted(
+            "cannot update a deleted project".into(),
+        )),
         Some(_) => Ok(()),
     }
 }
@@ -279,7 +300,11 @@ fn resolve_source_ids(conn: &Connection, source_ids: &[String]) -> Result<(Vec<i
 /// `service/project.py::add_papers` — add by paper id (per-row inserts; never a full
 /// rewrite). Unresolved ids are returned verbatim while the rest are still added.
 /// Raises ProjectNotFound/ProjectDeleted per the membership guards.
-pub fn add_papers(conn: &Connection, project_fk: i64, source_ids: &[String]) -> Result<Vec<String>> {
+pub fn add_papers(
+    conn: &Connection,
+    project_fk: i64,
+    source_ids: &[String],
+) -> Result<Vec<String>> {
     ensure_membership_writable(conn, project_fk)?;
     let (fks, failed) = resolve_source_ids(conn, source_ids)?;
     if !fks.is_empty() {
@@ -289,7 +314,11 @@ pub fn add_papers(conn: &Connection, project_fk: i64, source_ids: &[String]) -> 
 }
 
 /// `service/project.py::remove_papers` — same contract as `add_papers`, per-row deletes.
-pub fn remove_papers(conn: &Connection, project_fk: i64, source_ids: &[String]) -> Result<Vec<String>> {
+pub fn remove_papers(
+    conn: &Connection,
+    project_fk: i64,
+    source_ids: &[String],
+) -> Result<Vec<String>> {
     ensure_membership_writable(conn, project_fk)?;
     let (fks, failed) = resolve_source_ids(conn, source_ids)?;
     if !fks.is_empty() {
@@ -328,7 +357,10 @@ pub fn remove_paper_from_all_projects_by_id(
 ) -> Result<Option<Vec<i64>>> {
     match paperq::get_paper_root(conn, source_id.trim())? {
         None => Ok(None),
-        Some(root) => Ok(Some(pq::remove_paper_from_all_projects(conn, root.source_fk)?)),
+        Some(root) => Ok(Some(pq::remove_paper_from_all_projects(
+            conn,
+            root.source_fk,
+        )?)),
     }
 }
 
@@ -347,7 +379,15 @@ fn set_status(conn: &Connection, project: &Project, target: Status) -> Result<()
         Status::Archived | Status::Deleted => Some(Utc::now().naive_utc()),
         Status::Active => None,
     };
-    pq::update_project_fields(conn, fk, &p.name, &p.description, p.color, target, archived_at)?;
+    pq::update_project_fields(
+        conn,
+        fk,
+        &p.name,
+        &p.description,
+        p.color,
+        target,
+        archived_at,
+    )?;
     Ok(())
 }
 
@@ -402,7 +442,10 @@ pub fn purge_old(conn: &mut Connection, days: i64) -> Result<usize> {
 /// `service/project.py::get_projects` — the legacy `ProjectPage` list (default ACTIVE).
 pub fn get_projects(conn: &Connection, status: Status) -> Result<ProjectPage> {
     let projects = pq::list_projects(conn, Some(Q::new("STATUS = ?", status_sql(status))), true)?;
-    let mut page = ProjectPage { num_projects: projects.len(), ..Default::default() };
+    let mut page = ProjectPage {
+        num_projects: projects.len(),
+        ..Default::default()
+    };
     for p in &projects {
         page.project_names.push(p.name.clone());
         page.project_ids.push(p.id);
@@ -458,7 +501,14 @@ mod tests {
         let mut conn = setup();
         let id = create(&mut conn, &pin("Proj", vec![10, 11], vec!["RL", "Vision"])).unwrap();
 
-        let got = get(&conn, &Project { project_fk: Some(id) }).unwrap().unwrap();
+        let got = get(
+            &conn,
+            &Project {
+                project_fk: Some(id),
+            },
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(got.name, "Proj");
         assert_eq!(got.color, Some(255));
         assert_eq!(got.source_fks, vec![10, 11]);
@@ -480,9 +530,17 @@ mod tests {
         let mut conn = setup();
         // 999 has no PAPER_ROOTS parent → save_source_fks FK-violates mid-transaction.
         let err = create(&mut conn, &pin("Doomed", vec![10, 999], vec![])).unwrap_err();
-        assert!(matches!(err, CoreError::Internal(_)), "FK violation surfaces as Internal");
-        let n: i64 = conn.query_row("SELECT COUNT(*) FROM PROJECT", [], |r| r.get(0)).unwrap();
-        assert_eq!(n, 0, "PROJECT row rolled back with the failed membership write");
+        assert!(
+            matches!(err, CoreError::Internal(_)),
+            "FK violation surfaces as Internal"
+        );
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM PROJECT", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            n, 0,
+            "PROJECT row rolled back with the failed membership write"
+        );
         let m: i64 = conn
             .query_row("SELECT COUNT(*) FROM PROJECT_TO_PAPER", [], |r| r.get(0))
             .unwrap();
@@ -507,7 +565,14 @@ mod tests {
             },
         )
         .unwrap();
-        let got = get(&conn, &Project { project_fk: Some(id) }).unwrap().unwrap();
+        let got = get(
+            &conn,
+            &Project {
+                project_fk: Some(id),
+            },
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(got.name, "P2");
         assert_eq!(got.color, Some(255), "absent color left unchanged");
 
@@ -524,7 +589,18 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(get(&conn, &Project { project_fk: Some(id) }).unwrap().unwrap().color, None);
+        assert_eq!(
+            get(
+                &conn,
+                &Project {
+                    project_fk: Some(id)
+                }
+            )
+            .unwrap()
+            .unwrap()
+            .color,
+            None
+        );
 
         // Some(Some(7)) → set
         update(
@@ -539,7 +615,18 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(get(&conn, &Project { project_fk: Some(id) }).unwrap().unwrap().color, Some(7));
+        assert_eq!(
+            get(
+                &conn,
+                &Project {
+                    project_fk: Some(id)
+                }
+            )
+            .unwrap()
+            .unwrap()
+            .color,
+            Some(7)
+        );
     }
 
     #[test]
@@ -557,19 +644,45 @@ mod tests {
         };
 
         update(&mut conn, &with_status(Status::Archived)).unwrap();
-        let got = get(&conn, &Project { project_fk: Some(id) }).unwrap().unwrap();
+        let got = get(
+            &conn,
+            &Project {
+                project_fk: Some(id),
+            },
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(got.status, Status::Archived);
         assert!(got.archived_at.is_some());
 
         update(&mut conn, &with_status(Status::Active)).unwrap();
-        let got = get(&conn, &Project { project_fk: Some(id) }).unwrap().unwrap();
+        let got = get(
+            &conn,
+            &Project {
+                project_fk: Some(id),
+            },
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(got.status, Status::Active);
         assert!(got.archived_at.is_none(), "restore clears archived_at");
-        assert_eq!(got.source_fks, vec![10], "transition leaves membership intact");
+        assert_eq!(
+            got.source_fks,
+            vec![10],
+            "transition leaves membership intact"
+        );
 
         update(&mut conn, &with_status(Status::Deleted)).unwrap();
         assert_eq!(
-            get(&conn, &Project { project_fk: Some(id) }).unwrap().unwrap().status,
+            get(
+                &conn,
+                &Project {
+                    project_fk: Some(id)
+                }
+            )
+            .unwrap()
+            .unwrap()
+            .status,
             Status::Deleted
         );
 
@@ -592,7 +705,15 @@ mod tests {
         // … but a restore (status=Active) is allowed.
         update(&mut conn, &with_status(Status::Active)).unwrap();
         assert_eq!(
-            get(&conn, &Project { project_fk: Some(id) }).unwrap().unwrap().status,
+            get(
+                &conn,
+                &Project {
+                    project_fk: Some(id)
+                }
+            )
+            .unwrap()
+            .unwrap()
+            .status,
             Status::Active
         );
 
@@ -630,7 +751,14 @@ mod tests {
             },
         )
         .unwrap();
-        let got = get(&conn, &Project { project_fk: Some(id) }).unwrap().unwrap();
+        let got = get(
+            &conn,
+            &Project {
+                project_fk: Some(id),
+            },
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(got.name, "Renamed");
         assert_eq!(got.project_tags, vec!["keep", "new"]); // drop removed, new added
     }
@@ -641,31 +769,69 @@ mod tests {
         let id = create(&mut conn, &pin("P", vec![], vec![])).unwrap();
 
         // unknown id reported, known ones added (dedup of repeats).
-        let failed = add_papers(&conn, id, &["arxiv:1".into(), "arxiv:1".into(), "nope".into()]).unwrap();
+        let failed = add_papers(
+            &conn,
+            id,
+            &["arxiv:1".into(), "arxiv:1".into(), "nope".into()],
+        )
+        .unwrap();
         assert_eq!(failed, vec!["nope"]);
         assert_eq!(
-            get(&conn, &Project { project_fk: Some(id) }).unwrap().unwrap().source_fks,
+            get(
+                &conn,
+                &Project {
+                    project_fk: Some(id)
+                }
+            )
+            .unwrap()
+            .unwrap()
+            .source_fks,
             vec![10]
         );
 
         // trashed paper (arxiv:3) resolves and the row is written, but project reads
         // hide it (active-only membership), so source_fks stays [10].
-        assert!(add_papers(&conn, id, &["arxiv:3".into()]).unwrap().is_empty());
+        assert!(add_papers(&conn, id, &["arxiv:3".into()])
+            .unwrap()
+            .is_empty());
         assert_eq!(
-            get(&conn, &Project { project_fk: Some(id) }).unwrap().unwrap().source_fks,
+            get(
+                &conn,
+                &Project {
+                    project_fk: Some(id)
+                }
+            )
+            .unwrap()
+            .unwrap()
+            .source_fks,
             vec![10]
         );
 
         let failed = remove_papers(&conn, id, &["arxiv:1".into(), "ghost".into()]).unwrap();
         assert_eq!(failed, vec!["ghost"]);
-        assert!(get(&conn, &Project { project_fk: Some(id) }).unwrap().unwrap().source_fks.is_empty());
+        assert!(get(
+            &conn,
+            &Project {
+                project_fk: Some(id)
+            }
+        )
+        .unwrap()
+        .unwrap()
+        .source_fks
+        .is_empty());
     }
 
     #[test]
     fn membership_guards() {
         let mut conn = setup();
         let id = create(&mut conn, &pin("P", vec![], vec![])).unwrap();
-        delete(&conn, &Project { project_fk: Some(id) }).unwrap();
+        delete(
+            &conn,
+            &Project {
+                project_fk: Some(id),
+            },
+        )
+        .unwrap();
         assert!(matches!(
             add_papers(&conn, id, &["arxiv:1".into()]).unwrap_err(),
             CoreError::ProjectDeleted(_)
@@ -683,7 +849,15 @@ mod tests {
         // unresolved id does not error (logged, not returned).
         link_imported(&conn, id, &["arxiv:1".into(), "missing".into()]).unwrap();
         assert_eq!(
-            get(&conn, &Project { project_fk: Some(id) }).unwrap().unwrap().source_fks,
+            get(
+                &conn,
+                &Project {
+                    project_fk: Some(id)
+                }
+            )
+            .unwrap()
+            .unwrap()
+            .source_fks,
             vec![10]
         );
     }
@@ -693,10 +867,14 @@ mod tests {
         let mut conn = setup();
         let a = create(&mut conn, &pin("A", vec![10], vec![])).unwrap();
         let b = create(&mut conn, &pin("B", vec![10], vec![])).unwrap();
-        let mut fks = remove_paper_from_all_projects_by_id(&mut conn, " arxiv:1 ").unwrap().unwrap();
+        let mut fks = remove_paper_from_all_projects_by_id(&mut conn, " arxiv:1 ")
+            .unwrap()
+            .unwrap();
         fks.sort();
         assert_eq!(fks, vec![a, b]);
-        assert!(remove_paper_from_all_projects_by_id(&mut conn, "unknown").unwrap().is_none());
+        assert!(remove_paper_from_all_projects_by_id(&mut conn, "unknown")
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -704,8 +882,20 @@ mod tests {
         let mut conn = setup();
         let p1 = create(&mut conn, &pin("Old", vec![], vec![])).unwrap();
         let p2 = create(&mut conn, &pin("New", vec![], vec![])).unwrap();
-        delete(&conn, &Project { project_fk: Some(p1) }).unwrap();
-        delete(&conn, &Project { project_fk: Some(p2) }).unwrap();
+        delete(
+            &conn,
+            &Project {
+                project_fk: Some(p1),
+            },
+        )
+        .unwrap();
+        delete(
+            &conn,
+            &Project {
+                project_fk: Some(p2),
+            },
+        )
+        .unwrap();
         // Backdate p1's trash time so it is "old" and sorts last.
         conn.execute(
             "UPDATE PROJECT SET ARCHIVED_AT = '2000-01-01T00:00:00' WHERE PROJECT_FK = ?1",
@@ -720,8 +910,22 @@ mod tests {
 
         // purge_old removes only the backdated one.
         assert_eq!(purge_old(&mut conn, 30).unwrap(), 1);
-        assert!(get(&conn, &Project { project_fk: Some(p1) }).unwrap().is_none());
-        assert!(get(&conn, &Project { project_fk: Some(p2) }).unwrap().is_some());
+        assert!(get(
+            &conn,
+            &Project {
+                project_fk: Some(p1)
+            }
+        )
+        .unwrap()
+        .is_none());
+        assert!(get(
+            &conn,
+            &Project {
+                project_fk: Some(p2)
+            }
+        )
+        .unwrap()
+        .is_some());
     }
 
     #[test]
@@ -729,7 +933,13 @@ mod tests {
         let mut conn = setup();
         let a = create(&mut conn, &pin("Active", vec![10, 11], vec!["t"])).unwrap();
         let b = create(&mut conn, &pin("Arch", vec![], vec![])).unwrap();
-        archive(&conn, &Project { project_fk: Some(b) }).unwrap();
+        archive(
+            &conn,
+            &Project {
+                project_fk: Some(b),
+            },
+        )
+        .unwrap();
         // a note on project a to exercise note_counts.
         conn.execute(
             "INSERT INTO NOTE (SOURCE_FK, PROJECT_FK, TITLE, NOTE, CREATED_AT, UPDATED_AT) \
@@ -739,13 +949,27 @@ mod tests {
         .unwrap();
 
         // filter by status.
-        let actives = get_many(&conn, &Projects { status: Some(Status::Active), ..Default::default() }).unwrap();
+        let actives = get_many(
+            &conn,
+            &Projects {
+                status: Some(Status::Active),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(actives.len(), 1);
         assert_eq!(actives[0].id, Some(a));
         assert_eq!(actives[0].project_tags, vec!["t"]);
 
         // filter by explicit ids (both statuses).
-        let by_ids = get_many(&conn, &Projects { project_fks: Some(vec![a, b]), status: None }).unwrap();
+        let by_ids = get_many(
+            &conn,
+            &Projects {
+                project_fks: Some(vec![a, b]),
+                status: None,
+            },
+        )
+        .unwrap();
         assert_eq!(by_ids.len(), 2);
 
         let page = get_projects(&conn, Status::Active).unwrap();

@@ -40,7 +40,10 @@ pub async fn run(cmd: AuthorCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         AuthorCmd::Get { author_id } => {
             let author = match svc_author::get(
                 &ctx.conn,
-                &Author { author_id: Some(author_id), ..Default::default() },
+                &Author {
+                    author_id: Some(author_id),
+                    ..Default::default()
+                },
             )? {
                 Some(a) => a,
                 None => fail(format!("Author {author_id} not found")),
@@ -51,16 +54,26 @@ pub async fn run(cmd: AuthorCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             output(&result);
         }
         // cmd_author_update: 404 first, then require at least one field, then partial update.
-        AuthorCmd::Update { author_id, full_name, first_name, last_name, orcid } => {
+        AuthorCmd::Update {
+            author_id,
+            full_name,
+            first_name,
+            last_name,
+            orcid,
+        } => {
             if svc_author::get(
                 &ctx.conn,
-                &Author { author_id: Some(author_id), ..Default::default() },
+                &Author {
+                    author_id: Some(author_id),
+                    ..Default::default()
+                },
             )?
             .is_none()
             {
                 fail(format!("Author {author_id} not found"));
             }
-            if full_name.is_none() && first_name.is_none() && last_name.is_none() && orcid.is_none() {
+            if full_name.is_none() && first_name.is_none() && last_name.is_none() && orcid.is_none()
+            {
                 fail("at least one of --full-name, --first-name, --last-name, or --orcid must be provided");
             }
             svc_author::update_fields(
@@ -81,7 +94,13 @@ pub async fn run(cmd: AuthorCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                     "Author {author_id} is linked to {link_count} paper(s); unlink first"
                 ));
             }
-            svc_author::delete(&ctx.conn, &Author { author_id: Some(author_id), ..Default::default() })?;
+            svc_author::delete(
+                &ctx.conn,
+                &Author {
+                    author_id: Some(author_id),
+                    ..Default::default()
+                },
+            )?;
             output(&json!({ "deleted_author_id": author_id }));
         }
     }

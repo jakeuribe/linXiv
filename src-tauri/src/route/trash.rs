@@ -77,7 +77,13 @@ fn list(state: &AppState) -> Result<Value, ApiError> {
 /// returns `{ok, pdf_path:null, project_fks:[]}`, exactly as Python does.
 fn restore(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
     let (pdf_path, project_fks) = state.with_conn(|conn| {
-        svc_paper::restore(conn, &Paper { source_id: Some(source_id.to_string()), ..Default::default() })
+        svc_paper::restore(
+            conn,
+            &Paper {
+                source_id: Some(source_id.to_string()),
+                ..Default::default()
+            },
+        )
     })?;
     Ok(json!({ "ok": true, "pdf_path": pdf_path, "project_fks": project_fks }))
 }
@@ -86,7 +92,13 @@ fn restore(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
 /// an unknown source_id (200 no-op), matching Python.
 fn hard_delete(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
     state.with_conn(|conn| {
-        svc_paper::hard_delete(conn, &Paper { source_id: Some(source_id.to_string()), ..Default::default() })
+        svc_paper::hard_delete(
+            conn,
+            &Paper {
+                source_id: Some(source_id.to_string()),
+                ..Default::default()
+            },
+        )
     })?;
     Ok(json!({ "ok": true }))
 }
@@ -104,19 +116,32 @@ mod tests {
     }
 
     async fn req(st: &AppState, method: &str, path: &str) -> Result<Value, ApiError> {
-        route(st, ApiRequest { method: method.into(), path: path.into(), body: None }).await
+        route(
+            st,
+            ApiRequest {
+                method: method.into(),
+                path: path.into(),
+                body: None,
+            },
+        )
+        .await
     }
 
     #[tokio::test]
     async fn list_on_empty_db_wraps_empty_arrays() {
         let v = req(&state(), "GET", "/api/trash").await.unwrap();
         assert_eq!(v, json!({ "papers": [], "projects": [] }));
-        assert_eq!(serde_json::to_string(&v).unwrap(), r#"{"papers":[],"projects":[]}"#);
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            r#"{"papers":[],"projects":[]}"#
+        );
     }
 
     #[tokio::test]
     async fn hard_delete_unknown_source_is_idempotent_ok() {
-        let v = req(&state(), "DELETE", "/api/trash/2204.00001").await.unwrap();
+        let v = req(&state(), "DELETE", "/api/trash/2204.00001")
+            .await
+            .unwrap();
         assert_eq!(v, json!({ "ok": true }));
     }
 
@@ -124,13 +149,20 @@ mod tests {
     // source_id (no such paper), reproducing Python's 200 no-op — NOT a 404.
     #[tokio::test]
     async fn shadowed_project_hard_delete_is_paper_noop_200() {
-        let v = req(&state(), "DELETE", "/api/trash/projects/999").await.unwrap();
+        let v = req(&state(), "DELETE", "/api/trash/projects/999")
+            .await
+            .unwrap();
         assert_eq!(v, json!({ "ok": true }));
     }
 
     #[tokio::test]
     async fn shadowed_project_restore_is_paper_noop_200() {
-        let v = req(&state(), "POST", "/api/trash/projects/999/restore").await.unwrap();
-        assert_eq!(v, json!({ "ok": true, "pdf_path": null, "project_fks": [] }));
+        let v = req(&state(), "POST", "/api/trash/projects/999/restore")
+            .await
+            .unwrap();
+        assert_eq!(
+            v,
+            json!({ "ok": true, "pdf_path": null, "project_fks": [] })
+        );
     }
 }

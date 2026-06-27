@@ -198,12 +198,22 @@ mod tests {
         .unwrap();
         let bob = create(
             conn,
-            &AuthorIn { full_name: "Bob Stone".into(), first_name: Some("Bob".into()), last_name: Some("Stone".into()), orcid: None },
+            &AuthorIn {
+                full_name: "Bob Stone".into(),
+                first_name: Some("Bob".into()),
+                last_name: Some("Stone".into()),
+                orcid: None,
+            },
         )
         .unwrap();
         let alice = create(
             conn,
-            &AuthorIn { full_name: "Alice Cole".into(), first_name: Some("Alice".into()), last_name: Some("Cole".into()), orcid: Some("0000-1".into()) },
+            &AuthorIn {
+                full_name: "Alice Cole".into(),
+                first_name: Some("Alice".into()),
+                last_name: Some("Cole".into()),
+                orcid: Some("0000-1".into()),
+            },
         )
         .unwrap();
         link_author_to_paper(conn, bob, pid, Some(0)).unwrap();
@@ -223,19 +233,51 @@ mod tests {
         let (_pid, bob, alice) = seed(&conn);
 
         // by id
-        let a = get(&conn, &Author { author_id: Some(bob), ..Default::default() }).unwrap().unwrap();
+        let a = get(
+            &conn,
+            &Author {
+                author_id: Some(bob),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(a.full_name.as_deref(), Some("Bob Stone"));
 
         // by orcid (scan path)
-        let a = get(&conn, &Author { author_id: None, orcid: Some("0000-1".into()) }).unwrap().unwrap();
+        let a = get(
+            &conn,
+            &Author {
+                author_id: None,
+                orcid: Some("0000-1".into()),
+            },
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(a.author_id, alice);
 
         // id wins over orcid when both present
-        let a = get(&conn, &Author { author_id: Some(bob), orcid: Some("0000-1".into()) }).unwrap().unwrap();
+        let a = get(
+            &conn,
+            &Author {
+                author_id: Some(bob),
+                orcid: Some("0000-1".into()),
+            },
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(a.author_id, bob);
 
         // misses
-        assert!(get(&conn, &Author { orcid: Some("nope".into()), ..Default::default() }).unwrap().is_none());
+        assert!(get(
+            &conn,
+            &Author {
+                orcid: Some("nope".into()),
+                ..Default::default()
+            }
+        )
+        .unwrap()
+        .is_none());
         assert!(get(&conn, &Author::default()).unwrap().is_none());
     }
 
@@ -250,26 +292,61 @@ mod tests {
         assert_eq!(all[0].full_name.as_deref(), Some("Alice Cole"));
 
         // single name pushes to SQL exact match (NOCASE)
-        let one = get_many(&conn, &Authors { name: Some(vec!["bob stone".into()]), ..Default::default() }).unwrap();
+        let one = get_many(
+            &conn,
+            &Authors {
+                name: Some(vec!["bob stone".into()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(one.len(), 1);
         assert_eq!(one[0].full_name.as_deref(), Some("Bob Stone"));
 
         // multiple names post-filtered
-        let multi = get_many(&conn, &Authors { name: Some(vec!["Bob Stone".into(), "Ghost".into()]), ..Default::default() }).unwrap();
+        let multi = get_many(
+            &conn,
+            &Authors {
+                name: Some(vec!["Bob Stone".into(), "Ghost".into()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(multi.len(), 1);
         assert_eq!(multi[0].full_name.as_deref(), Some("Bob Stone"));
 
         // author_ids filter
-        let byid = get_many(&conn, &Authors { author_ids: Some(vec![bob]), ..Default::default() }).unwrap();
+        let byid = get_many(
+            &conn,
+            &Authors {
+                author_ids: Some(vec![bob]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(byid.len(), 1);
         assert_eq!(byid[0].author_id, bob);
 
         // empty author_ids is a no-op filter (returns all), not "match nothing"
-        let empty = get_many(&conn, &Authors { author_ids: Some(vec![]), ..Default::default() }).unwrap();
+        let empty = get_many(
+            &conn,
+            &Authors {
+                author_ids: Some(vec![]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(empty.len(), 2);
 
         // paper_id path -> ordered by AUTHOR_INDEX (Bob 0, Alice 1)
-        let bypaper = get_many(&conn, &Authors { paper_id: Some(pid), ..Default::default() }).unwrap();
+        let bypaper = get_many(
+            &conn,
+            &Authors {
+                paper_id: Some(pid),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(bypaper.len(), 2);
         assert_eq!(bypaper[0].full_name.as_deref(), Some("Bob Stone"));
     }
@@ -277,26 +354,88 @@ mod tests {
     #[test]
     fn create_update_delete() {
         let conn = mem();
-        let id = create(&conn, &AuthorIn { full_name: "Jane Doe".into(), first_name: None, last_name: None, orcid: None }).unwrap();
+        let id = create(
+            &conn,
+            &AuthorIn {
+                full_name: "Jane Doe".into(),
+                first_name: None,
+                last_name: None,
+                orcid: None,
+            },
+        )
+        .unwrap();
         assert!(id > 0);
 
-        update(&conn, id, &AuthorIn { full_name: "Jane Q Doe".into(), first_name: None, last_name: Some("Doe".into()), orcid: Some("0000-2".into()) }).unwrap();
-        let a = get(&conn, &Author { author_id: Some(id), ..Default::default() }).unwrap().unwrap();
+        update(
+            &conn,
+            id,
+            &AuthorIn {
+                full_name: "Jane Q Doe".into(),
+                first_name: None,
+                last_name: Some("Doe".into()),
+                orcid: Some("0000-2".into()),
+            },
+        )
+        .unwrap();
+        let a = get(
+            &conn,
+            &Author {
+                author_id: Some(id),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(a.full_name.as_deref(), Some("Jane Q Doe"));
         assert_eq!(a.last_name.as_deref(), Some("Doe"));
         assert_eq!(a.orcid.as_deref(), Some("0000-2"));
 
         // partial update_fields: change only orcid, leave full_name/last untouched
         update_fields(&conn, id, None, None, None, Some("0000-9")).unwrap();
-        let a = get(&conn, &Author { author_id: Some(id), ..Default::default() }).unwrap().unwrap();
-        assert_eq!(a.full_name.as_deref(), Some("Jane Q Doe"), "full_name unchanged by partial update");
+        let a = get(
+            &conn,
+            &Author {
+                author_id: Some(id),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            a.full_name.as_deref(),
+            Some("Jane Q Doe"),
+            "full_name unchanged by partial update"
+        );
         assert_eq!(a.orcid.as_deref(), Some("0000-9"));
 
         // delete with no id is a no-op; with id removes the row
         delete(&conn, &Author::default()).unwrap();
-        assert!(get(&conn, &Author { author_id: Some(id), ..Default::default() }).unwrap().is_some());
-        delete(&conn, &Author { author_id: Some(id), ..Default::default() }).unwrap();
-        assert!(get(&conn, &Author { author_id: Some(id), ..Default::default() }).unwrap().is_none());
+        assert!(get(
+            &conn,
+            &Author {
+                author_id: Some(id),
+                ..Default::default()
+            }
+        )
+        .unwrap()
+        .is_some());
+        delete(
+            &conn,
+            &Author {
+                author_id: Some(id),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(get(
+            &conn,
+            &Author {
+                author_id: Some(id),
+                ..Default::default()
+            }
+        )
+        .unwrap()
+        .is_none());
     }
 
     #[test]

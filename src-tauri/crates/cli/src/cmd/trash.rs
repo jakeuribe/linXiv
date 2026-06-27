@@ -36,11 +36,17 @@ pub async fn run(cmd: TrashCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         TrashCmd::Restore { source_id } => {
             let source_id = as_source_id(&source_id, "arxiv");
             if !svc_paper::is_paper_deleted(&ctx.conn, &source_id)? {
-                fail(format!("Paper {} not found in trash", crate::output::pyrepr(&source_id)));
+                fail(format!(
+                    "Paper {} not found in trash",
+                    crate::output::pyrepr(&source_id)
+                ));
             }
             let (pdf_path, project_fks) = svc_paper::restore(
                 &mut ctx.conn,
-                &Paper { source_id: Some(source_id.clone()), ..Default::default() },
+                &Paper {
+                    source_id: Some(source_id.clone()),
+                    ..Default::default()
+                },
             )?;
             output(&json!({
                 "restored": source_id,
@@ -52,17 +58,26 @@ pub async fn run(cmd: TrashCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         TrashCmd::HardDelete { source_id } => {
             let source_id = as_source_id(&source_id, "arxiv");
             if !svc_paper::is_paper_deleted(&ctx.conn, &source_id)? {
-                fail(format!("Paper {} not found in trash", crate::output::pyrepr(&source_id)));
+                fail(format!(
+                    "Paper {} not found in trash",
+                    crate::output::pyrepr(&source_id)
+                ));
             }
             // _do_paper_hard_delete: get_paper_root None -> not found; here unreachable
             // after the guard, but mirror the message off hard_delete's None return.
             if svc_paper::hard_delete(
                 &mut ctx.conn,
-                &Paper { source_id: Some(source_id.clone()), ..Default::default() },
+                &Paper {
+                    source_id: Some(source_id.clone()),
+                    ..Default::default()
+                },
             )?
             .is_none()
             {
-                fail(format!("Paper {} not found", crate::output::pyrepr(&source_id)));
+                fail(format!(
+                    "Paper {} not found",
+                    crate::output::pyrepr(&source_id)
+                ));
             }
             output(&json!({ "hard_deleted": source_id }));
         }
@@ -72,7 +87,12 @@ pub async fn run(cmd: TrashCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             if details.status != Status::Deleted {
                 fail(format!("Project {project_id} is not in trash"));
             }
-            svc_project::restore(&ctx.conn, &Project { project_fk: Some(project_id) })?;
+            svc_project::restore(
+                &ctx.conn,
+                &Project {
+                    project_fk: Some(project_id),
+                },
+            )?;
             output(&json!({ "restored_project_id": project_id }));
         }
         // cmd_trash_hard_delete_project
@@ -81,7 +101,12 @@ pub async fn run(cmd: TrashCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             if details.status != Status::Deleted {
                 fail(format!("Project {project_id} is not in trash"));
             }
-            svc_project::hard_delete(&mut ctx.conn, &Project { project_fk: Some(project_id) })?;
+            svc_project::hard_delete(
+                &mut ctx.conn,
+                &Project {
+                    project_fk: Some(project_id),
+                },
+            )?;
             output(&json!({ "hard_deleted_project_id": project_id }));
         }
     }
@@ -93,7 +118,12 @@ fn resolve_project_or_exit(
     ctx: &Ctx,
     project_id: i64,
 ) -> anyhow::Result<linxiv_core::models::ProjectDetails> {
-    match svc_project::get(&ctx.conn, &Project { project_fk: Some(project_id) })? {
+    match svc_project::get(
+        &ctx.conn,
+        &Project {
+            project_fk: Some(project_id),
+        },
+    )? {
         Some(d) => Ok(d),
         None => fail(format!("Project {project_id} not found")),
     }

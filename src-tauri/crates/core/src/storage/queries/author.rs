@@ -97,7 +97,8 @@ pub fn list_with_paper_count(conn: &Connection, min_papers: i64) -> Result<Vec<A
             paper_count: row.get("paper_count")?,
         })
     })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 /// `authors.py::get_author_paper_previews` — latest-version active papers linked
@@ -123,7 +124,8 @@ pub fn get_paper_previews(conn: &Connection, author_id: i64) -> Result<Vec<Autho
             title: row.get("title")?,
         })
     })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 /// `authors.py::count_author_paper_links` — distinct paper roots linked to this
@@ -171,7 +173,10 @@ pub fn upsert_author_by_name(conn: &Connection, full_name: &str) -> Result<i64> 
     if let Some(fk) = existing {
         return Ok(fk);
     }
-    conn.execute("INSERT INTO AUTHOR (AUTHOR_FULL_NAME) VALUES (?)", params![full_name])?;
+    conn.execute(
+        "INSERT INTO AUTHOR (AUTHOR_FULL_NAME) VALUES (?)",
+        params![full_name],
+    )?;
     Ok(conn.last_insert_rowid())
 }
 
@@ -202,7 +207,11 @@ pub fn update_author(
     if sets.is_empty() {
         return Ok(());
     }
-    let assigns = sets.iter().map(|c| format!("{c} = ?")).collect::<Vec<_>>().join(", ");
+    let assigns = sets
+        .iter()
+        .map(|c| format!("{c} = ?"))
+        .collect::<Vec<_>>()
+        .join(", ");
     p.push(Value::Integer(author_id));
     conn.execute(
         &format!("UPDATE AUTHOR SET {assigns} WHERE AUTHOR_FK = ?"),
@@ -265,7 +274,14 @@ mod tests {
         )
         .unwrap();
         let a1 = create_author(conn, "Bob Stone", Some("Bob"), Some("Stone"), None).unwrap();
-        let a2 = create_author(conn, "Alice Cole", Some("Alice"), Some("Cole"), Some("0000-1")).unwrap();
+        let a2 = create_author(
+            conn,
+            "Alice Cole",
+            Some("Alice"),
+            Some("Cole"),
+            Some("0000-1"),
+        )
+        .unwrap();
         link_author_to_paper(conn, a1, pid, Some(0)).unwrap();
         link_author_to_paper(conn, a2, pid, Some(1)).unwrap();
         (pid, a1, a2)
@@ -291,7 +307,10 @@ mod tests {
 
         // no-op update leaves the row intact.
         update_author(&conn, id, None, None, None, None).unwrap();
-        assert_eq!(get_author(&conn, id).unwrap().unwrap().last_name.as_deref(), Some("Doe"));
+        assert_eq!(
+            get_author(&conn, id).unwrap().unwrap().last_name.as_deref(),
+            Some("Doe")
+        );
 
         assert!(get_author(&conn, 9999).unwrap().is_none());
     }
@@ -304,7 +323,9 @@ mod tests {
         // case-insensitive hit -> same FK, no new row.
         let again = upsert_author_by_name(&conn, "carl friedrich").unwrap();
         assert_eq!(first, again);
-        let n: i64 = conn.query_row("SELECT COUNT(*) FROM AUTHOR", [], |r| r.get(0)).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM AUTHOR", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(n, 1);
         // new name -> new FK.
         assert_ne!(upsert_author_by_name(&conn, "Other Person").unwrap(), first);

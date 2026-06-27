@@ -136,15 +136,20 @@ where
     if let Some(pid) = project_id {
         if let Err(e) = link_imported(conn, pid, &sid) {
             return Err(match e {
-                CoreError::ProjectNotFound | CoreError::ProjectDeleted(_) => CoreError::PaperLink(
-                    format!("paper {sid} was imported but could not be linked to project {pid}: {e}"),
-                ),
+                CoreError::ProjectNotFound | CoreError::ProjectDeleted(_) => {
+                    CoreError::PaperLink(format!(
+                        "paper {sid} was imported but could not be linked to project {pid}: {e}"
+                    ))
+                }
                 other => other,
             });
         }
     }
 
-    Ok(PaperImportResult { source_id: sid, title })
+    Ok(PaperImportResult {
+        source_id: sid,
+        title,
+    })
 }
 
 /// `import_pdf` with the production resolver wired in. Async because the resolver
@@ -218,8 +223,9 @@ fn import_body(
         // Dedupe: keep the existing PDF, drop the upload.
         let _ = fs::remove_file(tmp_path);
     } else {
-        fs::rename(tmp_path, &final_path)
-            .map_err(|e| CoreError::Internal(format!("import_pdf: move PDF into place failed: {e}")))?;
+        fs::rename(tmp_path, &final_path).map_err(|e| {
+            CoreError::Internal(format!("import_pdf: move PDF into place failed: {e}"))
+        })?;
         st.wrote_final_path = true;
         store::mark_pdf_saved(conn, &sid, &final_path.to_string_lossy(), ver)?;
     }
@@ -283,9 +289,9 @@ fn rollback(conn: &mut Connection, tmp_path: &Path, st: &ImportState) {
 fn ensure_membership_writable(conn: &Connection, project_fk: i64) -> Result<()> {
     match proj_store::get_project(conn, project_fk, false)? {
         None => Err(CoreError::ProjectNotFound),
-        Some(p) if p.status == Status::Deleted => {
-            Err(CoreError::ProjectDeleted("cannot update a deleted project".into()))
-        }
+        Some(p) if p.status == Status::Deleted => Err(CoreError::ProjectDeleted(
+            "cannot update a deleted project".into(),
+        )),
         Some(_) => Ok(()),
     }
 }
@@ -373,12 +379,22 @@ mod tests {
         assert_eq!(res.source_id, "local:abc");
         assert_eq!(res.title, "Title of local:abc v1");
 
-        let p = paper::get(&conn, &paper::Paper { source_id: Some("local:abc".into()), version: Some(1), ..Default::default() })
-            .unwrap()
-            .unwrap();
+        let p = paper::get(
+            &conn,
+            &paper::Paper {
+                source_id: Some("local:abc".into()),
+                version: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
         assert!(p.has_pdf);
         let final_path = dir.path().join("local_abcv1.pdf");
-        assert_eq!(p.pdf_path.as_deref(), Some(final_path.to_string_lossy().as_ref()));
+        assert_eq!(
+            p.pdf_path.as_deref(),
+            Some(final_path.to_string_lossy().as_ref())
+        );
         assert!(final_path.exists());
         // Temp upload cleaned up; only the canonical file remains.
         let leftovers: Vec<_> = fs::read_dir(dir.path())
@@ -397,7 +413,9 @@ mod tests {
         let err = import_pdf(&mut conn, dir.path(), b"junk", None, bad).unwrap_err();
         assert!(matches!(err, CoreError::PdfImport(_)));
         // No paper saved, temp file cleaned up (dir empty).
-        assert!(paper::list_papers(&conn, false, None, 0, None).unwrap().is_empty());
+        assert!(paper::list_papers(&conn, false, None, 0, None)
+            .unwrap()
+            .is_empty());
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
     }
 
@@ -472,11 +490,23 @@ mod tests {
         assert!(matches!(err, CoreError::Internal(_)));
 
         // Brand-new root with NULL pdf_path → hard-deleted: paper + root gone.
-        assert!(paper::get(&conn, &paper::Paper { source_id: Some("local:new".into()), ..Default::default() }).unwrap().is_none());
+        assert!(paper::get(
+            &conn,
+            &paper::Paper {
+                source_id: Some("local:new".into()),
+                ..Default::default()
+            }
+        )
+        .unwrap()
+        .is_none());
         assert!(store::get_paper_root(&conn, "local:new").unwrap().is_none());
         // Temp upload cleaned up.
         let uploads = fs::read_dir(dir.path()).unwrap().filter(|e| {
-            e.as_ref().unwrap().file_name().to_string_lossy().starts_with("_upload_")
+            e.as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("_upload_")
         });
         assert_eq!(uploads.count(), 0);
     }
@@ -515,13 +545,22 @@ mod tests {
         let mut conn = mem();
         let dir = tempdir().unwrap();
         let data_dir = tempdir().unwrap();
-        let res = import_pdf_default(&mut conn, dir.path(), b"%PDF-1.4 junk", None, data_dir.path())
-            .await
-            .unwrap();
+        let res = import_pdf_default(
+            &mut conn,
+            dir.path(),
+            b"%PDF-1.4 junk",
+            None,
+            data_dir.path(),
+        )
+        .await
+        .unwrap();
         assert!(res.source_id.starts_with("local:"));
         let p = paper::get(
             &conn,
-            &paper::Paper { source_id: Some(res.source_id.clone()), ..Default::default() },
+            &paper::Paper {
+                source_id: Some(res.source_id.clone()),
+                ..Default::default()
+            },
         )
         .unwrap()
         .unwrap();
@@ -534,22 +573,60 @@ mod tests {
         let dir = tempdir().unwrap();
 
         // Missing project → ProjectNotFound, before any import work.
-        let err = import_pdf(&mut conn, dir.path(), b"pdf", Some(999), resolver(meta("local:p1", 1), None)).unwrap_err();
+        let err = import_pdf(
+            &mut conn,
+            dir.path(),
+            b"pdf",
+            Some(999),
+            resolver(meta("local:p1", 1), None),
+        )
+        .unwrap_err();
         assert!(matches!(err, CoreError::ProjectNotFound));
-        assert!(paper::list_papers(&conn, false, None, 0, None).unwrap().is_empty());
+        assert!(paper::list_papers(&conn, false, None, 0, None)
+            .unwrap()
+            .is_empty());
 
         // Deleted project → ProjectDeleted, also before import work.
-        conn.execute("INSERT INTO PROJECT (NAME, STATUS) VALUES ('Gone', 'deleted')", []).unwrap();
+        conn.execute(
+            "INSERT INTO PROJECT (NAME, STATUS) VALUES ('Gone', 'deleted')",
+            [],
+        )
+        .unwrap();
         let pid = conn.last_insert_rowid();
-        let err = import_pdf(&mut conn, dir.path(), b"pdf", Some(pid), resolver(meta("local:p2", 1), None)).unwrap_err();
+        let err = import_pdf(
+            &mut conn,
+            dir.path(),
+            b"pdf",
+            Some(pid),
+            resolver(meta("local:p2", 1), None),
+        )
+        .unwrap_err();
         assert!(matches!(err, CoreError::ProjectDeleted(_)));
-        assert!(paper::list_papers(&conn, false, None, 0, None).unwrap().is_empty());
+        assert!(paper::list_papers(&conn, false, None, 0, None)
+            .unwrap()
+            .is_empty());
 
         // Active project → paper imported AND linked.
-        conn.execute("INSERT INTO PROJECT (NAME, STATUS) VALUES ('Live', 'active')", []).unwrap();
+        conn.execute(
+            "INSERT INTO PROJECT (NAME, STATUS) VALUES ('Live', 'active')",
+            [],
+        )
+        .unwrap();
         let pid = conn.last_insert_rowid();
-        let res = import_pdf(&mut conn, dir.path(), b"pdf", Some(pid), resolver(meta("local:p3", 1), None)).unwrap();
-        let root = store::get_paper_root(&conn, &res.source_id).unwrap().unwrap();
-        assert_eq!(proj_store::get_paper_project_fks(&conn, root.source_fk).unwrap(), vec![pid]);
+        let res = import_pdf(
+            &mut conn,
+            dir.path(),
+            b"pdf",
+            Some(pid),
+            resolver(meta("local:p3", 1), None),
+        )
+        .unwrap();
+        let root = store::get_paper_root(&conn, &res.source_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            proj_store::get_paper_project_fks(&conn, root.source_fk).unwrap(),
+            vec![pid]
+        );
     }
 }

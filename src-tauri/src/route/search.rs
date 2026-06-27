@@ -28,10 +28,16 @@ fn history(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
         None => 10,
         Some(v) => match v.parse::<i64>() {
             Ok(n) if (1..=50).contains(&n) => n,
-            _ => return Err(ApiError::new(422, "limit must be an integer between 1 and 50")),
+            _ => {
+                return Err(ApiError::new(
+                    422,
+                    "limit must be an integer between 1 and 50",
+                ))
+            }
         },
     };
-    let suggestions = state.with_conn(|conn| search_history::get_suggestions(conn, prefix, limit))?;
+    let suggestions =
+        state.with_conn(|conn| search_history::get_suggestions(conn, prefix, limit))?;
     Ok(json!({ "suggestions": suggestions }))
 }
 
@@ -71,8 +77,14 @@ fn save(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let body: SearchStateBody = ctx.parse_body()?;
 
     let settings = UserSettings::load()?;
-    let enabled = settings.get("search_history_enabled").and_then(Value::as_bool).unwrap_or(true);
-    let max_history = settings.get("search_history_max").and_then(Value::as_i64).unwrap_or(200);
+    let enabled = settings
+        .get("search_history_enabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let max_history = settings
+        .get("search_history_max")
+        .and_then(Value::as_i64)
+        .unwrap_or(200);
 
     let clauses = json!(body.clauses);
     let results = Value::Array(body.results);
@@ -89,7 +101,15 @@ fn save(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
                 }
             }
         }
-        search_state::save_state(conn, &clauses, &body.source, body.max_results, &results, &saved_ids, sort_prefs.as_ref())?;
+        search_state::save_state(
+            conn,
+            &clauses,
+            &body.source,
+            body.max_results,
+            &results,
+            &saved_ids,
+            sort_prefs.as_ref(),
+        )?;
         Ok(())
     })?;
     Ok(json!({ "ok": true }))
@@ -107,30 +127,53 @@ mod tests {
         AppState::from_parts(conn, std::env::temp_dir(), std::env::temp_dir())
     }
     async fn req(s: &AppState, m: &str, p: &str, b: Option<Value>) -> Result<Value, ApiError> {
-        route(s, ApiRequest { method: m.into(), path: p.into(), body: b }).await
+        route(
+            s,
+            ApiRequest {
+                method: m.into(),
+                path: p.into(),
+                body: b,
+            },
+        )
+        .await
     }
 
     #[tokio::test]
     async fn history_empty_prefix_is_empty_list() {
-        assert_eq!(req(&st(), "GET", "/api/search/history?prefix=", None).await.unwrap(), json!({ "suggestions": [] }));
+        assert_eq!(
+            req(&st(), "GET", "/api/search/history?prefix=", None)
+                .await
+                .unwrap(),
+            json!({ "suggestions": [] })
+        );
     }
 
     #[tokio::test]
     async fn state_roundtrips_and_records_clause_history() {
         let s = st();
-        assert_eq!(req(&s, "GET", "/api/search/state", None).await.unwrap(), json!({ "state": null }));
+        assert_eq!(
+            req(&s, "GET", "/api/search/state", None).await.unwrap(),
+            json!({ "state": null })
+        );
 
         let body = json!({
             "clauses": [{ "value": "manifold" }],
             "source": "arxiv", "max_results": 25, "results": [], "saved_ids": []
         });
-        assert_eq!(req(&s, "POST", "/api/search/state", Some(body.clone())).await.unwrap(), json!({ "ok": true }));
+        assert_eq!(
+            req(&s, "POST", "/api/search/state", Some(body.clone()))
+                .await
+                .unwrap(),
+            json!({ "ok": true })
+        );
 
         let got = req(&s, "GET", "/api/search/state", None).await.unwrap();
         assert_eq!(got["state"]["source"], json!("arxiv"));
         assert_eq!(got["state"]["clauses"], body["clauses"]);
         // the clause value was recorded to history
-        let sugg = req(&s, "GET", "/api/search/history?prefix=man", None).await.unwrap();
+        let sugg = req(&s, "GET", "/api/search/history?prefix=man", None)
+            .await
+            .unwrap();
         assert_eq!(sugg["suggestions"], json!(["manifold"]));
     }
 }

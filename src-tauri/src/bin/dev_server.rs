@@ -24,21 +24,34 @@ const ADDR: &str = "127.0.0.1:8000";
 async fn main() {
     let state = Arc::new(AppState::new().expect("init app state"));
     let app = Router::new().fallback(any(dispatch)).with_state(state);
-    let listener = tokio::net::TcpListener::bind(ADDR).await.expect("bind dev shim");
+    let listener = tokio::net::TcpListener::bind(ADDR)
+        .await
+        .expect("bind dev shim");
     eprintln!("linxiv dev shim on http://{ADDR} — Vite proxies /api here (no Python).");
     axum::serve(listener, app).await.expect("dev shim serve");
 }
 
 async fn dispatch(State(state): State<Arc<AppState>>, req: Request) -> Response {
     let method = req.method().as_str().to_string();
-    let path = req.uri().path_and_query().map(|pq| pq.as_str().to_string()).unwrap_or_default();
-    let bytes = axum::body::to_bytes(req.into_body(), MAX_BODY).await.unwrap_or_default();
-    let body = if bytes.is_empty() { None } else { serde_json::from_slice(&bytes).ok() };
+    let path = req
+        .uri()
+        .path_and_query()
+        .map(|pq| pq.as_str().to_string())
+        .unwrap_or_default();
+    let bytes = axum::body::to_bytes(req.into_body(), MAX_BODY)
+        .await
+        .unwrap_or_default();
+    let body = if bytes.is_empty() {
+        None
+    } else {
+        serde_json::from_slice(&bytes).ok()
+    };
 
     match route(&state, ApiRequest { method, path, body }).await {
         Ok(value) => json(StatusCode::OK, &value),
         Err(e) => {
-            let status = StatusCode::from_u16(e.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            let status =
+                StatusCode::from_u16(e.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             json(status, &serde_json::json!({ "detail": e.detail }))
         }
     }

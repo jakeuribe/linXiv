@@ -209,14 +209,28 @@ pub fn build_manifest(
     include_pdfs: bool,
     pdf_dir: &Path,
 ) -> Result<(Manifest, Vec<(String, PathBuf)>)> {
-    let details = project::get(conn, &project::Project { project_fk: Some(project_fk) })?
-        .ok_or_else(|| CoreError::BadRequest(format!("Project {project_fk} not found")))?;
+    let details = project::get(
+        conn,
+        &project::Project {
+            project_fk: Some(project_fk),
+        },
+    )?
+    .ok_or_else(|| CoreError::BadRequest(format!("Project {project_fk} not found")))?;
 
     let papers = paper::get_many(
         conn,
-        &paper::Papers { source_fks: Some(details.source_fks.clone()), ..Default::default() },
+        &paper::Papers {
+            source_fks: Some(details.source_fks.clone()),
+            ..Default::default()
+        },
     )?;
-    let notes = note::get_many(conn, &note::Notes { project_fk: Some(project_fk), ..Default::default() })?;
+    let notes = note::get_many(
+        conn,
+        &note::Notes {
+            project_fk: Some(project_fk),
+            ..Default::default()
+        },
+    )?;
 
     let paper_entries: Vec<PaperEntry> = papers.iter().map(PaperEntry::from_details).collect();
 
@@ -226,8 +240,14 @@ pub fn build_manifest(
             continue; // Python skips notes whose source_id no longer resolves.
         };
         let version = match n.paper_id_fk {
-            Some(pid) => paper::get(conn, &paper::Paper { paper_id: Some(pid), ..Default::default() })?
-                .map(|p| p.version),
+            Some(pid) => paper::get(
+                conn,
+                &paper::Paper {
+                    paper_id: Some(pid),
+                    ..Default::default()
+                },
+            )?
+            .map(|p| p.version),
             None => None,
         };
         note_entries.push(NoteEntry {
@@ -245,7 +265,11 @@ pub fn build_manifest(
             let Some(stored) = &p.pdf_path else { continue };
             let local = {
                 let raw = Path::new(stored);
-                if raw.is_absolute() { raw.to_path_buf() } else { pdf_dir.join(raw) }
+                if raw.is_absolute() {
+                    raw.to_path_buf()
+                } else {
+                    pdf_dir.join(raw)
+                }
             };
             if local.is_file() {
                 pdf_files.push((format!("pdfs/{}_v{}.pdf", p.source_id, p.version), local));
@@ -287,8 +311,8 @@ pub fn export_project(
     pdf_dir: &Path,
 ) -> Result<PathBuf> {
     let (manifest, pdf_files) = build_manifest(conn, project_fk, include_pdfs, pdf_dir)?;
-    let manifest_json = serde_json::to_string_pretty(&manifest)
-        .map_err(|e| CoreError::Internal(e.to_string()))?;
+    let manifest_json =
+        serde_json::to_string_pretty(&manifest).map_err(|e| CoreError::Internal(e.to_string()))?;
     let dest = dest_path.with_extension("lxproj");
 
     let file = std::fs::File::create(&dest).map_err(|e| CoreError::Internal(e.to_string()))?;
@@ -335,12 +359,19 @@ pub fn preview_from_manifest(manifest: &Manifest) -> ImportPreview {
 
 /// Read + parse `manifest.json` from an open archive. Mirrors Python `_read_manifest`:
 /// a missing entry is a "not a valid .lxproj file" error.
-fn read_manifest<R: Read + Seek>(archive: &mut zip::ZipArchive<R>, label: &str) -> Result<Manifest> {
+fn read_manifest<R: Read + Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    label: &str,
+) -> Result<Manifest> {
     let mut entry = archive.by_name("manifest.json").map_err(|_| {
-        CoreError::BadRequest(format!("{label} is not a valid .lxproj file: manifest.json missing"))
+        CoreError::BadRequest(format!(
+            "{label} is not a valid .lxproj file: manifest.json missing"
+        ))
     })?;
     let mut buf = Vec::new();
-    entry.read_to_end(&mut buf).map_err(|e| CoreError::Internal(e.to_string()))?;
+    entry
+        .read_to_end(&mut buf)
+        .map_err(|e| CoreError::Internal(e.to_string()))?;
     serde_json::from_slice(&buf).map_err(|e| CoreError::Internal(e.to_string()))
 }
 
@@ -390,7 +421,12 @@ pub fn commit_from_manifest(
         Err(e) => {
             // Trash the partially-built project (Python `_project.delete`).
             tracing::warn!("import failed, trashing project {project_fk}: {e}");
-            let _ = project::delete(conn, &project::Project { project_fk: Some(project_fk) });
+            let _ = project::delete(
+                conn,
+                &project::Project {
+                    project_fk: Some(project_fk),
+                },
+            );
             Err(CoreError::ProjectImport(e.to_string()))
         }
     }
@@ -412,7 +448,13 @@ fn commit_body(
         match (existing, on_conflict) {
             (Some(root), OnConflict::Merge) => {
                 if root.status == "deleted" {
-                    paper::restore(conn, &paper::Paper { source_id: Some(source_id.clone()), ..Default::default() })?;
+                    paper::restore(
+                        conn,
+                        &paper::Paper {
+                            source_id: Some(source_id.clone()),
+                            ..Default::default()
+                        },
+                    )?;
                 }
                 // UNION the archive paper's tags onto the existing paper (Python
                 // `_paper.add_paper_tags`) so a merge-import never discards them.
@@ -422,7 +464,13 @@ fn commit_body(
             }
             (Some(root), OnConflict::Overwrite) => {
                 if root.status == "deleted" {
-                    paper::restore(conn, &paper::Paper { source_id: Some(source_id.clone()), ..Default::default() })?;
+                    paper::restore(
+                        conn,
+                        &paper::Paper {
+                            source_id: Some(source_id.clone()),
+                            ..Default::default()
+                        },
+                    )?;
                 }
                 paper::repair_paper(conn, root.source_fk, &pe.to_metadata())?;
                 if !pe.tags.is_empty() {
@@ -475,10 +523,18 @@ fn import_pdfs(
     std::fs::create_dir_all(pdf_dir).map_err(|e| CoreError::Internal(e.to_string()))?;
 
     for entry in pdfs {
-        let basename = entry.archive_name.rsplit('/').next().unwrap_or(&entry.archive_name);
-        let Some(stem) = basename.strip_suffix(".pdf") else { continue };
+        let basename = entry
+            .archive_name
+            .rsplit('/')
+            .next()
+            .unwrap_or(&entry.archive_name);
+        let Some(stem) = basename.strip_suffix(".pdf") else {
+            continue;
+        };
         // Last "_v" splits source_id from version.
-        let Some(sep) = stem.rfind("_v") else { continue };
+        let Some(sep) = stem.rfind("_v") else {
+            continue;
+        };
         let source_id = &stem[..sep];
         let version_str = &stem[sep + 2..];
         if !source_ids.iter().any(|s| s == source_id) {
@@ -506,7 +562,9 @@ fn import_notes(
     source_ids: &[String],
 ) -> Result<()> {
     for nd in &manifest.notes {
-        let Some(paper_source_id) = &nd.paper_source_id else { continue };
+        let Some(paper_source_id) = &nd.paper_source_id else {
+            continue;
+        };
         if !source_ids.iter().any(|s| s == paper_source_id) {
             continue;
         }
@@ -519,7 +577,11 @@ fn import_notes(
         let paper_id = match nd.paper_version {
             Some(v) if v != 0 => paper::get(
                 conn,
-                &paper::Paper { source_id: Some(paper_source_id.clone()), version: Some(v), ..Default::default() },
+                &paper::Paper {
+                    source_id: Some(paper_source_id.clone()),
+                    version: Some(v),
+                    ..Default::default()
+                },
             )?
             .map(|p| p.paper_id),
             _ => None,
@@ -553,12 +615,19 @@ pub fn commit_import(
     // Collect every bundled PDF entry (basename parsing happens in import_pdfs).
     let mut pdfs = Vec::new();
     for i in 0..archive.len() {
-        let mut entry = archive.by_index(i).map_err(|e| CoreError::Internal(e.to_string()))?;
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| CoreError::Internal(e.to_string()))?;
         let name = entry.name().to_string();
         if name.starts_with("pdfs/") && name.ends_with(".pdf") {
             let mut bytes = Vec::new();
-            entry.read_to_end(&mut bytes).map_err(|e| CoreError::Internal(e.to_string()))?;
-            pdfs.push(ArchivePdf { archive_name: name, bytes });
+            entry
+                .read_to_end(&mut bytes)
+                .map_err(|e| CoreError::Internal(e.to_string()))?;
+            pdfs.push(ArchivePdf {
+                archive_name: name,
+                bytes,
+            });
         }
     }
 
@@ -641,7 +710,8 @@ mod tests {
         let pdf_dir = tmp.path();
 
         // Two papers; one has a PDF on disk (relative path resolved against pdf_dir).
-        paper::save_paper_metadata(&mut conn, &meta("arxiv:1", 1, "Paper One", &["ml"]), None).unwrap();
+        paper::save_paper_metadata(&mut conn, &meta("arxiv:1", 1, "Paper One", &["ml"]), None)
+            .unwrap();
         paper::save_paper_metadata(&mut conn, &meta("arxiv:2", 1, "Paper Two", &[]), None).unwrap();
         let fk1 = paper::ensure_paper_root(&mut conn, "arxiv:1").unwrap();
         let fk2 = paper::ensure_paper_root(&mut conn, "arxiv:2").unwrap();
@@ -661,9 +731,28 @@ mod tests {
         .unwrap();
 
         // A note pinned to arxiv:1 v1.
-        let pid_v1 = paper::get(&conn, &paper::Paper { source_id: Some("arxiv:1".into()), version: Some(1), ..Default::default() })
-            .unwrap().unwrap().paper_id;
-        note::create(&conn, &NoteIn { source_fk: fk1, title: "n".into(), content: "body".into(), paper_id: Some(pid_v1), project_fk: Some(pid) }).unwrap();
+        let pid_v1 = paper::get(
+            &conn,
+            &paper::Paper {
+                source_id: Some("arxiv:1".into()),
+                version: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap()
+        .paper_id;
+        note::create(
+            &conn,
+            &NoteIn {
+                source_fk: fk1,
+                title: "n".into(),
+                content: "body".into(),
+                paper_id: Some(pid_v1),
+                project_fk: Some(pid),
+            },
+        )
+        .unwrap();
 
         let (m, pdf_files) = build_manifest(&conn, pid, true, pdf_dir).unwrap();
         assert_eq!(m.project.name, "My Proj");
@@ -699,7 +788,11 @@ mod tests {
         assert_eq!(p.note_count, 0);
         assert_eq!(p.project_name, "P");
         // explicit summary wins
-        m.summary = Summary { paper_count: 7, note_count: 3, has_pdfs: true };
+        m.summary = Summary {
+            paper_count: 7,
+            note_count: 3,
+            has_pdfs: true,
+        };
         let p = preview_from_manifest(&m);
         assert_eq!(p.paper_count, 7);
         assert_eq!(p.note_count, 3);
@@ -722,29 +815,58 @@ mod tests {
                 content: "c".into(),
             }],
         );
-        let pdfs = vec![ArchivePdf { archive_name: "pdfs/arxiv:1_v1.pdf".into(), bytes: b"BYTES".to_vec() }];
+        let pdfs = vec![ArchivePdf {
+            archive_name: "pdfs/arxiv:1_v1.pdf".into(),
+            bytes: b"BYTES".to_vec(),
+        }];
 
-        let pid = commit_from_manifest(&mut conn, &manifest, &pdfs, OnConflict::Merge, pdf_dir).unwrap();
+        let pid =
+            commit_from_manifest(&mut conn, &manifest, &pdfs, OnConflict::Merge, pdf_dir).unwrap();
 
         // Project created with tags + colour from the manifest.
-        let got = project::get(&conn, &project::Project { project_fk: Some(pid) }).unwrap().unwrap();
+        let got = project::get(
+            &conn,
+            &project::Project {
+                project_fk: Some(pid),
+            },
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(got.name, "Imported");
         assert_eq!(got.project_tags, vec!["imported"]);
         assert_eq!(got.color, Some(0x00ff00));
         assert_eq!(got.source_fks.len(), 1, "paper linked to the new project");
 
         // Paper metadata saved.
-        let p = paper::get(&conn, &paper::Paper { source_id: Some("arxiv:1".into()), ..Default::default() }).unwrap().unwrap();
+        let p = paper::get(
+            &conn,
+            &paper::Paper {
+                source_id: Some("arxiv:1".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(p.title, "New Paper");
 
         // PDF written under the archive basename + recorded on the paper.
         let on_disk = pdf_dir.join("arxiv:1_v1.pdf");
         assert!(on_disk.is_file(), "archive-named pdf written to disk");
-        assert_eq!(p.pdf_path.as_deref(), Some(on_disk.to_string_lossy().as_ref()));
+        assert_eq!(
+            p.pdf_path.as_deref(),
+            Some(on_disk.to_string_lossy().as_ref())
+        );
         assert!(p.has_pdf);
 
         // Note imported and pinned.
-        let notes = note::get_many(&conn, &note::Notes { project_fk: Some(pid), ..Default::default() }).unwrap();
+        let notes = note::get_many(
+            &conn,
+            &note::Notes {
+                project_fk: Some(pid),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].title, "note");
         assert!(notes[0].paper_id_fk.is_some());
@@ -753,24 +875,64 @@ mod tests {
     #[test]
     fn commit_merge_keeps_existing_metadata_overwrite_replaces_it() {
         let tmp = tempfile::tempdir().unwrap();
-        let manifest = base_manifest("P", vec![paper_entry("arxiv:1", 1, "Archive Title", &[])], vec![]);
+        let manifest = base_manifest(
+            "P",
+            vec![paper_entry("arxiv:1", 1, "Archive Title", &[])],
+            vec![],
+        );
 
         // MERGE: pre-existing paper keeps its stored title, still gets linked.
         {
             let mut conn = mem();
-            paper::save_paper_metadata(&mut conn, &meta("arxiv:1", 1, "Stored Title", &[]), None).unwrap();
-            let pid = commit_from_manifest(&mut conn, &manifest, &[], OnConflict::Merge, tmp.path()).unwrap();
-            let p = paper::get(&conn, &paper::Paper { source_id: Some("arxiv:1".into()), ..Default::default() }).unwrap().unwrap();
+            paper::save_paper_metadata(&mut conn, &meta("arxiv:1", 1, "Stored Title", &[]), None)
+                .unwrap();
+            let pid =
+                commit_from_manifest(&mut conn, &manifest, &[], OnConflict::Merge, tmp.path())
+                    .unwrap();
+            let p = paper::get(
+                &conn,
+                &paper::Paper {
+                    source_id: Some("arxiv:1".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .unwrap();
             assert_eq!(p.title, "Stored Title", "merge does not overwrite metadata");
-            assert_eq!(project::get(&conn, &project::Project { project_fk: Some(pid) }).unwrap().unwrap().source_fks.len(), 1);
+            assert_eq!(
+                project::get(
+                    &conn,
+                    &project::Project {
+                        project_fk: Some(pid)
+                    }
+                )
+                .unwrap()
+                .unwrap()
+                .source_fks
+                .len(),
+                1
+            );
         }
         // OVERWRITE: stored paper is repaired to the archive's title.
         {
             let mut conn = mem();
-            paper::save_paper_metadata(&mut conn, &meta("arxiv:1", 1, "Stored Title", &[]), None).unwrap();
-            commit_from_manifest(&mut conn, &manifest, &[], OnConflict::Overwrite, tmp.path()).unwrap();
-            let p = paper::get(&conn, &paper::Paper { source_id: Some("arxiv:1".into()), ..Default::default() }).unwrap().unwrap();
-            assert_eq!(p.title, "Archive Title", "overwrite repairs metadata from the archive");
+            paper::save_paper_metadata(&mut conn, &meta("arxiv:1", 1, "Stored Title", &[]), None)
+                .unwrap();
+            commit_from_manifest(&mut conn, &manifest, &[], OnConflict::Overwrite, tmp.path())
+                .unwrap();
+            let p = paper::get(
+                &conn,
+                &paper::Paper {
+                    source_id: Some("arxiv:1".into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                p.title, "Archive Title",
+                "overwrite repairs metadata from the archive"
+            );
         }
     }
 
@@ -779,12 +941,22 @@ mod tests {
         let mut conn = mem();
         let tmp = tempfile::tempdir().unwrap();
         paper::save_paper_metadata(&mut conn, &meta("arxiv:1", 1, "T", &[]), None).unwrap();
-        paper::delete(&mut conn, &paper::Paper { source_id: Some("arxiv:1".into()), ..Default::default() }).unwrap();
+        paper::delete(
+            &mut conn,
+            &paper::Paper {
+                source_id: Some("arxiv:1".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert!(paper::is_paper_deleted(&conn, "arxiv:1").unwrap());
 
         let manifest = base_manifest("P", vec![paper_entry("arxiv:1", 1, "T", &[])], vec![]);
         commit_from_manifest(&mut conn, &manifest, &[], OnConflict::Merge, tmp.path()).unwrap();
-        assert!(!paper::is_paper_deleted(&conn, "arxiv:1").unwrap(), "import restored the trashed paper");
+        assert!(
+            !paper::is_paper_deleted(&conn, "arxiv:1").unwrap(),
+            "import restored the trashed paper"
+        );
     }
 
     #[test]
@@ -793,21 +965,35 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         // Whitespace in the source_id: it's saved verbatim, but add_papers trims it,
         // so the membership lookup misses -> link fails -> whole project rolled back.
-        let manifest = base_manifest("Doomed", vec![paper_entry("  spacey:1  ", 1, "T", &[])], vec![]);
+        let manifest = base_manifest(
+            "Doomed",
+            vec![paper_entry("  spacey:1  ", 1, "T", &[])],
+            vec![],
+        );
 
-        let err = commit_from_manifest(&mut conn, &manifest, &[], OnConflict::Merge, tmp.path()).unwrap_err();
+        let err = commit_from_manifest(&mut conn, &manifest, &[], OnConflict::Merge, tmp.path())
+            .unwrap_err();
         assert!(matches!(err, CoreError::ProjectImport(_)));
 
         // The project must NOT survive as active — it was trashed (Python `_project.delete`).
         let active = project::get_many(
             &conn,
-            &project::Projects { status: Some(Status::Active), ..Default::default() },
+            &project::Projects {
+                status: Some(Status::Active),
+                ..Default::default()
+            },
         )
         .unwrap();
-        assert!(active.iter().all(|p| p.name != "Doomed"), "failed import leaves no active project");
+        assert!(
+            active.iter().all(|p| p.name != "Doomed"),
+            "failed import leaves no active project"
+        );
         // It IS present in trash.
         let trashed = project::list_deleted(&conn).unwrap();
-        assert!(trashed.iter().any(|p| p.name == "Doomed"), "rolled-back project is in trash");
+        assert!(
+            trashed.iter().any(|p| p.name == "Doomed"),
+            "rolled-back project is in trash"
+        );
     }
 
     #[test]
@@ -818,12 +1004,21 @@ mod tests {
         paper::save_paper_metadata(&mut conn, &meta("arxiv:1", 1, "T", &[]), None).unwrap();
 
         // v9 was never imported for this paper -> mark_pdf_saved errors, file removed.
-        let pdfs = vec![ArchivePdf { archive_name: "pdfs/arxiv:1_v9.pdf".into(), bytes: b"X".to_vec() }];
+        let pdfs = vec![ArchivePdf {
+            archive_name: "pdfs/arxiv:1_v9.pdf".into(),
+            bytes: b"X".to_vec(),
+        }];
         import_pdfs(&mut conn, &pdfs, &["arxiv:1".into()], pdf_dir).unwrap();
-        assert!(!pdf_dir.join("arxiv:1_v9.pdf").exists(), "orphan pdf removed after failed mark");
+        assert!(
+            !pdf_dir.join("arxiv:1_v9.pdf").exists(),
+            "orphan pdf removed after failed mark"
+        );
 
         // A pdf whose source_id wasn't imported is ignored entirely.
-        let pdfs = vec![ArchivePdf { archive_name: "pdfs/other:2_v1.pdf".into(), bytes: b"X".to_vec() }];
+        let pdfs = vec![ArchivePdf {
+            archive_name: "pdfs/other:2_v1.pdf".into(),
+            bytes: b"X".to_vec(),
+        }];
         import_pdfs(&mut conn, &pdfs, &["arxiv:1".into()], pdf_dir).unwrap();
         assert!(!pdf_dir.join("other:2_v1.pdf").exists());
     }
@@ -844,23 +1039,47 @@ mod tests {
         std::fs::create_dir_all(&export_pdf_dir).unwrap();
 
         // Seed: one paper with a real PDF on disk + a note pinned to it.
-        paper::save_paper_metadata(&mut conn, &meta("arxiv:1", 1, "Paper One", &["ml"]), None).unwrap();
+        paper::save_paper_metadata(&mut conn, &meta("arxiv:1", 1, "Paper One", &["ml"]), None)
+            .unwrap();
         let fk1 = paper::ensure_paper_root(&mut conn, "arxiv:1").unwrap();
         let pdf_path = export_pdf_dir.join("arxiv_1v1.pdf");
         std::fs::write(&pdf_path, b"PDFCONTENT").unwrap();
         paper::set_pdf_path(&conn, "arxiv:1", pdf_path.to_str().unwrap(), Some(1)).unwrap();
         paper::set_has_pdf(&conn, "arxiv:1", 1, true).unwrap();
 
-        let pid = project::create(&mut conn, &ProjectIn {
-            name: "Round Trip".into(),
-            description: "d".into(),
-            color: Some(0x00ff00),
-            tags: vec!["t".into()],
-            source_fks: vec![fk1],
-        }).unwrap();
-        let pv1 = paper::get(&conn, &paper::Paper { source_id: Some("arxiv:1".into()), version: Some(1), ..Default::default() })
-            .unwrap().unwrap().paper_id;
-        note::create(&conn, &NoteIn { source_fk: fk1, title: "n".into(), content: "body".into(), paper_id: Some(pv1), project_fk: Some(pid) }).unwrap();
+        let pid = project::create(
+            &mut conn,
+            &ProjectIn {
+                name: "Round Trip".into(),
+                description: "d".into(),
+                color: Some(0x00ff00),
+                tags: vec!["t".into()],
+                source_fks: vec![fk1],
+            },
+        )
+        .unwrap();
+        let pv1 = paper::get(
+            &conn,
+            &paper::Paper {
+                source_id: Some("arxiv:1".into()),
+                version: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap()
+        .paper_id;
+        note::create(
+            &conn,
+            &NoteIn {
+                source_fk: fk1,
+                title: "n".into(),
+                content: "body".into(),
+                paper_id: Some(pv1),
+                project_fk: Some(pid),
+            },
+        )
+        .unwrap();
 
         // Export -> .lxproj is forced as the extension.
         let dest = tmp.path().join("out");
@@ -878,13 +1097,29 @@ mod tests {
         // Commit into a FRESH db + fresh pdf dir.
         let mut conn2 = mem();
         let import_pdf_dir = tmp.path().join("import_pdfs");
-        let new_pid = commit_import(&mut conn2, &written, OnConflict::Merge, &import_pdf_dir).unwrap();
+        let new_pid =
+            commit_import(&mut conn2, &written, OnConflict::Merge, &import_pdf_dir).unwrap();
 
-        let proj = project::get(&conn2, &project::Project { project_fk: Some(new_pid) }).unwrap().unwrap();
+        let proj = project::get(
+            &conn2,
+            &project::Project {
+                project_fk: Some(new_pid),
+            },
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(proj.name, "Round Trip");
         assert_eq!(proj.source_fks.len(), 1);
 
-        let p = paper::get(&conn2, &paper::Paper { source_id: Some("arxiv:1".into()), ..Default::default() }).unwrap().unwrap();
+        let p = paper::get(
+            &conn2,
+            &paper::Paper {
+                source_id: Some("arxiv:1".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(p.title, "Paper One");
         assert!(p.has_pdf);
 
@@ -892,9 +1127,19 @@ mod tests {
         let imported_pdf = import_pdf_dir.join("arxiv:1_v1.pdf");
         assert!(imported_pdf.is_file());
         assert_eq!(std::fs::read(&imported_pdf).unwrap(), b"PDFCONTENT");
-        assert_eq!(p.pdf_path.as_deref(), Some(imported_pdf.to_string_lossy().as_ref()));
+        assert_eq!(
+            p.pdf_path.as_deref(),
+            Some(imported_pdf.to_string_lossy().as_ref())
+        );
 
-        let notes = note::get_many(&conn2, &note::Notes { project_fk: Some(new_pid), ..Default::default() }).unwrap();
+        let notes = note::get_many(
+            &conn2,
+            &note::Notes {
+                project_fk: Some(new_pid),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].title, "n");
         assert!(notes[0].paper_id_fk.is_some());
@@ -912,14 +1157,30 @@ mod tests {
         let manifest = base_manifest("P", vec![paper_entry("arxiv:1", 1, "T", &["B"])], vec![]);
         commit_from_manifest(&mut conn, &manifest, &[], OnConflict::Merge, tmp.path()).unwrap();
 
-        let p = paper::get(&conn, &paper::Paper { source_id: Some("arxiv:1".into()), ..Default::default() }).unwrap().unwrap();
+        let p = paper::get(
+            &conn,
+            &paper::Paper {
+                source_id: Some("arxiv:1".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
         let mut tags = p.tags.clone();
         tags.sort();
-        assert_eq!(tags, vec!["A".to_string(), "B".to_string()], "merge unions tags, not discard");
+        assert_eq!(
+            tags,
+            vec!["A".to_string(), "B".to_string()],
+            "merge unions tags, not discard"
+        );
 
         // Relational half re-synced too.
         let relational: i64 = conn
-            .query_row("SELECT COUNT(*) FROM PAPER_TO_TAG WHERE SOURCE_ID = ?", ["arxiv:1"], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM PAPER_TO_TAG WHERE SOURCE_ID = ?",
+                ["arxiv:1"],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(relational, 2);
     }

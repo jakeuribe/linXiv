@@ -109,7 +109,11 @@ fn entry_to_meta(e: &BibEntry) -> anyhow::Result<PaperMetadata> {
     let nonempty = |k: &str| e.fields.get(k).filter(|s| !s.is_empty()).cloned();
 
     let doi = nonempty("doi");
-    let title = e.fields.get("title").cloned().unwrap_or_else(|| e.key.clone());
+    let title = e
+        .fields
+        .get("title")
+        .cloned()
+        .unwrap_or_else(|| e.key.clone());
     let summary = e.fields.get("abstract").cloned().unwrap_or_default();
     let journal_ref = nonempty("journal").or_else(|| nonempty("booktitle"));
     let url = nonempty("url");
@@ -264,7 +268,11 @@ fn parse_entry_body(body: &[char]) -> Option<BibEntry> {
     if key.is_empty() && fields.is_empty() && authors.is_empty() {
         return None;
     }
-    Some(BibEntry { key, fields, authors })
+    Some(BibEntry {
+        key,
+        fields,
+        authors,
+    })
 }
 
 /// Read a field value at `*i`: `{...}` (outer braces stripped, inner kept),
@@ -394,7 +402,12 @@ fn format_person(name: &str) -> String {
             }
         };
 
-    let von_last = von.iter().chain(last.iter()).cloned().collect::<Vec<_>>().join(" ");
+    let von_last = von
+        .iter()
+        .chain(last.iter())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(" ");
     let jr = jr.join(" ");
     let first = first.join(" ");
     [von_last, jr, first]
@@ -519,7 +532,10 @@ mod tests {
         assert_eq!(format_person("Knuth, Donald E."), "Knuth, Donald E.");
         assert_eq!(format_person("Jean-luc Picard"), "Picard, Jean-luc");
         assert_eq!(format_person("van der Berg, Jan"), "van der Berg, Jan");
-        assert_eq!(format_person("von Beethoven, Jr, Ludwig"), "von Beethoven, Jr, Ludwig");
+        assert_eq!(
+            format_person("von Beethoven, Jr, Ludwig"),
+            "von Beethoven, Jr, Ludwig"
+        );
         assert_eq!(format_person("Smith"), "Smith");
         assert_eq!(format_person("{Barnes and Noble}"), "{Barnes and Noble}");
     }
@@ -548,7 +564,10 @@ mod tests {
     #[test]
     fn bad_year_falls_back_to_1900() {
         let e = &parse_bib("@misc{k, title={T}, year={20xx}}")[0];
-        assert_eq!(entry_to_meta(e).unwrap().published.to_string(), "1900-01-01");
+        assert_eq!(
+            entry_to_meta(e).unwrap().published.to_string(),
+            "1900-01-01"
+        );
         // No title field present -> defaults to the key.
         let e2 = &parse_bib("@misc{onlykey}")[0];
         assert_eq!(entry_to_meta(e2).unwrap().title, "onlykey");
