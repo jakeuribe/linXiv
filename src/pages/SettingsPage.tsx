@@ -8,6 +8,7 @@ import { SearchSection } from "../components/settings/SearchSection";
 import { SidebarSection } from "../components/settings/SidebarSection";
 import { ExportSection } from "../components/settings/ExportSection";
 import { IntegrationsSection } from "../components/settings/IntegrationsSection";
+import { SharingSection } from "../components/settings/SharingSection";
 import { TrashSection } from "../components/settings/TrashSection";
 import { AboutSection } from "../components/settings/AboutSection";
 import { EditorPluginSection } from "../components/settings/EditorPluginSection";
@@ -71,6 +72,12 @@ const GROUPS: SettingsGroup[] = [
         <EditorPluginSection />
       </div>
     ),
+  },
+  {
+    id: "sharing",
+    label: "Sharing",
+    icon: "⇄",
+    render: () => <SharingSection />,
   },
   {
     id: "about",
