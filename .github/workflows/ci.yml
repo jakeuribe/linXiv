@@ -29,6 +29,10 @@ jobs:
       # Native libpdfium for the PDF-extraction tests.
       - name: Fetch pdfium
         run: bash scripts/fetch_pdfium.sh
+      # linxiv-app's tauri-build validates the externalBin sidecar paths at
+      # compile time, so they must exist before cargo test builds the app.
+      - name: Stage Rust CLI/MCP sidecar binaries
+        run: bash scripts/stage_rust_bins.sh
       - name: cargo test
         working-directory: src-tauri
         run: cargo test --workspace
