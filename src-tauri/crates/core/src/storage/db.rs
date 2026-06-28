@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use chrono::{NaiveDate, NaiveDateTime};
+use chrono::{DateTime, NaiveDate, NaiveDateTime};
 use rusqlite::{Connection, Transaction};
 
 use crate::error::{CoreError, Result};
@@ -74,9 +74,14 @@ pub fn timestamp_to_sql(dt: NaiveDateTime) -> String {
 }
 
 pub fn timestamp_from_sql(s: &str) -> Result<NaiveDateTime> {
-    let norm = s.trim().replacen('T', " ", 1);
+    let t = s.trim();
+    let norm = t.replacen('T', " ", 1);
     NaiveDateTime::parse_from_str(&norm, "%Y-%m-%d %H:%M:%S%.f")
         .or_else(|_| NaiveDateTime::parse_from_str(&norm, "%Y-%m-%d %H:%M:%S"))
+        // Legacy rows from the Python backend used datetime.isoformat() with a UTC
+        // offset (e.g. "2026-06-04T03:10:47.041006+00:00"); RFC3339-parse those and
+        // normalize to naive UTC so the offset isn't trailing input.
+        .or_else(|_| DateTime::parse_from_rfc3339(t).map(|dt| dt.naive_utc()))
         .map_err(|e| CoreError::Internal(format!("bad TIMESTAMP {s:?}: {e}")))
 }
 
@@ -113,5 +118,26 @@ mod tests {
         assert_eq!(timestamp_from_sql("2024-03-05 12:00:00").unwrap(), dt);
         assert!(bool_from_sql(bool_to_sql(true)));
         assert!(!bool_from_sql(0));
+    }
+
+    #[test]
+    fn timestamp_from_sql_accepts_python_isoformat_offset() {
+        // Legacy Python row: microseconds + a UTC offset that used to be "trailing input".
+        let utc = NaiveDate::from_ymd_opt(2026, 6, 4)
+            .unwrap()
+            .and_hms_micro_opt(3, 10, 47, 41006)
+            .unwrap();
+        assert_eq!(
+            timestamp_from_sql("2026-06-04T03:10:47.041006+00:00").unwrap(),
+            utc
+        );
+        // A non-zero offset is normalized to naive UTC (03:10 -02:00 -> 05:10Z).
+        assert_eq!(
+            timestamp_from_sql("2026-06-04T03:10:47-02:00").unwrap(),
+            NaiveDate::from_ymd_opt(2026, 6, 4)
+                .unwrap()
+                .and_hms_opt(5, 10, 47)
+                .unwrap()
+        );
     }
 }
