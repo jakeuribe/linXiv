@@ -8,7 +8,6 @@ import "react-pdf/dist/Page/TextLayer.css";
 import { getPaperBySfk, getPaperVersions, getPaperPdfUrl, getPdfProxyUrl } from "../api/papers";
 import { getNotes, deleteNote } from "../api/notes";
 import { listProjects } from "../api/projects";
-import { fetchArxiv } from "../api/search";
 import { apiFetch, bytesToBase64, isTauri } from "../api/client";
 import type { Note, Paper } from "../types/api";
 import { Spinner } from "../components/ui/spinner";
@@ -52,7 +51,6 @@ export default function PaperDetailPage() {
   const [containerWidth, setContainerWidth] = useState(0);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [showPdfPreview, setShowPdfPreview] = useState(false);
-  const [useProxy, setUseProxy] = useState(false);
   const [pdfPreviewLoaded, setPdfPreviewLoaded] = useState(false);
   const pdfPreviewDocRef = useRef<PDFDocumentProxy | null>(null);
   const linkPdfInputRef = useRef<HTMLInputElement>(null);
@@ -109,16 +107,9 @@ export default function PaperDetailPage() {
   const isViewingLatest =
     selectedVersion === null || selectedVersion === versionsData?.latest_version;
 
-  const downloadPdfMutation = useMutation({
-    mutationFn: (sourceId: string) => fetchArxiv(sourceId, true),
-    onSuccess: () => {
-      setShowPdfPreview(true);
-      queryClient.invalidateQueries({ queryKey: ["paper", "sfk", sfk] });
-      queryClient.invalidateQueries({ queryKey: ["paper", "versions", sfk] });
-      queryClient.invalidateQueries({ queryKey: ["papers"] });
-      queryClient.invalidateQueries({ queryKey: ["stats"] });
-    },
-  });
+  function handlePreviewPdf() {
+    setShowPdfPreview(true);
+  }
 
   const savePdfMutation = useMutation({
     mutationFn: async (sourceId: string) => {
@@ -179,7 +170,6 @@ export default function PaperDetailPage() {
     };
   }, []);
 
-  const { reset: resetDownloadPdf } = downloadPdfMutation;
   const { reset: resetSavePdf } = savePdfMutation;
   const { reset: resetLinkPdf } = linkPdfMutation;
 
@@ -187,19 +177,17 @@ export default function PaperDetailPage() {
     setPreviewNumPages(0);
     setPreviewPage(1);
     setShowPdfPreview(false);
-    setUseProxy(false);
     setPdfPreviewLoaded(false);
     setOpenNativeError(null);
     setOpenNativeLoading(false);
     pdfPreviewDocRef.current = null;
-    resetDownloadPdf();
     resetSavePdf();
     resetLinkPdf();
     return () => {
       openNativeAbortRef.current?.abort();
       openNativeAbortRef.current = null;
     };
-  }, [sfk, selectedVersion, paper?.has_pdf, resetDownloadPdf, resetSavePdf, resetLinkPdf]);
+  }, [sfk, selectedVersion, paper?.has_pdf, resetSavePdf, resetLinkPdf]);
 
   function handleNotesSaved() {
     queryClient.invalidateQueries({ queryKey: ["notes", paper?.source_id] });
@@ -348,13 +336,11 @@ export default function PaperDetailPage() {
               paper={paper}
               isViewingLatest={isViewingLatest}
               isOnline={isOnline}
-              downloadPdfMutation={downloadPdfMutation}
+              onPreview={handlePreviewPdf}
               savePdfMutation={savePdfMutation}
               linkPdfMutation={linkPdfMutation}
               linkPdfInputRef={linkPdfInputRef}
               showPdfPreview={showPdfPreview}
-              useProxy={useProxy}
-              setUseProxy={setUseProxy}
               previewNumPages={previewNumPages}
               setPreviewNumPages={setPreviewNumPages}
               previewPage={previewPage}
@@ -594,13 +580,11 @@ interface PdfPaneProps {
   isViewingLatest: boolean;
   isOnline: boolean;
   asStrip?: boolean;
-  downloadPdfMutation: Mutation<string>;
+  onPreview: () => void;
   savePdfMutation: Mutation<string>;
   linkPdfMutation: Mutation<{ sourceId: string; file: File }>;
   linkPdfInputRef: React.RefObject<HTMLInputElement>;
   showPdfPreview: boolean;
-  useProxy: boolean;
-  setUseProxy: (v: boolean) => void;
   previewNumPages: number;
   setPreviewNumPages: (n: number) => void;
   previewPage: number;
@@ -653,13 +637,11 @@ function PdfPane({
   paper,
   isViewingLatest,
   isOnline,
-  downloadPdfMutation,
+  onPreview,
   savePdfMutation,
   linkPdfMutation,
   linkPdfInputRef,
   showPdfPreview,
-  useProxy,
-  setUseProxy,
   previewNumPages,
   setPreviewNumPages,
   previewPage,
@@ -707,19 +689,12 @@ function PdfPane({
           <div className="flex items-center gap-3 flex-wrap self-center">
             <Button
               variant="muted"
-              onClick={() => downloadPdfMutation.mutate(paper.source_id)}
-              disabled={downloadPdfMutation.isPending || !isOnline}
+              onClick={onPreview}
+              disabled={!isOnline}
             >
-              {downloadPdfMutation.isPending ? "Fetching…" : "Preview PDF"}
+              Preview PDF
             </Button>
             {!isOnline && <span className="text-xs text-muted">Offline</span>}
-            {downloadPdfMutation.isError && (
-              <span className="text-xs" style={{ color: "var(--color-danger)" }}>
-                {downloadPdfMutation.error instanceof Error
-                  ? downloadPdfMutation.error.message
-                  : "Failed to fetch PDF"}
-              </span>
-            )}
           </div>
         )}
         {!showPdfPreview && paper.url && (
@@ -787,7 +762,7 @@ function PdfPane({
                   className="w-full h-full overflow-y-auto bg-[#525659]"
                 >
                   <Document
-                    file={useProxy ? getPdfProxyUrl(paper.url) : paper.url}
+                    file={getPdfProxyUrl(paper.url)}
                     onLoadSuccess={(pdf) => {
                       setPreviewNumPages(pdf.numPages);
                       pdfPreviewDocRef.current = pdf;
@@ -800,30 +775,15 @@ function PdfPane({
                     }
                     error={
                       <div className="flex flex-col items-center justify-center gap-3 py-16 text-sm">
-                        {!useProxy ? (
-                          <>
-                            <span className="text-white/60">Could not load PDF directly (CORS).</span>
-                            <Button
-                              variant="primary"
-                              size="sm"
-                              onClick={() => { setPreviewNumPages(0); setPdfPreviewLoaded(false); pdfPreviewDocRef.current = null; setUseProxy(true); }}
-                            >
-                              Load via proxy
-                            </Button>
-                          </>
-                        ) : (
-                          <>
-                            <span className="text-danger">Failed to load PDF.</span>
-                            <a
-                              href={paper.url}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="text-accent hover:underline"
-                            >
-                              Open in browser
-                            </a>
-                          </>
-                        )}
+                        <span className="text-danger">Failed to load PDF.</span>
+                        <a
+                          href={paper.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-accent hover:underline"
+                        >
+                          Open in browser
+                        </a>
                       </div>
                     }
                   >
