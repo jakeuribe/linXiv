@@ -88,11 +88,13 @@ fn main() {
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 if let Some(share) = app.try_state::<ShareState>() {
                     // Bounded teardown: Router::shutdown can wait on draining handlers,
-                    // so cap it and let exit proceed if it overruns.
-                    let teardown = tauri::async_runtime::block_on(tokio::time::timeout(
-                        std::time::Duration::from_secs(5),
-                        share.shutdown(),
-                    ));
+                    // so cap it and let exit proceed if it overruns. The timeout future
+                    // is built inside the async block so its timer registers within the
+                    // runtime — constructing it outside block_on panics "no reactor".
+                    let teardown = tauri::async_runtime::block_on(async {
+                        tokio::time::timeout(std::time::Duration::from_secs(5), share.shutdown())
+                            .await
+                    });
                     match teardown {
                         Ok(Err(e)) => eprintln!("share node shutdown error: {e}"),
                         Err(_) => eprintln!("share node shutdown timed out; abandoning"),
