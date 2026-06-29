@@ -119,6 +119,8 @@ fn json_response(status: StatusCode, value: &serde_json::Value) -> Response<Cow<
     let body = serde_json::to_vec(value).unwrap_or_default();
     Response::builder()
         .status(status)
+        // linxiv:// is fetched cross-origin by the tauri:// webview.
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
         .header(header::CONTENT_TYPE, "application/json")
         .body(Cow::Owned(body))
         .expect("static response builder")
@@ -204,6 +206,8 @@ async fn fetch_proxy(url: &str) -> Response<Cow<'static, [u8]>> {
 fn pdf_response(bytes: Vec<u8>) -> Response<Cow<'static, [u8]>> {
     Response::builder()
         .status(StatusCode::OK)
+        // linxiv:// is fetched cross-origin by the tauri:// webview.
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
         .header(header::CONTENT_TYPE, "application/pdf")
         .header(header::CONTENT_DISPOSITION, "inline")
         .body(Cow::Owned(bytes))
@@ -213,6 +217,8 @@ fn pdf_response(bytes: Vec<u8>) -> Response<Cow<'static, [u8]>> {
 fn empty(status: StatusCode) -> Response<Cow<'static, [u8]>> {
     Response::builder()
         .status(status)
+        // linxiv:// is fetched cross-origin by the tauri:// webview.
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
         .body(Cow::Borrowed(&b""[..]))
         .expect("static response builder")
 }
