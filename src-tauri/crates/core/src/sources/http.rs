@@ -14,6 +14,8 @@ use crate::error::{CoreError, Result};
 
 /// arXiv host allowlist (exact-or-`.suffix`). Mirrors Python's pinned hosts.
 pub const ARXIV_HOSTS: &[&str] = &["arxiv.org", "ar5iv.labs.arxiv.org", "export.arxiv.org"];
+/// Host of the free public arXiv mirror on Google Cloud Storage (`gs://arxiv-dataset`).
+pub const GCS_HOSTS: &[&str] = &["storage.googleapis.com"];
 /// Polite mirror substituted into arXiv URLs, like `_substitute_domain(..., DOWNLOAD_DOMAIN)`.
 const DOWNLOAD_DOMAIN: &str = "export.arxiv.org";
 /// Cool-down after a 429 (`_RATELIMIT_WAIT` in fetch_paper_metadata.py).
@@ -76,6 +78,29 @@ pub fn assert_host_allowed(url: &str, allow: &[&str]) -> Result<()> {
 /// 429) are returned to the caller as-is.
 pub async fn get_guarded(url: &str, allow: &[&str]) -> Result<reqwest::Response> {
     get_guarded_with(url, allow, &[]).await
+}
+
+/// Cap the GCS mirror attempt so a stalled mirror degrades to arXiv well inside
+/// the caller's overall proxy budget instead of consuming it (a host that connects
+/// but hangs before the headers is not bounded by the client's connect timeout).
+const GCS_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(8);
+
+/// Fetch an arXiv PDF for viewing, preferring the free GCS mirror so the request
+/// doesn't count against arXiv's rate limit. The bucket keys objects by versioned
+/// id and lags for brand-new papers, so on any miss (unmappable URL, a slow/stalled
+/// mirror, or a non-success GCS response) fall back to the arXiv host. Both hops are
+/// host-guarded.
+pub async fn get_arxiv_pdf(pdf_url: &str) -> Result<reqwest::Response> {
+    if let Some(gcs) = crate::sources::arxiv_downloads::gcs_pdf_url(pdf_url) {
+        if let Ok(Ok(resp)) =
+            tokio::time::timeout(GCS_ATTEMPT_TIMEOUT, get_guarded(&gcs, GCS_HOSTS)).await
+        {
+            if resp.status().is_success() {
+                return Ok(resp);
+            }
+        }
+    }
+    get_guarded(pdf_url, ARXIV_HOSTS).await
 }
 
 /// `get_guarded` plus per-request headers (e.g. OpenAlex's polite-pool

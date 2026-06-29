@@ -31,6 +31,55 @@ fn pdf_to_src(url: &str) -> String {
     url.replace("/pdf/", "/src/")
 }
 
+/// Map an arXiv `…/pdf/<id>v<n>` URL to the matching object on the free public
+/// GCS mirror (`gs://arxiv-dataset`, served over HTTPS without auth) so a PDF
+/// view skips arXiv's rate limit. Returns None unless the URL is an arXiv `/pdf/`
+/// link carrying an explicit version — the bucket keys objects by `<id>v<n>.pdf`
+/// with no version-less alias — so an unmappable URL is left to the arXiv host.
+///
+/// New-style `…/pdf/2204.12985v4` → `…/arxiv/arxiv/pdf/2204/2204.12985v4.pdf`.
+/// Old-style `…/pdf/hep-th/9901001v1` → `…/arxiv/hep-th/pdf/9901/9901001v1.pdf`.
+pub(crate) fn gcs_pdf_url(pdf_url: &str) -> Option<String> {
+    // Only an arXiv-hosted URL may be mapped onto the mirror; otherwise the proxy
+    // would fetch an attacker-chosen storage.googleapis.com object. A rejected host
+    // yields None, so the caller falls back to the host-guarded arXiv fetch.
+    http::assert_host_allowed(pdf_url, http::ARXIV_HOSTS).ok()?;
+    let after = pdf_url.split_once("/pdf/")?.1;
+    let after = after
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(after)
+        .trim_matches('/');
+    let (archive_path, last) = after.rsplit_once('/').unwrap_or(("", after));
+    // Tolerate the canonical `.pdf` suffix on the object id.
+    let last = last.strip_suffix(".pdf").unwrap_or(last);
+    // The bucket has no version-less object, so an explicit trailing v<digits> is
+    // required; without one, defer to the arXiv host.
+    let vpos = last.rfind('v')?;
+    let (base, vdigits) = (&last[..vpos], &last[vpos + 1..]);
+    if base.is_empty() || vdigits.is_empty() || !vdigits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let (archive, yymm) = match base.split_once('.') {
+        // New-style "YYMM.NNNNN": the archive bucket is literally "arxiv".
+        Some((yymm, _)) => ("arxiv", yymm),
+        // Old-style "<archive>/NNNNNNN": the archive is a single path segment —
+        // reject a multi-segment or `..` path so it can't escape the bucket.
+        None => {
+            if archive_path.contains('/') || archive_path.contains("..") {
+                return None;
+            }
+            (archive_path, base.get(..4)?)
+        }
+    };
+    if archive.is_empty() || yymm.len() != 4 || !yymm.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(format!(
+        "https://storage.googleapis.com/arxiv-dataset/arxiv/{archive}/pdf/{yymm}/{last}.pdf"
+    ))
+}
+
 /// Safe default filename from a paper id or URL: take the last path segment,
 /// replace every char outside `[A-Za-z0-9_.-]` with `_`, append `.<extension>`.
 /// Mirrors `_default_filename` (`re.sub(r'[^\w.\-]', '_', tail)`).
@@ -337,6 +386,36 @@ mod tests {
         let out = pdf_to_src("https://arxiv.org/pdf/2204.12985v4");
         assert!(out.contains("/src/"));
         assert!(!out.contains("/pdf/"));
+    }
+
+    #[test]
+    fn gcs_pdf_url_maps_new_and_old_style() {
+        assert_eq!(
+            gcs_pdf_url("http://arxiv.org/pdf/2204.12985v4").as_deref(),
+            Some("https://storage.googleapis.com/arxiv-dataset/arxiv/arxiv/pdf/2204/2204.12985v4.pdf")
+        );
+        assert_eq!(
+            gcs_pdf_url("https://arxiv.org/pdf/hep-th/9901001v1").as_deref(),
+            Some(
+                "https://storage.googleapis.com/arxiv-dataset/arxiv/hep-th/pdf/9901/9901001v1.pdf"
+            )
+        );
+        // Canonical `.pdf`-suffixed form maps to the same object.
+        assert_eq!(
+            gcs_pdf_url("https://arxiv.org/pdf/2204.12985v4.pdf").as_deref(),
+            Some("https://storage.googleapis.com/arxiv-dataset/arxiv/arxiv/pdf/2204/2204.12985v4.pdf")
+        );
+        // No explicit version -> unmappable -> caller falls back to the arXiv host.
+        assert_eq!(gcs_pdf_url("http://arxiv.org/pdf/2204.12985"), None);
+        // Non-arXiv host must NOT be mapped onto the mirror (SSRF host guard).
+        assert_eq!(gcs_pdf_url("https://evil.com/pdf/9901001v1"), None);
+        // A traversing path can't escape the arxiv-dataset bucket.
+        assert_eq!(
+            gcs_pdf_url("https://arxiv.org/pdf/a/../../x/9901001v1"),
+            None
+        );
+        // Not an arXiv /pdf/ link.
+        assert_eq!(gcs_pdf_url("https://example.com/foo.pdf"), None);
     }
 
     // -- strip_tex_noise ----------------------------------------------------

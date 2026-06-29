@@ -182,7 +182,9 @@ async fn serve_proxy(query: &str) -> Response<Cow<'static, [u8]>> {
 }
 
 async fn fetch_proxy(url: &str) -> Response<Cow<'static, [u8]>> {
-    match core_http::get_guarded(url, core_http::ARXIV_HOSTS).await {
+    // Prefer the free arXiv GCS mirror (no rate limit), falling back to the arXiv
+    // host inside `get_arxiv_pdf` when the bucket lacks the object.
+    match core_http::get_arxiv_pdf(url).await {
         Ok(resp) if resp.status().is_success() => {
             if resp.content_length().is_some_and(|n| n > MAX_PDF_BYTES) {
                 return empty(StatusCode::PAYLOAD_TOO_LARGE);
