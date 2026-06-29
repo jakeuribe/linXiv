@@ -14,8 +14,15 @@ case "$triple" in *windows*) exe=".exe" ;; esac
 
 dest="src-tauri/binaries"
 mkdir -p "$dest"
-cp "src-tauri/target/release/linxiv-cli$exe" "$dest/linxiv-$triple$exe"
-cp "src-tauri/target/release/linxiv-mcp$exe" "$dest/linxiv-mcp-$triple$exe"
-chmod +x "$dest/linxiv-$triple$exe" "$dest/linxiv-mcp-$triple$exe"
-echo "staged: $dest/linxiv-$triple$exe"
-echo "staged: $dest/linxiv-mcp-$triple$exe"
+
+# Stage via a temp file + atomic rename. A running sidecar (e.g. the linxiv MCP
+# server) holds the old binary, so an in-place `cp` fails with ETXTBSY ("Text
+# file busy"); rename() swaps the directory entry without touching the busy inode.
+stage_bin() {
+  cp "$1" "$2.tmp"
+  chmod +x "$2.tmp"
+  mv -f "$2.tmp" "$2"
+  echo "staged: $2"
+}
+stage_bin "src-tauri/target/release/linxiv-cli$exe" "$dest/linxiv-$triple$exe"
+stage_bin "src-tauri/target/release/linxiv-mcp$exe" "$dest/linxiv-mcp-$triple$exe"
