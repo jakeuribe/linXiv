@@ -1,7 +1,7 @@
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::error::Result;
-use crate::models::TagDetails;
+use crate::models::{TagDetails, TagWithCount};
 use crate::storage::db;
 
 /// `_TAG_FK_BY_LABEL_SQL` — label match is COLLATE NOCASE, mirroring the UNIQUE
@@ -17,6 +17,31 @@ pub fn list_tags(conn: &Connection) -> Result<Vec<TagDetails>> {
         Ok(TagDetails {
             tag_id: row.get(0)?,
             label: row.get(1)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
+/// Every named tag with its distinct *active*-paper count (trashed/deleted roots
+/// excluded, matching `author_paper_counts`), ordered by label. Null-label rows
+/// are dropped. Drives the Tags index table's count column / count sort.
+pub fn list_tags_with_count(conn: &Connection) -> Result<Vec<TagWithCount>> {
+    let mut stmt = conn.prepare(
+        "SELECT t.TAG AS label, \
+                COUNT(DISTINCT CASE WHEN pr.STATUS = 'active' THEN p.SOURCE_FK END) AS paper_count \
+         FROM TAG t \
+         LEFT JOIN PAPER_TO_TAG ptt ON ptt.TAG_FK = t.TAG_FK \
+         LEFT JOIN PAPER p          ON p.PAPER_ID = ptt.PAPER_ID \
+         LEFT JOIN PAPER_ROOTS pr   ON pr.SOURCE_FK = p.SOURCE_FK \
+         WHERE t.TAG IS NOT NULL \
+         GROUP BY t.TAG_FK \
+         ORDER BY t.TAG",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(TagWithCount {
+            label: row.get("label")?,
+            paper_count: row.get("paper_count")?,
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -181,6 +206,43 @@ mod tests {
         assert_eq!(tags[0].label.as_deref(), Some("alpha"));
         assert_eq!(tags[1].label.as_deref(), Some("zeta"));
         assert!(tags[0].tag_id > 0);
+    }
+
+    #[test]
+    fn list_tags_with_count_counts_active_papers_only() {
+        let mut conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        let used = create_tag(&mut conn, "Used").unwrap();
+        create_tag(&mut conn, "Empty").unwrap();
+
+        // one active + one deleted paper, both tagged "Used".
+        for (sid, status) in [("p-active", "active"), ("p-trashed", "deleted")] {
+            conn.execute(
+                "INSERT INTO PAPER_ROOTS (SOURCE_ID, STATUS) VALUES (?, ?)",
+                rusqlite::params![sid, status],
+            )
+            .unwrap();
+            let fk = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO PAPER (SOURCE_ID, VERSION, TITLE, SOURCE_FK) VALUES (?, 1, 'T', ?)",
+                rusqlite::params![sid, fk],
+            )
+            .unwrap();
+            let pid = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO PAPER_TO_TAG (PAPER_ID, TAG_FK) VALUES (?, ?)",
+                rusqlite::params![pid, used],
+            )
+            .unwrap();
+        }
+
+        let counts = list_tags_with_count(&conn).unwrap();
+        // ordered by label: Empty, Used.
+        assert_eq!(counts.len(), 2);
+        assert_eq!(counts[0].label, "Empty");
+        assert_eq!(counts[0].paper_count, 0);
+        assert_eq!(counts[1].label, "Used");
+        assert_eq!(counts[1].paper_count, 1, "deleted paper excluded");
     }
 
     #[test]

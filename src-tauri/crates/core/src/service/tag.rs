@@ -10,7 +10,7 @@
 use rusqlite::Connection;
 
 use crate::error::Result;
-use crate::models::{TagDetails, TagIn};
+use crate::models::{TagDetails, TagIn, TagWithCount};
 use crate::storage::queries::tag as q;
 
 /// `service/tag.py::Tag` — single-tag lookup. Resolution order: tag_id -> label.
@@ -111,6 +111,11 @@ pub fn list_all_tags(conn: &Connection) -> Result<Vec<String>> {
         .into_iter()
         .filter_map(|t| t.label)
         .collect())
+}
+
+/// Every named tag with its active-paper count, for the Tags index table.
+pub fn list_tags_with_count(conn: &Connection) -> Result<Vec<TagWithCount>> {
+    q::list_tags_with_count(conn)
 }
 
 #[cfg(test)]

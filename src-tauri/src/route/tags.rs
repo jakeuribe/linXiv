@@ -20,9 +20,10 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
     }
 }
 
-/// `GET /api/tags` — `api_tags`.
+/// `GET /api/tags` — `api_tags`. Each tag carries its active-paper count so the
+/// index can render a table sortable by name or by count.
 fn list(state: &AppState) -> Result<Value, ApiError> {
-    let tags = state.with_conn(|conn| svc_tag::list_all_tags(conn))?;
+    let tags = state.with_conn(|conn| svc_tag::list_tags_with_count(conn))?;
     Ok(json!({ "tags": tags }))
 }
 
@@ -106,6 +107,36 @@ mod tests {
             get(&state(), "/api/tags").await.unwrap(),
             json!({ "tags": [] })
         );
+    }
+
+    #[tokio::test]
+    async fn list_returns_label_and_paper_count_keys() {
+        let st = state();
+        st.with_conn(|conn| {
+            conn.execute("INSERT INTO TAG (TAG) VALUES ('Used')", []).unwrap();
+            conn.execute(
+                "INSERT INTO PAPER_ROOTS (SOURCE_ID, STATUS) VALUES ('p1', 'active')",
+                [],
+            )
+            .unwrap();
+            let fk = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO PAPER (SOURCE_ID, VERSION, TITLE, SOURCE_FK) VALUES ('p1', 1, 'T', ?)",
+                [fk],
+            )
+            .unwrap();
+            let pid = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO PAPER_TO_TAG (PAPER_ID, TAG_FK) SELECT ?, TAG_FK FROM TAG WHERE TAG = 'Used'",
+                [pid],
+            )
+            .unwrap();
+        });
+
+        let v = get(&st, "/api/tags").await.unwrap();
+        let tag = &v["tags"][0];
+        assert_eq!(tag["label"], json!("Used"));
+        assert_eq!(tag["paper_count"], json!(1));
     }
 
     #[tokio::test]

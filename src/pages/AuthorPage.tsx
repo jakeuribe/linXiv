@@ -1,11 +1,12 @@
-import { useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useMemo, useState } from "react";
+import { useParams, useNavigate, Link } from "react-router-dom";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { listAuthors, getAuthor, updateAuthor, deleteAuthor } from "../api/authors";
 import type { AuthorUpdateBody } from "../api/authors";
 import { Spinner } from "../components/ui/spinner";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { SortHeader, nextSort, type SortDir } from "../components/ui/sort-header";
 import { useUiStore } from "../stores/ui";
 import { MathText } from "../lib/tex";
 
@@ -34,9 +35,15 @@ export default function AuthorPage() {
 // Index: list all authors
 // ---------------------------------------------------------------------------
 
+type AuthorSortKey = "name" | "paper_count";
+
 function AuthorIndexView() {
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<{ key: AuthorSortKey; dir: SortDir }>({
+    key: "paper_count",
+    dir: "desc",
+  });
   const hideSingleAuthors = useUiStore((s) => s.hideSingleAuthors);
   const setHideSingleAuthors = useUiStore((s) => s.setHideSingleAuthors);
 
@@ -45,17 +52,27 @@ function AuthorIndexView() {
     queryFn: () => listAuthors(hideSingleAuthors),
   });
 
-  const filtered = search.trim()
-    ? authors.filter((a) => {
-        const q = search.toLowerCase();
-        return (
-          a.full_name?.toLowerCase().includes(q) ||
-          a.first_name?.toLowerCase().includes(q) ||
-          a.last_name?.toLowerCase().includes(q) ||
-          a.orcid?.toLowerCase().includes(q)
-        );
-      })
-    : authors;
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    const matched = q
+      ? authors.filter(
+          (a) =>
+            a.full_name?.toLowerCase().includes(q) ||
+            a.first_name?.toLowerCase().includes(q) ||
+            a.last_name?.toLowerCase().includes(q) ||
+            a.orcid?.toLowerCase().includes(q)
+        )
+      : authors;
+    const dir = sort.dir === "asc" ? 1 : -1;
+    const name = (a: (typeof authors)[number]) => a.full_name ?? "";
+    return [...matched].sort((a, b) => {
+      const primary =
+        sort.key === "name"
+          ? name(a).localeCompare(name(b))
+          : (a.paper_count ?? 0) - (b.paper_count ?? 0);
+      return primary !== 0 ? primary * dir : name(a).localeCompare(name(b));
+    });
+  }, [authors, search, sort]);
 
   if (isLoading) {
     return (
@@ -115,23 +132,47 @@ function AuthorIndexView() {
             : "No authors yet."}
         </p>
       ) : (
-        <div className="flex flex-col divide-y" style={{ borderColor: "var(--color-border)" }}>
-          {filtered.map((author) => (
-            <button
-              key={author.author_id}
-              type="button"
-              className="flex items-center justify-between py-3 text-left hover:opacity-80 transition-opacity"
-              onClick={() => navigate(`/authors/${author.author_id}`)}
-            >
-              <span className="font-medium text-sm" style={{ color: "var(--color-text)" }}>
-                {author.full_name ?? "(unnamed)"}
-              </span>
-              <span className="text-xs ml-4 shrink-0" style={{ color: "var(--color-muted)" }}>
-                {author.paper_count ?? 0} paper{(author.paper_count ?? 0) !== 1 ? "s" : ""}
-              </span>
-            </button>
-          ))}
-        </div>
+        <table className="w-full text-sm border-collapse">
+          <thead>
+            <tr className="border-b" style={{ borderColor: "var(--color-border)" }}>
+              <SortHeader
+                label="Author"
+                active={sort.key === "name"}
+                dir={sort.dir}
+                onSort={() => setSort((s) => nextSort(s, "name", "asc"))}
+              />
+              <SortHeader
+                label="Papers"
+                active={sort.key === "paper_count"}
+                dir={sort.dir}
+                onSort={() => setSort((s) => nextSort(s, "paper_count", "desc"))}
+                align="right"
+              />
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((author) => {
+              const to = `/authors/${author.author_id}`;
+              return (
+              <tr
+                key={author.author_id}
+                onClick={() => navigate(to)}
+                className="border-b cursor-pointer hover:bg-[var(--color-panel)] transition-colors"
+                style={{ borderColor: "var(--color-border)" }}
+              >
+                <td className="py-2.5 font-medium" style={{ color: "var(--color-text)" }}>
+                  <Link to={to} className="block" onClick={(e) => e.stopPropagation()}>
+                    {author.full_name ?? "(unnamed)"}
+                  </Link>
+                </td>
+                <td className="py-2.5 text-right tabular-nums" style={{ color: "var(--color-muted)" }}>
+                  {author.paper_count ?? 0}
+                </td>
+              </tr>
+              );
+            })}
+          </tbody>
+        </table>
       )}
     </div>
   );
