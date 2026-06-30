@@ -156,6 +156,9 @@ export default function PaperDetailPage() {
     mutationFn: (noteId: number) => deleteNote(noteId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["notes", paper?.source_id] });
+      // Drop the deleted note's read page from cache so back-nav to it shows the
+      // not-found state instead of its stale content.
+      queryClient.invalidateQueries({ queryKey: ["note"] });
     },
   });
 
@@ -191,6 +194,9 @@ export default function PaperDetailPage() {
 
   function handleNotesSaved() {
     queryClient.invalidateQueries({ queryKey: ["notes", paper?.source_id] });
+    // Also refresh any open single-note read page (keyed ["note", id]) so an
+    // edit here isn't masked by its 30s staleTime.
+    queryClient.invalidateQueries({ queryKey: ["note"] });
     setShowAddNote(false);
     setEditingNoteId(null);
     deleteNoteMutation.reset();

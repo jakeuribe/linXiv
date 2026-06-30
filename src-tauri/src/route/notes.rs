@@ -19,6 +19,7 @@ use crate::state::AppState;
 pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<Value, ApiError>> {
     match (ctx.method, ctx.segs) {
         ("GET", ["api", "notes"]) => Some(list(state, ctx)),
+        ("GET", ["api", "notes", id]) => Some(get(state, id)),
         ("POST", ["api", "notes"]) => Some(create(state, ctx)),
         ("PATCH", ["api", "notes", id]) => Some(update(state, id, ctx)),
         ("DELETE", ["api", "notes", id]) => Some(delete(state, id)),
@@ -49,6 +50,17 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
             },
         )?;
         Ok(json!({ "notes": notes }))
+    })
+}
+
+/// `GET /api/notes/{id}` — single note by NOTE_SK, for the dedicated note page.
+/// 404 if no row matched.
+fn get(state: &AppState, id: &str) -> Result<Value, ApiError> {
+    let note_id = path_i64(id)?;
+    state.with_conn(|conn| {
+        let note = svc_note::get(conn, &Note { note_id: Some(note_id) })?
+            .ok_or_else(|| ApiError::new(404, "Note not found"))?;
+        Ok(json!({ "note": note }))
     })
 }
 
@@ -197,6 +209,24 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(listed["notes"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn get_returns_note_then_404_for_missing() {
+        let st = state();
+        req(
+            &st,
+            "POST",
+            "/api/notes",
+            Some(json!({ "source_id": "arxiv:1", "title": "t", "content": "c" })),
+        )
+        .await
+        .unwrap();
+        let got = req(&st, "GET", "/api/notes/1", None).await.unwrap();
+        assert_eq!(got["note"]["title"], "t");
+        assert_eq!(got["note"]["content"], "c");
+        let err = req(&st, "GET", "/api/notes/999", None).await.unwrap_err();
+        assert_eq!(err.status, 404);
     }
 
     #[tokio::test]

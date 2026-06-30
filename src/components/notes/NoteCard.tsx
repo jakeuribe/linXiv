@@ -1,9 +1,12 @@
+import { useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import type { Note, Project } from "../../types/api";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
 import { formatDate } from "../../lib/date";
 import { useConfirmWithTimeout } from "../../hooks/useConfirmWithTimeout";
 import { MathText } from "../../lib/tex";
+import { NoteBody, noteEdited } from "./NoteBody";
 
 interface NoteCardProps {
   note: Note;
@@ -18,16 +21,31 @@ export function NoteCard({ note, projects = [], onEdit, onDelete }: NoteCardProp
   // it behind the same arm-to-confirm step used for the app's other destructive
   // actions rather than firing on a single click.
   const { confirm: confirmDelete, arm, disarm } = useConfirmWithTimeout();
+  const navigate = useNavigate();
+  const cardRef = useRef<HTMLDivElement>(null);
+  // Clicking the title/preview opens the full note on its own page so a long
+  // note can be read without dropping into the editor. id is effectively always
+  // set, but guard so a malformed note isn't a dead click.
+  const openNote = note.id != null ? () => navigate(`/notes/${note.id}`) : undefined;
+  // A drag-select that ends inside this region still fires click; don't navigate
+  // away while the user is selecting preview text to copy. Only a selection
+  // inside THIS card suppresses the click — a selection elsewhere shouldn't.
+  const handleCardClick = openNote
+    ? () => {
+        const sel = window.getSelection();
+        if (
+          sel &&
+          !sel.isCollapsed &&
+          sel.anchorNode &&
+          cardRef.current?.contains(sel.anchorNode)
+        ) {
+          return;
+        }
+        openNote();
+      }
+    : undefined;
 
-  // created_at and updated_at are equal at creation and diverge on PATCH.
-  // Compare parsed instants rather than raw strings so timestamp-formatting
-  // differences can't produce a false "edited" flag.
-  const createdMs = note.created_at ? Date.parse(note.created_at) : NaN;
-  const updatedMs = note.updated_at ? Date.parse(note.updated_at) : NaN;
-  const isEdited =
-    Number.isFinite(createdMs) &&
-    Number.isFinite(updatedMs) &&
-    updatedMs !== createdMs;
+  const { date: stamp, edited: isEdited } = noteEdited(note);
   const scopeProject =
     note.project_id == null
       ? null
@@ -41,31 +59,52 @@ export function NoteCard({ note, projects = [], onEdit, onDelete }: NoteCardProp
 
   return (
     <div className="bg-panel rounded border border-border p-3 flex flex-col gap-1.5">
-      {/* Header: title + scope badge + date */}
-      <div className="flex items-start justify-between gap-2">
-        <span className="font-medium text-text leading-snug">
-          <MathText forceInline>{note.title || "Untitled note"}</MathText>
-        </span>
-        <div className="shrink-0 flex items-center gap-2 mt-0.5">
-          <Badge color={scopeProject?.color_hex ?? undefined}>{scopeLabel}</Badge>
-          <span className="text-muted text-xs">
-            {formatDate(isEdited ? note.updated_at : note.created_at)}
-            {isEdited && " · edited"}
+      {/* Title + preview open the full-note page; actions row below stays separate. */}
+      <div
+        ref={cardRef}
+        role={openNote ? "button" : undefined}
+        tabIndex={openNote ? 0 : undefined}
+        aria-label={openNote ? `Open note: ${note.title || "Untitled note"}` : undefined}
+        onClick={handleCardClick}
+        onKeyDown={
+          openNote
+            ? (e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  openNote();
+                }
+              }
+            : undefined
+        }
+        className={
+          "flex flex-col gap-1.5" +
+          (openNote
+            ? " cursor-pointer rounded -m-1 p-1 transition-colors hover:bg-[var(--color-border)]"
+            : "")
+        }
+      >
+        {/* Header: title + scope badge + date */}
+        <div className="flex items-start justify-between gap-2">
+          <span className="font-medium text-text leading-snug">
+            <MathText forceInline>{note.title || "Untitled note"}</MathText>
           </span>
-        </div>
-      </div>
-
-      {/* Content preview */}
-      {note.content && (
-        <div className="text-muted text-sm line-clamp-3 leading-relaxed whitespace-pre-wrap">
-          {note.content.split("\n").map((line, i) => (
-            <span key={i + "-" + line}>
-              {i > 0 && <br />}
-              <MathText forceInline>{line}</MathText>
+          <div className="shrink-0 flex items-center gap-2 mt-0.5">
+            <Badge color={scopeProject?.color_hex ?? undefined}>{scopeLabel}</Badge>
+            <span className="text-muted text-xs">
+              {formatDate(stamp)}
+              {isEdited && " · edited"}
             </span>
-          ))}
+          </div>
         </div>
-      )}
+
+        {/* Content preview */}
+        {note.content && (
+          <NoteBody
+            content={note.content}
+            className="text-muted text-sm line-clamp-3 leading-relaxed"
+          />
+        )}
+      </div>
 
       {/* Actions */}
       <div className="flex items-center gap-1 pt-1">
