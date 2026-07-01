@@ -27,6 +27,7 @@ export interface SharedSummary {
   name: string;
   paper_count: number;
   note_count: number;
+  annotation_count: number;
   tag_count: number;
 }
 

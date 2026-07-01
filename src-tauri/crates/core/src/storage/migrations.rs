@@ -22,6 +22,7 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     project_to_tag_unique_index(conn)?;
     project_to_paper_unique_index(conn)?;
     author_full_name_index(conn)?;
+    annotation_table(conn)?;
     Ok(())
 }
 
@@ -169,6 +170,18 @@ fn author_full_name_index(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+// ── 8. ANNOTATION table (PDF highlights) ─────────────────────────────────────
+
+/// The PDF-annotation table was added after the initial schema, so it is created
+/// here (not in TABLE_DDL) so existing user DBs gain it on startup. The DDL itself
+/// is `CREATE TABLE IF NOT EXISTS`, so the whole step is an idempotent no-op once
+/// the table exists. FK referents (PAPER_ROOTS, PROJECT) are created by
+/// apply_tables, which runs before migrations — see `super::init_db`.
+fn annotation_table(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../../sql/tables/ANNOTATION.sql"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,6 +197,17 @@ mod tests {
         run_migrations(&conn).unwrap();
         assert!(index_exists(&conn, "idx_tag_label_unique").unwrap());
         assert!(index_exists(&conn, "idx_author_full_name").unwrap());
+        // The ANNOTATION table is created by the migration, not TABLE_DDL.
+        let annotation_tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='ANNOTATION'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(annotation_tables, 1);
+        assert!(index_exists(&conn, "idx_annotation_source_fk").unwrap());
+        assert!(index_exists(&conn, "idx_annotation_project_fk").unwrap());
         schema::apply_views(&conn).unwrap();
     }
 }

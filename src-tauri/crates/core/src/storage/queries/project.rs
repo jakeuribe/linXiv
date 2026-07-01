@@ -323,6 +323,10 @@ pub fn hard_delete_project(conn: &mut Connection, project_fk: i64) -> Result<()>
             "UPDATE NOTE SET PROJECT_FK = NULL WHERE PROJECT_FK = ?1",
             [project_fk],
         )?;
+        tx.execute(
+            "UPDATE ANNOTATION SET PROJECT_FK = NULL WHERE PROJECT_FK = ?1",
+            [project_fk],
+        )?;
         tx.execute("DELETE FROM PROJECT WHERE PROJECT_FK = ?1", [project_fk])?;
         Ok(())
     })
@@ -459,6 +463,12 @@ mod tests {
             [id],
         )
         .unwrap();
+        // a project-scoped annotation (FK to PROJECT) must not block hard_delete.
+        conn.execute(
+            "INSERT INTO ANNOTATION (SOURCE_FK, PROJECT_FK, ANCHOR) VALUES (10, ?1, '{}')",
+            [id],
+        )
+        .unwrap();
         assert_eq!(get_paper_project_fks(&conn, 10).unwrap(), vec![id]);
 
         hard_delete_project(&mut conn, id).unwrap();
@@ -472,6 +482,14 @@ mod tests {
             )
             .unwrap();
         assert_eq!(note_proj, None, "note kept, PROJECT_FK NULLed (ADR-0009)");
+        let ann_proj: Option<i64> = conn
+            .query_row(
+                "SELECT PROJECT_FK FROM ANNOTATION WHERE SOURCE_FK = 10",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ann_proj, None, "annotation kept, PROJECT_FK NULLed");
         let tag_links: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM PROJECT_TO_TAG WHERE PROJECT_FK = ?1",

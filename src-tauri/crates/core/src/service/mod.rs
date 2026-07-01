@@ -1,4 +1,5 @@
 //! Service layer — Phase 2 ports of `service/*.py`.
+pub mod annotation;
 pub mod author;
 pub mod editor_project;
 pub mod export_import;

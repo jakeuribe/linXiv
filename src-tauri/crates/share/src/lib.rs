@@ -20,9 +20,11 @@ use automerge::AutoCommit;
 use rusqlite::Connection;
 
 use linxiv_core::error::CoreError;
-use linxiv_core::service::{note as note_svc, paper as paper_svc, project as project_svc};
+use linxiv_core::service::{
+    annotation as annotation_svc, note as note_svc, paper as paper_svc, project as project_svc,
+};
 
-pub use model::{SharedNote, SharedPaper, SharedProject, SharedSummary};
+pub use model::{SharedAnnotation, SharedNote, SharedPaper, SharedProject, SharedSummary};
 pub use transport::{mint_capability, resolve_capability, CapToken, ShareNode, ShareTicket, ALPN};
 
 const SHARE_EXT: &str = "automerge";
@@ -104,6 +106,28 @@ pub fn build_shared_project(conn: &Connection, project_id: i64) -> Result<Shared
     })
     .collect::<Result<Vec<_>>>()?;
 
+    let mut annotations = Vec::new();
+    for a in annotation_svc::get_many(
+        conn,
+        &annotation_svc::Annotations {
+            project_fk: Some(project_id),
+            ..Default::default()
+        },
+    )? {
+        // Skip annotations whose source_id no longer resolves (mirrors build_manifest).
+        let Some(paper_source_id) = paper_svc::get_source_id(conn, a.source_fk)? else {
+            continue;
+        };
+        annotations.push(SharedAnnotation {
+            id: a.annotation_id,
+            paper_source_id,
+            anchor: a.anchor,
+            comment: a.comment,
+            created_at: a.created_at.map(|t| t.to_string()),
+            updated_at: a.updated_at.map(|t| t.to_string()),
+        });
+    }
+
     Ok(SharedProject {
         share_id: project_id.to_string(),
         name: project.name,
@@ -112,6 +136,7 @@ pub fn build_shared_project(conn: &Connection, project_id: i64) -> Result<Shared
         tags: project.project_tags,
         papers,
         notes,
+        annotations,
     })
 }
 
@@ -189,6 +214,7 @@ pub fn list_shared(share_dir: &Path) -> Result<Vec<SharedSummary>> {
             name: sp.name,
             paper_count: sp.papers.len(),
             note_count: sp.notes.len(),
+            annotation_count: sp.annotations.len(),
             tag_count: sp.tags.len(),
         });
     }
@@ -234,8 +260,11 @@ impl ShareStore {
 mod tests {
     use super::*;
     use chrono::NaiveDate;
-    use linxiv_core::models::{NoteIn, PaperIn, ProjectIn};
+    use linxiv_core::models::{AnnotationIn, NoteIn, PaperIn, ProjectIn};
     use linxiv_core::storage::{self, db::open_in_memory};
+
+    // annotation_svc comes from `use super::*` (the crate-root service aliases).
+    const ANCHOR: &str = r##"{"v":1,"version":1,"page":1,"color":"#ffd400","quote":"q","rects":[{"x":0,"y":0,"w":0.5,"h":0.1}]}"##;
 
     // Seed a canonical in-memory DB via the real service WRITE APIs and return
     // (conn, project_id). The project has two papers, two project tags, two
@@ -318,6 +347,17 @@ mod tests {
             },
         )
         .unwrap();
+        // One project-scoped annotation that the snapshot must carry.
+        annotation_svc::create(
+            &conn,
+            &AnnotationIn {
+                source_fk: fk1,
+                anchor: ANCHOR.into(),
+                comment: "highlight".into(),
+                project_fk: Some(project_id),
+            },
+        )
+        .unwrap();
 
         (conn, project_id)
     }
@@ -336,6 +376,10 @@ mod tests {
                 count("SELECT COUNT(*) FROM PROJECT_TO_PAPER"),
             ),
             ("NOTE".into(), count("SELECT COUNT(*) FROM NOTE")),
+            (
+                "ANNOTATION".into(),
+                count("SELECT COUNT(*) FROM ANNOTATION"),
+            ),
             ("TAG".into(), count("SELECT COUNT(*) FROM TAG")),
         ]
     }
@@ -357,6 +401,7 @@ mod tests {
         assert_eq!(s.paper_count, 2);
         assert_eq!(s.note_count, 2); // the library note is excluded
         assert_eq!(s.tag_count, 2);
+        assert_eq!(s.annotation_count, 1);
 
         let sp = store.get_shared(&share_id).unwrap();
         assert_eq!(sp.name, "My Project");
@@ -375,6 +420,11 @@ mod tests {
         let mut note_bodies: Vec<_> = sp.notes.iter().map(|n| n.body.clone()).collect();
         note_bodies.sort();
         assert_eq!(note_bodies, vec!["body A", "body B"]);
+
+        // The project-scoped annotation projects into the snapshot.
+        assert_eq!(sp.annotations.len(), 1);
+        assert_eq!(sp.annotations[0].comment, "highlight");
+        assert_eq!(sp.annotations[0].anchor, ANCHOR);
     }
 
     #[test]

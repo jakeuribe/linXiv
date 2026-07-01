@@ -344,6 +344,62 @@ pub struct NoteDetails {
 }
 
 // ---------------------------------------------------------------------------
+// Annotation (PDF highlights) — `annotation_id` serializes as "id", like
+// NoteDetails. ANCHOR is opaque JSON (size-capped by validate_anchor; the
+// frontend renderer reads its structure); COMMENT defaults "".
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnnotationDetails {
+    #[serde(rename = "id")]
+    pub annotation_id: i64,
+    pub source_fk: i64,
+    #[serde(default)]
+    pub project_id: Option<i64>,
+    pub anchor: String,
+    pub comment: String,
+    #[serde(default)]
+    pub created_at: Option<NaiveDateTime>,
+    #[serde(default)]
+    pub updated_at: Option<NaiveDateTime>,
+}
+
+/// Upper bound on stored ANCHOR JSON, enforced at every write boundary (HTTP,
+/// MCP, CLI). The frontend caps rects/quote; this caps the serialized whole.
+pub const MAX_ANCHOR_BYTES: usize = 65_536;
+
+/// Reject an empty/whitespace-only or over-cap ANCHOR. Returns the message each
+/// write boundary surfaces in its own error type.
+pub fn validate_anchor(anchor: &str) -> std::result::Result<(), &'static str> {
+    if anchor.trim().is_empty() {
+        return Err("anchor must not be empty");
+    }
+    if anchor.len() > MAX_ANCHOR_BYTES {
+        return Err("anchor exceeds maximum size");
+    }
+    Ok(())
+}
+
+/// Insert DTO. `comment` defaults to "" (highlight with no written comment).
+#[derive(Debug, Clone, Deserialize)]
+pub struct AnnotationIn {
+    pub source_fk: i64,
+    pub anchor: String,
+    #[serde(default)]
+    pub comment: String,
+    #[serde(default)]
+    pub project_fk: Option<i64>,
+}
+
+/// PATCH DTO. Only the written comment is mutable — the anchor (geometry/quote)
+/// is immutable; re-highlighting creates a new annotation.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AnnotationUpdateIn {
+    pub annotation_id: i64,
+    pub comment: String,
+}
+
+// ---------------------------------------------------------------------------
 // Tag (service/models/tag.py)
 // ---------------------------------------------------------------------------
 

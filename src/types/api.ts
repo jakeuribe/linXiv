@@ -50,6 +50,18 @@ export interface Note {
   updated_at: string | null;
 }
 
+// PDF highlight annotation. `anchor` is opaque JSON (see lib/pdfAnchor); `comment`
+// is the written comment ("" = highlight-only).
+export interface Annotation {
+  id: number;
+  source_fk: number;
+  project_id: number | null;
+  anchor: string;
+  comment: string;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
 export interface GraphData {
   nodes: GraphNode[];
   edges: GraphEdge[];

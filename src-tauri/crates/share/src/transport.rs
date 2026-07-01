@@ -368,6 +368,14 @@ mod tests {
                 created_at: None,
                 updated_at: None,
             }],
+            annotations: vec![crate::SharedAnnotation {
+                id: 1,
+                paper_source_id: "arxiv:1".into(),
+                anchor: "{}".into(),
+                comment: "c".into(),
+                created_at: None,
+                updated_at: None,
+            }],
         }
     }
 

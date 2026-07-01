@@ -27,6 +27,7 @@ use linxiv_core::service::{paper as svc_paper, tag as svc_tag};
 
 use crate::state::AppState;
 
+mod annotations;
 mod authors;
 mod editor;
 mod graph;
@@ -165,8 +166,8 @@ pub async fn route(state: &AppState, req: ApiRequest) -> Result<Value, ApiError>
         )+};
     }
     try_groups!(
-        uploads, pdfs, papers, projects, notes, tags, authors, sources, search, settings, trash,
-        editor, graph
+        uploads, pdfs, papers, projects, notes, annotations, tags, authors, sources, search,
+        settings, trash, editor, graph
     );
 
     Err(ApiError::not_routed())

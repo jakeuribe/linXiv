@@ -28,9 +28,9 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{CoreError, Result};
-use crate::models::{NoteIn, PaperDetails, PaperMetadata, ProjectIn};
-use crate::service::{note, paper, project};
-use crate::storage::queries::paper as paperq;
+use crate::models::{validate_anchor, NoteIn, PaperDetails, PaperMetadata, ProjectIn};
+use crate::service::{annotation, note, paper, project};
+use crate::storage::queries::{annotation as annotationq, paper as paperq};
 
 const FORMAT_VERSION: i64 = 1;
 
@@ -58,6 +58,10 @@ pub struct Manifest {
     pub papers: Vec<PaperEntry>,
     #[serde(default)]
     pub notes: Vec<NoteEntry>,
+    /// PDF highlight annotations. `#[serde(default)]` so archives written before
+    /// annotations existed still import (empty list).
+    #[serde(default)]
+    pub annotations: Vec<AnnotationEntry>,
 }
 
 fn default_format_version() -> i64 {
@@ -70,6 +74,8 @@ pub struct Summary {
     pub paper_count: usize,
     #[serde(default)]
     pub note_count: usize,
+    #[serde(default)]
+    pub annotation_count: usize,
     #[serde(default)]
     pub has_pdfs: bool,
 }
@@ -178,6 +184,16 @@ pub struct NoteEntry {
     pub content: String,
 }
 
+/// Archive PDF-annotation record — keyed by source_id like notes. The version the
+/// coords were measured against lives inside the opaque `anchor` JSON.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnnotationEntry {
+    pub paper_source_id: String,
+    pub anchor: String,
+    #[serde(default)]
+    pub comment: String,
+}
+
 /// A decoded archive PDF entry. `archive_name` is the in-zip path, e.g.
 /// `pdfs/2204.12985_v1.pdf`; the zip layer fills `bytes` from the archive.
 #[derive(Debug, Clone)]
@@ -193,6 +209,7 @@ pub struct ImportPreview {
     pub description: String,
     pub paper_count: usize,
     pub note_count: usize,
+    pub annotation_count: usize,
     pub has_pdfs: bool,
     pub format_version: i64,
 }
@@ -231,6 +248,13 @@ pub fn build_manifest(
             ..Default::default()
         },
     )?;
+    let annotations = annotation::get_many(
+        conn,
+        &annotation::Annotations {
+            project_fk: Some(project_fk),
+            ..Default::default()
+        },
+    )?;
 
     let paper_entries: Vec<PaperEntry> = papers.iter().map(PaperEntry::from_details).collect();
 
@@ -255,6 +279,18 @@ pub fn build_manifest(
             paper_version: version,
             title: n.title.clone(),
             content: n.content.clone(),
+        });
+    }
+
+    let mut annotation_entries = Vec::new();
+    for a in &annotations {
+        let Some(source_id) = paper::get_source_id(conn, a.source_fk)? else {
+            continue; // skip annotations whose source_id no longer resolves.
+        };
+        annotation_entries.push(AnnotationEntry {
+            paper_source_id: source_id,
+            anchor: a.anchor.clone(),
+            comment: a.comment.clone(),
         });
     }
 
@@ -286,6 +322,7 @@ pub fn build_manifest(
         summary: Summary {
             paper_count: paper_entries.len(),
             note_count: note_entries.len(),
+            annotation_count: annotation_entries.len(),
             has_pdfs: !pdf_files.is_empty(),
         },
         project: ProjectEntry {
@@ -296,6 +333,7 @@ pub fn build_manifest(
         },
         papers: paper_entries,
         notes: note_entries,
+        annotations: annotation_entries,
     };
     Ok((manifest, pdf_files))
 }
@@ -339,6 +377,7 @@ pub fn export_project(
 
 /// `preview_import` over an already-decoded manifest (no DB, no zip).
 pub fn preview_from_manifest(manifest: &Manifest) -> ImportPreview {
+    // Archives predating the summary counts store 0; fall back to the array length.
     ImportPreview {
         project_name: manifest.project.name.clone(),
         description: manifest.project.description.clone(),
@@ -352,6 +391,8 @@ pub fn preview_from_manifest(manifest: &Manifest) -> ImportPreview {
         } else {
             manifest.notes.len()
         },
+        // The annotations array is the ground truth at preview time.
+        annotation_count: manifest.annotations.len(),
         has_pdfs: manifest.summary.has_pdfs,
         format_version: manifest.format_version,
     }
@@ -504,6 +545,7 @@ fn commit_body(
 
     import_pdfs(conn, pdfs, &source_ids, pdf_dir)?;
     import_notes(conn, project_fk, manifest, &source_ids)?;
+    import_annotations(conn, project_fk, manifest, &source_ids)?;
     Ok(())
 }
 
@@ -601,6 +643,40 @@ fn import_notes(
     Ok(())
 }
 
+fn import_annotations(
+    conn: &Connection,
+    project_fk: i64,
+    manifest: &Manifest,
+    source_ids: &[String],
+) -> Result<()> {
+    for ad in &manifest.annotations {
+        // Same anchor rule as the live write boundaries, but skip-not-fail: one
+        // bad archived annotation must not abort the whole import.
+        if let Err(msg) = validate_anchor(&ad.anchor) {
+            tracing::warn!(
+                "import: skipping annotation for '{}': {msg}",
+                ad.paper_source_id
+            );
+            continue;
+        }
+        if !source_ids.iter().any(|s| s == &ad.paper_source_id) {
+            continue;
+        }
+        let source_fk = match paperq::get_paper_root(conn, &ad.paper_source_id)? {
+            Some(r) => r.source_fk,
+            None => continue,
+        };
+        annotationq::create_annotation(
+            conn,
+            source_fk,
+            Some(project_fk),
+            &ad.anchor,
+            &ad.comment,
+        )?;
+    }
+    Ok(())
+}
+
 /// Parse a `.lxproj` archive (manifest + every `pdfs/*.pdf` entry) and import it.
 /// Returns the new project_fk.
 pub fn commit_import(
@@ -637,7 +713,7 @@ pub fn commit_import(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::Status;
+    use crate::models::{AnnotationIn, Status};
     use crate::storage::{self, db};
     use chrono::NaiveDate;
 
@@ -700,7 +776,62 @@ mod tests {
             },
             papers,
             notes,
+            annotations: Vec::new(),
         }
+    }
+
+    const ANCHOR: &str = r##"{"v":1,"version":1,"page":1,"color":"#ffd400","quote":"q","rects":[{"x":0,"y":0,"w":0.5,"h":0.1}]}"##;
+
+    #[test]
+    fn build_and_commit_round_trip_annotations() {
+        let mut conn = mem();
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Seed a paper + project + a project-scoped annotation on it.
+        paper::save_paper_metadata(&mut conn, &meta("arxiv:1", 1, "P", &[]), None).unwrap();
+        let fk1 = paper::ensure_paper_root(&mut conn, "arxiv:1").unwrap();
+        let pid = project::create(
+            &mut conn,
+            &ProjectIn {
+                name: "Proj".into(),
+                description: "d".into(),
+                color: None,
+                tags: vec![],
+                source_fks: vec![fk1],
+            },
+        )
+        .unwrap();
+        annotation::create(
+            &conn,
+            &AnnotationIn {
+                source_fk: fk1,
+                anchor: ANCHOR.into(),
+                comment: "hi".into(),
+                project_fk: Some(pid),
+            },
+        )
+        .unwrap();
+
+        let (m, _) = build_manifest(&conn, pid, false, tmp.path()).unwrap();
+        assert_eq!(m.annotations.len(), 1);
+        assert_eq!(m.annotations[0].paper_source_id, "arxiv:1");
+        assert_eq!(m.annotations[0].comment, "hi");
+
+        // Commit into a fresh DB and confirm the annotation lands project-scoped.
+        let mut conn2 = mem();
+        let new_pid = commit_from_manifest(&mut conn2, &m, &[], OnConflict::Merge, tmp.path())
+            .unwrap();
+        let anns = annotation::get_many(
+            &conn2,
+            &annotation::Annotations {
+                project_fk: Some(new_pid),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(anns.len(), 1);
+        assert_eq!(anns[0].anchor, ANCHOR);
+        assert_eq!(anns[0].comment, "hi");
     }
 
     #[test]
@@ -791,6 +922,7 @@ mod tests {
         m.summary = Summary {
             paper_count: 7,
             note_count: 3,
+            annotation_count: 0,
             has_pdfs: true,
         };
         let p = preview_from_manifest(&m);

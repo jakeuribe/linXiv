@@ -50,6 +50,11 @@ enum Commands {
         #[command(subcommand)]
         cmd: cmd::note::NoteCmd,
     },
+    /// Manage PDF highlight annotations
+    Annotation {
+        #[command(subcommand)]
+        cmd: cmd::annotation::AnnotationCmd,
+    },
     /// Manage PDFs
     Pdf {
         #[command(subcommand)]
@@ -97,6 +102,7 @@ async fn dispatch(command: Commands, ctx: &mut Ctx) -> anyhow::Result<()> {
         Commands::Tag { cmd } => cmd::tag::run(cmd, ctx).await,
         Commands::Project { cmd } => cmd::project::run(cmd, ctx).await,
         Commands::Note { cmd } => cmd::note::run(cmd, ctx).await,
+        Commands::Annotation { cmd } => cmd::annotation::run(cmd, ctx).await,
         Commands::Pdf { cmd } => cmd::pdf::run(cmd, ctx).await,
         Commands::Trash { cmd } => cmd::trash::run(cmd, ctx).await,
         Commands::Doi { cmd } => cmd::doi::run(cmd, ctx).await,

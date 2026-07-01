@@ -3,6 +3,7 @@
 //! modules (`papers`, `projects_tags`, `notes_pdf_trash`, `io_authors_misc`),
 //! each contributing one `#[tool_router]` impl block that is merged here.
 
+mod annotations;
 mod io_authors_misc;
 mod notes_pdf_trash;
 mod papers;
@@ -51,6 +52,7 @@ impl Server {
             tool_router: Self::tools_papers()
                 + Self::tools_projects_tags()
                 + Self::tools_notes_pdf_trash()
+                + Self::tools_annotations()
                 + Self::tools_io_authors_misc(),
         })
     }

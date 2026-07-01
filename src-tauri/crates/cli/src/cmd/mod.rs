@@ -2,6 +2,7 @@
 //! `run(cmd, ctx)`. `library` owns search/fetch/list; `misc` owns
 //! stats/categories/settings; the rest map 1:1 to a top-level group.
 
+pub mod annotation;
 pub mod author;
 pub mod bibtex;
 pub mod doi;

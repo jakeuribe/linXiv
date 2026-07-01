@@ -1,15 +1,19 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
-import { Document, Page, pdfjs } from "react-pdf";
+import { Document, Page } from "react-pdf";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
 import { getPaperBySfk, getPaperVersions, getPaperPdfUrl, getPdfProxyUrl } from "../api/papers";
 import { getNotes, deleteNote } from "../api/notes";
+import { getAnnotations, deleteAnnotation, updateAnnotation } from "../api/annotations";
 import { listProjects } from "../api/projects";
 import { apiFetch, bytesToBase64, isTauri } from "../api/client";
-import type { Note, Paper } from "../types/api";
+import type { Note, Paper, Annotation } from "../types/api";
+import { PdfReader } from "../components/pdf/PdfReader";
+import { PagePill } from "../components/pdf/PagePill";
+import { parseAnchor } from "../lib/pdfAnchor";
 import { Spinner } from "../components/ui/spinner";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
@@ -23,11 +27,6 @@ import { MathText } from "../lib/tex";
 import { formatDate } from "../lib/date";
 import { TagBadge } from "../components/tags/TagBadge";
 import { invoke } from "@tauri-apps/api/core";
-
-pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-  "pdfjs-dist/build/pdf.worker.min.mjs",
-  import.meta.url,
-).toString();
 
 const LATEST_VERSION_KEY = "latest" as const;
 
@@ -99,6 +98,14 @@ export default function PaperDetailPage() {
     enabled: !!paper?.source_id,
   });
 
+  // Highlights created in the PDF reader; shown here as a list with comments.
+  // Same query key (allProjects) the reader uses, so the two share one cache.
+  const { data: annotationsData, isLoading: annotationsLoading } = useQuery({
+    queryKey: ["annotations", paper?.source_id, { allProjects: true }],
+    queryFn: () => getAnnotations(paper!.source_id, undefined, true),
+    enabled: !!paper?.source_id,
+  });
+
   const { data: projectsData, isLoading: projectsLoading } = useQuery({
     queryKey: ["projects"],
     queryFn: () => listProjects(),
@@ -160,6 +167,15 @@ export default function PaperDetailPage() {
       // not-found state instead of its stale content.
       queryClient.invalidateQueries({ queryKey: ["note"] });
     },
+  });
+
+  const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
+  const deleteAnnotationMutation = useMutation({
+    mutationFn: (id: number) => deleteAnnotation(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["annotations"] });
+    },
+    onSettled: () => setPendingDeleteId(null),
   });
 
   useEffect(() => {
@@ -268,6 +284,7 @@ export default function PaperDetailPage() {
 
   const authors = normalizeAuthors(paper.authors ?? []);
   const notes = notesData?.notes ?? [];
+  const annotations = annotationsData?.annotations ?? [];
   const editingNote =
     editingNoteId != null ? notes.find((n) => n.id === editingNoteId) ?? null : null;
   const tags = paper.tags ?? [];
@@ -342,6 +359,7 @@ export default function PaperDetailPage() {
               paper={paper}
               isViewingLatest={isViewingLatest}
               isOnline={isOnline}
+              projectId={defaultProjectId}
               onPreview={handlePreviewPdf}
               savePdfMutation={savePdfMutation}
               linkPdfMutation={linkPdfMutation}
@@ -456,6 +474,9 @@ export default function PaperDetailPage() {
                 <TabsTrigger value="notes">
                   Notes{notes.length > 0 ? ` (${notes.length})` : ""}
                 </TabsTrigger>
+                <TabsTrigger value="annotations">
+                  Annotations{annotations.length > 0 ? ` (${annotations.length})` : ""}
+                </TabsTrigger>
               </TabsList>
 
               {/* Details tab: abstract */}
@@ -557,6 +578,46 @@ export default function PaperDetailPage() {
                   </>
                 )}
               </TabsContent>
+
+              <TabsContent value="annotations" className="pt-5 space-y-4">
+                <MonoLabel as="h3">Annotations</MonoLabel>
+                {annotationsLoading ? (
+                  <div className="flex justify-center py-6">
+                    <Spinner size={20} />
+                  </div>
+                ) : annotations.length === 0 ? (
+                  <p className="text-muted text-sm text-center py-8">
+                    No annotations yet. Highlight text in the saved PDF to create one.
+                  </p>
+                ) : (
+                  <div className="space-y-3">
+                    {annotations.map((a) => (
+                      <AnnotationCard
+                        key={a.id}
+                        annotation={a}
+                        isPending={
+                          a.id === pendingDeleteId &&
+                          deleteAnnotationMutation.isPending
+                        }
+                        onDelete={() => {
+                          if (!deleteAnnotationMutation.isPending) {
+                            setPendingDeleteId(a.id);
+                            deleteAnnotationMutation.mutate(a.id);
+                          }
+                        }}
+                      />
+                    ))}
+                  </div>
+                )}
+                {deleteAnnotationMutation.isError && (
+                  <p
+                    className="text-sm text-center"
+                    style={{ color: "var(--color-danger)" }}
+                  >
+                    Couldn't delete the annotation. Please try again.
+                  </p>
+                )}
+              </TabsContent>
             </Tabs>
           </div>
         </div>
@@ -570,6 +631,147 @@ export default function PaperDetailPage() {
         />
       )}
     </div>
+  );
+}
+
+// One annotation in the Annotations tab: a color chip + quoted highlight + the
+// written comment. The quote expands to full text, and the comment is editable
+// inline (add/edit/remove) so a highlight can carry a comment without opening the
+// reader popup. All edits invalidate the shared cache, keeping the reader in sync.
+function AnnotationCard({
+  annotation,
+  onDelete,
+  isPending,
+}: {
+  annotation: Annotation;
+  onDelete: () => void;
+  isPending: boolean;
+}) {
+  const queryClient = useQueryClient();
+  const anchor = parseAnchor(annotation.anchor);
+  const [expanded, setExpanded] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(annotation.comment);
+  // Comment as seen when editing opened; diverges if another surface saves first.
+  const [baseComment, setBaseComment] = useState(annotation.comment);
+  const stale = baseComment !== annotation.comment;
+
+  const updateMutation = useMutation({
+    mutationFn: (comment: string) => updateAnnotation(annotation.id, comment),
+    onSuccess: (_data, comment) => {
+      setBaseComment(comment);
+      queryClient.invalidateQueries({ queryKey: ["annotations"] });
+      setEditing(false);
+    },
+  });
+
+  // Long quotes clamp to 3 lines; offer the toggle only when there's plausibly
+  // more to show. ponytail: length heuristic, not exact overflow measurement.
+  const quote = anchor?.quote ?? "";
+  const clampable = quote.length > 160;
+
+  return (
+    <Card>
+      <div className="flex items-start gap-2.5">
+        <span
+          className="mt-1 h-3 w-3 shrink-0 rounded-full border border-black/20"
+          style={{ backgroundColor: anchor?.color ?? "var(--color-muted)" }}
+          aria-hidden
+        />
+        <div className="min-w-0 flex-1 space-y-1.5">
+          {quote && (
+            <p
+              className={`text-sm text-text italic ${
+                clampable && !expanded ? "line-clamp-3" : "whitespace-pre-wrap"
+              }`}
+            >
+              “{quote}”
+            </p>
+          )}
+          {clampable && (
+            <button
+              onClick={() => setExpanded((v) => !v)}
+              className="text-xs font-medium text-accent hover:underline"
+            >
+              {expanded ? "Show less" : "Show more"}
+            </button>
+          )}
+
+          {editing ? (
+            <div className="space-y-1.5">
+              <textarea
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                placeholder="Add a comment…"
+                rows={3}
+                autoFocus
+                className="w-full resize-none rounded border border-border bg-surface2 px-2 py-1.5 text-sm text-text focus:outline-none focus:border-accent"
+              />
+              <div className="flex items-center gap-3 text-xs">
+                <button
+                  disabled={updateMutation.isPending || draft === annotation.comment || stale}
+                  onClick={() => updateMutation.mutate(draft)}
+                  className="font-medium text-accent hover:underline disabled:opacity-40"
+                >
+                  {updateMutation.isPending ? "Saving…" : "Save"}
+                </button>
+                <button
+                  onClick={() => {
+                    setDraft(annotation.comment);
+                    updateMutation.reset();
+                    setEditing(false);
+                  }}
+                  className="font-medium text-muted hover:underline"
+                >
+                  Cancel
+                </button>
+                {stale ? (
+                  <span style={{ color: "var(--color-danger)" }}>
+                    Comment was updated elsewhere — cancel to reload.
+                  </span>
+                ) : (
+                  updateMutation.isError && (
+                    <span style={{ color: "var(--color-danger)" }}>
+                      Couldn't save. Try again.
+                    </span>
+                  )
+                )}
+              </div>
+            </div>
+          ) : (
+            annotation.comment && (
+              <p className="text-sm text-muted whitespace-pre-wrap">
+                {annotation.comment}
+              </p>
+            )
+          )}
+
+          <div className="flex items-center gap-3 text-xs text-ink3">
+            {anchor && <span>p. {anchor.page}</span>}
+            {!editing && (
+              <button
+                onClick={() => {
+                  setDraft(annotation.comment);
+                  setBaseComment(annotation.comment);
+                  updateMutation.reset();
+                  setEditing(true);
+                }}
+                className="font-medium text-accent hover:underline"
+              >
+                {annotation.comment ? "Edit comment" : "Add comment"}
+              </button>
+            )}
+            <button
+              onClick={onDelete}
+              disabled={isPending || updateMutation.isPending}
+              className="ml-auto font-medium text-[var(--color-danger)] hover:underline disabled:opacity-50"
+            >
+              {isPending ? "Deleting…" : "Delete"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Card>
   );
 }
 
@@ -601,42 +803,7 @@ interface PdfPaneProps {
   pdfPreviewDocRef: React.MutableRefObject<PDFDocumentProxy | null>;
   pdfContainerRef: (el: HTMLDivElement | null) => void;
   containerWidth: number;
-}
-
-// Bottom-center pill stepping through rendered react-pdf pages.
-function PagePill({
-  page,
-  total,
-  onGo,
-}: {
-  page: number;
-  total: number;
-  onGo: (n: number) => void;
-}) {
-  if (total <= 0) return null;
-  return (
-    <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2 rounded-full bg-panel border border-border shadow-card px-3 py-1.5">
-      <button
-        className="text-muted hover:text-text disabled:opacity-40 disabled:pointer-events-none px-1"
-        onClick={() => onGo(page - 1)}
-        disabled={page <= 1}
-        aria-label="Previous page"
-      >
-        ‹
-      </button>
-      <span className="font-mono text-xs text-text tabular-nums">
-        {page} / {total}
-      </span>
-      <button
-        className="text-muted hover:text-text disabled:opacity-40 disabled:pointer-events-none px-1"
-        onClick={() => onGo(page + 1)}
-        disabled={page >= total}
-        aria-label="Next page"
-      >
-        ›
-      </button>
-    </div>
-  );
+  projectId?: number | null;
 }
 
 function PdfPane({
@@ -658,6 +825,7 @@ function PdfPane({
   pdfPreviewDocRef,
   pdfContainerRef,
   containerWidth,
+  projectId,
   asStrip,
 }: PdfPaneProps) {
   const previewScrollRafRef = useRef<number | null>(null);
@@ -671,16 +839,20 @@ function PdfPane({
   );
 
   if (paper.has_pdf) {
+    // Saved PDF: the annotating reader (select→highlight, click→comment/delete)
+    // replaces the plain iframe so highlights can overlay the pages.
     return (
       <div className="relative w-full h-full min-h-0 flex flex-col">
         <div className="flex-1 min-h-0 w-full overflow-hidden bg-panel">
-          <iframe
-            src={getPaperPdfUrl(
+          <PdfReader
+            file={getPaperPdfUrl(
               paper.source_id,
               paper.version > 0 ? paper.version : undefined
             )}
-            className="w-full h-full block"
-            title="PDF viewer"
+            sourceId={paper.source_id}
+            version={paper.version}
+            projectId={projectId}
+            errorUrl={paper.url}
           />
         </div>
       </div>

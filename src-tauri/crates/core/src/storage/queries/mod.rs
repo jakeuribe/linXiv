@@ -8,6 +8,7 @@
 //!     FTS join is `papers.source_id = papers_fts.paper_id`.
 //!   * FTS5 has no UPDATE: refresh an entry with DELETE-then-INSERT, never UPDATE.
 
+pub mod annotation;
 pub mod author;
 pub mod note;
 pub mod paper;
