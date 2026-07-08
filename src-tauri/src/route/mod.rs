@@ -69,12 +69,11 @@ impl ApiError {
             detail: detail.into(),
         }
     }
-    /// Sentinel for "no in-process arm matched this route yet." During the staged
-    /// port (Phase 5b) `client.ts` falls back to the coexisting Python sidecar on
-    /// 501, so every intermediate commit ships a working app. Phase 6 deletes the
-    /// fallback and this becomes a real 404.
+    /// Returned when no route arm matches. (During the staged port this was a 501
+    /// sentinel telling `client.ts` to fall back to the Python sidecar; the sidecar
+    /// and that fallback are gone, so it's now a plain 404.)
     pub(crate) fn not_routed() -> Self {
-        Self::new(501, "route not implemented in-process")
+        Self::new(404, "route not found")
     }
 }
 
@@ -317,11 +316,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unrouted_path_returns_501_sentinel() {
-        // Not 404: 501 tells client.ts to fall back to the coexisting sidecar
-        // during the staged port. Becomes a real 404 in Phase 6.
+    async fn unrouted_path_returns_404() {
         let err = get(&state(), "/api/nope").await.unwrap_err();
-        assert_eq!(err.status, 501);
+        assert_eq!(err.status, 404);
     }
 
     #[test]
