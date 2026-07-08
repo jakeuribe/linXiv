@@ -1,0 +1,3 @@
+[submodule "docs/adr"]
+	path = docs/adr
+	url = https://github.com/linxiv-dev/linxiv-adr.git
