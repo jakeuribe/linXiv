@@ -67,7 +67,9 @@ pub struct UpdateAnnotationParams {
 
 #[tool_router(router = tools_annotations, vis = "pub(crate)")]
 impl Server {
-    #[tool(description = "Create a PDF highlight annotation on a paper, optionally scoped to a project.")]
+    #[tool(
+        description = "Create a PDF highlight annotation on a paper, optionally scoped to a project."
+    )]
     pub async fn create_annotation(
         &self,
         Parameters(p): Parameters<CreateAnnotationParams>,

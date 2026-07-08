@@ -666,13 +666,7 @@ fn import_annotations(
             Some(r) => r.source_fk,
             None => continue,
         };
-        annotationq::create_annotation(
-            conn,
-            source_fk,
-            Some(project_fk),
-            &ad.anchor,
-            &ad.comment,
-        )?;
+        annotationq::create_annotation(conn, source_fk, Some(project_fk), &ad.anchor, &ad.comment)?;
     }
     Ok(())
 }
@@ -819,8 +813,8 @@ mod tests {
 
         // Commit into a fresh DB and confirm the annotation lands project-scoped.
         let mut conn2 = mem();
-        let new_pid = commit_from_manifest(&mut conn2, &m, &[], OnConflict::Merge, tmp.path())
-            .unwrap();
+        let new_pid =
+            commit_from_manifest(&mut conn2, &m, &[], OnConflict::Merge, tmp.path()).unwrap();
         let anns = annotation::get_many(
             &conn2,
             &annotation::Annotations {

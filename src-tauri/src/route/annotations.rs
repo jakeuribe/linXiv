@@ -151,9 +151,14 @@ mod tests {
 
     #[tokio::test]
     async fn list_unknown_paper_returns_empty_not_404() {
-        let v = req(&state(), "GET", "/api/annotations?source_id=arxiv:404", None)
-            .await
-            .unwrap();
+        let v = req(
+            &state(),
+            "GET",
+            "/api/annotations?source_id=arxiv:404",
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(v, json!({ "annotations": [] }));
     }
 
@@ -198,7 +203,9 @@ mod tests {
             .unwrap();
         assert_eq!(listed["annotations"][0]["comment"], "note");
 
-        req(&st, "DELETE", "/api/annotations/1", None).await.unwrap();
+        req(&st, "DELETE", "/api/annotations/1", None)
+            .await
+            .unwrap();
         let listed = req(&st, "GET", "/api/annotations?source_id=arxiv:1", None)
             .await
             .unwrap();

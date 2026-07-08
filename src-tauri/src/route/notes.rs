@@ -58,8 +58,13 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
 fn get(state: &AppState, id: &str) -> Result<Value, ApiError> {
     let note_id = path_i64(id)?;
     state.with_conn(|conn| {
-        let note = svc_note::get(conn, &Note { note_id: Some(note_id) })?
-            .ok_or_else(|| ApiError::new(404, "Note not found"))?;
+        let note = svc_note::get(
+            conn,
+            &Note {
+                note_id: Some(note_id),
+            },
+        )?
+        .ok_or_else(|| ApiError::new(404, "Note not found"))?;
         Ok(json!({ "note": note }))
     })
 }

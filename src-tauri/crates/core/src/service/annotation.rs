@@ -108,8 +108,11 @@ mod tests {
             [],
         )
         .unwrap();
-        conn.execute("INSERT INTO PROJECT (PROJECT_FK, NAME) VALUES (10, 'P')", [])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO PROJECT (PROJECT_FK, NAME) VALUES (10, 'P')",
+            [],
+        )
+        .unwrap();
         conn
     }
 
@@ -200,9 +203,20 @@ mod tests {
     #[test]
     fn unset_id_short_circuits() {
         let conn = setup();
-        assert!(get(&conn, &Annotation { annotation_id: None })
-            .unwrap()
-            .is_none());
-        assert!(!delete(&conn, &Annotation { annotation_id: None }).unwrap());
+        assert!(get(
+            &conn,
+            &Annotation {
+                annotation_id: None
+            }
+        )
+        .unwrap()
+        .is_none());
+        assert!(!delete(
+            &conn,
+            &Annotation {
+                annotation_id: None
+            }
+        )
+        .unwrap());
     }
 }

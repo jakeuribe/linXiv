@@ -17,10 +17,16 @@ macro_rules! annotation_cols {
     };
 }
 
-const GET_ANNOTATION_SQL: &str =
-    concat!("SELECT ", annotation_cols!(), " FROM ANNOTATION WHERE ANNOTATION_SK = ?1");
-const LIST_ALL_SQL: &str =
-    concat!("SELECT ", annotation_cols!(), " FROM ANNOTATION ORDER BY CREATED_AT ASC");
+const GET_ANNOTATION_SQL: &str = concat!(
+    "SELECT ",
+    annotation_cols!(),
+    " FROM ANNOTATION WHERE ANNOTATION_SK = ?1"
+);
+const LIST_ALL_SQL: &str = concat!(
+    "SELECT ",
+    annotation_cols!(),
+    " FROM ANNOTATION ORDER BY CREATED_AT ASC"
+);
 const PROJECT_ANNOTATIONS_SQL: &str = concat!(
     "SELECT ",
     annotation_cols!(),
@@ -173,8 +179,11 @@ mod tests {
             [],
         )
         .unwrap();
-        conn.execute("INSERT INTO PROJECT (PROJECT_FK, NAME) VALUES (10, 'P')", [])
-            .unwrap();
+        conn.execute(
+            "INSERT INTO PROJECT (PROJECT_FK, NAME) VALUES (10, 'P')",
+            [],
+        )
+        .unwrap();
         (1, 10)
     }
 
@@ -195,7 +204,10 @@ mod tests {
 
         // patch updates only the comment.
         assert!(patch_annotation(&conn, id, "edited").unwrap());
-        assert_eq!(get_annotation(&conn, id).unwrap().unwrap().comment, "edited");
+        assert_eq!(
+            get_annotation(&conn, id).unwrap().unwrap().comment,
+            "edited"
+        );
 
         // patch/delete of an absent row report false.
         assert!(!patch_annotation(&conn, 999, "x").unwrap());

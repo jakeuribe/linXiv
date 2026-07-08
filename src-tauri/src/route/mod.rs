@@ -166,8 +166,20 @@ pub async fn route(state: &AppState, req: ApiRequest) -> Result<Value, ApiError>
         )+};
     }
     try_groups!(
-        uploads, pdfs, papers, projects, notes, annotations, tags, authors, sources, search,
-        settings, trash, editor, graph
+        uploads,
+        pdfs,
+        papers,
+        projects,
+        notes,
+        annotations,
+        tags,
+        authors,
+        sources,
+        search,
+        settings,
+        trash,
+        editor,
+        graph
     );
 
     Err(ApiError::not_routed())
