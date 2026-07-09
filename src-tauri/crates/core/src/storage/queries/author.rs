@@ -6,10 +6,11 @@
 //! SELECT-then-conditional-INSERT — no partial-inconsistent state to roll back.
 
 use rusqlite::types::Value;
-use rusqlite::{params, params_from_iter, Connection, Row};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
 
-use crate::error::Result;
+use crate::error::{CoreError, Result};
 use crate::models::{AuthorPaperPreview, AuthorWithCount, BasicAuthorDetails};
+use crate::storage::db;
 
 // `AUTHOR.AUTHOR_*` columns are all nullable -> every field but the FK is Option.
 fn row_to_basic(row: &Row) -> rusqlite::Result<BasicAuthorDetails> {
@@ -252,6 +253,125 @@ pub fn unlink_author_from_paper(conn: &Connection, author_fk: i64, paper_id: i64
     Ok(())
 }
 
+/// Merge `dup_ids` into `canonical_id`: resync PAPER_META.AUTHORS on every paper
+/// touched by a duplicate, re-point every PAPER_TO_AUTHOR row off a duplicate onto
+/// the canonical author, collapse the resulting double-links (no UNIQUE index
+/// enforces one link per paper), then delete the duplicate AUTHOR rows that still
+/// exist. All in one transaction. `canonical_id` itself is skipped if listed.
+/// Returns the subset of `dup_ids` that actually existed and were merged.
+pub fn merge_authors(
+    conn: &mut Connection,
+    canonical_id: i64,
+    dup_ids: &[i64],
+) -> Result<Vec<i64>> {
+    let dups: Vec<i64> = dup_ids
+        .iter()
+        .copied()
+        .filter(|&d| d != canonical_id)
+        .collect();
+    let placeholders = vec!["?"; dups.len()].join(",");
+    db::transaction(conn, |tx| {
+        let canonical_row: Option<Option<String>> = tx
+            .query_row(
+                "SELECT AUTHOR_FULL_NAME FROM AUTHOR WHERE AUTHOR_FK = ?",
+                params![canonical_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let Some(canonical_name) = canonical_row else {
+            return Err(CoreError::NotFound(format!(
+                "author {canonical_id} not found"
+            )));
+        };
+        if dups.is_empty() {
+            return Ok(Vec::new());
+        }
+        let dup_names: Vec<String> = {
+            let mut stmt = tx.prepare(&format!(
+                "SELECT AUTHOR_FULL_NAME FROM AUTHOR WHERE AUTHOR_FK IN ({placeholders})"
+            ))?;
+            let rows = stmt.query_map(params_from_iter(dups.iter().copied()), |r| {
+                r.get::<_, Option<String>>(0)
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+                .into_iter()
+                .flatten()
+                .collect()
+        };
+        let affected_papers: Vec<i64> = {
+            let mut stmt = tx.prepare(&format!(
+                "SELECT DISTINCT PAPER_ID FROM PAPER_TO_AUTHOR WHERE AUTHOR_FK IN ({placeholders})"
+            ))?;
+            let rows = stmt.query_map(params_from_iter(dups.iter().copied()), |r| r.get(0))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for pid in &affected_papers {
+            let authors_json: Option<String> = tx
+                .query_row(
+                    "SELECT AUTHORS FROM PAPER_META WHERE PAPER_ID = ?",
+                    params![pid],
+                    |r| r.get(0),
+                )
+                .optional()?
+                .flatten();
+            let Some(authors_json) = authors_json else {
+                continue;
+            };
+            // Replace duplicate names with the canonical name, or drop them if the
+            // canonical author has no name; then de-dupe case-insensitively.
+            let mut merged: Vec<String> = Vec::new();
+            for name in db::list_from_sql(&authors_json)? {
+                let is_dup = dup_names
+                    .iter()
+                    .any(|d| d.to_lowercase() == name.to_lowercase());
+                let resolved = if is_dup {
+                    canonical_name.clone()
+                } else {
+                    Some(name)
+                };
+                let Some(resolved) = resolved else {
+                    continue;
+                };
+                if !merged
+                    .iter()
+                    .any(|m: &String| m.to_lowercase() == resolved.to_lowercase())
+                {
+                    merged.push(resolved);
+                }
+            }
+            tx.execute(
+                "UPDATE PAPER_META SET AUTHORS = ? WHERE PAPER_ID = ?",
+                params![db::list_to_sql(&merged), pid],
+            )?;
+        }
+        tx.execute(
+            &format!(
+                "UPDATE PAPER_TO_AUTHOR SET AUTHOR_FK = ? WHERE AUTHOR_FK IN ({placeholders})"
+            ),
+            params_from_iter(std::iter::once(canonical_id).chain(dups.iter().copied())),
+        )?;
+        // Drop rows that now double-link a paper to the canonical author, keeping
+        // the lowest PTA_FK per paper.
+        tx.execute(
+            "DELETE FROM PAPER_TO_AUTHOR WHERE AUTHOR_FK = ? AND PTA_FK NOT IN (\
+                 SELECT MIN(PTA_FK) FROM PAPER_TO_AUTHOR WHERE AUTHOR_FK = ? GROUP BY PAPER_ID)",
+            params![canonical_id, canonical_id],
+        )?;
+        let existing_dups: Vec<i64> = {
+            let mut stmt = tx.prepare(&format!(
+                "SELECT AUTHOR_FK FROM AUTHOR WHERE AUTHOR_FK IN ({placeholders})"
+            ))?;
+            let rows = stmt.query_map(params_from_iter(dups.iter().copied()), |r| r.get(0))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        tx.execute(
+            &format!("DELETE FROM AUTHOR WHERE AUTHOR_FK IN ({placeholders})"),
+            params_from_iter(dups.iter().copied()),
+        )?;
+        Ok(existing_dups)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -393,5 +513,47 @@ mod tests {
 
         delete_author(&conn, a1).unwrap();
         assert!(get_author(&conn, a1).unwrap().is_none());
+    }
+
+    #[test]
+    fn merge_resyncs_paper_meta_authors_case_insensitively() {
+        let mut conn = open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        let (pid, a1, a2) = seed(&conn); // a1 = Bob Stone, a2 = Alice Cole
+        conn.execute(
+            "UPDATE PAPER_META SET AUTHORS = ? WHERE PAPER_ID = ?",
+            params![
+                db::list_to_sql(&[
+                    "Bob Stone".to_string(),
+                    "alice cole".to_string(), // case variant of the duplicate
+                    "Someone Else".to_string(),
+                ]),
+                pid
+            ],
+        )
+        .unwrap();
+
+        merge_authors(&mut conn, a1, &[a2]).unwrap();
+
+        let authors_json: String = conn
+            .query_row(
+                "SELECT AUTHORS FROM PAPER_META WHERE PAPER_ID = ?",
+                params![pid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let authors = db::list_from_sql(&authors_json).unwrap();
+        assert_eq!(
+            authors,
+            vec!["Bob Stone".to_string(), "Someone Else".to_string()]
+        );
+    }
+
+    #[test]
+    fn merge_errors_when_canonical_author_missing() {
+        let mut conn = open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        let (_pid, _a1, a2) = seed(&conn);
+        assert!(merge_authors(&mut conn, 9999, &[a2]).is_err());
     }
 }

@@ -30,6 +30,7 @@ use crate::state::AppState;
 mod annotations;
 mod authors;
 mod editor;
+mod feed;
 mod graph;
 mod notes;
 mod papers;
@@ -39,9 +40,11 @@ mod search;
 mod settings;
 pub mod share; // ShareState + share_api command, managed beside AppState in main.rs
 mod sources;
+mod storage;
 mod tags;
 mod trash;
 mod uploads;
+mod versions;
 
 /// One webview→backend call. `body` is the parsed JSON request body (None for
 /// GET/DELETE without a body); file uploads do not come through here (they stay
@@ -176,9 +179,12 @@ pub async fn route(state: &AppState, req: ApiRequest) -> Result<Value, ApiError>
         sources,
         search,
         settings,
+        storage,
         trash,
         editor,
-        graph
+        feed,
+        graph,
+        versions
     );
 
     Err(ApiError::not_routed())

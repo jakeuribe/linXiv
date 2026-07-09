@@ -66,6 +66,32 @@ fn main() {
             let node = tauri::async_runtime::block_on(ShareNode::bind(share_dir.clone()))
                 .map_err(|e| e.to_string())?;
             app.manage(ShareState::with_node(share_dir, node));
+            // Point the pdfium loader at the libpdfium bundled under the app
+            // resources (tauri.conf.json `bundle.resources` maps it into pdfium/).
+            if std::env::var_os("LINXIV_PDFIUM_LIB").is_none() {
+                let lib_name = if cfg!(target_os = "windows") {
+                    "pdfium.dll"
+                } else if cfg!(target_os = "macos") {
+                    "libpdfium.dylib"
+                } else {
+                    "libpdfium.so"
+                };
+                if let Ok(dir) = app.path().resource_dir() {
+                    let lib = dir.join("pdfium").join(lib_name);
+                    let lib_bin = dir.join("pdfium").join("bin").join(lib_name);
+                    if lib.is_file() {
+                        std::env::set_var("LINXIV_PDFIUM_LIB", lib);
+                    } else if lib_bin.is_file() {
+                        std::env::set_var("LINXIV_PDFIUM_LIB", lib_bin);
+                    } else if !cfg!(debug_assertions) {
+                        eprintln!(
+                            "linxiv: bundled pdfium lib not found at {} or {}; PDF metadata extraction will be degraded",
+                            lib.display(),
+                            lib_bin.display()
+                        );
+                    }
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

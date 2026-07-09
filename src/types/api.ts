@@ -100,7 +100,23 @@ export interface Settings {
   search_history_enabled?: boolean;
   search_history_max?: number;
   tex_rendering_enabled?: boolean;
+  home_feed_url?: string;
   [key: string]: unknown;
+}
+
+export interface FeedEntry {
+  title: string;
+  link: string;
+  authors: string[];
+  summary: string;
+  published: string;
+  arxiv_id: string | null;
+}
+
+export interface FeedResponse {
+  title: string;
+  entries: FeedEntry[];
+  saved_arxiv_ids: string[];
 }
 
 export interface PaperVersionSummary {

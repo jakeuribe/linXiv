@@ -84,13 +84,20 @@ export function NoteCard({ note, projects = [], onEdit, onDelete }: NoteCardProp
         }
       >
         {/* Header: title + scope badge + date */}
-        <div className="flex items-start justify-between gap-2">
+        {/* Title on its own full-width row so it never competes with the scope
+            badge for width; a long project-name badge truncates instead of
+            starving the title (was: title + shrink-0 badge on one row, which
+            crammed the title into a skinny column and clipped the badge when the
+            reader divider narrowed). */}
+        <div className="flex flex-col gap-1">
           <span className="font-medium text-text leading-snug">
             <MathText forceInline>{note.title || "Untitled note"}</MathText>
           </span>
-          <div className="shrink-0 flex items-center gap-2 mt-0.5">
-            <Badge color={scopeProject?.color_hex ?? undefined}>{scopeLabel}</Badge>
-            <span className="text-muted text-xs">
+          <div className="flex items-center gap-2 min-w-0">
+            <Badge className="max-w-[240px] min-w-0" color={scopeProject?.color_hex ?? undefined}>
+              <span className="truncate">{scopeLabel}</span>
+            </Badge>
+            <span className="text-muted text-xs shrink-0 whitespace-nowrap">
               {formatDate(stamp)}
               {isEdited && " · edited"}
             </span>

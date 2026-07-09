@@ -23,9 +23,12 @@ const TABLE_DDL: &[&str] = &[
     include_str!("../../sql/tables/PAPER_TO_AUTHOR.sql"),
     include_str!("../../sql/tables/PAPER_TO_TAG.sql"),
     include_str!("../../sql/tables/PROJECT_TO_PAPER.sql"),
+    include_str!("../../sql/tables/PAPER_TO_READING.sql"),
     include_str!("../../sql/tables/PROJECT_TO_TAG.sql"),
     include_str!("../../sql/tables/NOTE.sql"),
     include_str!("../../sql/tables/papers_fts.sql"),
+    // After NOTE: its sync triggers reference the NOTE table.
+    include_str!("../../sql/tables/notes_fts.sql"),
     include_str!("../../sql/tables/DB_VERSION.sql"),
     include_str!("../../sql/tables/SEARCH_HISTORY.sql"),
     include_str!("../../sql/tables/SEARCH_STATE.sql"),

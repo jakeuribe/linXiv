@@ -41,7 +41,10 @@
     "externalBin": [
       "binaries/linxiv",
       "binaries/linxiv-mcp"
-    ]
+    ],
+    "resources": {
+      "vendor/pdfium/lib/": "pdfium/"
+    }
   },
   "plugins": {
     "shell": {

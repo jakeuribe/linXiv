@@ -10,6 +10,7 @@ import {
   type TrashedProject,
 } from "../../api/trash";
 import { removeFromAllProjects } from "../../api/papers";
+import { useReadingStatusStore } from "../../stores/readingStatus";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
 import { Dialog } from "../ui/dialog";
@@ -260,6 +261,9 @@ export function TrashSection() {
     setActionError(null);
     try {
       await hardDeletePaper(sourceId);
+      // Drop the persisted reading status so a re-saved paper reusing this
+      // source_id starts fresh. Soft delete keeps it: trash+restore round-trips.
+      useReadingStatusStore.getState().remove(sourceId);
       await qc.invalidateQueries({ queryKey: ["trash"] });
       await qc.invalidateQueries({ queryKey: ["papers"] });
     } catch (e) {

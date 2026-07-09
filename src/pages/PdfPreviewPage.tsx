@@ -3,8 +3,6 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Document, Page, pdfjs } from "react-pdf";
 import type { PDFDocumentProxy } from "pdfjs-dist";
-import "react-pdf/dist/Page/AnnotationLayer.css";
-import "react-pdf/dist/Page/TextLayer.css";
 import { fetchArxiv } from "../api/search";
 import { appendSavedId } from "../api/searchState";
 import { apiFetch, bytesToBase64, isTauri } from "../api/client";

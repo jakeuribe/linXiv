@@ -3,8 +3,6 @@ import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { Document, Page } from "react-pdf";
 import type { PDFDocumentProxy } from "pdfjs-dist";
-import "react-pdf/dist/Page/AnnotationLayer.css";
-import "react-pdf/dist/Page/TextLayer.css";
 import { getPaperBySfk, getPaperVersions, getPaperPdfUrl, getPdfProxyUrl } from "../api/papers";
 import { getNotes, deleteNote } from "../api/notes";
 import { getAnnotations, deleteAnnotation, updateAnnotation } from "../api/annotations";
@@ -14,6 +12,7 @@ import type { Note, Paper, Annotation } from "../types/api";
 import { PdfReader } from "../components/pdf/PdfReader";
 import { PagePill } from "../components/pdf/PagePill";
 import { parseAnchor } from "../lib/pdfAnchor";
+import { submitOnCtrlEnter } from "../lib/submitShortcut";
 import { Spinner } from "../components/ui/spinner";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
@@ -30,6 +29,14 @@ import { invoke } from "@tauri-apps/api/core";
 
 const LATEST_VERSION_KEY = "latest" as const;
 
+// Draggable split between the PDF pane and the details/notes pane. Persisted so
+// the chosen width survives navigation/reload. Only active on lg screens where
+// the two panes sit side by side (below lg they stack vertically).
+const RIGHT_PANE_KEY = "paperDetail.rightPaneWidth";
+const MIN_RIGHT_PANE = 300;
+const MAX_RIGHT_PANE = 720;
+const DEFAULT_RIGHT_PANE = 388;
+
 export default function PaperDetailPage() {
   const { sfk } = useParams<{ sfk: string }>();
   const navigate = useNavigate();
@@ -44,6 +51,76 @@ export default function PaperDetailPage() {
   const openNativeAbortRef = useRef<AbortController | null>(null);
   // null means "latest"; a number means a specific stored version
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
+
+  // Resizable right (details/notes) pane width.
+  const [rightWidth, setRightWidth] = useState(() => {
+    const saved = Number(localStorage.getItem(RIGHT_PANE_KEY));
+    return saved >= MIN_RIGHT_PANE && saved <= MAX_RIGHT_PANE ? saved : DEFAULT_RIGHT_PANE;
+  });
+  const [isWide, setIsWide] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(min-width: 1024px)").matches,
+  );
+  const twoPaneRef = useRef<HTMLDivElement>(null);
+  const draggingRef = useRef(false);
+  const dividerRafRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 1024px)");
+    const onChange = (e: MediaQueryListEvent) => setIsWide(e.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (dividerRafRef.current !== null) {
+        cancelAnimationFrame(dividerRafRef.current);
+      }
+    },
+    [],
+  );
+
+  const onDividerPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    e.preventDefault();
+    draggingRef.current = true;
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const onDividerPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!draggingRef.current || !twoPaneRef.current) return;
+    const rect = twoPaneRef.current.getBoundingClientRect();
+    const clientX = e.clientX;
+    if (dividerRafRef.current !== null) return;
+    dividerRafRef.current = requestAnimationFrame(() => {
+      dividerRafRef.current = null;
+      const next = Math.min(MAX_RIGHT_PANE, Math.max(MIN_RIGHT_PANE, rect.right - clientX));
+      setRightWidth(next);
+    });
+  };
+  const onDividerPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!draggingRef.current) return;
+    draggingRef.current = false;
+    e.currentTarget.releasePointerCapture(e.pointerId);
+    localStorage.setItem(RIGHT_PANE_KEY, String(rightWidth));
+  };
+  const onDividerKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const step = 16;
+    let next: number;
+    if (e.key === "ArrowLeft") {
+      next = Math.min(MAX_RIGHT_PANE, rightWidth + step);
+    } else if (e.key === "ArrowRight") {
+      next = Math.max(MIN_RIGHT_PANE, rightWidth - step);
+    } else if (e.key === "Home") {
+      next = MIN_RIGHT_PANE;
+    } else if (e.key === "End") {
+      next = MAX_RIGHT_PANE;
+    } else {
+      return;
+    }
+    setRightWidth(next);
+    localStorage.setItem(RIGHT_PANE_KEY, String(next));
+    e.preventDefault();
+  };
 
   const [previewNumPages, setPreviewNumPages] = useState(0);
   const [previewPage, setPreviewPage] = useState(1);
@@ -351,7 +428,15 @@ export default function PaperDetailPage() {
       </div>
 
       {/* Two-pane row: each pane scrolls independently */}
-      <div className={`flex-1 min-h-0 overflow-hidden ${hasPdfContent ? "grid grid-rows-[1fr_1fr] grid-cols-1 lg:grid-rows-1 lg:grid-cols-[1fr_388px]" : "flex flex-col"}`}>
+      <div
+        ref={twoPaneRef}
+        className={`flex-1 min-h-0 overflow-hidden ${hasPdfContent ? "grid grid-rows-[1fr_1fr] grid-cols-1 lg:grid-rows-1 lg:grid-cols-[1fr_388px]" : "flex flex-col"}`}
+        style={
+          hasPdfContent && isWide
+            ? { gridTemplateColumns: `minmax(0,1fr) 6px ${rightWidth}px` }
+            : undefined
+        }
+      >
         {/* Left pane: PDF */}
         <div className={hasPdfContent ? "min-h-0 overflow-y-auto bg-surface2 border-r border-border" : "shrink-0 flex items-center gap-3 flex-wrap px-6 py-3 bg-surface2 border-b border-border"}>
           <div className={hasPdfContent ? "h-full flex flex-col" : "contents"}>
@@ -380,6 +465,26 @@ export default function PaperDetailPage() {
           </div>
         </div>
 
+        {/* Draggable divider (side-by-side layout only) */}
+        {hasPdfContent && isWide && (
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize panels"
+            aria-valuenow={rightWidth}
+            aria-valuemin={MIN_RIGHT_PANE}
+            aria-valuemax={MAX_RIGHT_PANE}
+            tabIndex={0}
+            onPointerDown={onDividerPointerDown}
+            onPointerMove={onDividerPointerMove}
+            onPointerUp={onDividerPointerUp}
+            onPointerCancel={onDividerPointerUp}
+            onKeyDown={onDividerKeyDown}
+            className="h-full cursor-col-resize bg-border hover:bg-accent transition-colors"
+            style={{ touchAction: "none" }}
+          />
+        )}
+
         {/* Right pane: identity + Details/Notes */}
         <div className={`overflow-y-auto bg-panel ${hasPdfContent ? "min-h-0" : "flex-1 min-h-0"}`}>
           <div className={hasPdfContent ? "px-[18px] py-5 space-y-5" : "max-w-[760px] mx-auto px-8 py-6 space-y-5"}>
@@ -390,7 +495,10 @@ export default function PaperDetailPage() {
               </h2>
 
               {authors.length > 0 && (
-                <p className="text-muted text-sm">{authors.join(", ")}</p>
+                <div className="space-y-1.5">
+                  <MonoLabel>Authors</MonoLabel>
+                  <p className="text-muted text-sm">{authors.join(", ")}</p>
+                </div>
               )}
 
               {/* Meta row */}
@@ -702,6 +810,10 @@ function AnnotationCard({
               <textarea
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={submitOnCtrlEnter(() => {
+                  if (!(updateMutation.isPending || draft === annotation.comment || stale))
+                    updateMutation.mutate(draft);
+                })}
                 placeholder="Add a comment…"
                 rows={3}
                 autoFocus

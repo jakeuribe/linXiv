@@ -80,6 +80,17 @@ pub async fn get_guarded(url: &str, allow: &[&str]) -> Result<reqwest::Response>
     get_guarded_with(url, allow, &[]).await
 }
 
+/// True iff the URL's host is arxiv.org or any subdomain (rss./export./ar5iv…).
+pub(crate) fn is_arxiv_url(url: &str) -> bool {
+    Url::parse(url)
+        .ok()
+        .and_then(|u| {
+            u.host_str()
+                .map(|h| h == "arxiv.org" || h.ends_with(".arxiv.org"))
+        })
+        .unwrap_or(false)
+}
+
 /// Cap the GCS mirror attempt so a stalled mirror degrades to arXiv well inside
 /// the caller's overall proxy budget instead of consuming it (a host that connects
 /// but hangs before the headers is not bounded by the client's connect timeout).
@@ -111,10 +122,30 @@ pub async fn get_guarded_with(
     allow: &[&str],
     headers: &[(&str, &str)],
 ) -> Result<reqwest::Response> {
+    get_checked(url, headers, |u| assert_host_allowed(u, allow), None).await
+}
+
+/// Shared redirect-follow GET: `check` guards the initial URL and every hop
+/// before the request is sent. `arxiv_pace = Some(data_dir)` makes arXiv-host
+/// hops honour the shared cool-down + `MIN_SPACING` and record a 429 cool-down
+/// (callers whose pacing is done upstream, e.g. `arxiv_get`, pass `None`).
+pub(crate) async fn get_checked(
+    url: &str,
+    headers: &[(&str, &str)],
+    check: impl Fn(&str) -> Result<()>,
+    arxiv_pace: Option<&Path>,
+) -> Result<reqwest::Response> {
     let client = client();
     let mut current = url.to_string();
     for _ in 0..=MAX_REDIRECTS {
-        assert_host_allowed(&current, allow)?;
+        check(&current)?;
+        let pace_dir = arxiv_pace.filter(|_| is_arxiv_url(&current));
+        if let Some(dir) = pace_dir {
+            if let Some(remaining) = cooldown_remaining(dir, Utc::now()) {
+                tokio::time::sleep(remaining).await;
+            }
+            enforce_spacing().await;
+        }
         let mut req = client.get(&current);
         for (k, v) in headers {
             req = req.header(*k, *v);
@@ -123,6 +154,11 @@ pub async fn get_guarded_with(
             .send()
             .await
             .map_err(|e| CoreError::Upstream(format!("GET {current:?} failed: {e}")))?;
+        if resp.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            if let Some(dir) = pace_dir {
+                record_ratelimit(dir)?;
+            }
+        }
         if resp.status().is_redirection() {
             let loc = resp
                 .headers()
@@ -235,6 +271,18 @@ mod tests {
         // Allowed host as a left-label of an attacker domain.
         assert!(assert_host_allowed("https://arxiv.org.evil.com/x", ARXIV_HOSTS).is_err());
         assert!(assert_host_allowed("not a url", ARXIV_HOSTS).is_err());
+    }
+
+    #[test]
+    fn arxiv_url_predicate_matches_arxiv_domains_only() {
+        assert!(is_arxiv_url("https://arxiv.org/abs/1"));
+        assert!(is_arxiv_url("https://rss.arxiv.org/rss/cs.LG"));
+        assert!(is_arxiv_url("http://export.arxiv.org/api/query"));
+        assert!(is_arxiv_url("https://ar5iv.labs.arxiv.org/html/1"));
+        assert!(!is_arxiv_url("https://notarxiv.org/feed"));
+        assert!(!is_arxiv_url("https://arxiv.org.evil.com/x"));
+        assert!(!is_arxiv_url("https://example.com/rss"));
+        assert!(!is_arxiv_url("not a url"));
     }
 
     #[test]

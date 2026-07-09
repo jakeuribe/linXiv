@@ -12,9 +12,9 @@
 //! NOT enter `core`). So `import_pdf` takes a resolver `Fn(&[u8]) -> Result<(meta,
 //! external)>`. The full orchestration + rollback is ported and TESTED now with
 //! a fake resolver; the real one plugs in at Phase 3. `external` is the optional
-//! upstream identity `(source_id, version)`: `Some` ⇒ dedupe/adopt an existing
-//! arxiv/DOI root, `None` ⇒ mint a fresh `local:<sha>` root (so the
-//! "create new root" path is kept — do not drop the Option).
+//! upstream identity `(source_id, version)`: `Some` ⇒ key on that arxiv/DOI
+//! identity (creating or adopting its root), `None` ⇒ mint a fresh `local:<sha>`
+//! root (so the "create new root" path is kept — do not drop the Option).
 //!
 //! Two PDF filename formats stay DISTINCT: on-disk `{safe}v{version}.pdf`
 //! (`paper::pdf_on_disk_name`, used here) vs `.lxproj` archive
@@ -69,10 +69,10 @@ struct ImportState {
 /// Save a PDF to disk, extract its metadata (via `resolve`), persist to the DB,
 /// and optionally link it to a project. Returns the imported `(source_id, title)`.
 ///
-/// Dedupe: when `resolve` returns an `external` identity already in PAPER_ROOTS,
-/// the import ADOPTS it instead of minting a new `local:<sha>` root. Adopting a
-/// soft-deleted root auto-restores it; a later failure re-soft-deletes so a
-/// failed import never permanently un-trashes a root.
+/// Dedupe: when `resolve` returns an `external` arxiv/DOI identity, the import
+/// keys on it instead of minting a new `local:<sha>` root.
+/// Adopting an already-soft-deleted root auto-restores it; a later failure
+/// re-soft-deletes it.
 ///
 /// Rollback policy on storage/FS failure (the matrix):
 ///   - Brand-new paper (root didn't exist): hard_delete under the import lock,
@@ -184,8 +184,8 @@ fn import_body(
         // Serialize check-then-upsert against concurrent imports of the same paper.
         let _guard = IMPORT_ROOT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
 
-        // If enrichment matched an upstream root already in PAPER_ROOTS, adopt
-        // that identity instead of creating a new local:<sha> root.
+        // If enrichment resolved an upstream identity (arXiv/DOI), key on it as
+        // this paper's Paper Root, not the content hash.
         if let Some((ext_id, ext_version)) = external {
             if let Some(existing) = store::get_paper_root(conn, &ext_id)? {
                 if existing.status == "deleted" {
@@ -193,9 +193,9 @@ fn import_body(
                     // record it so rollback can re-trash.
                     st.restored_deleted_root = true;
                 }
-                meta.source_id = ext_id;
-                meta.version = ext_version;
             }
+            meta.source_id = ext_id;
+            meta.version = ext_version;
         }
 
         let pre_existing_root = store::get_paper_root(conn, &meta.source_id)?.is_some();
@@ -441,6 +441,38 @@ mod tests {
         assert!(store::get_paper_root(&conn, "local:xyz").unwrap().is_none());
         // The arxiv version now has a PDF on disk.
         assert!(dir.path().join("arxiv_2204.0001v1.pdf").exists());
+    }
+
+    #[test]
+    fn import_resolving_to_new_arxiv_id_converges_with_later_direct_save() {
+        // "Imported earlier" case: the arxiv root does NOT yet exist when the PDF
+        // is imported. The import keys on the resolved arxiv identity, not the
+        // content hash.
+        let mut conn = mem();
+        let dir = tempdir().unwrap();
+
+        let res = import_pdf(
+            &mut conn,
+            dir.path(),
+            b"pdf",
+            None,
+            resolver(meta("local:xyz", 1), Some(("arxiv:2308.0001".into(), 1))),
+        )
+        .unwrap();
+        // Keyed on the arxiv identity, no local:<sha> root minted.
+        assert_eq!(res.source_id, "arxiv:2308.0001");
+        assert!(store::get_paper_root(&conn, "local:xyz").unwrap().is_none());
+
+        // Direct arXiv save of the same paper afterwards.
+        paper::save_paper_metadata(&mut conn, &meta("arxiv:2308.0001", 1), None).unwrap();
+
+        // One paper, not two.
+        assert_eq!(
+            paper::list_papers(&conn, false, None, 0, None)
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]

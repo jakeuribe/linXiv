@@ -1,7 +1,8 @@
 //! Author service — Rust port of `service/author.py`. Plan §5.2.
 //!
 //! Thin orchestration over `storage::queries::author`. Every DB-touching fn
-//! takes `conn: &Connection` first (DI seam — no config-opened connections).
+//! takes `conn: &Connection` first (DI seam — no config-opened connections),
+//! except transactional writers like `merge`, which take `conn: &mut Connection`.
 //!
 //! D17 dual-lookup seam: `get(Author)` / `get_many(Authors)` are the ONE lookup
 //! seam. The Python `get_author_details` / `get_full_author_details` /
@@ -126,6 +127,13 @@ pub fn update(conn: &Connection, author_id: i64, author: &AuthorIn) -> Result<()
         author.last_name.as_deref(),
         author.orcid.as_deref(),
     )
+}
+
+/// Merge one or more duplicate authors into `canonical_id`, re-pointing their
+/// papers (deduped) and deleting the duplicate rows. Returns the ids actually
+/// merged (excludes `canonical_id` itself). See `store::merge_authors`.
+pub fn merge(conn: &mut Connection, canonical_id: i64, duplicate_ids: &[i64]) -> Result<Vec<i64>> {
+    store::merge_authors(conn, canonical_id, duplicate_ids)
 }
 
 /// Delete by lookup key. No-op when the key carries no `author_id` (matching
@@ -436,6 +444,63 @@ mod tests {
         )
         .unwrap()
         .is_none());
+    }
+
+    #[test]
+    fn merge_repoints_papers_and_removes_duplicate() {
+        let mut conn = mem();
+        // Shared paper (both authors) + one paper each, to exercise dedupe.
+        let (shared, bob, alice) = seed(&conn);
+        conn.execute("INSERT INTO PAPER_ROOTS (SOURCE_ID) VALUES ('arxiv:2')", [])
+            .unwrap();
+        let fk = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO PAPER (SOURCE_ID, VERSION, TITLE, SOURCE_FK) VALUES ('arxiv:2', 1, 'T2', ?)",
+            params![fk],
+        )
+        .unwrap();
+        let solo = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO PAPER_META (PAPER_ID, PUBLISHED) VALUES (?, '2024-01-02')",
+            params![solo],
+        )
+        .unwrap();
+        link_author_to_paper(&conn, alice, solo, Some(0)).unwrap();
+
+        merge(&mut conn, bob, &[alice]).unwrap();
+
+        // Duplicate author is gone; canonical remains.
+        assert!(get(
+            &conn,
+            &Author {
+                author_id: Some(alice),
+                ..Default::default()
+            }
+        )
+        .unwrap()
+        .is_none());
+        assert!(get(
+            &conn,
+            &Author {
+                author_id: Some(bob),
+                ..Default::default()
+            }
+        )
+        .unwrap()
+        .is_some());
+
+        // Bob now covers both paper roots, with exactly one link row per paper
+        // (the shared paper did not double-link).
+        assert_eq!(count_paper_links(&conn, bob).unwrap(), 2);
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM PAPER_TO_AUTHOR WHERE AUTHOR_FK = ?",
+                params![bob],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(get_paper_authors(&conn, shared).unwrap().len(), 1);
     }
 
     #[test]

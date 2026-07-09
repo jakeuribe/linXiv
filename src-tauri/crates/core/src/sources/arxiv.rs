@@ -26,16 +26,28 @@ use quick_xml::Reader;
 
 use crate::error::{CoreError, Result};
 use crate::models::{strip_namespace, PaperMetadata};
+use crate::service::version_monitor::MAX_VERSION_CHECK_BATCH;
+use tracing::warn;
 
 // ---------------------------------------------------------------------------
 // _parse_arxiv_id
 // ---------------------------------------------------------------------------
 
 /// Split `"http://arxiv.org/abs/2204.12985v4"` -> `("arxiv:2204.12985", 4)`.
-/// Port of `_parse_arxiv_id`'s `^(.+?)(?:v(\d+))?$` over the last path segment:
+/// Also handles old-style ids: `"http://arxiv.org/abs/hep-th/9901001v1"` -> `("arxiv:hep-th/9901001", 1)`.
+/// Port of `_parse_arxiv_id`'s `^(.+?)(?:v(\d+))?$` over the raw id (extracted by stripping URL):
 /// a trailing `v<digits>` is the version (default 1), the rest is the bare id.
 pub fn parse_arxiv_id(entry_id: &str) -> (String, i64) {
-    let raw = entry_id.rsplit('/').next().unwrap_or(entry_id);
+    // Strip URL prefix by finding the last /abs/ or /pdf/ and taking everything after.
+    // If neither is present, fall back to the current rsplit behavior for bare ids.
+    let raw = if let Some((_, after_abs)) = entry_id.rsplit_once("/abs/") {
+        after_abs
+    } else if let Some((_, after_pdf)) = entry_id.rsplit_once("/pdf/") {
+        after_pdf
+    } else {
+        entry_id.rsplit('/').next().unwrap_or(entry_id)
+    };
+
     if let Some(vpos) = raw.rfind('v') {
         let (base, vpart) = raw.split_at(vpos);
         let digits = &vpart[1..];
@@ -62,7 +74,8 @@ struct Entry {
     authors: Vec<String>,
     categories: Vec<String>,
     category: Option<String>,
-    doi: Option<String>,
+    doi_bare: Option<String>,
+    doi_link: Option<String>,
     journal_ref: Option<String>,
     comment: Option<String>,
     url: Option<String>,
@@ -95,8 +108,7 @@ fn attr_tag(l: &[u8], e: &BytesStart, b: &mut Entry) {
         }
         b"link" => match attr(e, b"title").as_deref() {
             Some("pdf") => b.url = attr(e, b"href"),
-            // bare <arxiv:doi> is preferred; the link form is a full doi.org URL.
-            Some("doi") if b.doi.is_none() => b.doi = attr(e, b"href"),
+            Some("doi") => b.doi_link = attr(e, b"href"),
             _ => {}
         },
         _ => {}
@@ -129,7 +141,7 @@ fn finalize(b: Entry) -> Result<PaperMetadata> {
         summary: b.summary.trim().to_string(),
         category: b.category,
         categories: Some(b.categories),
-        doi: b.doi,
+        doi: b.doi_bare.or(b.doi_link),
         journal_ref: b.journal_ref,
         comment: b.comment,
         url: b.url,
@@ -147,6 +159,7 @@ pub fn parse_atom(xml: &[u8]) -> Result<Vec<PaperMetadata>> {
     let mut cur: Option<Entry> = None;
     let mut in_author = false;
     let mut text = String::new();
+    let mut last_err: Option<CoreError> = None;
 
     loop {
         let ev = reader
@@ -170,27 +183,40 @@ pub fn parse_atom(xml: &[u8]) -> Result<Vec<PaperMetadata>> {
             }
             Event::Text(e) => {
                 if cur.is_some() {
-                    let t = e
-                        .decode()
-                        .map_err(|err| CoreError::Upstream(format!("arXiv XML decode: {err}")))?;
-                    text.push_str(&t);
+                    match e.decode() {
+                        Ok(t) => text.push_str(&t),
+                        Err(err) => {
+                            warn!("arXiv XML text decode failed: {}", err);
+                        }
+                    }
                 }
             }
             // quick-xml emits entities (`&amp;`, `&#38;`) as their own events.
             Event::GeneralRef(e) => {
                 if cur.is_some() {
-                    if let Some(c) = e
-                        .resolve_char_ref()
-                        .map_err(|err| CoreError::Upstream(format!("arXiv XML ref: {err}")))?
-                    {
-                        text.push(c);
-                    } else {
-                        let name = e
-                            .decode()
-                            .map_err(|err| CoreError::Upstream(format!("arXiv XML ref: {err}")))?;
-                        if let Some(s) = quick_xml::escape::resolve_predefined_entity(&name) {
-                            text.push_str(s);
+                    let resolved = match e.resolve_char_ref() {
+                        Ok(Some(c)) => Some(c.to_string()),
+                        Ok(None) => match e.decode() {
+                            Ok(name) => {
+                                if let Some(s) = quick_xml::escape::resolve_predefined_entity(&name) {
+                                    Some(s.to_string())
+                                } else {
+                                    warn!("Unknown XML entity: &{};", name);
+                                    None
+                                }
+                            }
+                            Err(err) => {
+                                warn!("arXiv XML entity decode failed: {}", err);
+                                None
+                            }
+                        },
+                        Err(err) => {
+                            warn!("arXiv XML char ref resolution failed: {}", err);
+                            None
                         }
+                    };
+                    if let Some(s) = resolved {
+                        text.push_str(&s);
                     }
                 }
             }
@@ -212,14 +238,21 @@ pub fn parse_atom(xml: &[u8]) -> Result<Vec<PaperMetadata>> {
                             b"summary" => b.summary = text.clone(),
                             b"journal_ref" => b.journal_ref = Some(text.trim().to_string()),
                             b"comment" => b.comment = Some(text.trim().to_string()),
-                            b"doi" if b.doi.is_none() => b.doi = Some(text.trim().to_string()),
+                            b"doi" => b.doi_bare = Some(text.trim().to_string()),
                             _ => {}
                         }
                     }
                 }
                 if l == b"entry" {
                     if let Some(b) = cur.take() {
-                        out.push(finalize(b)?);
+                        let entry_id = b.entry_id.clone();
+                        match finalize(b) {
+                            Ok(metadata) => out.push(metadata),
+                            Err(e) => {
+                                warn!("Skipping malformed arXiv entry {entry_id:?}: {}", e);
+                                last_err = Some(e);
+                            }
+                        }
                     }
                 }
             }
@@ -227,6 +260,11 @@ pub fn parse_atom(xml: &[u8]) -> Result<Vec<PaperMetadata>> {
             _ => {}
         }
         buf.clear();
+    }
+    if out.is_empty() {
+        if let Some(e) = last_err {
+            return Err(e);
+        }
     }
     Ok(out)
 }
@@ -291,6 +329,40 @@ pub async fn fetch_by_id(source_id: &str, data_dir: &Path) -> Result<PaperMetada
         .ok_or_else(|| CoreError::ArxivNotFound(format!("Paper '{source_id}' not found on arXiv.")))
 }
 
+/// Prepare the id_list parameter for a batch query: strip namespaces, filter
+/// empty ids, join with commas. Returns None if all ids are empty after stripping.
+/// Cap processing to 100 ids.
+fn prepare_id_list(source_ids: &[String]) -> Option<(String, usize)> {
+    let bare: Vec<String> = source_ids
+        .iter()
+        .take(MAX_VERSION_CHECK_BATCH as usize)
+        .map(|s| strip_namespace(s))
+        .filter(|s| !s.is_empty())
+        .collect();
+    if bare.is_empty() {
+        None
+    } else {
+        let count = bare.len();
+        Some((bare.join(","), count))
+    }
+}
+
+/// Fetch metadata for many ids in ONE rate-limited request (arXiv `id_list` is
+/// comma-separated). Ids that arXiv doesn't recognize are simply absent from the
+/// returned feed — the caller matches results back by `source_id`.
+pub async fn fetch_by_ids(source_ids: &[String], data_dir: &Path) -> Result<Vec<PaperMetadata>> {
+    let (id_list, count) = match prepare_id_list(source_ids) {
+        Some(pair) => pair,
+        None => return Ok(Vec::new()),
+    };
+    let mut url = reqwest::Url::parse(QUERY_URL).expect("static URL");
+    url.query_pairs_mut()
+        .append_pair("id_list", &id_list)
+        .append_pair("max_results", &count.to_string());
+    let resp = crate::sources::http::arxiv_get(url.as_str(), data_dir).await?;
+    parse_atom(body(resp).await?.as_bytes())
+}
+
 // ---------------------------------------------------------------------------
 // Tests — parser against a representative recorded arXiv Atom feed.
 // (The Python suite mocks `arxiv.Result`; the real wire format the `arxiv`
@@ -338,6 +410,76 @@ Second line of the abstract.
   <opensearch:totalResults xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">0</opensearch:totalResults>
 </feed>"#;
 
+    // A feed with two entries to verify non-cross-contamination.
+    const ATOM_TWO: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
+  <title type="html">ArXiv Query</title>
+  <id>http://arxiv.org/api/errors</id>
+  <updated>2024-01-01T00:00:00-05:00</updated>
+  <entry>
+    <id>http://arxiv.org/abs/2204.12985v1</id>
+    <updated>2023-08-14T15:00:00Z</updated>
+    <published>2022-04-27T17:59:01Z</published>
+    <title>First Paper</title>
+    <summary>First summary text.</summary>
+    <author><name>Alice Smith</name></author>
+    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2301.00123v2</id>
+    <updated>2023-01-15T10:30:00Z</updated>
+    <published>2023-01-01T12:00:00Z</published>
+    <title>Second Paper</title>
+    <summary>Second summary text.</summary>
+    <author><name>Bob Jones</name></author>
+    <author><name>Charlie Brown</name></author>
+    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+  </entry>
+</feed>"#;
+
+    // A feed with one good entry and one malformed entry (missing published date).
+    const ATOM_MIXED_GOOD_BAD: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
+  <title>ArXiv Query</title>
+  <id>http://arxiv.org/api/errors</id>
+  <entry>
+    <id>http://arxiv.org/abs/2204.12985v1</id>
+    <published>2022-04-27T17:59:01Z</published>
+    <title>Good Paper</title>
+    <summary>Good summary.</summary>
+    <author><name>Alice Smith</name></author>
+    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2301.00123v1</id>
+    <title>Bad Paper</title>
+    <summary>Missing published date.</summary>
+    <author><name>Bob Jones</name></author>
+    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+  </entry>
+</feed>"#;
+
+    // A feed where all entries fail finalize (all missing published date).
+    const ATOM_ALL_BAD: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
+  <title>ArXiv Query</title>
+  <id>http://arxiv.org/api/errors</id>
+  <entry>
+    <id>http://arxiv.org/abs/2204.12985v1</id>
+    <title>Bad Paper 1</title>
+    <summary>Missing published.</summary>
+    <author><name>Alice</name></author>
+    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2301.00123v1</id>
+    <title>Bad Paper 2</title>
+    <summary>Also missing published.</summary>
+    <author><name>Bob</name></author>
+    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+  </entry>
+</feed>"#;
+
     #[test]
     fn parse_arxiv_id_matches_python_cases() {
         assert_eq!(
@@ -358,6 +500,16 @@ Second line of the abstract.
         assert_eq!(
             parse_arxiv_id("http://arxiv.org/abs/2204.123456v1"),
             ("arxiv:2204.123456".into(), 1)
+        );
+        // old-style id with archive prefix
+        assert_eq!(
+            parse_arxiv_id("http://arxiv.org/abs/hep-th/9901001v1"),
+            ("arxiv:hep-th/9901001".into(), 1)
+        );
+        // /pdf/ URL fallback
+        assert_eq!(
+            parse_arxiv_id("http://arxiv.org/pdf/2204.12985v4"),
+            ("arxiv:2204.12985".into(), 4)
         );
     }
 
@@ -408,8 +560,87 @@ Second line of the abstract.
     }
 
     #[test]
+    fn parse_atom_multi_entry_no_cross_contamination() {
+        let papers = parse_atom(ATOM_TWO).unwrap();
+        assert_eq!(papers.len(), 2);
+
+        // First entry
+        let p1 = &papers[0];
+        assert_eq!(p1.source_id, "arxiv:2204.12985");
+        assert_eq!(p1.version, 1);
+        assert_eq!(p1.title, "First Paper");
+        assert_eq!(p1.authors, vec!["Alice Smith"]);
+        assert_eq!(p1.summary, "First summary text.");
+        assert_eq!(p1.category.as_deref(), Some("cs.LG"));
+
+        // Second entry — verify no field leakage from first
+        let p2 = &papers[1];
+        assert_eq!(p2.source_id, "arxiv:2301.00123");
+        assert_eq!(p2.version, 2);
+        assert_eq!(p2.title, "Second Paper");
+        assert_eq!(p2.authors, vec!["Bob Jones", "Charlie Brown"]);
+        assert_eq!(p2.summary, "Second summary text.");
+        assert_eq!(p2.category.as_deref(), Some("cs.AI"));
+    }
+
+    #[test]
     fn sort_params_rejects_unknown_sort() {
         assert!(sort_params("relevance").is_ok());
         assert!(sort_params("bogus").is_err());
+    }
+
+    #[test]
+    fn prepare_id_list_strips_namespace() {
+        let input = vec!["arxiv:2204.12985".to_string()];
+        let (ids, count) = prepare_id_list(&input).unwrap();
+        assert_eq!(ids, "2204.12985");
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn prepare_id_list_filters_empty() {
+        let input = vec!["arxiv:2204.12985".to_string(), "".to_string()];
+        let (ids, count) = prepare_id_list(&input).unwrap();
+        assert_eq!(ids, "2204.12985");
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn prepare_id_list_joins_with_comma() {
+        let input = vec![
+            "arxiv:2204.12985".to_string(),
+            "arxiv:2301.00123".to_string(),
+        ];
+        let (ids, count) = prepare_id_list(&input).unwrap();
+        assert_eq!(ids, "2204.12985,2301.00123");
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn prepare_id_list_empty_input_returns_none() {
+        let input: Vec<String> = vec![];
+        assert!(prepare_id_list(&input).is_none());
+    }
+
+    #[test]
+    fn prepare_id_list_all_empty_returns_none() {
+        let input = vec!["".to_string(), "".to_string()];
+        assert!(prepare_id_list(&input).is_none());
+    }
+
+    #[test]
+    fn parse_atom_skips_malformed_entries_returns_good_ones() {
+        let papers = parse_atom(ATOM_MIXED_GOOD_BAD).unwrap();
+        assert_eq!(papers.len(), 1);
+        let p = &papers[0];
+        assert_eq!(p.source_id, "arxiv:2204.12985");
+        assert_eq!(p.title, "Good Paper");
+        assert_eq!(p.authors, vec!["Alice Smith"]);
+    }
+
+    #[test]
+    fn parse_atom_all_entries_fail_returns_error() {
+        let result = parse_atom(ATOM_ALL_BAD);
+        assert!(result.is_err());
     }
 }

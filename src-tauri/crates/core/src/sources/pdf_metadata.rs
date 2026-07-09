@@ -27,7 +27,8 @@ use crate::sources::{arxiv, crossref, doi_resolve};
 // Raw extraction result (mirrors the Python dict; `abstract` is always None).
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub(crate) struct Extracted {
     pub title: Option<String>,
     pub authors: Option<String>,
@@ -210,7 +211,9 @@ pub(crate) fn extract_title_from_text(text: &str) -> Option<String> {
     if lines.is_empty() {
         None
     } else {
-        Some(lines.join(" "))
+        let joined = lines.join(" ");
+        let capped: String = joined.chars().take(300).collect();
+        Some(capped)
     }
 }
 
@@ -302,11 +305,8 @@ fn pdfium_lib_path() -> Option<&'static std::path::Path> {
 }
 
 /// Bind libpdfium for a SINGLE extraction; the caller drops it immediately after.
-/// Mechanism: `thread_safe` takes a process-global lock inside `FPDF_InitLibrary`
-/// (`Pdfium::new`) and releases it in `FPDF_DestroyLibrary` (`Drop`), i.e. it is
-/// held for the instance's whole lifetime. So a per-call instance frees the lock
-/// each call and concurrent extractions queue on it; a long-lived/per-thread
-/// instance would pin the lock and the next caller's `new` would block forever.
+/// Per-call bind+drop releases the process-global lock on each invocation (see
+/// concurrent_extractions_do_not_deadlock for the empirical check).
 fn bind_pdfium() -> Option<Pdfium> {
     let bindings = match pdfium_lib_path() {
         Some(p) => Pdfium::bind_to_library(p).ok(),
@@ -330,7 +330,8 @@ fn bind_pdfium() -> Option<Pdfium> {
 /// Non-empty Info-dict value for `tag`, else None (mirrors `meta.get(k) or None`).
 fn meta_get(md: &PdfMetadata, tag: PdfDocumentMetadataTagType) -> Option<String> {
     let v = md.get(tag)?.value().to_string();
-    (!v.trim().is_empty()).then_some(v)
+    let capped: String = v.chars().take(300).collect();
+    (!capped.trim().is_empty()).then_some(capped)
 }
 
 // ---------------------------------------------------------------------------
@@ -346,7 +347,7 @@ pub(crate) fn extract_pdf_metadata(bytes: &[u8]) -> Extracted {
     // catch_unwind degrades a pdfium *panic* to all-None — but only under an unwind
     // profile; NOTE (D30): in a release build (`panic = "abort"`) a panic aborts the
     // process, and a native libpdfium *segfault* is uncatchable in either profile.
-    // Production should run extraction behind a worker/subprocess boundary.
+    // `extract_pdf_metadata_isolated` is the subprocess boundary covering those.
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let Some(pdfium) = bind_pdfium() else {
             return Extracted::default();
@@ -374,8 +375,8 @@ fn extract_from_doc(doc: &PdfDocument) -> Extracted {
     }
 
     // First-page text — Python reads pages[0]. pdfium emits proper newlines, so
-    // the title heuristic sees one logical line per visual line (no length guard
-    // needed, unlike lopdf).
+    // the title heuristic sees one logical line per visual line; joined output is
+    // capped at 300 chars in extract_title_from_text.
     let first_page = doc
         .pages()
         .first()
@@ -398,6 +399,233 @@ fn extract_from_doc(doc: &PdfDocument) -> Extracted {
         doi,
         arxiv_id,
         year,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Subprocess boundary — a native libpdfium crash kills the worker, not the app
+// ---------------------------------------------------------------------------
+
+const WORKER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+fn sweep_stale_pdfmeta_temps() {
+    static SWEPT: std::sync::Once = std::sync::Once::new();
+    SWEPT.call_once(|| {
+        if let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) {
+            let now = std::time::SystemTime::now();
+            let one_hour = std::time::Duration::from_secs(3600);
+            for entry in entries.flatten() {
+                if let Ok(metadata) = entry.metadata() {
+                    if let Ok(name) = entry.file_name().into_string() {
+                        if name.starts_with("linxiv-pdfmeta-") && name.ends_with(".pdf") {
+                            if let Ok(modified) = metadata.modified() {
+                                if let Ok(elapsed) = now.duration_since(modified) {
+                                    if elapsed > one_hour {
+                                        let _ = std::fs::remove_file(entry.path());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// Extraction behind the crash boundary: routed through the worker subprocess
+/// when one is found, else run in-process (the pre-boundary behavior).
+/// ponytail: process-per-call (spawn + libpdfium load per import); pool the
+/// worker if import throughput ever matters.
+pub(crate) fn extract_pdf_metadata_isolated(bytes: &[u8]) -> Extracted {
+    extract_isolated_with(pdf_worker_path().as_deref(), bytes)
+}
+
+fn extract_isolated_with(worker: Option<&Path>, bytes: &[u8]) -> Extracted {
+    match worker {
+        // Worker failure (crash/timeout/garbage) degrades to all-None.
+        Some(w) => extract_via_worker(w, bytes, WORKER_TIMEOUT).unwrap_or_default(),
+        None => extract_pdf_metadata(bytes),
+    }
+}
+
+/// Worker-process entry (`linxiv pdf-meta <path>`): direct in-process extraction,
+/// emitted as one JSON object the parent parses back into `Extracted`.
+pub fn extract_pdf_metadata_json(bytes: &[u8]) -> String {
+    serde_json::to_string(&extract_pdf_metadata(bytes)).unwrap_or_else(|_| "{}".into())
+}
+
+/// Locate the worker (the CLI, which links this crate): `LINXIV_PDF_WORKER` env,
+/// else a CLI binary next to the current exe — `linxiv-cli` in the cargo target
+/// dir (dev), `linxiv` bundled-sidecar-adjacent (release). Every candidate takes
+/// the same `is_file` check, so a broken path degrades to the in-process path.
+fn pdf_worker_path() -> Option<std::path::PathBuf> {
+    let env_var = std::env::var_os("LINXIV_PDF_WORKER");
+    let env_set = env_var.is_some();
+    let candidates: Vec<std::path::PathBuf> = match env_var {
+        Some(p) => vec![p.into()],
+        None => {
+            let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+            let exe = if cfg!(windows) { ".exe" } else { "" };
+            vec![
+                dir.join(format!("linxiv-cli{exe}")),
+                dir.join(format!("linxiv{exe}")),
+            ]
+        }
+    };
+    let result = candidates.into_iter().find(|p| p.is_file());
+    if result.is_none() && env_set {
+        static WARNED: std::sync::Once = std::sync::Once::new();
+        WARNED.call_once(|| {
+            tracing::warn!(
+                "LINXIV_PDF_WORKER set but worker binary not found — \
+                 falling back to in-process extraction"
+            )
+        });
+    }
+    result
+}
+
+/// Spawn `worker pdf-meta <tmp>` on a temp copy of `bytes`. None on any failure
+/// (spawn, nonzero exit, timeout, unparseable stdout) — the caller defaults.
+fn extract_via_worker(
+    worker: &Path,
+    bytes: &[u8],
+    timeout: std::time::Duration,
+) -> Option<Extracted> {
+    sweep_stale_pdfmeta_temps();
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmp = std::env::temp_dir().join(format!(
+        "linxiv-pdfmeta-{}-{}.pdf",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    #[cfg(unix)]
+    {
+        use std::fs::OpenOptions;
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let write_result = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)
+            .and_then(|mut f| f.write_all(bytes));
+        if write_result.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+            return None;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        use std::fs::OpenOptions;
+        use std::io::Write;
+        let write_result = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+            .and_then(|mut f| f.write_all(bytes));
+        if write_result.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+            return None;
+        }
+    }
+    let result = run_worker(worker, &tmp, timeout);
+    let _ = std::fs::remove_file(&tmp);
+    result
+}
+
+fn run_worker(worker: &Path, pdf: &Path, timeout: std::time::Duration) -> Option<Extracted> {
+    use std::process::Stdio;
+    let mut cmd = std::process::Command::new(worker);
+    cmd.arg("pdf-meta")
+        .arg(pdf)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // Thread the resolved lib to the child so it binds the same libpdfium even
+    // when the parent found it by exe-adjacent lookup rather than env.
+    if let Some(lib) = pdfium_lib_path() {
+        cmd.env("LINXIV_PDFIUM_LIB", lib);
+    }
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "pdf-worker spawn failed");
+            return None;
+        }
+    };
+
+    let stdout = child.stdout.take().expect("stdout piped above");
+    let stderr = child.stderr.take().expect("stderr piped above");
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (stderr_tx, stderr_rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut out = String::new();
+        use std::io::Read;
+        let _ = stdout.take(1_000_000).read_to_string(&mut out);
+        let _ = tx.send(out);
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut err = String::new();
+        use std::io::Read;
+        let _ = stderr.take(1_000_000).read_to_string(&mut err);
+        let _ = stderr_tx.send(err);
+    });
+
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break st,
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                // Don't join the readers: an orphaned grandchild can hold the
+                // pipes open past the deadline; the detached threads exit then.
+                tracing::warn!("pdf-worker killed on timeout");
+                return None;
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(25)),
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    if !status.success() {
+        let _ = reader.join();
+        let stderr_out = stderr_rx.recv().ok().unwrap_or_default();
+        let stderr_snippet = stderr_out.chars().take(200).collect::<String>();
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            if status.code().is_none() {
+                if let Some(signal) = status.signal() {
+                    tracing::warn!(
+                        signal = signal,
+                        stderr = %stderr_snippet,
+                        "pdf-worker killed by signal"
+                    );
+                }
+            } else {
+                tracing::warn!(code = ?status.code(), stderr = %stderr_snippet, "pdf-worker exited non-zero");
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            tracing::warn!(code = ?status.code(), stderr = %stderr_snippet, "pdf-worker exited non-zero");
+        }
+        let _ = stderr_reader.join();
+        return None;
+    }
+    let out = reader.join().ok().and_then(|_| rx.recv().ok())?;
+    match serde_json::from_str(&out) {
+        Ok(extracted) => Some(extracted),
+        Err(e) => {
+            tracing::warn!(error = %e, len = out.len(), "pdf-worker JSON parse failed");
+            None
+        }
     }
 }
 
@@ -431,10 +659,10 @@ pub async fn resolve_pdf_metadata(
     bytes: &[u8],
     data_dir: &Path,
 ) -> Result<(PaperMetadata, Option<(String, i64)>)> {
-    // Blocking native FFI — off the executor onto the blocking pool (and the
-    // per-call libpdfium lock is waited on there, not on a runtime worker).
+    // Blocking work (child-process wait, or native FFI on the in-process
+    // fallback) — off the executor onto the blocking pool.
     let owned = bytes.to_vec();
-    let raw = tokio::task::spawn_blocking(move || extract_pdf_metadata(&owned))
+    let raw = tokio::task::spawn_blocking(move || extract_pdf_metadata_isolated(&owned))
         .await
         .unwrap_or_default();
     let local_id = pdf_source_id(bytes);
@@ -843,26 +1071,89 @@ mod tests {
     // it (the 2nd concurrent extraction blocked forever on a long-lived worker); the
     // per-call bind+drop releases it. 8 concurrent resolves on a 4-worker runtime must
     // all finish — the timeout turns a regression into a failure, not a hung suite.
+    // Exercises resolve_pdf_metadata's full path (extraction + enrichment) and when
+    // LINXIV_PDF_WORKER or an adjacent binary is available, the worker subprocess path.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_extractions_do_not_deadlock() {
-        let dir = tempfile::tempdir().unwrap();
+        let data_dir = tempfile::tempdir().unwrap();
         let mut handles = Vec::new();
         for i in 0..8 {
-            let p = dir.path().to_path_buf();
+            let data_dir_path = data_dir.path().to_path_buf();
             handles.push(tokio::spawn(async move {
-                // Each call binds a Pdfium (acquires the global lock) and drops it.
+                // Each call exercises resolve_pdf_metadata's full path (extraction + enrichment).
+                // Result value is irrelevant here — only completion (no deadlock) matters.
                 let bytes = format!("%PDF junk {i}").into_bytes();
-                resolve_pdf_metadata(&bytes, &p).await
+                let _ = resolve_pdf_metadata(&bytes, &data_dir_path).await;
             }));
         }
         let join_all = async {
             for h in handles {
-                h.await.unwrap().unwrap();
+                h.await.unwrap();
             }
         };
         tokio::time::timeout(std::time::Duration::from_secs(30), join_all)
             .await
             .expect("concurrent PDF extractions deadlocked (timed out)");
+    }
+
+    // ---- subprocess boundary degrade paths (fake workers; no real segfault) ----
+
+    #[cfg(unix)]
+    fn fake_worker(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let p = dir.join(name);
+        std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn worker_boundary_degrade_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let timeout = std::time::Duration::from_secs(10);
+
+        // Healthy worker: the parsed record comes from the child's stdout.
+        let ok = fake_worker(
+            dir.path(),
+            "ok.sh",
+            r#"echo '{"title":"FROM_WORKER","authors":null,"doi":null,"arxiv_id":null,"year":2024}'"#,
+        );
+        let got = extract_via_worker(&ok, b"junk", timeout).expect("worker json parses");
+        assert_eq!(got.title.as_deref(), Some("FROM_WORKER"));
+        assert_eq!(got.year, Some(2024));
+
+        // Nonzero exit (what a segfaulted child looks like) -> None -> default.
+        let boom = fake_worker(dir.path(), "boom.sh", "exit 139");
+        assert_eq!(extract_via_worker(&boom, b"junk", timeout), None);
+        assert_eq!(
+            extract_isolated_with(Some(&boom), b"junk"),
+            Extracted::default()
+        );
+
+        // Garbage stdout -> None.
+        let garbage = fake_worker(dir.path(), "garbage.sh", "echo not-json");
+        assert_eq!(extract_via_worker(&garbage, b"junk", timeout), None);
+
+        // Hung child is killed at the deadline -> None (bounded, not forever).
+        let hang = fake_worker(dir.path(), "hang.sh", "sleep 30");
+        let t0 = std::time::Instant::now();
+        assert_eq!(
+            extract_via_worker(&hang, b"junk", std::time::Duration::from_millis(300)),
+            None
+        );
+        assert!(t0.elapsed() < std::time::Duration::from_secs(10));
+
+        // No worker found -> in-process fallback (junk -> default, no crash).
+        assert_eq!(
+            extract_isolated_with(None, b"%PDF junk"),
+            Extracted::default()
+        );
+        // Worker routing via the dispatch seam.
+        assert_eq!(
+            extract_isolated_with(Some(&ok), b"junk").title.as_deref(),
+            Some("FROM_WORKER")
+        );
     }
 
     #[tokio::test]

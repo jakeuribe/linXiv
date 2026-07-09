@@ -5,12 +5,14 @@
 //! the named queries below are signature-only stubs so the API surface exists.
 //! Correctness of the primitives outranks covering every named query.
 
+pub mod backup;
 pub mod db;
 pub mod migrations;
 pub mod queries;
 pub mod query;
 pub mod schema;
 
+pub use backup::{backup, restore, validate_backup_source, BackupInfo};
 pub use db::{open, open_in_memory, transaction};
 pub use queries::*;
 pub use query::{_in, Q};

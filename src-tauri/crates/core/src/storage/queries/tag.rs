@@ -8,12 +8,20 @@ use crate::storage::db;
 /// index `idx_tag_label_unique`. Used by every get-or-create path below.
 const TAG_FK_BY_LABEL_SQL: &str = "SELECT TAG_FK FROM TAG WHERE TAG = ? COLLATE NOCASE LIMIT 1";
 
+/// Internal marker tag on projects that are reading lists (frontend
+/// `src/lib/readingStatus.ts::READING_LIST_TAG`). Hidden from index listings only.
+pub const READING_LIST_TAG: &str = "reading-list";
+
 /// `storage/tags.py::list_tags` (no paper/project/label filter) — every tag,
 /// ordered by label. TAG.TAG is UNIQUE NOCASE, so the rows are already distinct.
 /// TAG.TAG is nullable, so `label` maps to `Option<String>`.
+/// The internal `READING_LIST_TAG` marker is excluded (get/delete by id still work).
 pub fn list_tags(conn: &Connection) -> Result<Vec<TagDetails>> {
-    let mut stmt = conn.prepare("SELECT TAG_FK, TAG FROM TAG ORDER BY TAG")?;
-    let rows = stmt.query_map([], |row| {
+    let mut stmt = conn.prepare(
+        "SELECT TAG_FK, TAG FROM TAG \
+         WHERE TAG IS NULL OR TAG <> ? COLLATE NOCASE ORDER BY TAG",
+    )?;
+    let rows = stmt.query_map([READING_LIST_TAG], |row| {
         Ok(TagDetails {
             tag_id: row.get(0)?,
             label: row.get(1)?,
@@ -34,11 +42,11 @@ pub fn list_tags_with_count(conn: &Connection) -> Result<Vec<TagWithCount>> {
          LEFT JOIN PAPER_TO_TAG ptt ON ptt.TAG_FK = t.TAG_FK \
          LEFT JOIN PAPER p          ON p.PAPER_ID = ptt.PAPER_ID \
          LEFT JOIN PAPER_ROOTS pr   ON pr.SOURCE_FK = p.SOURCE_FK \
-         WHERE t.TAG IS NOT NULL \
+         WHERE t.TAG IS NOT NULL AND t.TAG <> ? COLLATE NOCASE \
          GROUP BY t.TAG_FK \
          ORDER BY t.TAG",
     )?;
-    let rows = stmt.query_map([], |row| {
+    let rows = stmt.query_map([READING_LIST_TAG], |row| {
         Ok(TagWithCount {
             label: row.get("label")?,
             paper_count: row.get("paper_count")?,
@@ -318,5 +326,36 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM TAG", [], |r| r.get(0))
             .unwrap();
         assert_eq!(tag_rows, 2, "remove unlinks, never deletes the TAG row");
+    }
+
+    #[test]
+    fn reading_list_tag_hidden_from_index_listings_only() {
+        let mut conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO PROJECT (PROJECT_FK, NAME) VALUES (1, 'rl')",
+            [],
+        )
+        .unwrap();
+        add_project_tags(&mut conn, 1, &[READING_LIST_TAG.into(), "ml".into()]).unwrap();
+
+        // hidden from both index listings (NOCASE-safe by the unique index)
+        let labels: Vec<_> = list_tags(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.label)
+            .collect();
+        assert_eq!(labels, vec![Some("ml".to_string())]);
+        let counts = list_tags_with_count(&conn).unwrap();
+        assert_eq!(counts.len(), 1);
+        assert_eq!(counts[0].label, "ml");
+
+        // still directly addressable: project listing keeps it, CRUD by id works
+        assert_eq!(
+            get_project_tags(&conn, 1).unwrap(),
+            vec!["ml".to_string(), READING_LIST_TAG.to_string()]
+        );
+        let id = create_tag(&mut conn, READING_LIST_TAG).unwrap();
+        assert!(get_tag(&conn, id).unwrap().is_some());
     }
 }

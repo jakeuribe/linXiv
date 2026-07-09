@@ -1,5 +1,4 @@
-//! Idempotent startup migrations. Rust port of the seven `_migrate_*` helpers in
-//! `storage/config/core.py`. Plan §5.3 + D6.
+//! Idempotent startup migrations. Plan §5.3 + D6.
 //!
 //! NON-NEGOTIABLE: every migration here runs on EVERY startup against real user
 //! DBs, so each MUST be idempotent — guarded by `PRAGMA table_info` (missing
@@ -12,7 +11,7 @@ use rusqlite::Connection;
 
 use crate::error::Result;
 
-/// Run all seven idempotent migrations in order. Call between `apply_tables`
+/// Run all ten idempotent migrations in order. Call between `apply_tables`
 /// and `apply_views` (views reference columns these add) — see `super::init_db`.
 pub fn run_migrations(conn: &Connection) -> Result<()> {
     paper_roots_soft_delete(conn)?;
@@ -23,6 +22,9 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     project_to_paper_unique_index(conn)?;
     author_full_name_index(conn)?;
     annotation_table(conn)?;
+    version_check_table(conn)?;
+    notes_fts_backfill(conn)?;
+    project_reading_list_flag(conn)?;
     Ok(())
 }
 
@@ -182,6 +184,48 @@ fn annotation_table(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+// ── 9. VERSION_CHECK table (arXiv new-version monitoring) ──────────────────────
+
+/// Per-root poll bookkeeping for the version monitor: LAST_CHECKED_AT drives the
+/// stalest-first rotation, NEW_VERSION flags an un-acknowledged discovery. Added
+/// after the initial schema, so created here like ANNOTATION.
+fn version_check_table(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../../sql/tables/VERSION_CHECK.sql"))?;
+    Ok(())
+}
+
+// ── 10. Backfill notes_fts for notes that predate the FTS table ────────────────
+
+/// The notes_fts triggers (see notes_fts.sql) only index NOTE rows written after
+/// the table existed, so index any pre-existing note. `NOT IN` skips rows
+/// already indexed.
+fn notes_fts_backfill(conn: &Connection) -> Result<()> {
+    let note_count: i64 = conn.query_row("SELECT COUNT(*) FROM NOTE", [], |r| r.get(0))?;
+    let fts_count: i64 = conn.query_row("SELECT COUNT(*) FROM notes_fts", [], |r| r.get(0))?;
+    if note_count == fts_count {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "INSERT INTO notes_fts(rowid, title, note, source_fk)
+         SELECT NOTE_SK, TITLE, CAST(NOTE AS TEXT), SOURCE_FK FROM NOTE
+         WHERE NOTE_SK NOT IN (SELECT rowid FROM notes_fts)",
+    )?;
+    Ok(())
+}
+
+// ── 10. PROJECT.IS_READING_LIST flag ─────────────────────────────────────────
+
+/// Marks a project as a reading list (0 = normal project, 1 = reading list).
+/// Per-paper reading status for such projects lives sparsely in PAPER_TO_READING.
+fn project_reading_list_flag(conn: &Connection) -> Result<()> {
+    if !has_column(conn, "PROJECT", "IS_READING_LIST")? {
+        conn.execute_batch(
+            "ALTER TABLE PROJECT ADD COLUMN IS_READING_LIST INTEGER NOT NULL DEFAULT 0",
+        )?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,10 +235,11 @@ mod tests {
     fn migrations_are_idempotent() {
         let conn = crate::storage::db::open_in_memory().unwrap();
         schema::apply_tables(&conn).unwrap();
-        // fresh schema already has every column/index → all guards skip cleanly,
-        // and a second pass must also be a clean no-op.
+        // Fresh schema already has most columns/indexes, so most guards skip; the
+        // exception is IS_READING_LIST, which the first pass actually ALTERs in.
         run_migrations(&conn).unwrap();
         run_migrations(&conn).unwrap();
+        assert!(has_column(&conn, "PROJECT", "IS_READING_LIST").unwrap());
         assert!(index_exists(&conn, "idx_tag_label_unique").unwrap());
         assert!(index_exists(&conn, "idx_author_full_name").unwrap());
         // The ANNOTATION table is created by the migration, not TABLE_DDL.
@@ -208,6 +253,44 @@ mod tests {
         assert_eq!(annotation_tables, 1);
         assert!(index_exists(&conn, "idx_annotation_source_fk").unwrap());
         assert!(index_exists(&conn, "idx_annotation_project_fk").unwrap());
+        let version_check_tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='VERSION_CHECK'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(version_check_tables, 1);
         schema::apply_views(&conn).unwrap();
+    }
+
+    #[test]
+    fn notes_fts_backfill_indexes_pre_existing_notes() {
+        let conn = crate::storage::db::open_in_memory().unwrap();
+        schema::apply_tables(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO PAPER_ROOTS (SOURCE_FK, SOURCE_ID) VALUES (1, 'arxiv:1')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO NOTE (NOTE_SK, SOURCE_FK, TITLE, NOTE) VALUES (1, 1, 'Backfill Me', 'quantum entanglement')",
+            [],
+        )
+        .unwrap();
+        // Simulate a note that predates notes_fts: drop its row before backfill runs.
+        conn.execute("DELETE FROM notes_fts WHERE rowid = 1", [])
+            .unwrap();
+
+        notes_fts_backfill(&conn).unwrap();
+
+        let hits: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM notes_fts WHERE notes_fts MATCH 'entanglement'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hits, 1);
     }
 }

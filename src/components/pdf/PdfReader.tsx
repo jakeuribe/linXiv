@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
-import "react-pdf/dist/Page/AnnotationLayer.css";
-import "react-pdf/dist/Page/TextLayer.css";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Spinner } from "../ui/spinner";
 import {
@@ -17,6 +15,7 @@ import {
 } from "../../lib/pdfAnchor";
 import { HighlightLayer, type PageHighlight } from "./HighlightLayer";
 import { PagePill } from "./PagePill";
+import { submitOnCtrlEnter } from "../../lib/submitShortcut";
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/build/pdf.worker.min.mjs",
@@ -284,6 +283,9 @@ export function PdfReader({ file, sourceId, version, projectId, errorUrl }: PdfR
     ? !annData?.annotations.some((a) => a.id === popup.id) ||
       (commentById.get(popup.id) ?? "") !== popup.comment
     : false;
+  const canSaveComment = popup
+    ? !updateMut.isPending && draft !== popup.comment && !popupStale
+    : false;
 
   return (
     <div className="relative w-full h-full min-h-0 flex flex-col">
@@ -388,6 +390,11 @@ export function PdfReader({ file, sourceId, version, projectId, errorUrl }: PdfR
           style={{ top: popup.top, left: popup.left }}
           onMouseDown={(e) => e.stopPropagation()}
           onMouseUp={(e) => e.stopPropagation()}
+          onKeyDown={submitOnCtrlEnter(() => {
+            if (canSaveComment) {
+              updateMut.mutate({ id: popup.id, comment: draft });
+            }
+          })}
         >
           {popup.quote && (
             <p className="text-xs text-muted line-clamp-3 italic">
@@ -411,7 +418,7 @@ export function PdfReader({ file, sourceId, version, projectId, errorUrl }: PdfR
               {deleteMut.isPending ? "Deleting…" : "Delete"}
             </button>
             <button
-              disabled={updateMut.isPending || draft === popup.comment || popupStale}
+              disabled={!canSaveComment}
               onClick={() => updateMut.mutate({ id: popup.id, comment: draft })}
               className="text-xs font-medium text-accent hover:underline disabled:opacity-40"
             >

@@ -18,6 +18,7 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
         ("GET", ["api", "authors"]) => Some(list(state, ctx)),
         ("GET", ["api", "authors", id]) => Some(detail(state, id)),
         ("PATCH", ["api", "authors", id]) => Some(update(state, id, ctx)),
+        ("POST", ["api", "authors", id, "merge"]) => Some(merge(state, id, ctx)),
         ("DELETE", ["api", "authors", id]) => Some(delete(state, id)),
         _ => None,
     }
@@ -62,6 +63,29 @@ fn update(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
         )
     })?;
     detail_response(state, author_id)
+}
+
+/// `POST /api/authors/{id}/merge` — fold `duplicate_ids` into author `{id}`,
+/// re-pointing their papers, then returns the canonical author's detail shape.
+fn merge(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
+    let canonical_id = path_i64(id)?;
+    #[derive(Deserialize)]
+    struct Body {
+        #[serde(default)]
+        duplicate_ids: Vec<i64>,
+    }
+    let b: Body = ctx.parse_body()?;
+    let merged_ids = state.with_conn(|conn| -> Result<Vec<i64>, ApiError> {
+        if svc_author::get(conn, &author_ref(canonical_id))?.is_none() {
+            return Err(ApiError::new(404, "Author not found"));
+        }
+        Ok(svc_author::merge(conn, canonical_id, &b.duplicate_ids)?)
+    })?;
+    let mut v = detail_response(state, canonical_id)?;
+    if let Value::Object(map) = &mut v {
+        map.insert("merged_ids".into(), json!(merged_ids));
+    }
+    Ok(v)
 }
 
 /// `DELETE /api/authors/{id}` — `api_author_delete`. 404 if absent, 409 if still
@@ -115,7 +139,9 @@ mod tests {
     use super::*;
     use crate::route::route;
     use crate::route::ApiRequest;
+    use linxiv_core::models::AuthorIn;
     use linxiv_core::storage;
+    use rusqlite::{params, Connection};
 
     fn state() -> AppState {
         let conn = storage::open_in_memory().unwrap();
@@ -133,6 +159,130 @@ mod tests {
             },
         )
         .await
+    }
+
+    async fn post(st: &AppState, path: &str, body: Value) -> Result<Value, ApiError> {
+        route(
+            st,
+            ApiRequest {
+                method: "POST".into(),
+                path: path.into(),
+                body: Some(body),
+            },
+        )
+        .await
+    }
+
+    // Two paper roots, each with one distinct author linked. Returns
+    // (canonical_author, dup_author, canonical_paper_id, dup_paper_id).
+    fn seed_two_authors_with_papers(conn: &mut Connection) -> (i64, i64, i64, i64) {
+        conn.execute("INSERT INTO PAPER_ROOTS (SOURCE_ID) VALUES ('arxiv:1')", [])
+            .unwrap();
+        let fk1 = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO PAPER (SOURCE_ID, VERSION, TITLE, SOURCE_FK) VALUES ('arxiv:1', 1, 'T1', ?)",
+            params![fk1],
+        )
+        .unwrap();
+        let pid1 = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO PAPER_META (PAPER_ID, PUBLISHED) VALUES (?, '2024-01-01')",
+            params![pid1],
+        )
+        .unwrap();
+
+        conn.execute("INSERT INTO PAPER_ROOTS (SOURCE_ID) VALUES ('arxiv:2')", [])
+            .unwrap();
+        let fk2 = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO PAPER (SOURCE_ID, VERSION, TITLE, SOURCE_FK) VALUES ('arxiv:2', 1, 'T2', ?)",
+            params![fk2],
+        )
+        .unwrap();
+        let pid2 = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO PAPER_META (PAPER_ID, PUBLISHED) VALUES (?, '2024-01-02')",
+            params![pid2],
+        )
+        .unwrap();
+
+        let author = |c: &mut Connection| {
+            svc_author::create(
+                c,
+                &AuthorIn {
+                    full_name: "Bob Stone".into(),
+                    first_name: None,
+                    last_name: None,
+                    orcid: None,
+                },
+            )
+            .unwrap()
+        };
+        let canonical = author(conn);
+        let dup = author(conn);
+        svc_author::link_author_to_paper(conn, canonical, pid1, Some(0)).unwrap();
+        svc_author::link_author_to_paper(conn, dup, pid2, Some(0)).unwrap();
+        (canonical, dup, pid1, pid2)
+    }
+
+    #[tokio::test]
+    async fn merge_folds_duplicate_and_returns_merged_ids() {
+        let st = state();
+        let (canonical, dup, pid1, pid2) = st.with_conn(seed_two_authors_with_papers);
+
+        let resp = post(
+            &st,
+            &format!("/api/authors/{canonical}/merge"),
+            json!({ "duplicate_ids": [dup] }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(resp["merged_ids"], json!([dup]));
+        assert_eq!(resp["paper_count"], json!(2));
+        let paper_ids: Vec<i64> = resp["papers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["paper_id"].as_i64().unwrap())
+            .collect();
+        assert!(paper_ids.contains(&pid1));
+        assert!(paper_ids.contains(&pid2));
+    }
+
+    #[tokio::test]
+    async fn merge_missing_canonical_is_404() {
+        let err = post(&state(), "/api/authors/999/merge", json!({ "duplicate_ids": [] }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, 404);
+    }
+
+    #[tokio::test]
+    async fn merge_bogus_duplicate_id_is_absent_but_still_ok() {
+        let st = state();
+        let canonical = st.with_conn(|conn| {
+            svc_author::create(
+                conn,
+                &AuthorIn {
+                    full_name: "Solo Author".into(),
+                    first_name: None,
+                    last_name: None,
+                    orcid: None,
+                },
+            )
+            .unwrap()
+        });
+
+        let resp = post(
+            &st,
+            &format!("/api/authors/{canonical}/merge"),
+            json!({ "duplicate_ids": [999_999] }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(resp["merged_ids"], json!([]));
     }
 
     #[tokio::test]

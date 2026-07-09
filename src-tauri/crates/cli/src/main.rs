@@ -1,9 +1,8 @@
 //! linXiv headless CLI — Rust port of `linxiv_cli.py`.
 //!
 //! Shared skeleton: the top-level clap tree + the group module contract. Command
-//! bodies live in `cmd::<group>::run` (still `todo!()` here); this file only wires
-//! parsing → lazy `Ctx::open()` → dispatch. Output/error JSON parity helpers are in
-//! `output`, the DB/data-dir seam in `ctx`.
+//! bodies live in `cmd::<group>::run`; this file only wires parsing → lazy `Ctx::open()`
+//! → dispatch. Output/error JSON parity helpers are in `output`, the DB/data-dir seam in `ctx`.
 
 mod cmd;
 mod ctx;
@@ -12,6 +11,7 @@ mod output;
 use clap::{Parser, Subcommand};
 
 use ctx::Ctx;
+use linxiv_core::{config, storage};
 
 #[derive(Parser)]
 #[command(name = "linxiv", version, about = "linXiv headless CLI")]
@@ -20,8 +20,10 @@ struct Cli {
     command: Commands,
 }
 
-/// All 15 top-level groups. `search`/`fetch`/`list` are flat commands routed into
-/// the `library` group; `stats`/`categories`/`settings` route into `misc`.
+/// All 19 top-level groups. `search`/`fetch`/`list` are flat commands routed into
+/// the `library` group; `stats`/`categories`/`settings`/`backup` route into `misc`.
+/// `restore` and `pdf-meta` are special-cased in `main` before `Ctx::open()` so they
+/// still work without requiring a valid DB; their dispatch arms exist for match exhaustiveness.
 #[derive(Subcommand)]
 enum Commands {
     /// Search for papers
@@ -89,6 +91,14 @@ enum Commands {
         #[command(subcommand)]
         cmd: cmd::misc::SettingsCmd,
     },
+    /// Snapshot the database to a backup file
+    Backup { dest: std::path::PathBuf },
+    /// Restore the database from a backup snapshot
+    Restore { src: std::path::PathBuf },
+    /// Hidden pdfium worker: extraction runs in this child process so a native
+    /// libpdfium crash kills the child, not the app (core `pdf_metadata`).
+    #[command(hide = true)]
+    PdfMeta { path: std::path::PathBuf },
 }
 
 async fn dispatch(command: Commands, ctx: &mut Ctx) -> anyhow::Result<()> {
@@ -111,15 +121,47 @@ async fn dispatch(command: Commands, ctx: &mut Ctx) -> anyhow::Result<()> {
         Commands::Stats => cmd::misc::run(MiscCmd::Stats, ctx).await,
         Commands::Categories => cmd::misc::run(MiscCmd::Categories, ctx).await,
         Commands::Settings { cmd } => cmd::misc::run(MiscCmd::Settings { cmd }, ctx).await,
+        Commands::Backup { dest } => cmd::misc::run(MiscCmd::Backup { dest }, ctx).await,
+        // `main` intercepts Restore and PdfMeta before Ctx::open()
+        // (see above); these arms exist only for match exhaustiveness.
+        Commands::Restore { .. } => unreachable!("restore is handled in main() before dispatch"),
+        Commands::PdfMeta { .. } => unreachable!("pdf-meta is handled in main() before dispatch"),
     }
 }
 
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
-    // Lazy: open the DB/data-dir once before dispatch (cheap, no network).
-    let mut ctx = Ctx::open().unwrap_or_else(|e| output::fail(e));
-    if let Err(e) = dispatch(cli.command, &mut ctx).await {
-        output::fail(e);
+    match cli.command {
+        // Bypasses Ctx::open(): the worker must not touch the DB (no contention
+        // with the parent) and must stay silent on stdout except the JSON record.
+        // ponytail: compact JSON (direct println, no output::output) is intentional — worker IPC only, not user-facing CLI contract.
+        Commands::PdfMeta { path } => {
+            let bytes = std::fs::read(&path).unwrap_or_else(|e| output::fail(e));
+            println!(
+                "{}",
+                tokio::task::spawn_blocking(move || {
+                    linxiv_core::sources::pdf_metadata::extract_pdf_metadata_json(&bytes)
+                })
+                .await
+                .unwrap_or_else(|e| output::fail(e))
+            );
+        }
+        // Bypasses Ctx::open()/init_db so restore works even on a broken DB.
+        Commands::Restore { src } => {
+            let db_path = config::db_path();
+            match storage::restore(&src, &db_path) {
+                Ok(()) => output::output(&serde_json::json!({ "restored": db_path.to_string_lossy() })),
+                Err(e) => output::fail(e),
+            }
+        }
+        command => {
+            // Lazy: open the DB/data-dir once before dispatch (cheap, no network).
+            let mut ctx = Ctx::open().unwrap_or_else(|e| output::fail(e));
+            if let Err(e) = dispatch(command, &mut ctx).await {
+                output::fail(e);
+            }
+        }
     }
 }
+

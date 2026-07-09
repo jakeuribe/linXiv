@@ -13,14 +13,16 @@ pub mod author;
 pub mod note;
 pub mod paper;
 pub mod project;
+pub mod reading_list;
 pub mod search;
 pub mod search_history;
 pub mod search_state;
 pub mod tag;
+pub mod version_check;
 
 pub use author::{get_author, get_many as get_authors};
 pub use note::get_notes;
 pub use paper::{get_paper, list_papers};
 pub use project::{get_project, list_projects};
 pub use search::search_full_text;
-pub use tag::list_tags;
+pub use tag::{list_tags, READING_LIST_TAG};

@@ -149,6 +149,14 @@ pub struct UpdateAuthorParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct MergeAuthorsParams {
+    /// Canonical author id to keep.
+    pub canonical_id: i64,
+    /// Duplicate author ids to merge into the canonical author and delete.
+    pub duplicate_ids: Vec<i64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct ImportBibtexParams {
     /// Path to the .bib file on disk.
     pub file: String,
@@ -394,6 +402,38 @@ impl Server {
             .map_err(map_core)
         })?;
         json_ok(&json!({ "deleted_author_id": author_id }))
+    }
+
+    #[tool(
+        description = "Merge duplicate authors into one canonical author, re-pointing all their papers."
+    )]
+    pub async fn merge_authors(
+        &self,
+        params: Parameters<MergeAuthorsParams>,
+    ) -> Result<String, ErrorData> {
+        let MergeAuthorsParams {
+            canonical_id,
+            duplicate_ids,
+        } = params.0;
+        let merged = self.with_conn(|conn| -> Result<Vec<i64>, ErrorData> {
+            if svc_author::get(
+                conn,
+                &Author {
+                    author_id: Some(canonical_id),
+                    ..Default::default()
+                },
+            )
+            .map_err(map_core)?
+            .is_none()
+            {
+                return Err(ErrorData::invalid_params(
+                    format!("Author {canonical_id} not found."),
+                    None,
+                ));
+            }
+            svc_author::merge(conn, canonical_id, &duplicate_ids).map_err(map_core)
+        })?;
+        json_ok(&json!({ "canonical_id": canonical_id, "merged_ids": merged }))
     }
 
     #[tool(description = "Bulk-import papers from a BibTeX (.bib) file into the library.")]

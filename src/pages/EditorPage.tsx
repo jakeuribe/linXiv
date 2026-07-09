@@ -40,6 +40,7 @@ import {
 } from "../api/editorPlugin";
 import { fmtMB, errMessage } from "../lib/editorPluginUtils";
 import { Dialog } from "../components/ui/dialog";
+import { formSubmitOnCtrlEnter } from "../lib/submitShortcut";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 
@@ -555,6 +556,7 @@ export default function EditorPage() {
             e.preventDefault();
             void submitNewProject();
           }}
+          onKeyDown={formSubmitOnCtrlEnter}
         >
           <Input
             autoFocus

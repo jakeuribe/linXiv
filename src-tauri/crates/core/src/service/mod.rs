@@ -8,5 +8,7 @@ pub mod note;
 pub mod paper;
 pub mod paper_import;
 pub mod project;
+pub mod reading_list;
 pub mod tag;
 pub mod vault;
+pub mod version_monitor;

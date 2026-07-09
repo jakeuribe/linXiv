@@ -5,6 +5,7 @@ import { StorageSection } from "../components/settings/StorageSection";
 import { CrossRefSection } from "../components/settings/CrossRefSection";
 import { OpenAlexSection } from "../components/settings/OpenAlexSection";
 import { SearchSection } from "../components/settings/SearchSection";
+import { HomeFeedSection } from "../components/settings/HomeFeedSection";
 import { SidebarSection } from "../components/settings/SidebarSection";
 import { ExportSection } from "../components/settings/ExportSection";
 import { IntegrationsSection } from "../components/settings/IntegrationsSection";
@@ -12,6 +13,8 @@ import { SharingSection } from "../components/settings/SharingSection";
 import { TrashSection } from "../components/settings/TrashSection";
 import { AboutSection } from "../components/settings/AboutSection";
 import { EditorPluginSection } from "../components/settings/EditorPluginSection";
+import { ShortcutsSection } from "../components/settings/ShortcutsSection";
+import { VersionMonitorSection } from "../components/settings/VersionMonitorSection";
 
 interface SettingsGroup {
   id: string;
@@ -33,8 +36,10 @@ const GROUPS: SettingsGroup[] = [
     icon: "▤",
     render: () => (
       <div className="flex flex-col gap-8">
+        <HomeFeedSection />
         <SearchSection />
         <SidebarSection />
+        <VersionMonitorSection />
         <ExportSection />
       </div>
     ),
@@ -78,6 +83,12 @@ const GROUPS: SettingsGroup[] = [
     label: "Sharing",
     icon: "⇄",
     render: () => <SharingSection />,
+  },
+  {
+    id: "shortcuts",
+    label: "Shortcuts",
+    icon: "⌨",
+    render: () => <ShortcutsSection />,
   },
   {
     id: "about",
