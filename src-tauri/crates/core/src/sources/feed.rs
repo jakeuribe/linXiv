@@ -269,7 +269,9 @@ pub fn parse_feed(xml: &[u8]) -> Result<Feed> {
                         // RSS `<link>` is element text; Atom's @href was taken above.
                         b"link" if !t.is_empty() => explicit_link = Some(t.to_string()),
                         // RSS `<guid isPermaLink>` fallback when <link> is absent.
-                        b"guid" if guid_is_permalink && !t.is_empty() => guid_permalink = Some(t.to_string()),
+                        b"guid" if guid_is_permalink && !t.is_empty() => {
+                            guid_permalink = Some(t.to_string())
+                        }
                         // RSS description / Atom summary; Atom content as fallback.
                         b"description" | b"summary" => b.summary = t.to_string(),
                         b"content" if b.summary.is_empty() => b.summary = t.to_string(),
@@ -534,9 +536,7 @@ Abstract: We study attention.</description>
         let loop_url = format!("{}/loop", server.uri());
         Mock::given(method("GET"))
             .and(path("/loop"))
-            .respond_with(
-                ResponseTemplate::new(302).insert_header("location", loop_url.as_str())
-            )
+            .respond_with(ResponseTemplate::new(302).insert_header("location", loop_url.as_str()))
             .mount(&server)
             .await;
 

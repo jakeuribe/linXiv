@@ -252,9 +252,13 @@ mod tests {
 
     #[tokio::test]
     async fn merge_missing_canonical_is_404() {
-        let err = post(&state(), "/api/authors/999/merge", json!({ "duplicate_ids": [] }))
-            .await
-            .unwrap_err();
+        let err = post(
+            &state(),
+            "/api/authors/999/merge",
+            json!({ "duplicate_ids": [] }),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(err.status, 404);
     }
 

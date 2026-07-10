@@ -83,6 +83,39 @@ export function parseAnchor(raw: string | null | undefined): Anchor | null {
   return null;
 }
 
+// A raw (un-normalized) client rect in viewport coordinates.
+export interface RawRect {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+// pdf.js renders each word/run of the text layer as its own <span>, so a
+// selection's getClientRects() comes back one tight rect PER WORD with nothing
+// for the inter-word spaces — painting them directly gives a patchy highlight
+// with white gaps. Group rects that share a visual line (a rect joins a line
+// when its vertical midpoint falls inside that line's band, tolerant of the
+// sub-pixel top/height jitter between adjacent spans) and merge each group into
+// one span from min-left to max-right. Pure so it's unit-testable without a DOM.
+export function coalesceRectsIntoLines(rects: RawRect[]): RawRect[] {
+  const sorted = [...rects].sort((a, b) => a.top - b.top || a.left - b.left);
+  const lines: RawRect[] = [];
+  for (const r of sorted) {
+    const line = lines[lines.length - 1];
+    const mid = (r.top + r.bottom) / 2;
+    if (line && mid >= line.top && mid <= line.bottom) {
+      line.left = Math.min(line.left, r.left);
+      line.right = Math.max(line.right, r.right);
+      line.top = Math.min(line.top, r.top);
+      line.bottom = Math.max(line.bottom, r.bottom);
+    } else {
+      lines.push({ ...r });
+    }
+  }
+  return lines;
+}
+
 // Build an anchor from the current text selection, measured against the
 // `.react-pdf__Page` element the selection starts in. Returns null when there is
 // no usable selection (collapsed, empty, or not inside a rendered page).
@@ -105,17 +138,22 @@ export function selectionToAnchor(version: number, color: string): Anchor | null
   const box = pageEl.getBoundingClientRect();
   if (!pageNum || box.width === 0 || box.height === 0) return null;
 
-  const rects: AnchorRect[] = [];
-  const clamp = (n: number) => Math.max(0, Math.min(1, n));
+  const raw: RawRect[] = [];
   for (const r of Array.from(range.getClientRects())) {
     if (r.width === 0 || r.height === 0) continue;
     // A non-empty rect outside the page box means the selection spans a page
     // break; the quote would cover both pages but only the start page renders.
     if (r.bottom <= box.top || r.top >= box.bottom) return null;
-    const x = clamp((r.left - box.left) / box.width);
-    const y = clamp((r.top - box.top) / box.height);
-    const w = Math.min(clamp(r.width / box.width), 1 - x);
-    const h = Math.min(clamp(r.height / box.height), 1 - y);
+    raw.push({ left: r.left, top: r.top, right: r.right, bottom: r.bottom });
+  }
+
+  const rects: AnchorRect[] = [];
+  const clamp = (n: number) => Math.max(0, Math.min(1, n));
+  for (const line of coalesceRectsIntoLines(raw)) {
+    const x = clamp((line.left - box.left) / box.width);
+    const y = clamp((line.top - box.top) / box.height);
+    const w = Math.min(clamp((line.right - line.left) / box.width), 1 - x);
+    const h = Math.min(clamp((line.bottom - line.top) / box.height), 1 - y);
     if (w === 0 || h === 0) continue;
     rects.push({ x, y, w, h });
   }

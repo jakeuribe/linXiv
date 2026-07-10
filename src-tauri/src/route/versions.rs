@@ -73,8 +73,7 @@ async fn check(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
         return Ok(json!({ "checked": 0, "new_versions": [] }));
     }
     let ids: Vec<String> = candidates.iter().map(|c| c.source_id.clone()).collect();
-    let fetched = arxiv::fetch_by_ids(&ids, &config::data_dir())
-        .await?;
+    let fetched = arxiv::fetch_by_ids(&ids, &config::data_dir()).await?;
     let found = state.with_conn(|conn| svc::apply_results(conn, &candidates, &fetched))?;
     Ok(json!({ "checked": candidates.len(), "new_versions": found }))
 }

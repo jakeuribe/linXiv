@@ -198,7 +198,8 @@ pub fn parse_atom(xml: &[u8]) -> Result<Vec<PaperMetadata>> {
                         Ok(Some(c)) => Some(c.to_string()),
                         Ok(None) => match e.decode() {
                             Ok(name) => {
-                                if let Some(s) = quick_xml::escape::resolve_predefined_entity(&name) {
+                                if let Some(s) = quick_xml::escape::resolve_predefined_entity(&name)
+                                {
                                     Some(s.to_string())
                                 } else {
                                     warn!("Unknown XML entity: &{};", name);

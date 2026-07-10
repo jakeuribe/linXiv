@@ -12,7 +12,6 @@ use linxiv_core::{config, storage};
 use crate::route::{ApiError, ReqCtx};
 use crate::state::AppState;
 
-
 /// Canonicalize a path's parent, or fall back to the path itself if the parent
 /// cannot be canonicalized (e.g., doesn't exist yet). Preserves the filename.
 fn canon_or_raw(path: &Path) -> PathBuf {
@@ -22,7 +21,6 @@ fn canon_or_raw(path: &Path) -> PathBuf {
         .map(|(canon_parent, fname)| canon_parent.join(fname))
         .unwrap_or_else(|| path.to_path_buf())
 }
-
 
 pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<Value, ApiError>> {
     match (ctx.method, ctx.segs) {
@@ -73,8 +71,15 @@ fn backup(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
                 .map_err(|e| ApiError::new(400, format!("cannot remove stale temp file: {e}")))?;
         }
         let mut backup_info = storage::backup(conn, &temp_path)?;
-        std::fs::rename(&temp_path, &b.dest_path)
-            .map_err(|e| ApiError::new(400, format!("cannot finalize backup: {e} (backup file is at: {})", temp_path.display())))?;
+        std::fs::rename(&temp_path, &b.dest_path).map_err(|e| {
+            ApiError::new(
+                400,
+                format!(
+                    "cannot finalize backup: {e} (backup file is at: {})",
+                    temp_path.display()
+                ),
+            )
+        })?;
         backup_info.path = b.dest_path.clone();
         Ok::<_, ApiError>(backup_info)
     })?;
@@ -187,7 +192,10 @@ mod tests {
             },
         )
         .await;
-        assert!(result.is_err(), "should reject live DB as backup destination");
+        assert!(
+            result.is_err(),
+            "should reject live DB as backup destination"
+        );
         let err = result.unwrap_err();
         assert_eq!(err.status, 400);
         assert!(err.detail.contains("live database"));
@@ -213,14 +221,21 @@ mod tests {
             },
         )
         .await;
-        assert!(result.is_ok(), "backup should succeed after cleaning stale temp");
+        assert!(
+            result.is_ok(),
+            "backup should succeed after cleaning stale temp"
+        );
         let new_content = std::fs::read(&dest).unwrap();
         assert_ne!(&new_content, original_content);
-        assert!(!temp.exists(), "temp file should not exist after successful backup");
+        assert!(
+            !temp.exists(),
+            "temp file should not exist after successful backup"
+        );
 
         // Scenario 3: restore happy path
         let backup_path = tmpdir.path().join("snapshot.db");
-        state.with_conn(|conn| storage::backup(conn, &backup_path))
+        state
+            .with_conn(|conn| storage::backup(conn, &backup_path))
             .unwrap();
         assert!(backup_path.exists());
 
@@ -255,7 +270,9 @@ mod tests {
         let query_result = state.with_conn(|conn| {
             conn.query_row("SELECT count(*) FROM PAPER", [], |row| row.get::<_, i32>(0))
         });
-        assert!(query_result.is_ok(), "connection should still be working after restore failure");
+        assert!(
+            query_result.is_ok(),
+            "connection should still be working after restore failure"
+        );
     }
 }
-

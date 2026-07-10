@@ -145,8 +145,8 @@ mod tests {
 
     #[tokio::test]
     async fn cache_hit_within_ttl_fetches_upstream_once() {
-        use wiremock::{MockServer, Mock, ResponseTemplate};
         use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
 
         cache().lock().unwrap().clear();
 
@@ -168,9 +168,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let encoded_url = feed_url
-            .replace(":", "%3A")
-            .replace("/", "%2F");
+        let encoded_url = feed_url.replace(":", "%3A").replace("/", "%2F");
 
         let result1 = get(&format!("/api/feed?url={}", encoded_url)).await;
         assert!(result1.is_ok());
@@ -183,8 +181,8 @@ mod tests {
 
     #[tokio::test]
     async fn saved_arxiv_ids_empty_when_no_papers_in_library() {
-        use wiremock::{MockServer, Mock, ResponseTemplate};
         use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
 
         cache().lock().unwrap().clear();
 
@@ -200,9 +198,7 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let encoded_url = feed_url
-            .replace(":", "%3A")
-            .replace("/", "%2F");
+        let encoded_url = feed_url.replace(":", "%3A").replace("/", "%2F");
 
         let result = get(&format!("/api/feed?url={}", encoded_url)).await;
         assert!(result.is_ok());
@@ -221,8 +217,8 @@ mod tests {
 
     #[tokio::test]
     async fn feed_entries_limited_to_200() {
-        use wiremock::{MockServer, Mock, ResponseTemplate};
         use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
 
         cache().lock().unwrap().clear();
 
@@ -232,23 +228,25 @@ mod tests {
         // Create a feed with 250 entries
         let mut entries = String::new();
         for i in 0..250 {
-            entries.push_str(&format!(r#"{{"title": "Paper {}", "arxiv_id": "{:04}"}}"#, i, i));
+            entries.push_str(&format!(
+                r#"{{"title": "Paper {}", "arxiv_id": "{:04}"}}"#,
+                i, i
+            ));
             if i < 249 {
                 entries.push(',');
             }
         }
 
         Mock::given(method("GET"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                format!(r#"{{"entries": [{}]}}"#, entries),
-            ))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(format!(r#"{{"entries": [{}]}}"#, entries)),
+            )
             .expect(1)
             .mount(&mock_server)
             .await;
 
-        let encoded_url = feed_url
-            .replace(":", "%3A")
-            .replace("/", "%2F");
+        let encoded_url = feed_url.replace(":", "%3A").replace("/", "%2F");
 
         let result = get(&format!("/api/feed?url={}", encoded_url)).await;
         assert!(result.is_ok());

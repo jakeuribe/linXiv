@@ -198,3 +198,12 @@ mjx-container[jax="SVG"] > svg {
   background: linear-gradient(160deg, #0a0a1a 0%, #1c1c1e 50%, #0f1a2e 100%) fixed;
 }
 
+/* ── Suppress pdf.js hyperref link-annotation borders ─────────────────────── */
+/* pdf.js draws a bordered box for each PDF link annotation, which shows up as
+   stray red/green boxes over author ORCID/affiliation superscripts. Hide the
+   border/outline while keeping the annotation clickable (links stay live). */
+.annotationLayer .linkAnnotation {
+  border: 0 !important;
+  outline: 0 !important;
+}
+

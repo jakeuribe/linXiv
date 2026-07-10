@@ -36,7 +36,9 @@ pub fn backup(conn: &Connection, dest: &Path) -> Result<BackupInfo> {
         Ok(m) => m.len(),
         Err(e) => {
             let _ = std::fs::remove_file(dest);
-            return Err(CoreError::Internal(format!("backup written but unreadable: {e}")));
+            return Err(CoreError::Internal(format!(
+                "backup written but unreadable: {e}"
+            )));
         }
     };
     Ok(BackupInfo {

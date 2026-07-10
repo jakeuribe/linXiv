@@ -151,7 +151,9 @@ async fn main() {
         Commands::Restore { src } => {
             let db_path = config::db_path();
             match storage::restore(&src, &db_path) {
-                Ok(()) => output::output(&serde_json::json!({ "restored": db_path.to_string_lossy() })),
+                Ok(()) => {
+                    output::output(&serde_json::json!({ "restored": db_path.to_string_lossy() }))
+                }
                 Err(e) => output::fail(e),
             }
         }
@@ -164,4 +166,3 @@ async fn main() {
         }
     }
 }
-

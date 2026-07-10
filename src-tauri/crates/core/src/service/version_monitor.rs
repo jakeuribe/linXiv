@@ -209,14 +209,14 @@ mod tests {
         assert_eq!(cands.len(), 2);
 
         // Delete one root's row (CASCADE deletes VERSION_CHECK and PAPER dependents).
-        conn.execute("DELETE FROM PAPER_ROOTS WHERE SOURCE_ID = ?1", ["arxiv:deleted"])
-            .unwrap();
+        conn.execute(
+            "DELETE FROM PAPER_ROOTS WHERE SOURCE_ID = ?1",
+            ["arxiv:deleted"],
+        )
+        .unwrap();
 
         // apply_results with metadata for both: should skip the deleted one, not crash.
-        let fetched = vec![
-            meta("arxiv:live", 2),
-            meta("arxiv:deleted", 2),
-        ];
+        let fetched = vec![meta("arxiv:live", 2), meta("arxiv:deleted", 2)];
         let found = apply_results(&mut conn, &cands, &fetched).unwrap();
 
         assert_eq!(found.len(), 1);

@@ -482,17 +482,18 @@ fn mcp_config_path(client_id: &str) -> Result<PathBuf, String> {
 /// Checks the new Gemini path first, then falls back to the legacy Codeium path.
 fn antigravity_config_paths(roots: &Roots) -> Vec<PathBuf> {
     let home = &roots.home;
-    let mut paths = vec![
-        home.join(".gemini").join("config").join("mcp_config.json"),
-    ];
+    let mut paths = vec![home.join(".gemini").join("config").join("mcp_config.json")];
     // Legacy Codeium-era Antigravity path.
     let legacy = match roots.os {
-        Os::Linux | Os::Mac => {
-            home.join(".codeium").join("antigravity").join("mcp_config.json")
-        }
+        Os::Linux | Os::Mac => home
+            .join(".codeium")
+            .join("antigravity")
+            .join("mcp_config.json"),
         Os::Windows => {
             if let Some(ad) = &roots.appdata {
-                ad.join("Codeium").join("Antigravity").join("mcp_config.json")
+                ad.join("Codeium")
+                    .join("Antigravity")
+                    .join("mcp_config.json")
             } else {
                 return paths;
             }
@@ -647,7 +648,11 @@ fn registration_state(path: &Path, key: &str) -> (bool, bool) {
     let config = match read_mcp_config(path) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("[linxiv] registration_state: failed to read config at {}: {}", path.display(), e);
+            eprintln!(
+                "[linxiv] registration_state: failed to read config at {}: {}",
+                path.display(),
+                e
+            );
             return (false, false);
         }
     };
@@ -696,7 +701,11 @@ pub fn list_mcp_clients() -> Vec<MpcClientStatus> {
                     .iter()
                     .find_map(|p| {
                         let (inst, st) = registration_state(p, servers_key(id));
-                        if inst { Some((inst, st)) } else { None }
+                        if inst {
+                            Some((inst, st))
+                        } else {
+                            None
+                        }
                     })
                     .unwrap_or((false, false))
             } else {
@@ -856,7 +865,7 @@ fn encode_utf16le(s: &str) -> Vec<u8> {
 
 #[cfg(target_os = "windows")]
 fn windows_path_add(dir: &str) -> Result<(), String> {
-    use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, RegType};
+    use winreg::enums::{RegType, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
     use winreg::{RegKey, RegValue};
 
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
@@ -1062,7 +1071,10 @@ mod tests {
         assert_eq!(registration_state(&cfg, "mcpServers"), (true, false));
 
         // Registered against a deleted binary (Python-era sidecar shape).
-        let gone = dir.path().join("binaries").join("linxiv-mcp-x86_64-unknown-linux-gnu");
+        let gone = dir
+            .path()
+            .join("binaries")
+            .join("linxiv-mcp-x86_64-unknown-linux-gnu");
         write(serde_json::json!({
             "mcpServers": { "linxiv": { "command": gone.to_string_lossy() } }
         }));
