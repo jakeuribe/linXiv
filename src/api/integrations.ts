@@ -5,6 +5,8 @@ export interface MpcClientStatus {
   name: string;
   installed: boolean;
   available: boolean;
+  /** Registered command no longer exists on disk (old install); needs a reinstall. */
+  stale: boolean;
 }
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;

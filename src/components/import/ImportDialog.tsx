@@ -11,6 +11,7 @@ import {
 } from "../../api/exportImport";
 import { Button } from "../ui/button";
 import { Dialog } from "../ui/dialog";
+import { submitOnCtrlEnter } from "../../lib/submitShortcut";
 
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -211,7 +212,7 @@ export function ImportDialog({ open, onClose, projectId, onDone }: ImportDialogP
       onClose={() => { reset(); onClose(); }}
       title="Import"
     >
-      <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-4" onKeyDown={submitOnCtrlEnter(handleImport)}>
         {/* File picker */}
         <div>
           <input

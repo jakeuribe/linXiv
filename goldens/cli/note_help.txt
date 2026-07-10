@@ -1,0 +1,12 @@
+usage: linxiv note [-h] {create,get,list,update,delete} ...
+
+positional arguments:
+  {create,get,list,update,delete}
+    create              Create a note on a paper
+    get                 Get a note by ID
+    list                List notes
+    update              Update note title or content
+    delete              Delete a note by ID
+
+options:
+  -h, --help            show this help message and exit

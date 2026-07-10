@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate, useNavigationType, Link } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Download, Upload } from "lucide-react";
+import { ArrowLeft, Download, FolderOpen, Upload } from "lucide-react";
 import { useUiStore, type ExportFormatKey } from "../stores/ui";
 import {
   getProject,
@@ -15,7 +15,7 @@ import {
 import { listPapers } from "../api/papers";
 import { exportProject, exportBibtex, exportObsidian } from "../api/exportImport";
 import { ImportDialog } from "../components/import/ImportDialog";
-import type { Paper } from "../types/api";
+import type { Paper, Project } from "../types/api";
 import { useSelectionStore } from "../stores/selection";
 import { ColorSwatch } from "../components/projects/ColorSwatch";
 import { PRESET_COLORS } from "../components/projects/constants";
@@ -23,11 +23,16 @@ import { TagInput, type TagInputHandle } from "../components/projects/TagInput";
 import { Button } from "../components/ui/button";
 import { TagBadge } from "../components/tags/TagBadge";
 import { Dialog } from "../components/ui/dialog";
+import { submitOnCtrlEnter, formSubmitOnCtrlEnter } from "../lib/submitShortcut";
 import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/input";
 import { Spinner } from "../components/ui/spinner";
+import { EmptyState } from "../components/ui/empty-state";
 import { normalizeAuthors } from "../lib/papers";
 import { MathText } from "../lib/tex";
+import { READING_LIST_TAG, isReadingListProject } from "../lib/readingStatus";
+import { useReadingStatusStore } from "../stores/readingStatus";
+import { StatusButton } from "../components/reading/StatusButton";
 
 // ---------------------------------------------------------------------------
 // Edit Project Dialog
@@ -60,9 +65,7 @@ function EditProjectDialog({
   const [error, setError] = useState<string | null>(null);
   const tagInputRef = useRef<TagInputHandle>(null);
 
-  // Keep a mutable ref so the effect below always reads the latest props
-  // without listing them as dependencies (prevents background refetches from
-  // wiping the user's in-progress edits while the dialog is open).
+  // Keep a mutable ref so the effect reads latest props without dependencies.
   const seedRef = useRef({ initialName, initialDescription, initialColor, initialTags });
   seedRef.current = { initialName, initialDescription, initialColor, initialTags };
 
@@ -78,6 +81,7 @@ function EditProjectDialog({
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (submitting) return;
     if (!name.trim()) return;
     setSubmitting(true);
     setError(null);
@@ -85,6 +89,17 @@ function EditProjectDialog({
       // Read via imperative handle to capture any uncommitted draft text
       // (typed but not yet Enter'd — stale closure on tags state is unsafe here).
       const currentTags = tagInputRef.current?.getTagsWithDraft() ?? tags;
+      const hasReadingListTag = currentTags.some(
+        (t) => t.toLowerCase() === READING_LIST_TAG
+      );
+      const hadReadingListTag = initialTags.some(
+        (t) => t.toLowerCase() === READING_LIST_TAG
+      );
+      if (hasReadingListTag && !hadReadingListTag) {
+        setError("Cannot add reading-list tag to a non-reading-list project");
+        setSubmitting(false);
+        return;
+      }
       await updateProject(projectId, {
         name: name.trim(),
         description: description.trim(),
@@ -107,7 +122,7 @@ function EditProjectDialog({
 
   return (
     <Dialog open={open} onClose={onClose} title="Edit Project">
-      <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+      <form onSubmit={handleSubmit} onKeyDown={formSubmitOnCtrlEnter} className="flex flex-col gap-4">
         <div className="flex flex-col gap-1.5">
           <label
             htmlFor="edit-proj-name"
@@ -254,14 +269,14 @@ function AddPapersDialog({
   }
 
   async function handleSubmit() {
+    if (submitting) return;
     if (selectedIds.size === 0) return;
     setSubmitting(true);
     setError(null);
     try {
       const { failed } = await addPapersToProject(projectId, [...selectedIds]);
       await queryClient.invalidateQueries({ queryKey: ["project", String(projectId)] });
-      // The ["projects"] list query backs the note scope picker / badges on the
-      // paper detail page; keep its membership (source_ids) fresh.
+      // The ["projects"] list query backs the note scope picker / badges.
       await queryClient.invalidateQueries({ queryKey: ["projects"] });
       if (failed.length > 0) {
         setError(`Failed to add ${failed.length} paper${failed.length !== 1 ? "s" : ""}`);
@@ -288,6 +303,7 @@ function AddPapersDialog({
         <div
           className="overflow-y-auto rounded-md border border-[var(--color-border)]"
           style={{ maxHeight: 280, backgroundColor: "var(--color-bg)" }}
+          onKeyDown={submitOnCtrlEnter(handleSubmit)}
         >
           {isLoading ? (
             <div className="flex items-center justify-center p-6">
@@ -372,9 +388,11 @@ interface PaperRowProps {
   /** Project being viewed; passed as nav state so the note scope picker
    *  on the paper detail page pre-selects it (ADR 0003). */
   projectId: number;
+  /** Owning project; used only to detect reading-list projects for the status pill. */
+  project: Pick<Project, "project_tags">;
 }
 
-function PaperRow({ paper, checked, onToggle, projectId }: PaperRowProps) {
+function PaperRow({ paper, checked, onToggle, projectId, project }: PaperRowProps) {
   const navigate = useNavigate();
   const authors = Array.isArray(paper.authors)
     ? paper.authors.slice(0, 3).join(", ")
@@ -415,6 +433,9 @@ function PaperRow({ paper, checked, onToggle, projectId }: PaperRowProps) {
           {paper.source_id}
         </p>
       </div>
+      {isReadingListProject(project) && (
+        <StatusButton sourceId={paper.source_id} />
+      )}
     </div>
   );
 }
@@ -535,7 +556,7 @@ export default function ProjectDetailPage() {
 
   const { selectedIds, toggle, clear, selectAll } = useSelectionStore();
 
-  // Clear selection on mount/unmount to avoid leaking state to other pages
+  // Clear selection on mount/unmount.
   useEffect(() => {
     clear();
     return () => clear();
@@ -614,12 +635,19 @@ export default function ProjectDetailPage() {
         selectAll(idsArray.filter((_, i) => results[i].status === "rejected"));
         setRemoveError(`Failed to remove ${failedCount} paper${failedCount !== 1 ? "s" : ""}`);
       } else {
+        // Clean up reading status entries for successfully removed papers (reading-list projects only).
+        if (project && isReadingListProject(project)) {
+          idsArray.forEach((sid) => {
+            useReadingStatusStore.getState().remove(sid);
+          });
+        }
         clear();
       }
       await queryClient.invalidateQueries({ queryKey: ["project", id] });
-      // Keep the ["projects"] list (source_ids) fresh for the paper detail
-      // note scope picker / badges.
+      // Invalidate ["projects"] list for paper detail scope picker.
       await queryClient.invalidateQueries({ queryKey: ["projects"] });
+    } catch (err) {
+      setRemoveError(err instanceof Error ? err.message : "Failed to remove papers");
     } finally {
       setRemoving(false);
     }
@@ -664,6 +692,12 @@ export default function ProjectDetailPage() {
     setStatusBusy(true);
     setStatusError(null);
     try {
+      // Clean up reading status entries if this is a reading-list project.
+      if (project && isReadingListProject(project)) {
+        projectPapers.forEach((paper) => {
+          useReadingStatusStore.getState().remove(paper.source_id);
+        });
+      }
       await deleteProject(projectId);
       await queryClient.invalidateQueries({ queryKey: ["projects"] });
       navigate("/projects");
@@ -802,11 +836,13 @@ export default function ProjectDetailPage() {
           </p>
         )}
 
-        {project.project_tags.length > 0 && (
+        {project.project_tags.filter((t) => t.toLowerCase() !== READING_LIST_TAG).length > 0 && (
           <div className="flex items-center gap-2 flex-wrap">
-            {project.project_tags.map((tag) => (
-              <TagBadge key={tag} label={tag} />
-            ))}
+            {project.project_tags
+              .filter((t) => t.toLowerCase() !== READING_LIST_TAG)
+              .map((tag) => (
+                <TagBadge key={tag} label={tag} />
+              ))}
           </div>
         )}
       </div>
@@ -875,12 +911,13 @@ export default function ProjectDetailPage() {
               <Spinner size={22} />
             </div>
           ) : projectPapers.length === 0 ? (
-            <p
-              className="p-6 text-sm text-center"
-              style={{ color: "var(--color-muted)" }}
-            >
-              No papers in this project yet. Click "Add Papers" to get started.
-            </p>
+            <EmptyState
+              icon={<FolderOpen size={28} strokeWidth={1.5} />}
+              title="No papers in this project"
+              description="Add papers from your library to start organizing this project."
+              actionLabel="Add Papers"
+              onAction={() => setAddPapersOpen(true)}
+            />
           ) : (
             projectPapers.map((paper) => (
               <PaperRow
@@ -889,6 +926,7 @@ export default function ProjectDetailPage() {
                 checked={selectedIds.has(paper.source_id)}
                 onToggle={() => toggle(paper.source_id)}
                 projectId={projectId}
+                project={project}
               />
             ))
           )}
@@ -904,6 +942,7 @@ export default function ProjectDetailPage() {
       {project && (
         <>
           <EditProjectDialog
+            key={projectId}
             open={editOpen}
             onClose={() => setEditOpen(false)}
             projectId={projectId}
@@ -913,12 +952,14 @@ export default function ProjectDetailPage() {
             initialTags={project.project_tags}
           />
           <AddPapersDialog
+            key={projectId}
             open={addPapersOpen}
             onClose={() => setAddPapersOpen(false)}
             projectId={projectId}
             existingSourceIds={project.source_ids}
           />
           <ExportDialog
+            key={projectId}
             open={exportOpen}
             onClose={() => setExportOpen(false)}
             projectId={projectId}

@@ -11,6 +11,7 @@ import { Dialog } from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/input";
 import { Spinner } from "../components/ui/spinner";
+import { formSubmitOnCtrlEnter } from "../lib/submitShortcut";
 
 function NewProjectDialog({
   open,
@@ -30,6 +31,7 @@ function NewProjectDialog({
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (submitting) return;
     if (!name.trim()) return;
     setSubmitting(true);
     setError(null);
@@ -66,7 +68,7 @@ function NewProjectDialog({
 
   return (
     <Dialog open={open} onClose={handleClose} title="New Project">
-      <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+      <form onSubmit={handleSubmit} onKeyDown={formSubmitOnCtrlEnter} className="flex flex-col gap-4">
         <div className="flex flex-col gap-1.5">
           <label
             htmlFor="proj-name"

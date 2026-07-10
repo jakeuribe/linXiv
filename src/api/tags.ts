@@ -7,8 +7,13 @@ export interface TagDetail {
   projects: Project[];
 }
 
-export async function getAllTags(): Promise<string[]> {
-  return apiFetch<{ tags: string[] }>("/api/tags").then((r) => r.tags);
+export interface TagSummary {
+  label: string;
+  paper_count: number;
+}
+
+export async function getAllTags(): Promise<TagSummary[]> {
+  return apiFetch<{ tags: TagSummary[] }>("/api/tags").then((r) => r.tags);
 }
 
 export async function getTagDetail(label: string): Promise<TagDetail> {

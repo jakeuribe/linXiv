@@ -1,0 +1,11 @@
+usage: linxiv author [-h] {list,get,update,delete} ...
+
+positional arguments:
+  {list,get,update,delete}
+    list                List all authors with paper counts
+    get                 Get author details and paper list
+    update              Update author fields
+    delete              Delete an author (blocked if linked to papers)
+
+options:
+  -h, --help            show this help message and exit

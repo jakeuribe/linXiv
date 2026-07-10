@@ -1,0 +1,252 @@
+//! `/api/trash` routes — `api/app.py` 1099–1161. Soft-delete (trash) management.
+//!
+//! Upstream Python had a latent route-ordering bug: `/api/trash/{source_id:path}`
+//! (1142) and `.../{source_id:path}/restore` (1129) were declared BEFORE the
+//! `/api/trash/projects/{id}` routes (1148, 1156). Starlette matches in declaration
+//! order and the `:path` converter swallows slashes, so the project routes were
+//! SHADOWED and never executed: `DELETE /api/trash/projects/5` landed on the paper
+//! hard-delete handler as source_id="projects/5" (a 200 no-op), leaving the project
+//! stuck in Trash. We fix that here: the specific `projects/{id}` arms are matched
+//! BEFORE the greedy paper `rest @ ..` arms (Rust matches top-to-bottom), so
+//! project hard-delete and restore now route to `svc_project` correctly.
+
+use serde_json::{json, Value};
+
+use linxiv_core::service::paper::{self as svc_paper, Paper};
+use linxiv_core::service::project as svc_project;
+
+use crate::route::{ApiError, ReqCtx};
+use crate::state::AppState;
+
+pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<Value, ApiError>> {
+    match (ctx.method, ctx.segs) {
+        ("GET", ["api", "trash"]) => Some(list(state)),
+        // Specific project arms MUST precede the greedy paper arms below.
+        ("POST", ["api", "trash", "projects", id, "restore"]) => Some(restore_project(state, id)),
+        ("DELETE", ["api", "trash", "projects", id]) => Some(hard_delete_project(state, id)),
+        // `:path` greedy capture: everything after `/api/trash/` (minus a trailing
+        // `/restore`) is the paper source_id. `projects/{id}` is handled by the
+        // specific arms above and never reaches here.
+        ("POST", ["api", "trash", rest @ .., "restore"]) if !rest.is_empty() => {
+            Some(restore(state, &rest.join("/")))
+        }
+        ("DELETE", ["api", "trash", rest @ ..]) if !rest.is_empty() => {
+            Some(hard_delete(state, &rest.join("/")))
+        }
+        _ => None,
+    }
+}
+
+/// `GET /api/trash` — `api_trash_list`. Two arrays with hand-picked keys (the
+/// `DeletedPaperDetails`/`ProjectDetails` structs carry more than the API exposes).
+fn list(state: &AppState) -> Result<Value, ApiError> {
+    state.with_conn(|conn| {
+        let papers = svc_paper::list_deleted(conn)?;
+        let projects = svc_project::list_deleted(conn)?;
+        let papers: Vec<Value> = papers
+            .iter()
+            .map(|d| {
+                json!({
+                    "source_fk": d.source_fk,
+                    "source_id": d.source_id,
+                    "title": d.title,
+                    "authors": d.authors,
+                    "published": d.published,
+                    "deleted_at": d.deleted_at,
+                    "had_pdf": d.had_pdf,
+                })
+            })
+            .collect();
+        let projects: Vec<Value> = projects
+            .iter()
+            .map(|p| {
+                json!({
+                    "id": p.id,
+                    "name": p.name,
+                    // archived_at is overwritten by delete(), so it holds the deletion timestamp
+                    "deleted_at": p.archived_at,
+                    "paper_count": p.source_fks.len(),
+                })
+            })
+            .collect();
+        Ok(json!({ "papers": papers, "projects": projects }))
+    })
+}
+
+/// `POST /api/trash/{source_id:path}/restore` — `api_trash_restore`. Idempotent:
+/// an unknown source_id (e.g. `2204.99999`) restores nothing and returns
+/// `{ok, pdf_path:null, project_fks:[]}`, exactly as Python does.
+fn restore(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
+    let (pdf_path, project_fks) = state.with_conn(|conn| {
+        svc_paper::restore(
+            conn,
+            &Paper {
+                source_id: Some(source_id.to_string()),
+                ..Default::default()
+            },
+        )
+    })?;
+    Ok(json!({ "ok": true, "pdf_path": pdf_path, "project_fks": project_fks }))
+}
+
+/// `DELETE /api/trash/{source_id:path}` — `api_trash_hard_delete`. Idempotent on
+/// an unknown source_id (200 no-op), matching Python.
+fn hard_delete(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
+    state.with_conn(|conn| {
+        svc_paper::hard_delete(
+            conn,
+            &Paper {
+                source_id: Some(source_id.to_string()),
+                ..Default::default()
+            },
+        )
+    })?;
+    Ok(json!({ "ok": true }))
+}
+
+/// `POST /api/trash/projects/{id}/restore` — un-trash a project. 422 on a non-integer id.
+fn restore_project(state: &AppState, id: &str) -> Result<Value, ApiError> {
+    let project_fk = crate::route::path_i64(id)?;
+    state.with_conn(|conn| {
+        svc_project::restore(
+            conn,
+            &svc_project::Project {
+                project_fk: Some(project_fk),
+            },
+        )
+    })?;
+    Ok(json!({ "ok": true }))
+}
+
+/// `DELETE /api/trash/projects/{id}` — permanently delete a trashed project. 422 on
+/// a non-integer id. No-op if the project does not exist (matches svc_project).
+fn hard_delete_project(state: &AppState, id: &str) -> Result<Value, ApiError> {
+    let project_fk = crate::route::path_i64(id)?;
+    state.with_conn(|conn| {
+        svc_project::hard_delete(
+            conn,
+            &svc_project::Project {
+                project_fk: Some(project_fk),
+            },
+        )
+    })?;
+    Ok(json!({ "ok": true }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::route::{route, ApiRequest};
+    use linxiv_core::storage;
+
+    fn state() -> AppState {
+        let conn = storage::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        AppState::from_parts(conn, std::env::temp_dir(), std::env::temp_dir())
+    }
+
+    async fn req(st: &AppState, method: &str, path: &str) -> Result<Value, ApiError> {
+        route(
+            st,
+            ApiRequest {
+                method: method.into(),
+                path: path.into(),
+                body: None,
+            },
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn list_on_empty_db_wraps_empty_arrays() {
+        let v = req(&state(), "GET", "/api/trash").await.unwrap();
+        assert_eq!(v, json!({ "papers": [], "projects": [] }));
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            r#"{"papers":[],"projects":[]}"#
+        );
+    }
+
+    #[tokio::test]
+    async fn hard_delete_unknown_source_is_idempotent_ok() {
+        let v = req(&state(), "DELETE", "/api/trash/2204.00001")
+            .await
+            .unwrap();
+        assert_eq!(v, json!({ "ok": true }));
+    }
+
+    use linxiv_core::models::{ProjectIn, Status};
+
+    /// Create a project then soft-delete it (trash), returning its id.
+    fn trashed_project(st: &AppState) -> i64 {
+        st.with_conn(|conn| {
+            let id = svc_project::create(
+                conn,
+                &ProjectIn {
+                    name: "Trashed".into(),
+                    description: String::new(),
+                    color: None,
+                    tags: vec![],
+                    source_fks: vec![],
+                },
+            )
+            .unwrap();
+            svc_project::delete(
+                conn,
+                &svc_project::Project {
+                    project_fk: Some(id),
+                },
+            )
+            .unwrap();
+            id
+        })
+    }
+
+    fn get_status(st: &AppState, id: i64) -> Option<Status> {
+        st.with_conn(|conn| {
+            svc_project::get(
+                conn,
+                &svc_project::Project {
+                    project_fk: Some(id),
+                },
+            )
+            .unwrap()
+        })
+        .map(|d| d.status)
+    }
+
+    #[tokio::test]
+    async fn project_hard_delete_removes_it() {
+        let st = state();
+        let id = trashed_project(&st);
+        let v = req(&st, "DELETE", &format!("/api/trash/projects/{id}"))
+            .await
+            .unwrap();
+        assert_eq!(v, json!({ "ok": true }));
+        // Gone from the DB entirely.
+        assert_eq!(get_status(&st, id), None);
+    }
+
+    #[tokio::test]
+    async fn project_restore_reactivates_it() {
+        let st = state();
+        let id = trashed_project(&st);
+        assert_eq!(get_status(&st, id), Some(Status::Deleted));
+        let v = req(&st, "POST", &format!("/api/trash/projects/{id}/restore"))
+            .await
+            .unwrap();
+        assert_eq!(v, json!({ "ok": true }));
+        assert_eq!(get_status(&st, id), Some(Status::Active));
+    }
+
+    #[tokio::test]
+    async fn project_non_integer_id_is_422() {
+        for (method, path) in [
+            ("DELETE", "/api/trash/projects/abc"),
+            ("POST", "/api/trash/projects/abc/restore"),
+        ] {
+            let err = req(&state(), method, path).await.unwrap_err();
+            assert_eq!(err.status, 422);
+        }
+    }
+}

@@ -1,0 +1,8 @@
+usage: linxiv fetch [-h] [--source {arxiv,openalex,crossref}] source_id
+
+positional arguments:
+  source_id             Paper ID (e.g. 2204.12985 or W3123456789)
+
+options:
+  -h, --help            show this help message and exit
+  --source {arxiv,openalex,crossref}

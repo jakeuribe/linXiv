@@ -2,7 +2,7 @@
 # resolves sidecar binaries relative to current_exe(), so the cargo target/
 # directory must stay at src-tauri/target (ADR 0016 / drift report 2026-06-05).
 [workspace]
-members = ["."]
+members = [".", "crates/core", "crates/cli", "crates/mcp", "crates/migrate", "crates/share"]
 
 [package]
 name = "linxiv-app"
@@ -10,10 +10,21 @@ version = "0.2.0"
 description = "linXiv desktop app"
 authors = ["jakeuribe"]
 edition = "2021"
+# `tauri dev` runs a bare `cargo run`; pick the app over the dev-server bin.
+default-run = "linxiv-app"
+
+[lib]
+name = "linxiv_app"
+path = "src/lib.rs"
 
 [[bin]]
 name = "linxiv-app"
 path = "src/main.rs"
+
+# Dev-only HTTP shim (D32): serves /api/* over HTTP for the browser dev loop.
+[[bin]]
+name = "linxiv-dev-server"
+path = "src/bin/dev_server.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -23,22 +34,45 @@ tauri = { version = "2", features = ["unstable"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-opener = "2"
-tauri-plugin-shell = "2"
-tauri-plugin-texbrain = { git = "https://github.com/linxiv-dev/tex-brain-linxiv-plugin" }
+tauri-plugin-texbrain = { git = "https://github.com/linxiv-dev/tex-brain-linxiv-plugin", rev = "9499d4343033de0c3f1e52a2f2a06989fa4d2f13" }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# preserve_order: write_mcp_config (src/integrations.rs) rewrites third-party MCP
+# client config files and must not re-sort their keys.
+serde_json = { version = "1", features = ["preserve_order"] }
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json", "blocking"] }
+# Dev-only HTTP shim server (used by the linxiv-dev-server bin; not in the app).
+axum = "0.8"
+# In-process backend: the app calls linxiv-core directly via the `api` dispatch
+# command (replacing the HTTP hop to the Python sidecar). rusqlite is pinned to
+# core's version so the Connection type unifies to one crate instance.
+linxiv-core = { path = "crates/core" }
+# Phase-0 quarantined CRDT "shared projects" store, reached via the `share_api`
+# command. Reads canonical via linxiv-core; its own docs live under the share dir.
+linxiv-share = { path = "crates/share" }
+rusqlite = "0.40"
+anyhow = "1"
+# Date parse/format parity with core's NaiveDate fields in router arms.
+chrono = "0.4"
+# File-upload routes carry bytes as base64 in the JSON `api` body (the webview
+# can't put a multipart body through `invoke`).
+base64 = "0.22"
+
+[dev-dependencies]
+# Share-dispatcher test injects a tempdir share dir (never the real data dir).
+tempfile = "3"
+wiremock = "0.6"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
 
 [profile.release]
 codegen-units = 1
 lto = true
 opt-level = "s"
-panic = "abort"
+# D30: unwind so the PDF-extraction catch_unwind (sources/pdf_metadata.rs) can
+# degrade a libpdfium-binding Rust panic to "no metadata" instead of aborting the
+# whole app. The catch is inside the Rust→pdfium-render call, so nothing unwinds
+# across a C frame. (Native libpdfium *segfaults* are contained by the subprocess
+# boundary in pdf_metadata.rs::extract_pdf_metadata_isolated.)
+panic = "unwind"
 strip = true

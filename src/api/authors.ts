@@ -29,6 +29,17 @@ export async function updateAuthor(
   });
 }
 
+export async function mergeAuthors(
+  canonicalId: number,
+  duplicateIds: number[],
+): Promise<AuthorDetail> {
+  return apiFetch<AuthorDetail>(`/api/authors/${canonicalId}/merge`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ duplicate_ids: duplicateIds }),
+  });
+}
+
 export async function deleteAuthor(authorId: number): Promise<void> {
   await apiFetch<{ ok: boolean }>(`/api/authors/${authorId}`, {
     method: "DELETE",

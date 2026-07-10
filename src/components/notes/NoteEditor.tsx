@@ -5,6 +5,9 @@ import { Input, Textarea } from "../ui/input";
 import { Button } from "../ui/button";
 import { Select } from "../ui/select";
 import { Badge } from "../ui/badge";
+import { Segmented } from "../ui/segmented";
+import { NoteMarkdown } from "./NoteMarkdown";
+import { submitOnCtrlEnter } from "../../lib/submitShortcut";
 
 interface NoteEditorProps {
   sourceId: string;
@@ -50,6 +53,7 @@ export function NoteEditor({
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [tab, setTab] = useState<"write" | "preview">("write");
 
   const wordCount = content.trim() === "" ? 0 : content.trim().split(/\s+/).length;
 
@@ -93,8 +97,13 @@ export function NoteEditor({
   // control type doesn't flip from a badge to a select once they arrive.
   const scopeReadOnly = isEditing || (!projectsLoading && projects.length === 0);
 
+  const canSave = !saving && (!!title.trim() || !!content.trim());
+
   return (
-    <div className="flex flex-col gap-3">
+    <div
+      className="flex flex-col gap-3"
+      onKeyDown={submitOnCtrlEnter(() => { if (canSave) handleSave(); })}
+    >
       <div className="flex flex-col items-start gap-1">
         {scopeReadOnly ? (
           <>
@@ -145,13 +154,35 @@ export function NoteEditor({
         onChange={(e) => setTitle(e.target.value)}
         disabled={saving}
       />
-      <Textarea
-        placeholder="Note content…"
-        value={content}
-        onChange={(e) => setContent(e.target.value)}
-        disabled={saving}
-        className="min-h-[160px] text-[13px] leading-[1.65]"
-      />
+      <div className="flex flex-col gap-2">
+        <Segmented
+          options={[
+            { value: "write", label: "Write" },
+            { value: "preview", label: "Preview" },
+          ]}
+          value={tab}
+          onChange={setTab}
+          disabled={saving}
+          aria-label="Note editor mode"
+          className="self-start"
+        />
+        {tab === "write" ? (
+          <Textarea
+            placeholder="Note content… ($TeX$ math supported; Markdown formatting shown in Preview)"
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            disabled={saving}
+            className="min-h-[160px] text-[13px] leading-[1.65]"
+          />
+        ) : content.trim() ? (
+          <NoteMarkdown
+            content={content}
+            className="min-h-[160px] text-[13px] leading-[1.65] text-text"
+          />
+        ) : (
+          <p className="min-h-[160px] text-[13px] text-muted">Nothing to preview.</p>
+        )}
+      </div>
       <div className="flex items-center justify-between gap-2 font-mono text-[10.5px] uppercase tracking-[0.08em] text-ink3">
         <span>{wordCount === 1 ? "1 word" : `${wordCount} words`}</span>
         <span>{scopeLabel}</span>
@@ -169,7 +200,7 @@ export function NoteEditor({
           variant="primary"
           size="sm"
           onClick={handleSave}
-          disabled={saving || (!title.trim() && !content.trim())}
+          disabled={!canSave}
         >
           {saving ? "Saving…" : "Save"}
         </Button>

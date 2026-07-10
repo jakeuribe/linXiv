@@ -1,0 +1,35 @@
+[package]
+name = "linxiv-share"
+version = "0.2.0"
+edition = "2021"
+
+[lib]
+name = "linxiv_share"
+path = "src/lib.rs"
+
+[dependencies]
+linxiv-core = { path = "../core" }
+# Pinned to core's version so the `Connection` type unifies to one crate instance.
+rusqlite = "0.40"
+# CRDT engine: autosurgeon 0.12 derives Reconcile/Hydrate and requires automerge ^0.10.
+automerge = "0.10.0"
+autosurgeon = "0.12.0"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+# Phase-1 one-way share transport: iroh core only (Endpoint/Router + custom ALPN);
+# no iroh-blobs/gossip/docs. iroh's default `tls-ring` keeps the build hermetic
+# (ring backend, no aws-lc-rs / CMake).
+iroh = "1.0"
+# Unguessable per-share capability tokens (>=16 random bytes).
+rand = "0.8"
+# Pasteable ticket: serde struct -> postcard bytes -> base32 (filename/url safe).
+data-encoding = "2"
+postcard = { version = "1", features = ["use-std"] }
+# Per-connection deadline (tokio::time) + non-blocking inbound file I/O (tokio::fs).
+tokio = { version = "1", features = ["time", "fs"] }
+
+[dev-dependencies]
+tempfile = "3"
+chrono = "0.4"
+# Async runtime for the loopback transport tests (iroh needs a tokio reactor).
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

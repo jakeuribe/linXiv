@@ -1,13 +1,28 @@
-import { useState } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useMemo, useState } from "react";
+import { useParams, useNavigate, Link } from "react-router-dom";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
-import { listAuthors, getAuthor, updateAuthor, deleteAuthor } from "../api/authors";
+import { listAuthors, getAuthor, updateAuthor, deleteAuthor, mergeAuthors } from "../api/authors";
 import type { AuthorUpdateBody } from "../api/authors";
 import { Spinner } from "../components/ui/spinner";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { SortHeader, nextSort, type SortDir } from "../components/ui/sort-header";
+import { nameSortKey, type NameSortBy } from "../lib/authorName";
 import { useUiStore } from "../stores/ui";
 import { MathText } from "../lib/tex";
+import { submitOnCtrlEnter } from "../lib/submitShortcut";
+
+// Matches an author against a free-text query across full/first/last name and ORCID.
+function authorMatchesQuery(a: { full_name?: string | null; first_name?: string | null; last_name?: string | null; orcid?: string | null }, query: string) {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return (
+    a.full_name?.toLowerCase().includes(q) ||
+    a.first_name?.toLowerCase().includes(q) ||
+    a.last_name?.toLowerCase().includes(q) ||
+    a.orcid?.toLowerCase().includes(q)
+  );
+}
 
 export default function AuthorPage() {
   const { id } = useParams<{ id?: string }>();
@@ -27,16 +42,24 @@ export default function AuthorPage() {
     );
   }
 
-  return <AuthorDetailView authorId={authorId} />;
+  return <AuthorDetailView key={authorId} authorId={authorId} />;
 }
 
 // ---------------------------------------------------------------------------
 // Index: list all authors
 // ---------------------------------------------------------------------------
 
+type AuthorSortKey = "name" | "paper_count";
+
 function AuthorIndexView() {
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
+  const [sort, setSort] = useState<{ key: AuthorSortKey; dir: SortDir }>({
+    key: "paper_count",
+    dir: "desc",
+  });
+  // Which name part the "Author" column sorts by (full / first / last name).
+  const [nameBy, setNameBy] = useState<NameSortBy>("full_name");
   const hideSingleAuthors = useUiStore((s) => s.hideSingleAuthors);
   const setHideSingleAuthors = useUiStore((s) => s.setHideSingleAuthors);
 
@@ -45,17 +68,19 @@ function AuthorIndexView() {
     queryFn: () => listAuthors(hideSingleAuthors),
   });
 
-  const filtered = search.trim()
-    ? authors.filter((a) => {
-        const q = search.toLowerCase();
-        return (
-          a.full_name?.toLowerCase().includes(q) ||
-          a.first_name?.toLowerCase().includes(q) ||
-          a.last_name?.toLowerCase().includes(q) ||
-          a.orcid?.toLowerCase().includes(q)
-        );
-      })
-    : authors;
+  const filtered = useMemo(() => {
+    const matched = authors.filter((a) => authorMatchesQuery(a, search));
+    const dir = sort.dir === "asc" ? 1 : -1;
+    const keyed = matched.map((author) => ({ author, key: nameSortKey(author, nameBy) }));
+    keyed.sort((a, b) => {
+      const primary =
+        sort.key === "name"
+          ? a.key.localeCompare(b.key)
+          : (a.author.paper_count ?? 0) - (b.author.paper_count ?? 0);
+      return primary !== 0 ? primary * dir : a.key.localeCompare(b.key);
+    });
+    return keyed.map((k) => k.author);
+  }, [authors, search, sort, nameBy]);
 
   if (isLoading) {
     return (
@@ -106,6 +131,27 @@ function AuthorIndexView() {
         Hide single-paper authors
       </label>
 
+      <label
+        className="flex items-center gap-2 text-sm w-fit"
+        style={{ color: "var(--color-muted)" }}
+      >
+        Sort names by
+        <select
+          value={nameBy}
+          onChange={(e) => {
+            setNameBy(e.target.value as NameSortBy);
+            // Make the choice take effect even if currently sorted by papers.
+            setSort((s) => (s.key === "name" ? s : { key: "name", dir: "asc" }));
+          }}
+          className="rounded-md border px-2 py-1 bg-transparent"
+          style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
+        >
+          <option value="full_name">Full name</option>
+          <option value="first_name">First name</option>
+          <option value="last_name">Last name</option>
+        </select>
+      </label>
+
       {filtered.length === 0 ? (
         <p className="text-sm" style={{ color: "var(--color-muted)" }}>
           {search
@@ -115,23 +161,47 @@ function AuthorIndexView() {
             : "No authors yet."}
         </p>
       ) : (
-        <div className="flex flex-col divide-y" style={{ borderColor: "var(--color-border)" }}>
-          {filtered.map((author) => (
-            <button
-              key={author.author_id}
-              type="button"
-              className="flex items-center justify-between py-3 text-left hover:opacity-80 transition-opacity"
-              onClick={() => navigate(`/authors/${author.author_id}`)}
-            >
-              <span className="font-medium text-sm" style={{ color: "var(--color-text)" }}>
-                {author.full_name ?? "(unnamed)"}
-              </span>
-              <span className="text-xs ml-4 shrink-0" style={{ color: "var(--color-muted)" }}>
-                {author.paper_count ?? 0} paper{(author.paper_count ?? 0) !== 1 ? "s" : ""}
-              </span>
-            </button>
-          ))}
-        </div>
+        <table className="w-full text-sm border-collapse">
+          <thead>
+            <tr className="border-b" style={{ borderColor: "var(--color-border)" }}>
+              <SortHeader
+                label="Author"
+                active={sort.key === "name"}
+                dir={sort.dir}
+                onSort={() => setSort((s) => nextSort(s, "name", "asc"))}
+              />
+              <SortHeader
+                label="Papers"
+                active={sort.key === "paper_count"}
+                dir={sort.dir}
+                onSort={() => setSort((s) => nextSort(s, "paper_count", "desc"))}
+                align="right"
+              />
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map((author) => {
+              const to = `/authors/${author.author_id}`;
+              return (
+              <tr
+                key={author.author_id}
+                onClick={() => navigate(to)}
+                className="border-b cursor-pointer hover:bg-[var(--color-panel)] transition-colors"
+                style={{ borderColor: "var(--color-border)" }}
+              >
+                <td className="py-2.5 font-medium" style={{ color: "var(--color-text)" }}>
+                  <Link to={to} className="block" onClick={(e) => e.stopPropagation()}>
+                    {author.full_name ?? "(unnamed)"}
+                  </Link>
+                </td>
+                <td className="py-2.5 text-right tabular-nums" style={{ color: "var(--color-muted)" }}>
+                  {author.paper_count ?? 0}
+                </td>
+              </tr>
+              );
+            })}
+          </tbody>
+        </table>
       )}
     </div>
   );
@@ -152,6 +222,9 @@ function AuthorDetailView({ authorId }: AuthorDetailViewProps) {
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState<AuthorUpdateBody>({});
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [mergeIds, setMergeIds] = useState<number[]>([]);
+  const [mergeFilter, setMergeFilter] = useState("");
+  const [mergeActive, setMergeActive] = useState(false);
 
   const { data: author, isLoading, error } = useQuery({
     queryKey: ["author", authorId],
@@ -174,6 +247,26 @@ function AuthorDetailView({ authorId }: AuthorDetailViewProps) {
       navigate("/authors");
     },
     onError: (err: Error) => setDeleteError(err.message),
+  });
+
+  // Full author list for picking merge duplicates (excludes this author below).
+  // Only fetched once the merge section is actually interacted with.
+  const { data: allAuthors = [] } = useQuery({
+    queryKey: ["authors", { hideSingleAuthors: false }],
+    queryFn: () => listAuthors(false),
+    enabled: mergeActive,
+  });
+
+  const mergeMutation = useMutation({
+    mutationFn: () => mergeAuthors(authorId, mergeIds),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["author", authorId] });
+      queryClient.invalidateQueries({ queryKey: ["authors"] });
+      mergeIds.forEach((dupId) =>
+        queryClient.removeQueries({ queryKey: ["author", dupId] })
+      );
+      setMergeIds([]);
+    },
   });
 
   if (isLoading) {
@@ -246,7 +339,12 @@ function AuthorDetailView({ authorId }: AuthorDetailViewProps) {
         </div>
 
         {editing ? (
-          <div className="space-y-3">
+          <div
+            className="space-y-3"
+            onKeyDown={submitOnCtrlEnter(() => {
+              if (!updateMutation.isPending) handleSave();
+            })}
+          >
             <LabeledField label="Full name">
               <Input
                 value={form.full_name ?? ""}
@@ -351,6 +449,68 @@ function AuthorDetailView({ authorId }: AuthorDetailViewProps) {
             ))}
           </div>
         )}
+      </section>
+
+      {/* Merge duplicates */}
+      <section className="space-y-3 pt-4" style={{ borderTop: "1px solid var(--color-border)" }}>
+        <h2 className="text-base font-semibold" style={{ color: "var(--color-text)" }}>
+          Merge duplicates
+        </h2>
+        <p className="text-xs" style={{ color: "var(--color-muted)" }}>
+          Pick other records for the same person. Their papers move to this author and the
+          duplicate records are deleted. This cannot be undone.
+        </p>
+        <Input
+          placeholder="Filter authors…"
+          value={mergeFilter}
+          onChange={(e) => setMergeFilter(e.target.value)}
+          onFocus={() => setMergeActive(true)}
+          className="w-full"
+        />
+        <select
+          multiple
+          aria-label="Authors to merge into this author"
+          size={Math.min(8, Math.max(3, allAuthors.length - 1))}
+          value={mergeIds.map(String)}
+          onFocus={() => setMergeActive(true)}
+          onChange={(e) =>
+            setMergeIds(Array.from(e.target.selectedOptions, (o) => Number(o.value)))
+          }
+          className="w-full rounded-md border px-2 py-1 bg-transparent text-sm"
+          style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
+        >
+          {allAuthors
+            .filter((a) => a.author_id !== authorId)
+            .filter((a) => authorMatchesQuery(a, mergeFilter))
+            .slice(0, 50)
+            .map((a) => (
+              <option key={a.author_id} value={a.author_id}>
+                {a.full_name ?? "(unnamed)"} ({a.paper_count ?? 0})
+              </option>
+            ))}
+        </select>
+        {mergeMutation.error && (
+          <p className="text-sm" style={{ color: "var(--color-danger)" }}>
+            {(mergeMutation.error as Error).message}
+          </p>
+        )}
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            const names = allAuthors
+              .filter((a) => mergeIds.includes(a.author_id))
+              .map((a) => a.full_name ?? "(unnamed)");
+            if (window.confirm(`Merge ${names.join(", ")} into this author? This cannot be undone.`)) {
+              mergeMutation.mutate();
+            }
+          }}
+          disabled={mergeIds.length === 0 || mergeMutation.isPending}
+        >
+          {mergeMutation.isPending
+            ? "Merging…"
+            : `Merge${mergeIds.length ? ` ${mergeIds.length}` : ""} into this author`}
+        </Button>
       </section>
 
       {/* Delete */}

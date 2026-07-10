@@ -1,0 +1,26 @@
+usage: linxiv [-h] [--version]
+              {search,fetch,list,paper,tag,project,note,pdf,trash,doi,author,bibtex,stats,categories,settings} ...
+
+linXiv headless CLI
+
+positional arguments:
+  {search,fetch,list,paper,tag,project,note,pdf,trash,doi,author,bibtex,stats,categories,settings}
+    search              Search for papers
+    fetch               Fetch and save a paper by ID
+    list                List papers in the database
+    paper               Manage individual papers
+    tag                 Manage tags
+    project             Manage projects
+    note                Manage notes
+    pdf                 Manage PDFs
+    trash               Manage soft-deleted items
+    doi                 Resolve and save papers by DOI
+    author              Manage authors
+    bibtex              BibTeX import
+    stats               Library statistics
+    categories          List all paper categories in the library
+    settings            View and update user settings
+
+options:
+  -h, --help            show this help message and exit
+  --version             show program's version number and exit

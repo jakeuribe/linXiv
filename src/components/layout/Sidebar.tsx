@@ -3,6 +3,7 @@ import { NavLink } from "react-router-dom";
 import {
   Home,
   BookOpen,
+  BookMarked,
   FolderOpen,
   Network,
   Search,
@@ -32,6 +33,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/", label: "Home", icon: <Home size={16} />, end: true },
   { to: "/library", label: "Library", icon: <BookOpen size={16} /> },
   { to: "/projects", label: "Projects", icon: <FolderOpen size={16} /> },
+  { to: "/reading", label: "Reading", icon: <BookMarked size={16} /> },
   { to: "/graph", label: "Graph", icon: <Network size={16} />, pageKey: "graph" },
   { to: "/search", label: "Search", icon: <Search size={16} />, pageKey: "search" },
   { to: "/doi", label: "DOI", icon: <Link2 size={16} />, pageKey: "doi" },

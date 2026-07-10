@@ -908,14 +908,22 @@ window.addEventListener('message', function(e) {
 });
 
 // ── Data fetch + bootstrap ───────────────────────────────────────────────────
-// http(s) = dev (Vite proxy handles /api), tauri: = production app
-// (backend at 127.0.0.1:8000), file: = Qt bridge (no fetch — skip).
+// The iframe can't use Tauri invoke, so it fetches the in-process backend over
+// the linxiv:// scheme (see src-tauri protocol.rs). The packaged window can be
+// served as either tauri://localhost OR http://tauri.localhost depending on
+// platform, so don't key off the protocol — only a real Vite dev server
+// (http://localhost:PORT, which proxies /api itself) uses its own origin. The
+// production base mirrors src/api/papers.ts. file: = Qt bridge (no fetch — skip).
 
 function _resolveGraphBase() {
-    const proto = window.location.protocol;
-    if (proto === 'tauri:') return 'http://127.0.0.1:8000';
-    if (proto === 'http:' || proto === 'https:') return window.location.origin;
-    return null;
+    const { protocol, hostname, origin } = window.location;
+    if ((protocol === 'http:' || protocol === 'https:')
+        && (hostname === 'localhost' || hostname === '127.0.0.1')) {
+        return origin;  // Vite dev server
+    }
+    if (protocol === 'file:') return null;
+    return /Windows/i.test(navigator.userAgent)
+        ? 'http://linxiv.localhost' : 'linxiv://localhost';
 }
 
 // Fetch graph data + dropdowns and (re)load the graph. The token guards against

@@ -2,165 +2,150 @@
 
 <img src="assets/wide_logo.png" alt="linXiv logo" width="800" />
 
-A local-first desktop application for discovering, managing, and visualizing academic papers from arXiv and other sources. Combines a local SQLite database, optional AI-powered tagging, Obsidian vault integration, and an interactive network graph (Cytoscape rendering with a D3 force simulation), wrapped in a Tauri desktop shell (React + TypeScript frontend, Python backend).
+A local-first desktop application for discovering, managing, and visualizing academic papers from arXiv and other sources. It bundles a native Rust backend (bundled SQLite storage, arXiv/OpenAlex/CrossRef sources, PDF text extraction, BibTeX/Obsidian export) with a React + TypeScript frontend and an interactive paper–author graph, all wrapped in a Tauri v2 desktop shell.
 
-Upload your PDFs, create projects, manage notes, tags, and more to organize your files — all locally, without sending your data anywhere. This project aims to be a one-stop-shop for researchers who want to manage their literature, with the near-term goal of extending to research groups who seek to share knowledge without going to the web.
+Upload your PDFs, create projects, manage notes, tags, and annotations to organize your library — all locally, without sending your data anywhere. linXiv aims to be a one-stop shop for researchers managing their literature, with the near-term goal of extending to research groups who want to share knowledge without going to the web.
 
-> **Development status:** The database schema and paper identifier format are actively changing. `source_id` values are being migrated to a namespaced format (`arxiv:2204.12985`, `doi:10.48550/…`, `openalex:W3123456789`, `local:{hash}`). Until that work lands, pre-v0.1.2 (current version) existing `papers.db` files will not be compatible with new builds — delete `papers.db` and let it rebuild on first run. No stable release has been cut yet.
-
+> **Development status:** Pre-1.0 (current version `0.2.0`). The database schema is still evolving. Paper identifiers use a namespaced `source_id` format (`arxiv:2204.12985`, `openalex:W3123456789`, `doi:10.48550/…`, `local:{hash}`). If you are upgrading from an older build and hit a schema mismatch, delete `papers.db` from the app data directory and let it rebuild on first run.
 
 <img src="assets/carousel.gif" width="800" />
 
 ## Table of Contents
 
 - [Features](#features)
-- [Project Structure](#project-structure)
+- [Architecture](#architecture)
 - [Setup](#setup)
   - [Prerequisites](#prerequisites)
   - [Install dependencies](#install-dependencies)
-  - [Environment variables](#environment-variables)
-  - [Run](#run)
-- [Building the Tauri App](#building-the-tauri-app)
-  - [Tauri prerequisites](#tauri-prerequisites)
-  - [Development](#development)
-  - [Production build](#production-build)
-- [Usage](#usage)
-  - [Projects](#projects)
-  - [Notes](#notes)
-  - [Search and save papers](#search-and-save-papers)
-  - [Add by DOI](#add-by-doi)
-  - [AI tools](#ai-tools)
-  - [Download PDFs](#download-pdfs)
-  - [Database queries](#database-queries)
-- [Graph Visualization](#graph-visualization)
+  - [Run in development](#run-in-development)
+- [Building the desktop app](#building-the-desktop-app)
+- [CLI](#cli)
+- [MCP server](#mcp-server)
+- [Graph visualization](#graph-visualization)
+- [Data location](#data-location)
 - [Acknowledgements](#acknowledgements)
 
 ## Features
 
-- **Paper search** — Search arXiv by keyword, fetch by ID, or look up by DOI; results saved to a local SQLite DB with version tracking
-- **Interactive graph** — Force-directed network of papers and authors (D3 force simulation, Cytoscape rendering); real-time force controls (center, repel, link distance, link strength)
-- **Projects** — Organise papers into projects; add notes per paper scoped to a project; composable SQL query builder (`Q`) for filtering
-- **TeX rendering** — MathJax renders LaTeX math in titles and abstracts inside the search UI
-- **AI tools** — Google Gemini structured output for tag generation, paper summarization, and semantic similarity
-- **Obsidian integration** — Auto-generate markdown notes with YAML frontmatter for your vault
-- **PDF & TeX downloads** — Batch download PDFs and TeX source tarballs
+- **Paper search & fetch** — Search arXiv, OpenAlex, or CrossRef by keyword; fetch by ID; resolve by DOI (arXiv → Semantic Scholar → CrossRef fallback). Results are saved to a local SQLite database with per-paper version tracking.
+- **Projects** — Organize papers into projects; scope notes and highlight annotations to a paper within a project; archive, restore, and trash with soft-delete.
+- **Notes & PDF annotations** — Attach freeform notes and PDF highlight annotations to papers, optionally scoped to a project.
+- **Tags** — Tag papers and projects; list and manage the full tag set.
+- **PDF management** — Download PDFs, import local PDFs (with first-page text and metadata extraction via native PDFium), and track total storage usage.
+- **Import / export** — Import and export projects as `.lxproj` archives, import BibTeX (`.bib`), and export projects to BibTeX or Obsidian-flavored Markdown.
+- **Interactive graph** — Force-directed network of papers and authors (Cytoscape rendering with an fCoSE / D3 layout), with real-time force controls.
+- **TeX rendering** — MathJax renders LaTeX math in titles and abstracts, bundled locally for full offline use.
+- **CLI & MCP server** — A headless `linxiv` CLI and an `linxiv-mcp` MCP server expose the same library over the terminal and to LLM clients such as Claude.
 
 <img src="assets/demo.gif" width="800" />
 
-## Project Structure
+## Architecture
+
+linXiv is a Tauri v2 app. The frontend is React 18 + TypeScript (Vite); the backend is native Rust and runs **in-process** inside the app — the webview calls it through a single `api` Tauri command over IPC, and streams PDFs and graph assets over a custom `linxiv://` scheme. There is no HTTP server and no Python in the packaged app.
+
+The Rust workspace lives under `src-tauri/` (which is also the Cargo workspace root):
 
 ```
 linXiv/
-├── AI_tools.py                # Gemini: tag(), summarize(), find_related(); PaperContent input type
-├── linxiv_cli.py              # CLI entry point (linxiv command via pyproject.toml)
-├── linxiv_mcp.py              # MCP server for Claude integration
-├── config.py                  # App-wide configuration constants
-├── user_settings.py           # User-editable settings (API keys, paths)
-├── pyproject.toml             # Package metadata + CLI/MCP entry points
-├── assets/
-│   ├── app_icon.png           # Application icon
-│   └── wide_logo.png          # Wide logo (README header)
-├── api/
-│   ├── __main__.py            # Entry point: python -m api
-│   ├── app.py                 # FastAPI routes (REST API incl. /api/graph)
-│   ├── graph_payload.py       # Graph JSON (tags + projects) for /api/graph
-│   └── run_api.py             # uvicorn launcher helper
-├── sources/
-│   ├── base.py                # PaperSource protocol + PaperMetadata model
-│   ├── arxiv_source.py        # ArxivSource: search and fetch from arXiv API
-│   ├── crossref_source.py     # CrossRefSource: fetch by DOI, search by title
-│   ├── openalex_source.py     # OpenAlexSource: lookup via OpenAlex
-│   ├── doi_resolve.py         # DOI resolution (arXiv, Semantic Scholar, CrossRef fallback)
-│   ├── fetch_paper_metadata.py# High-level fetch/search helpers + Obsidian note generation
-│   ├── pdf_metadata.py        # PDF metadata extraction and resolution pipeline
-│   └── arxiv_downloads.py     # PDF and TeX source download helpers
-├── service/
-│   ├── paper.py               # Paper service: get, get_all, get_many, upsert, graph data
-│   ├── author.py              # Author service: get, upsert, link/unlink to papers
-│   ├── tag.py                 # Tag service: get, upsert, paper/project tag management
-│   ├── note.py                # Note service: get, upsert, count by paper/project
-│   ├── project.py             # Project service: get, upsert, filter, status management
-│   ├── export_import.py       # Export/import projects as .lxproj archives
-│   ├── vault.py               # On-disk LaTeX vault for the embedded editor
-│   ├── editor_project.py      # Note-link layer for the embedded editor
-│   ├── files.py               # File utilities for paper sources
-│   └── models/                # Typed return types (PaperDetails, ProjectDetails, etc.)
-├── storage/
-│   ├── db.py                  # SQLite DB: versioned paper storage, graph data queries
-│   ├── authors.py             # Author CRUD and paper linkage
-│   ├── tags.py                # Tag CRUD
-│   ├── projects.py            # Projects: Project data model + CRUD (Status/Q imported)
-│   ├── notes.py               # Notes: per-paper annotations scoped to projects
-│   ├── paths.py               # Filesystem paths (project root, DB, PDFs)
-│   ├── config/
-│   │   ├── core.py            # Schema application: apply_sql_schema, init_db
-│   │   ├── queries.py         # Typed query helpers + composable Q predicate builder
-│   │   └── sql/               # SQL table, view, and index definitions
-│   └── migrations/            # One-off schema migration scripts
-├── formats/
-│   ├── bibtex.py              # BibTeX import/export
-│   ├── csv_fmt.py             # CSV import/export
-│   ├── json_fmt.py            # JSON import/export
-│   ├── markdown.py            # Markdown / Obsidian import/export
-│   ├── table_format.md        # YAML frontmatter template for Obsidian notes
-│   └── arxiv_paper.md         # Plain-text paper card template
-├── public/
-│   └── graph/                 # Graph viewer (graph.html/js/css), loaded in an iframe
-├── src/                       # React + TypeScript frontend (Vite)
-├── src-tauri/                 # Tauri shell (Rust) + bundled sidecar binaries
-├── tests/                     # pytest suite (API, CLI, DB, sources, DOI, notes, projects)
-├── docs/                      # Development notes and technical debt log
-└── pdfs/                      # Downloaded PDFs (gitignored)
+├── src/                        # React + TypeScript frontend (Vite)
+│   ├── api/                    # Typed client — calls the in-process backend via invoke("api")
+│   ├── pages/ components/ …    # UI
+├── public/graph/               # Force-directed graph viewer (Cytoscape + fCoSE + D3), loaded over linxiv://
+├── src-tauri/                  # Tauri shell + Cargo workspace root
+│   ├── src/                    # Tauri app: window, api-command router, integrations (install CLI/MCP)
+│   ├── crates/
+│   │   ├── core/               # linxiv-core: all library logic (sources, storage, formats, graph, service)
+│   │   │   └── src/sources/    #   arXiv, OpenAlex, CrossRef, DOI resolution, PDF metadata, downloads
+│   │   ├── cli/                # linxiv-cli → the `linxiv` binary (headless CLI)
+│   │   ├── mcp/                # linxiv-mcp → the `linxiv-mcp` binary (MCP stdio server)
+│   │   ├── migrate/            # one-off schema migration binary
+│   │   └── share/              # quarantined CRDT "shared projects" store (phase 0, P2P roadmap)
+│   ├── binaries/               # staged CLI + MCP sidecars (target-triple suffixed) for `tauri build`
+│   ├── tauri.conf.json         # app config; bundles the linxiv + linxiv-mcp sidecars as externalBin
+│   └── Cargo.toml              # workspace manifest
+├── scripts/
+│   ├── fetch_pdfium.sh         # downloads the native libpdfium used for PDF text extraction
+│   └── stage_rust_bins.sh      # builds + stages the CLI/MCP sidecars into src-tauri/binaries/
+└── assets/                     # logo, icons, GIFs
 ```
+
+**Storage.** SQLite is compiled in via `rusqlite` (bundled, FTS5 for full-text search) — no system `libsqlite3` needed. The database is `papers.db` in the per-user app data directory.
+
+**PDF extraction.** First-page text and metadata come from native `libpdfium` (`pdfium-render`). The shared library is fetched by `scripts/fetch_pdfium.sh` and bundled as a Tauri resource.
 
 ## Setup
 
 ### Prerequisites
 
-- Python 3.10+
-- [Node.js](https://nodejs.org/) 18+ (for frontend / Tauri dev)
-- [Rust toolchain](https://rustup.rs/) (for Tauri)
-- [uv](https://github.com/astral-sh/uv) (recommended Python package manager)
+- [Rust toolchain](https://rustup.rs/) (stable) — builds the backend, CLI, MCP server, and Tauri shell
+- [Node.js](https://nodejs.org/) 18+ — frontend / Tauri tooling
+- System Tauri dependencies — follow the [Tauri v2 prerequisites guide](https://tauri.app/start/prerequisites/) for your OS (WebKit2GTK on Linux, Xcode Command Line Tools on macOS, Microsoft C++ Build Tools on Windows)
+
+> The build pulls the `tauri-plugin-texbrain` crate as a git dependency (`github.com/linxiv-dev/tex-brain-linxiv-plugin`, pinned in `Cargo.lock`) — no extra checkout needed.
 
 ### Install dependencies
 
 ```bash
-uv sync          # Python dependencies (backend + dev)
-npm install      # Node dependencies (frontend)
+npm install                       # frontend dependencies
+bash scripts/fetch_pdfium.sh      # native libpdfium (needed for PDF import/extraction)
 ```
 
-> Add `--extra mcp` if you need the MCP server: `uv pip install -e ".[mcp]"`
+Rust crates are fetched automatically on first `cargo`/`tauri` build.
 
-### Environment variables
+### Run in development
 
-Create a `.env` file in the project root:
-
-```env
-GENAI_API_KEY_TAG_GEN=your_google_gemini_api_key
-```
-
-### Run
-
-**HTTP API (JSON backend)**
+Native desktop window (recommended — runs the in-process Rust backend, hot-reloads the frontend):
 
 ```bash
-uv run python -m api   # http://127.0.0.1:8000 — see /docs for OpenAPI
+npm run tauri dev
 ```
 
-**CLI**
-
-Install once (editable install via uv):
+Browser-only dev loop (no native window; uses a dev-only HTTP shim that serves the backend over `/api`):
 
 ```bash
-uv pip install -e .
+# terminal 1 — dev backend (linxiv-dev-server, HTTP shim over the Rust core)
+npm run dev:api
+
+# terminal 2 — Vite dev server on :5180 (proxies /api to the shim)
+npm run dev
 ```
 
-Then run from anywhere:
+## Building the desktop app
+
+The `linxiv` (CLI) and `linxiv-mcp` (MCP server) binaries ship inside the app as Tauri sidecars.
+
+```bash
+npm run build:sidecar   # fetch libpdfium + build/stage the CLI & MCP sidecars into src-tauri/binaries/
+npm run tauri build     # build the app and bundle it
+```
+
+Or run both in one step:
+
+```bash
+npm run build:all
+```
+
+The installer/bundle is written to `src-tauri/target/release/bundle/`.
+
+After installing the app, open **Settings** to:
+- **Install CLI** — symlinks the bundled `linxiv` binary to `~/.local/bin/linxiv` (Linux/macOS) or writes a PATH shim on Windows.
+- **Integrations** — register the bundled MCP server with a detected client (Claude Desktop, Claude Code, and others) by writing its config file.
+
+## CLI
+
+The `linxiv` binary is a headless interface to the same library the app uses. In a checkout you can run it without installing:
+
+```bash
+# from src-tauri/
+cargo run -p linxiv-cli -- --help
+```
+
+Installed (via the app's **Install CLI**, or a staged/bundled build), invoke it directly as `linxiv`. All commands print JSON to stdout; pass `--help` to any command or subcommand for full options.
 
 ```bash
 linxiv --version
 
-# Search papers (arxiv, openalex, or crossref)
+# Search (source: arxiv (default), openalex, or crossref)
 linxiv search "attention is all you need" --max 5
 linxiv search "diffusion models" --source openalex --max 10
 linxiv search "lattice QCD" --source crossref --max 3
@@ -169,246 +154,130 @@ linxiv search "lattice QCD" --source crossref --max 3
 linxiv fetch 2204.12985
 linxiv fetch W3123456789 --source openalex
 
-# List papers in the database
+# List stored papers
 linxiv list --limit 20 --offset 0 --category cs.LG
 
-# Paper management
+# Papers
 linxiv paper get 2204.12985
 linxiv paper versions 2204.12985
-linxiv paper delete 2204.12985
+linxiv paper search "scaled dot-product"     # full-text search of the local library
+linxiv paper delete 2204.12985               # soft-delete
+linxiv paper restore 2204.12985
+linxiv paper hard-delete 2204.12985
+linxiv paper remove-from-all-projects 2204.12985
 
-# Tag management
+# Tags (on papers)
 linxiv tag add 2204.12985 transformers attention deep-learning
 linxiv tag remove 2204.12985 attention
 linxiv tag list 2204.12985
 linxiv tag list-all
 linxiv tag create my-tag
 linxiv tag delete 42
+# Tags (on projects)
+linxiv tag add-project 1 reading-list
+linxiv tag remove-project 1 reading-list
+linxiv tag list-project 1
 
-# Project management
+# Projects
 linxiv project list
-linxiv project list --status active      # active | archived | deleted
+linxiv project list --status active                # active | archived | deleted
 linxiv project get 1
-linxiv project create "Diffusion Models" --description "Score-based generative models"
-linxiv project update 1 --name "Diffusion Models v2" --description "Updated"
+linxiv project create "Diffusion Models" --description "Score-based generative models" --color "#4f86f7" --tags generative
+linxiv project update 1 --name "Diffusion Models v2" --status archived
 linxiv project add-paper 1 2006.11239
 linxiv project remove-paper 1 2006.11239
-linxiv project delete 1
+linxiv project archive 1
+linxiv project restore 1
+linxiv project delete 1                            # soft-delete
+linxiv project hard-delete 1
+linxiv project export 1 ./diffusion --pdfs         # .lxproj archive
+linxiv project import ./diffusion.lxproj --on-conflict merge   # merge | overwrite; --preview for a dry run
+linxiv project export-bibtex 1 ./diffusion.bib
+linxiv project export-obsidian 1 ./diffusion.md
 
-# Note management
+# Notes
 linxiv note create 2204.12985 "Key insight: scaled dot-product attention" --title "Reading notes"
 linxiv note create 2204.12985 "Follow-up question" --project-id 1
 linxiv note get 7
 linxiv note list --paper-id 2204.12985
 linxiv note list --project-id 1
+linxiv note update 7 --content "Revised note"
 linxiv note delete 7
 
-# PDF management
+# PDF highlight annotations
+linxiv annotation create 2204.12985 '<anchor-json>' --comment "important" --project-id 1
+linxiv annotation list --paper-id 2204.12985
+linxiv annotation get 3
+linxiv annotation update 3 --comment "revised"
+linxiv annotation delete 3
+
+# PDFs
 linxiv pdf path 2204.12985
 linxiv pdf path 2204.12985 --version 2
 linxiv pdf download 2204.12985 https://arxiv.org/pdf/2204.12985
+linxiv pdf import ./local-paper.pdf --project-id 1
 linxiv pdf storage
+
+# DOI
+linxiv doi resolve 10.48550/arXiv.1706.03762     # resolve to metadata, no save
+linxiv doi save 10.48550/arXiv.1706.03762        # resolve and save to library
+
+# Authors
+linxiv author list
+linxiv author get 12
+linxiv author update 12 --name "A. N. Other"
+linxiv author delete 12                          # blocked if still linked to papers
+
+# BibTeX import
+linxiv bibtex import ./refs.bib
+
+# Trash (soft-deleted items)
+linxiv trash list
+linxiv trash restore 2204.12985
+linxiv trash hard-delete 2204.12985
+linxiv trash restore-project 1
+linxiv trash hard-delete-project 1
+
+# Library / maintenance
+linxiv stats
+linxiv categories
+linxiv settings get
+linxiv settings update <key> <value>             # value is JSON-parsed if valid JSON, else a string
+linxiv backup ./papers.bak                       # snapshot the DB
+linxiv restore ./papers.bak                      # restore even if the live DB is broken
 ```
 
-All commands output JSON (or a formatted markdown card for `fetch`). Pass `--help` to any subcommand for full options.
+## MCP server
 
-**MCP server (Claude integration)**
+`linxiv-mcp` is a stdio MCP server exposing ~60 tools (search, fetch, papers, projects, tags, notes, annotations, PDFs, trash, authors, import/export, settings, stats) so an MCP client like Claude can drive your library directly.
 
-Install with the `mcp` extra:
+The simplest path is to install the desktop app and use **Settings → Integrations**, which registers the bundled server with a detected client.
+
+To register manually with the Claude Code CLI, point it at the built or bundled binary:
 
 ```bash
-uv pip install -e ".[mcp]"
+claude mcp add linxiv -- /path/to/linxiv-mcp
 ```
 
-Register with Claude Code:
-
-```bash
-claude mcp add linxiv -- linxiv-mcp
-```
-
-Or add manually to `.claude/settings.json`:
+Or add it to a client's MCP config (e.g. `claude_desktop_config.json`):
 
 ```json
 {
   "mcpServers": {
     "linxiv": {
-      "command": "linxiv-mcp"
+      "command": "/path/to/linxiv-mcp"
     }
   }
 }
 ```
 
-> Without an editable install, fall back to `uv run`:
-> ```json
-> { "command": "uv", "args": ["run", "linxiv_mcp.py"], "cwd": "/absolute/path/to/linxiv" }
-> ```
-
-Once registered, Claude can call the linXiv tools directly — for example `search_papers`, `fetch_paper`, and `list_papers`. Full tool documentation will be added soon.
+In a checkout you can run it straight from source with `cargo run -p linxiv-mcp` (from `src-tauri/`).
 
 <img src="assets/claude_demo.gif" width="800" />
 
-## Building the Tauri App
+## Graph visualization
 
-The Tauri desktop app wraps the React/Vite frontend and bundles the Python backend as sidecar binaries compiled with PyInstaller.
-
-### Tauri prerequisites
-
-- [Node.js](https://nodejs.org/) 18+
-- [Rust toolchain](https://rustup.rs/) (stable)
-- [uv](https://github.com/astral-sh/uv)
-- The Tauri build pulls the `tauri-plugin-texbrain` crate as a git dependency (`github.com/linxiv-dev/tex-brain-linxiv-plugin`, pinned in `Cargo.lock`) — no extra checkout needed
-- System Tauri dependencies — follow the [Tauri v2 prerequisites guide](https://tauri.app/start/prerequisites/) for your OS (WebKit2GTK on Linux, Xcode Command Line Tools on macOS, Microsoft C++ Build Tools on Windows)
-
-### Development
-
-Start the Python API and the Tauri dev window in separate terminals:
-
-```bash
-# terminal 1 — Python backend
-uv run python -m api   # http://127.0.0.1:8000
-
-# terminal 2 — Tauri dev window (also starts Vite, hot-reloads on frontend changes)
-npm run tauri dev
-```
-
-The Python API sidecar is not bundled in dev mode — the app talks to the locally running API on port 8000.
-
-### Production build
-
-The Python entry points (API, CLI, MCP server) are compiled to self-contained binaries with PyInstaller and staged into `src-tauri/binaries/` before Tauri bundles the app.
-
-**1. Build and stage the Python sidecars:**
-
-```bash
-npm run build:sidecar
-```
-
-This runs PyInstaller on `linxiv-api.spec`, `linxiv-cli.spec`, and `linxiv-mcp.spec`, then copies the outputs to `src-tauri/binaries/` with the correct Tauri target-triple suffix.
-
-**2. Build the Tauri app:**
-
-```bash
-npm run tauri build
-```
-
-Or run both steps at once:
-
-```bash
-npm run build:all
-```
-
-The final installer/bundle is written to `src-tauri/target/release/bundle/`.
-
-**Installing the CLI**
-
-After installing the desktop app, open Settings and click **Install CLI** to symlink the bundled `linxiv` binary to `~/.local/bin/linxiv` (Linux/macOS) or add a shim to your PATH (Windows).
-
-## Usage
-
-### Projects
-
-```python
-from storage import Project, filter_projects, Q, Status, get_paper
-
-# Create and save a project
-p = Project(name="Diffusion Models", color=0x5b8dee, project_tags=["generative"])
-p.save()
-
-# Add papers — add_papers takes integer SOURCE_FKs (papers must already be in the DB)
-p.add_papers([get_paper(sid)["source_fk"] for sid in ("2006.11239", "2010.02502", "2112.10752")])
-
-# Query with composable predicates
-active = filter_projects(Q("status = ?", Status.ACTIVE))
-not_deleted = filter_projects(~Q("status = ?", Status.DELETED))
-blue_diffusion = filter_projects(
-    Q("status = ?", Status.ACTIVE)
-    & Q("color = ?", 0x5b8dee)
-    & Q("name LIKE ?", "%diffusion%")
-)
-```
-
-### Notes
-
-```python
-from storage import Note, get_notes, count_paper_notes, ensure_notes_db, get_paper
-
-ensure_notes_db()
-
-# Notes attach to a paper by its integer SOURCE_FK
-sfk = get_paper("2006.11239")["source_fk"]
-
-# Add a project-scoped note on a paper
-note = Note(source_fk=sfk, project_id=p.id, title="Key insight", content="...")
-note.save()
-
-# Retrieve
-project_notes = get_notes(sfk, project_id=p.id)
-count = count_paper_notes(sfk, project_id=p.id)
-```
-
-### Search and save papers
-
-```python
-from sources import search_papers
-from storage import init_db, save_papers
-
-init_db()
-papers = search_papers("lattice QCD", max_results=25)  # returns arxiv.Result objects
-save_papers(papers)                                    # persist them to the DB
-```
-
-### Add by DOI
-
-```python
-from sources import resolve_doi
-
-result = resolve_doi("10.48550/arXiv.1706.03762")
-```
-
-### AI tools
-
-```python
-from AI_tools import tag, summarize, find_related, PaperContent
-
-content = PaperContent(abstract=paper.summary)
-
-tags = tag(content)                        # ["#quantum_computing", ...]
-tags = tag(content, file_path="tags.md")   # also appends to file
-
-s = summarize(content)
-print(s.tldr)
-print(s.key_contributions)
-
-# Semantic edges for the graph
-from storage import list_papers
-candidates = [(r["paper_id"], r["summary"]) for r in list_papers()]
-related_ids = find_related(content, candidates)
-```
-
-### Download PDFs
-
-```python
-from sources.arxiv_downloads import download_pdf, download_pdf_batch, download_source_batch
-
-download_pdf(paper, dirpath="pdfs/")
-download_pdf_batch(papers, dirpath="pdfs/")
-download_source_batch(papers, dirpath="source/")
-```
-
-### Database queries
-
-```python
-from storage import get_paper, get_all_versions, list_papers, get_graph_data
-
-get_paper("2204.12985")           # latest version
-get_paper("2204.12985", version=2)
-get_all_versions("2204.12985")    # all stored versions
-nodes, edges = get_graph_data()   # for the graph viewer
-```
-
-## Graph Visualization
-
-Papers (circles, in your theme's accent color — blue by default) and authors (gold diamonds) form a force-directed network. Edges connect each paper to its authors. The control panel has four real-time sliders:
+Papers and authors form a force-directed network: papers connect to their authors, laid out with an fCoSE / D3 force simulation and rendered with Cytoscape. The control panel exposes real-time sliders:
 
 | Slider | Effect |
 |---|---|
@@ -417,14 +286,14 @@ Papers (circles, in your theme's accent color — blue by default) and authors (
 | Link distance | Target edge length |
 | Link strength | Stiffness of paper–author edges |
 
-## Notes
+The viewer, MathJax, D3, and the UI font are all bundled locally — no external CDN calls, so the interface works fully offline.
 
-- `papers.db`, `pdfs/`, `source/`, and vault contents are gitignored.
-- MathJax, D3, and the Inter UI font are all bundled locally — no external CDN calls, so the interface works fully offline.
-- `PaperContent` accepts `abstract`, `full_text` (TeX source), or `pdf` (bytes) — Gemini will use the richest available source.
+## Data location
+
+The database (`papers.db`), managed PDFs, and the Obsidian vault live in the per-user app data directory for `com.linxiv.app` (e.g. `~/.local/share/com.linxiv.app` on Linux, `~/Library/Application Support/com.linxiv.app` on macOS). Set the `LINXIV_DATA_DIR` environment variable to override the location — the app, CLI, and MCP server all honor it, so they share one library.
 
 ## Acknowledgements
 
-linXiv owes a debt to [Qiqqa](https://github.com/jimmejardine/qiqqa-open-source), the open-source research management tool originally created by Jimme Jardine. 
+linXiv owes a debt to [Qiqqa](https://github.com/jimmejardine/qiqqa-open-source), the open-source research management tool originally created by Jimme Jardine.
 
-PDF text and metadata extraction uses [pypdf](https://github.com/py-pdf/pypdf), a pure-Python PDF library maintained by the [py-pdf](https://github.com/py-pdf) organization. pypdf is licensed under the [BSD 3-Clause License](https://github.com/py-pdf/pypdf/blob/main/LICENSE).
+PDF text and metadata extraction is powered by [PDFium](https://pdfium.googlesource.com/pdfium/) (Google's PDF rendering library) via the [`pdfium-render`](https://github.com/ajrcarey/pdfium-render) Rust bindings.

@@ -1,0 +1,22 @@
+usage: linxiv project [-h]
+                      {list,get,create,update,delete,archive,restore,hard-delete,add-paper,remove-paper,export,import,export-bibtex,export-obsidian} ...
+
+positional arguments:
+  {list,get,create,update,delete,archive,restore,hard-delete,add-paper,remove-paper,export,import,export-bibtex,export-obsidian}
+    list                List projects
+    get                 Get project details
+    create              Create a project
+    update              Update project fields
+    delete              Soft-delete a project
+    archive             Archive an active project
+    restore             Restore an archived or deleted project
+    hard-delete         Permanently delete a project
+    add-paper           Add a paper to a project
+    remove-paper        Remove a paper from a project
+    export              Export a project to a .lxproj archive
+    import              Import a project from a .lxproj archive
+    export-bibtex       Export project papers as BibTeX
+    export-obsidian     Export project papers as Obsidian markdown
+
+options:
+  -h, --help            show this help message and exit
