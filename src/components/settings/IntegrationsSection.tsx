@@ -20,6 +20,7 @@ function IntegrationRow({
   installed,
   available = true,
   stale = false,
+  configError = false,
   loading,
   error,
   onInstall,
@@ -30,6 +31,7 @@ function IntegrationRow({
   installed: boolean;
   available?: boolean;
   stale?: boolean;
+  configError?: boolean;
   loading: boolean;
   error?: string;
   onInstall: () => void;
@@ -63,7 +65,20 @@ function IntegrationRow({
               reinstall needed
             </span>
           )}
-          {!available && !installed && <span className="text-xs text-muted">(not detected)</span>}
+          {!installed && configError && (
+            <span
+              className="text-xs px-2 py-0.5 rounded-full font-medium"
+              style={{
+                background: "color-mix(in srgb, var(--color-danger) 15%, transparent)",
+                color: "var(--color-danger)",
+              }}
+            >
+              config unreadable
+            </span>
+          )}
+          {!available && !installed && !configError && (
+            <span className="text-xs text-muted">(not detected)</span>
+          )}
         </span>
       }
       description={
@@ -73,6 +88,12 @@ function IntegrationRow({
             <span className="block">
               The registered linXiv command no longer exists (likely an old install). Reinstall to
               register the current binary.
+            </span>
+          )}
+          {!installed && configError && (
+            <span className="block">
+              This client's MCP config file exists but isn't valid JSON, so linXiv can't tell
+              whether it's registered. Fix or remove the file by hand.
             </span>
           )}
           {error && (
@@ -245,6 +266,7 @@ export function IntegrationsSection() {
               installed={client.installed}
               available={client.available}
               stale={client.stale}
+              configError={client.config_error}
               loading={!!mcpPending[client.id]}
               error={errors[client.id]}
               onInstall={() => handleMcp(client.id, "install")}

@@ -362,6 +362,11 @@ pub struct MpcClientStatus {
     /// `true` when the registered command no longer exists on disk (e.g. the
     /// deleted Python-era sidecar) and the entry needs a reinstall.
     pub stale: bool,
+    /// `true` when the client's config file exists but could not be parsed as
+    /// JSON, so `installed`/`stale` could not be determined and default to
+    /// `false`. Distinct from "genuinely not installed" — the config needs
+    /// manual repair.
+    pub config_error: bool,
 }
 
 /// Supported clients: (id, display name). Paths and config shape live in
@@ -634,16 +639,22 @@ fn is_client_available(client_id: &str, roots: &Roots) -> bool {
         .any(|p| p.exists())
 }
 
-/// `(installed, stale)`: installed when the `linxiv` entry exists in the
-/// client's current config file (read live, never cached); stale when its
-/// recorded command is an absolute path that no longer exists on disk —
-/// e.g. the deleted Python-era PyInstaller sidecar
+/// `(installed, stale, config_error)`: installed when the `linxiv` entry
+/// exists in the client's current config file (read live, never cached);
+/// stale when its recorded command is an absolute path that no longer exists
+/// on disk — e.g. the deleted Python-era PyInstaller sidecar
 /// (`<resources>/binaries/linxiv-mcp-<triple>`), a dead AppImage mount, or a
 /// moved dev checkout. A non-absolute command (resolved via the client's PATH,
 /// or a bare name) is assumed live.
-fn registration_state(path: &Path, key: &str) -> (bool, bool) {
+///
+/// `config_error` is set when the config file exists but could not be read as
+/// JSON (e.g. hand-edited into a broken state). That case is NOT collapsed
+/// into `(false, false)` — a corrupted config for a client that genuinely has
+/// linxiv registered would otherwise be misreported identically to "never
+/// installed", hiding a real problem the user needs to go fix by hand.
+fn registration_state(path: &Path, key: &str) -> (bool, bool, bool) {
     if !path.exists() {
-        return (false, false);
+        return (false, false, false);
     }
     let config = match read_mcp_config(path) {
         Ok(c) => c,
@@ -653,11 +664,11 @@ fn registration_state(path: &Path, key: &str) -> (bool, bool) {
                 path.display(),
                 e
             );
-            return (false, false);
+            return (false, false, true);
         }
     };
     let Some(entry) = config.get(key).and_then(|s| s.get("linxiv")) else {
-        return (false, false);
+        return (false, false, false);
     };
     let stale = match entry.get("command").and_then(|c| c.as_str()) {
         Some(cmd) if cmd.trim().is_empty() => true,
@@ -665,7 +676,7 @@ fn registration_state(path: &Path, key: &str) -> (bool, bool) {
         // An entry without a runnable command cannot work.
         None => true,
     };
-    (true, stale)
+    (true, stale, false)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -687,6 +698,7 @@ pub fn list_mcp_clients() -> Vec<MpcClientStatus> {
                     installed: false,
                     available: false,
                     stale: false,
+                    config_error: false,
                 })
                 .collect();
         }
@@ -695,23 +707,23 @@ pub fn list_mcp_clients() -> Vec<MpcClientStatus> {
     MCP_CLIENTS
         .iter()
         .map(|(id, name)| {
-            let (installed, stale) = if *id == "antigravity" {
-                // Check both new and legacy paths, preferring whichever has a linxiv entry.
-                antigravity_config_paths(&roots)
+            let (installed, stale, config_error) = if *id == "antigravity" {
+                // Check both new and legacy paths, preferring whichever has a linxiv
+                // entry; if none is installed but any path had a broken config,
+                // surface that instead of reporting a flat "not installed".
+                let results: Vec<(bool, bool, bool)> = antigravity_config_paths(&roots)
                     .iter()
-                    .find_map(|p| {
-                        let (inst, st) = registration_state(p, servers_key(id));
-                        if inst {
-                            Some((inst, st))
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or((false, false))
+                    .map(|p| registration_state(p, servers_key(id)))
+                    .collect();
+                results
+                    .iter()
+                    .find(|(inst, _, _)| *inst)
+                    .copied()
+                    .unwrap_or_else(|| (false, false, results.iter().any(|(_, _, err)| *err)))
             } else {
                 mcp_config_path_in(id, &roots)
                     .map(|p| registration_state(&p, servers_key(id)))
-                    .unwrap_or((false, false))
+                    .unwrap_or((false, false, false))
             };
 
             MpcClientStatus {
@@ -720,6 +732,7 @@ pub fn list_mcp_clients() -> Vec<MpcClientStatus> {
                 installed,
                 available: is_client_available(id, &roots),
                 stale,
+                config_error,
             }
         })
         .collect()
@@ -1060,7 +1073,10 @@ mod tests {
         let cfg = dir.path().join("mcp.json");
 
         // No config file at all.
-        assert_eq!(registration_state(&cfg, "mcpServers"), (false, false));
+        assert_eq!(
+            registration_state(&cfg, "mcpServers"),
+            (false, false, false)
+        );
 
         // Registered against a live binary (this test executable).
         let me = std::env::current_exe().unwrap();
@@ -1068,7 +1084,7 @@ mod tests {
         write(serde_json::json!({
             "mcpServers": { "linxiv": { "command": me.to_string_lossy(), "args": [] } }
         }));
-        assert_eq!(registration_state(&cfg, "mcpServers"), (true, false));
+        assert_eq!(registration_state(&cfg, "mcpServers"), (true, false, false));
 
         // Registered against a deleted binary (Python-era sidecar shape).
         let gone = dir
@@ -1078,24 +1094,38 @@ mod tests {
         write(serde_json::json!({
             "mcpServers": { "linxiv": { "command": gone.to_string_lossy() } }
         }));
-        assert_eq!(registration_state(&cfg, "mcpServers"), (true, true));
+        assert_eq!(registration_state(&cfg, "mcpServers"), (true, true, false));
 
         // Bare command name resolves via PATH; not checkable, assumed live.
         write(serde_json::json!({
             "mcpServers": { "linxiv": { "command": "linxiv-mcp" } }
         }));
-        assert_eq!(registration_state(&cfg, "mcpServers"), (true, false));
+        assert_eq!(registration_state(&cfg, "mcpServers"), (true, false, false));
 
         // Entry with no command cannot run.
         write(serde_json::json!({ "mcpServers": { "linxiv": { "args": [] } } }));
-        assert_eq!(registration_state(&cfg, "mcpServers"), (true, true));
+        assert_eq!(registration_state(&cfg, "mcpServers"), (true, true, false));
 
         // VS Code shape lives under "servers", invisible under "mcpServers".
         write(serde_json::json!({
             "servers": { "linxiv": { "type": "stdio", "command": gone.to_string_lossy() } }
         }));
-        assert_eq!(registration_state(&cfg, "servers"), (true, true));
-        assert_eq!(registration_state(&cfg, "mcpServers"), (false, false));
+        assert_eq!(registration_state(&cfg, "servers"), (true, true, false));
+        assert_eq!(
+            registration_state(&cfg, "mcpServers"),
+            (false, false, false)
+        );
+    }
+
+    #[test]
+    fn registration_state_reports_config_error_not_plain_missing() {
+        // A client that IS installed but whose config got hand-edited into
+        // invalid JSON must not be reported identically to "never installed" —
+        // that hides a real problem the user needs to go fix.
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("mcp.json");
+        std::fs::write(&cfg, "{ not valid json").unwrap();
+        assert_eq!(registration_state(&cfg, "mcpServers"), (false, false, true));
     }
 
     #[test]
