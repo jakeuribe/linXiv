@@ -12,6 +12,7 @@ use rusqlite::Connection;
 
 use crate::error::Result;
 use crate::models::PaperMetadata;
+use crate::storage::db::transaction;
 use crate::storage::queries::paper as store;
 pub use crate::storage::queries::version_check::{
     ack, list_new_versions, record_check, stale_candidates, Candidate, NewVersion,
@@ -45,10 +46,12 @@ fn process_candidate(
         .find(|m| m.source_id == cand.source_id)
         .filter(|m| is_newer(m.version, cand.known_version));
     if let Some(m) = newer {
-        // ponytail: flag-then-save so a crash re-checks instead of silently raising
-        // known_version; one real tx needs a tx-level write_paper_version in paper.rs.
-        record_check(conn, root.source_fk, Some(m.version))?;
-        store::save_paper_metadata(conn, m, None)?;
+        // Save + flag as one transaction: either both land or neither does, so a
+        // crash mid-write can't silently raise known_version without capturing it.
+        transaction(conn, |tx| {
+            store::write_paper_version_in_tx(tx, m, None)?;
+            record_check(tx, root.source_fk, Some(m.version))
+        })?;
         let result = NewVersion {
             source_fk: root.source_fk,
             source_id: cand.source_id.clone(),
@@ -222,5 +225,26 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].source_id, "arxiv:live");
         assert_eq!(found[0].version, 2);
+    }
+
+    /// Real transaction, not just careful ordering: if the second write in the
+    /// pair (record_check) fails, the first (the version save) is rolled back
+    /// too, instead of being left committed with the flag never set.
+    #[test]
+    fn save_and_record_check_are_one_atomic_transaction() {
+        let mut conn = mem();
+        save(&mut conn, "arxiv:x", 1);
+        let good_fk = fk(&conn, "arxiv:x");
+        let bad_fk = good_fk + 999; // no matching PAPER_ROOTS row -> FK violation
+
+        let m = meta("arxiv:x", 2);
+        let result = crate::storage::db::transaction(&mut conn, |tx| {
+            store::write_paper_version_in_tx(tx, &m, None)?;
+            record_check(tx, bad_fk, Some(m.version))
+        });
+        assert!(result.is_err());
+
+        // The version write ran first but must not have survived the rollback.
+        assert_eq!(store::get_all_versions(&conn, "arxiv:x").unwrap().len(), 1);
     }
 }
