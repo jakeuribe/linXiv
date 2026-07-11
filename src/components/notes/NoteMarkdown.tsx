@@ -30,16 +30,21 @@ function withMath(
   children: ReactNode,
   math: string[],
   mathComponents: Set<LeafType>,
+  forceInline: boolean,
 ): ReactNode {
   return Children.map(children, (child) => {
     if (typeof child === "string") {
-      return <MathText>{restoreMath(child, math)}</MathText>;
+      return <MathText forceInline={forceInline}>{restoreMath(child, math)}</MathText>;
     }
     if (isValidElement(child)) {
       if (shouldSkipMathWalk(child, mathComponents)) return child;
       const kids = (child.props as { children?: ReactNode }).children;
       if (kids == null) return child;
-      return cloneElement(child, undefined, withMath(kids, math, mathComponents));
+      return cloneElement(
+        child,
+        undefined,
+        withMath(kids, math, mathComponents, forceInline),
+      );
     }
     return child;
   });
@@ -52,13 +57,13 @@ const MATH_TAGS = ["p", "li", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote"] 
 // Built per NoteMarkdown render so each tag renderer closes over that
 // render's extracted math[]; MATH_COMPONENTS is rebuilt alongside it so its
 // reference-equality check matches these specific component instances.
-function createComponents(math: string[]): Components {
+function createComponents(math: string[], forceInline: boolean): Components {
   const components: Components = Object.fromEntries(
     MATH_TAGS.map((tag) => [
       tag,
       ({ node: _node, children, ...rest }: { node?: unknown; children?: ReactNode }) => {
         const Tag = tag;
-        return <Tag {...rest}>{withMath(children, math, mathComponents)}</Tag>;
+        return <Tag {...rest}>{withMath(children, math, mathComponents, forceInline)}</Tag>;
       },
     ]),
   );
@@ -73,14 +78,19 @@ function createComponents(math: string[]): Components {
 export function NoteMarkdown({
   content,
   className,
+  forceInline = false,
 }: {
   content: string;
   className?: string;
+  /** Forces display ($$…$$) math to render inline instead of as a block —
+   *  needed by callers (e.g. the line-clamped card preview) that can't host a
+   *  display:block container. See MathText's forceInline for the mechanism. */
+  forceInline?: boolean;
 }) {
   const { text, math } = extractMath(content);
   return (
     <div className={"note-markdown" + (className ? " " + className : "")}>
-      <Markdown components={createComponents(math)}>{text}</Markdown>
+      <Markdown components={createComponents(math, forceInline)}>{text}</Markdown>
     </div>
   );
 }
