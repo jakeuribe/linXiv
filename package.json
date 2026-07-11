@@ -7,7 +7,7 @@
     "dev": "vite",
     "dev:api": "cd src-tauri && cargo run --bin linxiv-dev-server",
     "build": "tsc && vite build",
-    "test": "node --experimental-strip-types --test \"src/**/*.test.ts\" public/graph/cluster.test.js public/graph/graph.test.js",
+    "test": "node --experimental-transform-types --test \"src/**/*.test.ts\" public/graph/cluster.test.js public/graph/graph.test.js",
     "preview": "vite preview",
     "tauri": "tauri",
     "build:sidecar": "bash scripts/fetch_pdfium.sh && bash scripts/stage_rust_bins.sh",

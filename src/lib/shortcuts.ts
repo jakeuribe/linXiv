@@ -1,6 +1,6 @@
 import { useEffect } from "react";
-import { useUiStore } from "../stores/ui";
-import { ZOOM_STEP, DEFAULT_ZOOM } from "./zoom";
+import { useUiStore } from "../stores/ui.ts";
+import { ZOOM_STEP, DEFAULT_ZOOM } from "./zoom.ts";
 
 // Central inventory of the app's keyboard shortcuts. This is the single source
 // of truth: the Settings "Shortcuts" view renders it, and useGlobalShortcuts()

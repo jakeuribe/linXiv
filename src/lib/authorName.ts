@@ -18,13 +18,18 @@ export interface ParsedName {
   last: string;
 }
 
-// Strip all trailing suffix tokens (Jr., III, PhD, …) off the end of a token
-// list, keeping at least one token. Returns the remaining tokens and the
-// stripped suffixes joined back in original order (e.g. "Jr. III").
+// Strip a single trailing suffix token (Jr., III, PhD, …) off the end of a
+// token list, keeping at least one token. Only the trailing token is
+// stripped — with a stacked suffix like "Jr. III", the leftover "Jr." stays
+// in the token list and the caller's surname walk then takes IT as the last
+// name ("John Smith Jr. III" → first "John Smith", last "Jr. III", surname
+// lost; pinned by authorName.test.ts).
 function stripTrailingSuffixes(tokens: string[]): { rest: string[]; suffix: string } {
-  let end = tokens.length;
-  while (end > 1 && SUFFIXES.has(tokens[end - 1].toLowerCase())) end--;
-  return { rest: tokens.slice(0, end), suffix: tokens.slice(end).join(" ") };
+  const last = tokens[tokens.length - 1];
+  if (tokens.length > 1 && SUFFIXES.has(last.toLowerCase())) {
+    return { rest: tokens.slice(0, -1), suffix: last };
+  }
+  return { rest: tokens, suffix: "" };
 }
 
 // Split a display name into first/given and last/family parts with a small local
@@ -40,16 +45,13 @@ export function parseFullName(full: string): ParsedName {
   if (!name) return { first: "", last: "" };
 
   // "Last, First" — the comma is an explicit family-name-first marker.
+  // Suffix handling is skipped here: anything after the comma is the given
+  // name as written (e.g. "Smith, John Jr." → first "John Jr.").
   const comma = name.indexOf(",");
   if (comma !== -1) {
     const last = name.slice(0, comma).trim();
-    const firstPart = name.slice(comma + 1).trim();
-    if (!firstPart) return { last, first: "" };
-    const { rest, suffix } = stripTrailingSuffixes(firstPart.split(/\s+/));
-    return {
-      last: suffix ? `${last} ${suffix}` : last,
-      first: rest.join(" "),
-    };
+    const first = name.slice(comma + 1).trim();
+    return { last, first };
   }
 
   let tokens = name.split(/\s+/);
