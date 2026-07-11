@@ -1,14 +1,12 @@
 import type { Note } from "../../types/api";
-import { MathText } from "../../lib/tex";
+import { NoteMarkdown } from "./NoteMarkdown";
 
-// Render a note's body as TeX-aware text. The whole string goes through one
-// MathText so a `$$…$$` display block can span lines; whitespace-pre-wrap keeps
-// the newlines. (Tradeoff: two stray `$$` on different lines could merge into one
-// span, but `$$`-as-currency is essentially never written, whereas multi-line
-// display math is common.) forceInline (default, for the clamped card preview)
-// keeps display math inline so a display:block container isn't promoted out of
-// the line-clamp box; the full read page passes forceInline={false} so display
-// equations render as proper centered blocks.
+// Render a saved note's body the same way the editor's Preview tab does
+// (markdown + math via NoteMarkdown), so what you see after saving matches
+// what you saw while writing. forceInline (default, for the clamped card
+// preview) keeps display math inline so a display:block container isn't
+// promoted out of the line-clamp box; the full read page passes
+// forceInline={false} so display equations render as proper centered blocks.
 export function NoteBody({
   content,
   className,
@@ -18,11 +16,7 @@ export function NoteBody({
   className?: string;
   forceInline?: boolean;
 }) {
-  return (
-    <div className={"whitespace-pre-wrap" + (className ? " " + className : "")}>
-      <MathText forceInline={forceInline}>{content}</MathText>
-    </div>
-  );
+  return <NoteMarkdown content={content} className={className} forceInline={forceInline} />;
 }
 
 // created_at and updated_at are equal at creation and diverge on PATCH. Compare
