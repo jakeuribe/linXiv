@@ -11,8 +11,9 @@ use rusqlite::Connection;
 
 use crate::error::Result;
 
-/// Run all ten idempotent migrations in order. Call between `apply_tables`
-/// and `apply_views` (views reference columns these add) — see `super::init_db`.
+/// Run all twelve idempotent post-schema migrations in order. Call between
+/// `apply_tables` and `apply_views` (views reference columns these add) — see
+/// `super::init_db`, which also runs `dedup_project_to_paper` BEFORE apply_tables.
 pub fn run_migrations(conn: &Connection) -> Result<()> {
     paper_roots_soft_delete(conn)?;
     paper_meta_provider(conn)?;
@@ -25,6 +26,7 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     version_check_table(conn)?;
     notes_fts_backfill(conn)?;
     project_reading_list_flag(conn)?;
+    paper_to_reading_cascade_fk(conn)?;
     Ok(())
 }
 
@@ -47,6 +49,17 @@ fn index_exists(conn: &Connection, name: &str) -> Result<bool> {
         |r| r.get(0),
     )?;
     Ok(n > 0)
+}
+
+/// Whether PAPER_TO_READING already has a FK referencing PROJECT_TO_PAPER
+/// (column 2 of `PRAGMA foreign_key_list` is the referenced table name).
+fn paper_to_reading_has_cascade_fk(conn: &Connection) -> Result<bool> {
+    Ok(conn
+        .prepare("PRAGMA foreign_key_list(PAPER_TO_READING)")?
+        .query_map([], |r| r.get::<_, String>(2))?
+        .collect::<rusqlite::Result<Vec<String>>>()?
+        .iter()
+        .any(|t| t.eq_ignore_ascii_case("PROJECT_TO_PAPER")))
 }
 
 // ── 1. PAPER_ROOTS soft-delete columns ──────────────────────────────────────
@@ -150,14 +163,40 @@ fn project_to_tag_unique_index(conn: &Connection) -> Result<()> {
 
 // ── 6. PROJECT_TO_PAPER unique (PROJECT_FK, SOURCE_FK) ───────────────────────
 
+/// Creates the unique index whose duplicates `dedup_project_to_paper` (run BEFORE
+/// apply_tables — see `init_db`) has already cleared, so this can never hit
+/// `UNIQUE constraint failed` on a legacy DB. Deliberately NOT in
+/// PROJECT_TO_PAPER.sql: apply_tables would run it before the dedup. MUST stay
+/// before `paper_to_reading_cascade_fk`: that migration INSERTs into a table whose
+/// composite FK needs this parent-key index to exist by then (SQLite checks it at
+/// DML time, not CREATE TABLE time).
 fn project_to_paper_unique_index(conn: &Connection) -> Result<()> {
-    if index_exists(conn, "idx_project_to_paper_unique")? {
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_project_to_paper_unique ON PROJECT_TO_PAPER (PROJECT_FK, SOURCE_FK)",
+    )?;
+    Ok(())
+}
+
+/// Pre-schema dedup of PROJECT_TO_PAPER — the one migration that MUST run BEFORE
+/// `apply_tables` (see `init_db`), not after. Once apply_tables has created the
+/// current PAPER_TO_READING (composite FK on these two columns), ANY DML on
+/// PROJECT_TO_PAPER while its parent key is unindexed fails with "foreign key
+/// mismatch" — even a dedup DELETE on a legacy DB. Before apply_tables, a DB old
+/// enough to hold duplicates has no such child table (PAPER_TO_READING postdates
+/// the unique index), so the DELETE is legal. Idempotent: no-ops when the table
+/// doesn't exist yet (fresh DB) or the unique index already does.
+pub fn dedup_project_to_paper(conn: &Connection) -> Result<()> {
+    let table_exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='PROJECT_TO_PAPER'",
+        [],
+        |r| r.get(0),
+    )?;
+    if table_exists == 0 || index_exists(conn, "idx_project_to_paper_unique")? {
         return Ok(());
     }
     conn.execute_batch(
         "DELETE FROM PROJECT_TO_PAPER WHERE PROJECT_TO_PAPER_FK NOT IN (
-             SELECT MIN(PROJECT_TO_PAPER_FK) FROM PROJECT_TO_PAPER GROUP BY PROJECT_FK, SOURCE_FK);
-         CREATE UNIQUE INDEX idx_project_to_paper_unique ON PROJECT_TO_PAPER (PROJECT_FK, SOURCE_FK);",
+             SELECT MIN(PROJECT_TO_PAPER_FK) FROM PROJECT_TO_PAPER GROUP BY PROJECT_FK, SOURCE_FK)",
     )?;
     Ok(())
 }
@@ -213,7 +252,7 @@ fn notes_fts_backfill(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-// ── 10. PROJECT.IS_READING_LIST flag ─────────────────────────────────────────
+// ── 11. PROJECT.IS_READING_LIST flag ─────────────────────────────────────────
 
 /// Marks a project as a reading list (0 = normal project, 1 = reading list).
 /// Per-paper reading status for such projects lives sparsely in PAPER_TO_READING.
@@ -226,6 +265,45 @@ fn project_reading_list_flag(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+// ── 12. PAPER_TO_READING → PROJECT_TO_PAPER composite cascade FK ────────────
+
+/// Rebuilds PAPER_TO_READING with `FOREIGN KEY (PROJECT_FK, SOURCE_FK)
+/// REFERENCES PROJECT_TO_PAPER(...) ON DELETE CASCADE` so a paper's reading
+/// status is auto-dropped when it's removed from the project (previously only
+/// PROJECT_TO_PAPER was cleaned up, leaving an orphaned row that resurrected on
+/// re-add). SQLite has no `ALTER TABLE ADD CONSTRAINT`, so existing DBs need the
+/// table rebuilt; fresh installs already get the new FK from PAPER_TO_READING.sql
+/// (guard below sees it and no-ops). MUST run after `project_to_paper_unique_index`
+/// — the new FK's parent key needs that unique index to already exist before any
+/// row is written (it doesn't have to exist yet at CREATE TABLE time, only by the
+/// time of the INSERT below). The `JOIN PROJECT_TO_PAPER` in the copy drops any
+/// row that was already orphaned pre-migration, rather than carrying the bug forward.
+fn paper_to_reading_cascade_fk(conn: &Connection) -> Result<()> {
+    if paper_to_reading_has_cascade_fk(conn)? {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "BEGIN;
+         CREATE TABLE PAPER_TO_READING_NEW(
+             PROJECT_FK  INTEGER NOT NULL,
+             SOURCE_FK   INTEGER NOT NULL,
+             STATUS      TEXT    NOT NULL CHECK (STATUS IN ('reading', 'read')),
+             UPDATED_AT  TIMESTAMP NOT NULL DEFAULT (datetime('now')),
+             PRIMARY KEY (PROJECT_FK, SOURCE_FK),
+             FOREIGN KEY (PROJECT_FK, SOURCE_FK) REFERENCES PROJECT_TO_PAPER(PROJECT_FK, SOURCE_FK) ON DELETE CASCADE
+         );
+         INSERT INTO PAPER_TO_READING_NEW (PROJECT_FK, SOURCE_FK, STATUS, UPDATED_AT)
+             SELECT r.PROJECT_FK, r.SOURCE_FK, r.STATUS, r.UPDATED_AT
+             FROM PAPER_TO_READING r
+             JOIN PROJECT_TO_PAPER m ON m.PROJECT_FK = r.PROJECT_FK AND m.SOURCE_FK = r.SOURCE_FK;
+         DROP TABLE PAPER_TO_READING;
+         ALTER TABLE PAPER_TO_READING_NEW RENAME TO PAPER_TO_READING;
+         CREATE INDEX IF NOT EXISTS idx_paper_to_reading_source_fk ON PAPER_TO_READING (SOURCE_FK);
+         COMMIT;",
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,12 +313,14 @@ mod tests {
     fn migrations_are_idempotent() {
         let conn = crate::storage::db::open_in_memory().unwrap();
         schema::apply_tables(&conn).unwrap();
-        // Fresh schema already has most columns/indexes, so most guards skip; the
-        // exception is IS_READING_LIST, which the first pass actually ALTERs in.
+        // First pass creates whatever TABLE_DDL doesn't (unique indexes, ANNOTATION,
+        // VERSION_CHECK); the second must see every guard trip and be a silent no-op.
         run_migrations(&conn).unwrap();
         run_migrations(&conn).unwrap();
         assert!(has_column(&conn, "PROJECT", "IS_READING_LIST").unwrap());
+        assert!(paper_to_reading_has_cascade_fk(&conn).unwrap());
         assert!(index_exists(&conn, "idx_tag_label_unique").unwrap());
+        assert!(index_exists(&conn, "idx_project_to_paper_unique").unwrap());
         assert!(index_exists(&conn, "idx_author_full_name").unwrap());
         // The ANNOTATION table is created by the migration, not TABLE_DDL.
         let annotation_tables: i64 = conn
@@ -262,6 +342,150 @@ mod tests {
             .unwrap();
         assert_eq!(version_check_tables, 1);
         schema::apply_views(&conn).unwrap();
+    }
+
+    /// `PRAGMA table_info(table)` rows as (name, type, notnull, dflt_value, pk),
+    /// sorted so two schemas built via different paths can be diffed directly.
+    fn table_info(
+        conn: &Connection,
+        table: &str,
+    ) -> Vec<(String, String, i64, Option<String>, i64)> {
+        let mut rows: Vec<_> = conn
+            .prepare(&format!("PRAGMA table_info({table})"))
+            .unwrap()
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i64>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                    r.get::<_, i64>(5)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        rows.sort();
+        rows
+    }
+
+    /// `PRAGMA foreign_key_list(table)` rows as (referenced table, from-col,
+    /// to-col, on_delete), sorted.
+    fn foreign_key_list(conn: &Connection, table: &str) -> Vec<(String, String, String, String)> {
+        let mut rows: Vec<_> = conn
+            .prepare(&format!("PRAGMA foreign_key_list({table})"))
+            .unwrap()
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, String>(6)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        rows.sort();
+        rows
+    }
+
+    /// A fresh install (schema::apply_tables → TABLE_DDL already has
+    /// IS_READING_LIST and the PAPER_TO_READING→PROJECT_TO_PAPER cascade FK) must
+    /// end up column-for-column and FK-for-FK identical to a pre-existing DB that
+    /// only gained them via the two migrations (`project_reading_list_flag`,
+    /// `paper_to_reading_cascade_fk`) — the whole point of folding a
+    /// migration-only column/constraint into the base table def.
+    #[test]
+    fn fresh_install_matches_upgraded_via_migration() {
+        let fresh = crate::storage::db::open_in_memory().unwrap();
+        crate::storage::init_db(&fresh).unwrap();
+
+        // Simulate a pre-fix DB: PROJECT without IS_READING_LIST, PAPER_TO_READING
+        // with the old single-column (non-cascading-to-membership) FKs. Everything
+        // else is created fresh by apply_tables below, same as any real upgrade.
+        let legacy = crate::storage::db::open_in_memory().unwrap();
+        legacy
+            .execute_batch(
+                "CREATE TABLE PROJECT(
+                     PROJECT_FK   INTEGER NOT NULL,
+                     NAME         TEXT    NOT NULL,
+                     DESCRIPTION  TEXT    DEFAULT '',
+                     COLOR        INTEGER,
+                     STATUS       TEXT    NOT NULL DEFAULT 'active',
+                     CREATED_AT   TIMESTAMP NOT NULL DEFAULT (datetime('now')),
+                     UPDATED_AT   TIMESTAMP NOT NULL DEFAULT (datetime('now')),
+                     ARCHIVED_AT  TIMESTAMP,
+                     PRIMARY KEY (PROJECT_FK)
+                 );
+                 CREATE TABLE PAPER_TO_READING(
+                     PROJECT_FK  INTEGER NOT NULL,
+                     SOURCE_FK   INTEGER NOT NULL,
+                     STATUS      TEXT    NOT NULL CHECK (STATUS IN ('reading', 'read')),
+                     UPDATED_AT  TIMESTAMP NOT NULL DEFAULT (datetime('now')),
+                     PRIMARY KEY (PROJECT_FK, SOURCE_FK),
+                     FOREIGN KEY (PROJECT_FK) REFERENCES PROJECT(PROJECT_FK) ON DELETE CASCADE,
+                     FOREIGN KEY (SOURCE_FK)  REFERENCES PAPER_ROOTS(SOURCE_FK) ON DELETE CASCADE
+                 );",
+            )
+            .unwrap();
+        crate::storage::init_db(&legacy).unwrap();
+
+        assert!(has_column(&legacy, "PROJECT", "IS_READING_LIST").unwrap());
+        assert!(paper_to_reading_has_cascade_fk(&legacy).unwrap());
+        assert_eq!(
+            table_info(&fresh, "PROJECT"),
+            table_info(&legacy, "PROJECT"),
+            "fresh vs. migrated PROJECT schema must match column-for-column"
+        );
+        assert_eq!(
+            table_info(&fresh, "PAPER_TO_READING"),
+            table_info(&legacy, "PAPER_TO_READING"),
+            "fresh vs. migrated PAPER_TO_READING schema must match column-for-column"
+        );
+        assert_eq!(
+            foreign_key_list(&fresh, "PAPER_TO_READING"),
+            foreign_key_list(&legacy, "PAPER_TO_READING"),
+            "fresh vs. migrated PAPER_TO_READING must have the same FKs"
+        );
+    }
+
+    /// A pre-migration-6 DB can hold duplicate (PROJECT_FK, SOURCE_FK) membership
+    /// rows. Startup (init_db) must dedup them and then create the unique index —
+    /// never fail with `UNIQUE constraint failed` and brick the app (which is what
+    /// happens if the index creation sneaks into PROJECT_TO_PAPER.sql, since
+    /// apply_tables runs before the dedup migration).
+    #[test]
+    fn legacy_db_with_duplicate_memberships_boots_and_dedups() {
+        let conn = crate::storage::db::open_in_memory().unwrap();
+        // Legacy PROJECT_TO_PAPER shape (no unique index yet; FK clauses omitted —
+        // irrelevant to the dedup under test, and their referents don't exist yet).
+        conn.execute_batch(
+            "CREATE TABLE PROJECT_TO_PAPER(
+                 PROJECT_TO_PAPER_FK INTEGER NOT NULL,
+                 PROJECT_FK  INTEGER NOT NULL,
+                 SOURCE_FK   INTEGER NOT NULL,
+                 CREATED_AT  TIMESTAMP NOT NULL DEFAULT (datetime('now')),
+                 UPDATED_AT  TIMESTAMP NOT NULL DEFAULT (datetime('now')),
+                 PRIMARY KEY (PROJECT_TO_PAPER_FK)
+             );
+             INSERT INTO PROJECT_TO_PAPER (PROJECT_TO_PAPER_FK, PROJECT_FK, SOURCE_FK)
+                 VALUES (1, 7, 42), (2, 7, 42), (3, 7, 43);",
+        )
+        .unwrap();
+
+        crate::storage::init_db(&conn).unwrap();
+
+        assert!(index_exists(&conn, "idx_project_to_paper_unique").unwrap());
+        // The duplicate collapsed onto the lowest FK; the distinct row survived.
+        let rows: Vec<i64> = conn
+            .prepare("SELECT PROJECT_TO_PAPER_FK FROM PROJECT_TO_PAPER ORDER BY 1")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows, vec![1, 3]);
     }
 
     #[test]

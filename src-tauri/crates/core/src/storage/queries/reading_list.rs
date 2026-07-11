@@ -118,6 +118,12 @@ mod tests {
             [],
         )
         .unwrap();
+        // PAPER_TO_READING's composite FK requires project membership to exist first.
+        conn.execute(
+            "INSERT INTO PROJECT_TO_PAPER (PROJECT_TO_PAPER_FK, PROJECT_FK, SOURCE_FK) VALUES (1, 10, 1)",
+            [],
+        )
+        .unwrap();
         conn
     }
 

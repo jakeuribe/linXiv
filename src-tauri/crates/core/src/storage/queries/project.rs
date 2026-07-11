@@ -530,4 +530,100 @@ mod tests {
             .unwrap()
             .is_empty());
     }
+
+    fn seed_reading_list_project(conn: &Connection) {
+        conn.execute_batch(
+            "INSERT INTO PAPER_ROOTS (SOURCE_FK, SOURCE_ID, STATUS) VALUES (10, 'arxiv:1', 'active');
+             INSERT INTO PROJECT (PROJECT_FK, NAME, IS_READING_LIST, STATUS, CREATED_AT, UPDATED_AT) VALUES
+                 (1, 'RL', 1, 'active', '2024-01-01T00:00:00', '2024-01-01T00:00:00');",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn remove_papers_clears_reading_status_and_readd_does_not_resurrect_it() {
+        use crate::storage::queries::reading_list::{
+            get_reading_status, set_reading_status, ReadingStatus,
+        };
+
+        let conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        seed_reading_list_project(&conn);
+
+        add_papers(&conn, 1, &[10]).unwrap();
+        set_reading_status(&conn, 1, 10, ReadingStatus::Read).unwrap();
+        assert_eq!(
+            get_reading_status(&conn, 1, 10).unwrap(),
+            ReadingStatus::Read
+        );
+
+        // (b) removing the paper from the project cascades to drop its reading row.
+        remove_papers(&conn, 1, &[10]).unwrap();
+        assert_eq!(
+            get_reading_status(&conn, 1, 10).unwrap(),
+            ReadingStatus::Unread
+        );
+
+        // (c) re-adding it starts fresh — no resurrected status from the orphaned row.
+        add_papers(&conn, 1, &[10]).unwrap();
+        assert_eq!(
+            get_reading_status(&conn, 1, 10).unwrap(),
+            ReadingStatus::Unread
+        );
+    }
+
+    #[test]
+    fn remove_paper_from_all_projects_clears_reading_status() {
+        use crate::storage::queries::reading_list::{
+            get_reading_status, set_reading_status, ReadingStatus,
+        };
+
+        let mut conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        seed_reading_list_project(&conn);
+
+        add_papers(&conn, 1, &[10]).unwrap();
+        set_reading_status(&conn, 1, 10, ReadingStatus::Reading).unwrap();
+
+        remove_paper_from_all_projects(&mut conn, 10).unwrap();
+        assert_eq!(
+            get_reading_status(&conn, 1, 10).unwrap(),
+            ReadingStatus::Unread
+        );
+    }
+
+    /// Documents a landmine, not a fix: `replace_papers`/`save_source_fks` do a
+    /// blanket DELETE-then-reinsert of every PROJECT_TO_PAPER row for the project
+    /// (see `save_source_fks` above), and SQLite's `ON DELETE CASCADE` fires
+    /// synchronously per-statement — it is NOT deferred to COMMIT, so a row
+    /// deleted and then reinserted in the same transaction still loses its
+    /// cascaded children. That means calling `replace_papers` against a project
+    /// that already has reading-list state wipes it even for papers that stay in
+    /// the list. Today this is inert: `save_source_fks`'s only production caller
+    /// (`insert_project`) runs on a brand-new project with no existing
+    /// PAPER_TO_READING rows to lose, and nothing else in the app currently calls
+    /// `replace_papers`. Whoever wires `replace_papers` to an existing reading
+    /// list next needs to switch it to a diff (add/remove only what changed).
+    #[test]
+    fn replace_papers_blanket_delete_reinsert_clears_reading_status_even_for_retained_papers() {
+        use crate::storage::queries::reading_list::{
+            get_reading_status, set_reading_status, ReadingStatus,
+        };
+
+        let mut conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        seed_reading_list_project(&conn);
+
+        add_papers(&conn, 1, &[10]).unwrap();
+        set_reading_status(&conn, 1, 10, ReadingStatus::Read).unwrap();
+
+        // paper 10 stays in the list — nothing "removed" from the caller's POV.
+        replace_papers(&mut conn, 1, &[10]).unwrap();
+
+        assert_eq!(get_paper_project_fks(&conn, 10).unwrap(), vec![1]);
+        assert_eq!(
+            get_reading_status(&conn, 1, 10).unwrap(),
+            ReadingStatus::Unread
+        );
+    }
 }
