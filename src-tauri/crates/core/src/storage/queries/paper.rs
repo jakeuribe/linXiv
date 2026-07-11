@@ -340,6 +340,19 @@ fn write_paper_version(
     Ok(())
 }
 
+/// tx-level `save_paper_metadata`, for callers that need the paper-version write
+/// to share a transaction with other statements of their own (e.g. version_monitor
+/// saving a new version and flagging it as checked as one atomic unit instead of
+/// two ordered-but-separate writes).
+pub(crate) fn write_paper_version_in_tx(
+    tx: &Transaction,
+    meta: &PaperMetadata,
+    extra_tags: Option<&[String]>,
+) -> Result<()> {
+    let merged = merge_tags(&meta.tags, extra_tags);
+    write_paper_version(tx, meta, &merged)
+}
+
 /// `save_paper_metadata` — persist one paper version atomically (PAPER +
 /// PAPER_META + PAPER_ROOTS + dual tag/author sync). `extra_tags` are merged into
 /// the paper's own tags. Returns (source_id, version).
@@ -348,8 +361,7 @@ pub fn save_paper_metadata(
     meta: &PaperMetadata,
     extra_tags: Option<&[String]>,
 ) -> Result<(String, i64)> {
-    let merged = merge_tags(&meta.tags, extra_tags);
-    transaction(conn, |tx| write_paper_version(tx, meta, &merged))?;
+    transaction(conn, |tx| write_paper_version_in_tx(tx, meta, extra_tags))?;
     Ok((meta.source_id.clone(), meta.version))
 }
 
