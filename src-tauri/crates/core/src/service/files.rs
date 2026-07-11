@@ -12,7 +12,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::error::Result;
+use crate::error::{CoreError, Result};
 
 /// Characters Python's `_UNSAFE_FNAME_RE = [/\:*?"<>|]` strips from a paper id before
 /// it becomes a filename stem. Old-style arXiv ids (`math.GT/0309136`) contain `/`.
@@ -56,13 +56,14 @@ pub fn pdf_path(
     std.is_file().then_some(std)
 }
 
-/// Total size of all managed `*.pdf` files in `pdf_dir`, in MB. `0.0` if the dir is
+/// Total size of all managed `*.pdf` files in `pdf_dir`, in bytes. `0` if the dir is
 /// absent. Files that vanish mid-scan are skipped (Python ignores `FileNotFoundError`).
-/// Port of `files.pdf_storage_mb`.
-pub fn pdf_storage_mb(pdf_dir: &Path) -> f64 {
+/// Also the basis of the `pdf_save_limit_mb` total-storage cap (see
+/// `paper_import::check_pdf_storage_quota` and `download_pdf` below).
+pub fn pdf_storage_bytes(pdf_dir: &Path) -> u64 {
     let entries = match std::fs::read_dir(pdf_dir) {
         Ok(e) => e,
-        Err(_) => return 0.0, // missing dir (or unreadable) → no managed storage
+        Err(_) => return 0, // missing dir (or unreadable) → no managed storage
     };
     let mut total: u64 = 0;
     for entry in entries.flatten() {
@@ -72,7 +73,12 @@ pub fn pdf_storage_mb(pdf_dir: &Path) -> f64 {
             }
         }
     }
-    total as f64 / (1024.0 * 1024.0)
+    total
+}
+
+/// `pdf_storage_bytes` in MB. Port of `files.pdf_storage_mb`.
+pub fn pdf_storage_mb(pdf_dir: &Path) -> f64 {
+    pdf_storage_bytes(pdf_dir) as f64 / (1024.0 * 1024.0)
 }
 
 /// Delete a PDF only if it resolves to a location inside the managed `pdf_dir`. Returns
@@ -115,14 +121,34 @@ pub fn delete_pdf(pdf_dir: &Path, path: &str) -> bool {
 /// to `sources::download::download_pdf` (scheme allowlist, host-resolves-to-public check, per-hop
 /// redirect re-check, content-type + size caps, atomic tmp→dest rename). Port of
 /// `files.download_pdf`.
+///
+/// `max_total_bytes` is the caller-resolved `pdf_save_limit_mb` cap (`config::UserSettings::
+/// pdf_save_limit_bytes`, DI'd — this module never reads config itself): a TOTAL-storage cap
+/// across every managed PDF, not a per-file one. The allowance handed to the downloader is
+/// whatever the PDFs already in `pdf_dir` leave of it; the fixed `sources::download`
+/// SSRF/memory ceiling still applies on top (the smaller of the two wins).
+/// An already-downloaded dest is returned as-is — re-fetching writes nothing new, so the
+/// quota never blocks it.
+// ponytail: dir walk per download; track a running total only if libraries get huge.
 pub async fn download_pdf(
     pdf_dir: &Path,
     paper_id: &str,
     version: i64,
     url: &str,
+    max_total_bytes: u64,
 ) -> Result<PathBuf> {
     let dest = pdf_file(pdf_dir, paper_id, version);
-    crate::sources::download::download_pdf(&dest, url).await
+    if dest.exists() {
+        return Ok(dest); // idempotent re-return (mirrors sources::download) — no quota check
+    }
+    let existing = pdf_storage_bytes(pdf_dir);
+    let remaining = max_total_bytes.saturating_sub(existing);
+    if remaining == 0 {
+        return Err(CoreError::PdfTooLarge(format!(
+            "PDF storage is full: {existing} bytes already saved of the {max_total_bytes} byte total limit (pdf_save_limit_mb)."
+        )));
+    }
+    crate::sources::download::download_pdf(&dest, url, remaining).await
 }
 
 #[cfg(test)]
@@ -231,10 +257,53 @@ mod tests {
         let pdf_dir = dir.path();
         let body = b"%PDF-1.7 ok".to_vec();
         fs::write(pdf_dir.join("2204.00001v3.pdf"), &body).unwrap();
-        let out = download_pdf(pdf_dir, "2204.00001", 3, "http://example.com/x.pdf")
-            .await
-            .unwrap();
+        let out = download_pdf(
+            pdf_dir,
+            "2204.00001",
+            3,
+            "http://example.com/x.pdf",
+            1024 * 1024 * 1024,
+        )
+        .await
+        .unwrap();
         assert_eq!(out, pdf_dir.join("2204.00001v3.pdf"));
+        assert_eq!(fs::read(&out).unwrap(), body);
+    }
+
+    #[tokio::test]
+    async fn download_pdf_rejects_when_total_storage_full_before_any_network() {
+        // Existing PDFs already meet the pdf_save_limit_mb quota → early PdfTooLarge,
+        // proven offline: the unresolvable URL would error differently if fetched.
+        let dir = tempfile::tempdir().unwrap();
+        let pdf_dir = dir.path();
+        write_pdf(pdf_dir, "seedv1.pdf", 100);
+        let err = download_pdf(
+            pdf_dir,
+            "2204.00003",
+            1,
+            "http://example.invalid/x.pdf",
+            100,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, crate::error::CoreError::PdfTooLarge(ref m) if m.contains("full")),
+            "expected storage-full rejection, got {err}"
+        );
+        assert!(!pdf_dir.join("2204.00003v1.pdf").exists());
+
+        // An already-downloaded dest is still returned even at a full quota.
+        let body = b"%PDF-1.7 ok".to_vec();
+        fs::write(pdf_dir.join("2204.00004v1.pdf"), &body).unwrap();
+        let out = download_pdf(
+            pdf_dir,
+            "2204.00004",
+            1,
+            "http://example.invalid/x.pdf",
+            100,
+        )
+        .await
+        .unwrap();
         assert_eq!(fs::read(&out).unwrap(), body);
     }
 
@@ -256,7 +325,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let pdf_dir = dir.path();
         let url = format!("{}/evil.pdf", server.uri());
-        let err = download_pdf(pdf_dir, "2204.00002", 1, &url)
+        let err = download_pdf(pdf_dir, "2204.00002", 1, &url, 1024 * 1024 * 1024)
             .await
             .unwrap_err();
         assert!(

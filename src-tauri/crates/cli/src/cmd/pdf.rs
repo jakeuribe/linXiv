@@ -114,8 +114,15 @@ pub async fn run(cmd: PdfCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         } => {
             let paper = resolve_paper_or_exit(&ctx.conn, &source_id);
             let version = version.filter(|&v| v != 0).unwrap_or(paper.version);
-            let path = match svc_files::download_pdf(&ctx.pdf_dir, &paper.source_id, version, &url)
-                .await
+            let max_pdf_bytes = ctx.settings.pdf_save_limit_bytes();
+            let path = match svc_files::download_pdf(
+                &ctx.pdf_dir,
+                &paper.source_id,
+                version,
+                &url,
+                max_pdf_bytes,
+            )
+            .await
             {
                 Ok(p) => p,
                 Err(e) => {
@@ -149,11 +156,13 @@ pub async fn run(cmd: PdfCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                 }
             };
             let data_dir = config::data_dir();
+            let max_pdf_bytes = ctx.settings.pdf_save_limit_bytes();
             let result = match paper_import::import_pdf_default(
                 &mut ctx.conn,
                 &ctx.pdf_dir,
                 &content,
                 project_id,
+                max_pdf_bytes,
                 &data_dir,
             )
             .await

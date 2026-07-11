@@ -134,6 +134,12 @@ async fn import_pdf(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     }
     let pdf_dir = state.pdf_dir.clone();
     let data_dir = config::data_dir();
+    // `pdf_save_limit_mb` — a user-configurable TOTAL-storage cap, layered under the fixed
+    // 100 MB per-upload ceiling above. Checked here BEFORE the (expensive) pdfium metadata
+    // resolve so an over-quota upload isn't fully parsed first; core's `import_pdf`
+    // re-checks it before any FS/DB write.
+    let max_pdf_bytes = config::UserSettings::load()?.pdf_save_limit_bytes();
+    paper_import::check_pdf_storage_quota(&pdf_dir, content.len(), max_pdf_bytes)?;
     // ProjectNotFound → 404, ProjectDeleted/PaperLink → 400 flow through `?`. NOTE:
     // resolve_pdf_metadata degrades a pdfium extraction failure to empty metadata
     // (it never errors), so app.py's PdfImportError → 422 path is unreachable here —
@@ -141,7 +147,7 @@ async fn import_pdf(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     // Matching that needs core to surface PdfImport from the resolver (deferred).
     let resolved = resolve_pdf_metadata(&content, &data_dir).await?;
     let result = state.with_conn(|conn| {
-        paper_import::import_pdf(conn, &pdf_dir, &content, project_id, |_| {
+        paper_import::import_pdf(conn, &pdf_dir, &content, project_id, max_pdf_bytes, |_| {
             Ok(resolved.clone())
         })
     })?;

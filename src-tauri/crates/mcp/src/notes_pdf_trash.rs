@@ -413,7 +413,10 @@ impl Server {
                 ))),
             }
         })?;
-        let path = svc_files::download_pdf(&pdf_dir, &source_id, ver, &p.url)
+        let max_pdf_bytes = config::UserSettings::load()
+            .map_err(core_err)?
+            .pdf_save_limit_bytes();
+        let path = svc_files::download_pdf(&pdf_dir, &source_id, ver, &p.url, max_pdf_bytes)
             .await
             .map_err(core_err)?;
         let path_str = path.to_string_lossy().into_owned();
@@ -578,6 +581,14 @@ impl Server {
         }
         let content =
             std::fs::read(&p.file).map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
+        // `pdf_save_limit_mb` total-storage quota BEFORE the (expensive) pdfium
+        // metadata resolve — no point fully parsing a PDF that's about to be
+        // rejected; core's `import_pdf` re-checks it before any FS/DB write.
+        let max_pdf_bytes = config::UserSettings::load()
+            .map_err(core_err)?
+            .pdf_save_limit_bytes();
+        paper_import::check_pdf_storage_quota(&pdf_dir, content.len(), max_pdf_bytes)
+            .map_err(core_err)?;
         // Resolve metadata (network) OUTSIDE the lock, then do the sync DB+FS
         // import under it — mirrors `import_pdf_default` without holding the
         // mutex across the await.
@@ -585,9 +596,14 @@ impl Server {
             .await
             .map_err(core_err)?;
         self.with_conn(|conn| {
-            match paper_import::import_pdf(conn, &pdf_dir, &content, p.project_id, |_| {
-                Ok(resolved.clone())
-            }) {
+            match paper_import::import_pdf(
+                conn,
+                &pdf_dir,
+                &content,
+                p.project_id,
+                max_pdf_bytes,
+                |_| Ok(resolved.clone()),
+            ) {
                 Ok(result) => json_ok(&result),
                 Err(CoreError::ProjectNotFound) => Err(invalid(format!(
                     "Project {} not found.",

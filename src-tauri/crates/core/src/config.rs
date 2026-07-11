@@ -147,6 +147,20 @@ impl UserSettings {
         let body = serde_json::to_string_pretty(&self.overrides).map_err(map_json)?;
         std::fs::write(path, body).map_err(map_io)
     }
+
+    /// `pdf_save_limit_mb`, converted to bytes — the TOTAL-storage cap across all managed
+    /// PDFs, enforced before every new PDF write by `service::paper_import::import_pdf` and
+    /// `service::files::download_pdf`. Falls back to the bundled default (1024 MB) if the
+    /// setting is missing or not a positive integer, so a hand-edited settings file can't
+    /// silently disable the cap (saturating_mul keeps an absurd value from overflowing it away).
+    pub fn pdf_save_limit_bytes(&self) -> u64 {
+        let mb = self
+            .get("pdf_save_limit_mb")
+            .and_then(Value::as_i64)
+            .filter(|&v| v > 0)
+            .unwrap_or(1024) as u64;
+        mb.saturating_mul(1024 * 1024)
+    }
 }
 
 fn parse_obj(s: &str) -> Result<Map<String, Value>> {
