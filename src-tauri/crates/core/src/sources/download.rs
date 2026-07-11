@@ -43,7 +43,13 @@ const MAX_REDIRECTS: u32 = 10;
 /// Download `url` into `dest` (which already encodes the DI'd managed pdf_dir). Returns the
 /// dest path. Idempotent: if `dest` already exists it is returned without a network call
 /// (mirrors Python's `if dest.exists(): return str(dest)`).
-pub async fn download_pdf(dest: &Path, url: &str) -> Result<PathBuf> {
+///
+/// `configured_max_bytes` is the caller-resolved allowance for THIS download — for the
+/// `pdf_save_limit_mb` total-storage cap that's what existing PDFs leave of the quota, computed
+/// by `service::files::download_pdf` (DI'd — this module never reads config or walks pdf_dir).
+/// It layers on top of the fixed `MAX_PDF_BYTES` SSRF/memory ceiling rather than replacing it:
+/// the effective cap is whichever of the two is smaller.
+pub async fn download_pdf(dest: &Path, url: &str, configured_max_bytes: u64) -> Result<PathBuf> {
     if dest.exists() {
         return Ok(dest.to_path_buf());
     }
@@ -52,7 +58,8 @@ pub async fn download_pdf(dest: &Path, url: &str) -> Result<PathBuf> {
             .map_err(|e| CoreError::Internal(format!("could not create pdf dir: {e}")))?;
     }
     let client = build_client()?;
-    fetch_to_dest(&client, url, dest, MAX_PDF_BYTES, &host_is_public).await
+    let max_bytes = configured_max_bytes.min(MAX_PDF_BYTES);
+    fetch_to_dest(&client, url, dest, max_bytes, &host_is_public).await
 }
 
 /// A redirect-DISABLED client so the SSRF guard re-runs on every hop's URL (an auto-following
@@ -157,7 +164,7 @@ async fn fetch_to_dest(
     {
         if declared > max_bytes {
             return Err(CoreError::Validation(format!(
-                "File too large ({declared} bytes; limit {max_bytes})."
+                "File too large ({declared} bytes; {max_bytes} byte allowance left)."
             )));
         }
     }
@@ -182,7 +189,7 @@ async fn fetch_to_dest(
         total += chunk.len() as u64;
         if total > max_bytes {
             return Err(CoreError::Validation(format!(
-                "Download exceeded {max_bytes} byte limit."
+                "Download exceeded the {max_bytes} byte allowance left under the size limits."
             )));
         }
         file.write_all(&chunk)
@@ -461,6 +468,87 @@ mod tests {
             matches!(err, CoreError::Validation(m) if m.contains("too large") || m.contains("exceeded"))
         );
         assert!(!dest.exists());
+    }
+
+    /// `download_pdf`'s effective cap is the REMAINING `pdf_save_limit_mb` total-storage
+    /// allowance (quota minus PDFs already in pdf_dir, computed by `service::files::
+    /// download_pdf`), clamped under the fixed SSRF/memory ceiling. These two seed a quota
+    /// dir and drive the derived allowance through `fetch_to_dest` — same workaround the
+    /// other tests here use, since the SSRF guard rejects a wiremock host on the public
+    /// `download_pdf` entry point (see `download_pdf_refuses_ssrf_and_leaves_no_file` in
+    /// `service::files`; the zero-remaining early reject is tested there too).
+    #[tokio::test]
+    async fn remaining_storage_allowance_under_body_size_is_rejected() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/small-cap"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/pdf")
+                    .set_body_bytes(vec![0u8; 10]),
+            )
+            .mount(&server)
+            .await;
+        let client = build_client().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("o.pdf");
+        // Existing PDFs consume all but 5 bytes of a 100-byte quota: the 10-byte body
+        // fits the quota alone, but not the remaining total-storage allowance.
+        std::fs::write(dir.path().join("seedv1.pdf"), vec![0u8; 95]).unwrap();
+        let quota = 100u64;
+        let remaining = quota
+            .saturating_sub(crate::service::files::pdf_storage_bytes(dir.path()))
+            .min(MAX_PDF_BYTES);
+        assert_eq!(remaining, 5);
+        let err = fetch_to_dest(
+            &client,
+            &format!("{}/small-cap", server.uri()),
+            &dest,
+            remaining,
+            &|_| true,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(err, CoreError::Validation(m) if m.contains("too large") || m.contains("exceeded"))
+        );
+        assert!(!dest.exists());
+    }
+
+    #[tokio::test]
+    async fn remaining_storage_allowance_over_body_size_passes() {
+        let server = MockServer::start().await;
+        let body = vec![0u8; 10];
+        Mock::given(method("GET"))
+            .and(path("/small-cap-ok"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/pdf")
+                    .set_body_bytes(body.clone()),
+            )
+            .mount(&server)
+            .await;
+        let client = build_client().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("o.pdf");
+        // Existing PDFs leave 29 bytes of a 124-byte quota — comfortably above the
+        // 10-byte body → saved.
+        std::fs::write(dir.path().join("seedv1.pdf"), vec![0u8; 95]).unwrap();
+        let remaining = 124u64
+            .saturating_sub(crate::service::files::pdf_storage_bytes(dir.path()))
+            .min(MAX_PDF_BYTES);
+        assert_eq!(remaining, 29);
+        let out = fetch_to_dest(
+            &client,
+            &format!("{}/small-cap-ok", server.uri()),
+            &dest,
+            remaining,
+            &|_| true,
+        )
+        .await
+        .unwrap();
+        assert_eq!(out, dest);
+        assert_eq!(std::fs::read(&dest).unwrap(), body);
     }
 
     #[tokio::test]

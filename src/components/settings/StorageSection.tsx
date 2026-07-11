@@ -112,9 +112,8 @@ export function StorageSection() {
         </p>
       )}
       <SettingGroup>
-        {/* TODO: pdf_save_limit_mb is defined in default_settings.json (default 1024 MB) but no
-            backend enforcement was found — the limit is not currently checked when downloading
-            or saving PDFs. Verify backend enforcement before treating this as a hard cap. */}
+        {/* pdf_save_limit_mb: a total-storage cap enforced by the backend before every new
+            PDF write (core's import_pdf + download_pdf sum the managed PDF dir first). */}
         <SettingRow
           label="Total PDF storage (MB)"
           description="Maximum combined disk space for all locally saved PDFs."
