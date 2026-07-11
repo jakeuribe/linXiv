@@ -10,9 +10,10 @@ export interface BackupInfo {
  *  Returns null when the user cancels the dialog. */
 export async function backupDatabase(): Promise<BackupInfo | null> {
   const now = new Date();
+  // UTC, not local time: filenames should be consistent regardless of the user's timezone.
   const destPath = await save({
     title: "Back up library to…",
-    defaultPath: `linxiv-backup-${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}.db`,
+    defaultPath: `linxiv-backup-${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}.db`,
     filters: [{ name: "SQLite database", extensions: ["db"] }],
   });
   if (!destPath) return null;
@@ -27,10 +28,7 @@ export async function backupDatabase(): Promise<BackupInfo | null> {
 export async function restoreDatabase(): Promise<true | null> {
   const srcPath = await open({
     title: "Restore library from backup",
-    filters: [
-      { name: "SQLite database", extensions: ["db"] },
-      { name: "All files", extensions: [] }
-    ],
+    filters: [{ name: "SQLite database", extensions: ["db"] }],
   });
   if (!srcPath) return null;
   await apiFetch("/api/storage/restore", {
