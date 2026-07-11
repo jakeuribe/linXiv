@@ -1,5 +1,5 @@
 use chrono::Utc;
-use rusqlite::{params, params_from_iter, Connection, Row};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
 
 use crate::error::Result;
 use crate::models::NoteDetails;
@@ -55,63 +55,31 @@ pub fn get_notes(
     } else {
         "PROJECT_FK IS NULL"
     };
-    let sql = format!(
-        "SELECT NOTE_SK, SOURCE_FK, PAPER_ID_FK, PROJECT_FK, TITLE, NOTE, CREATED_AT, UPDATED_AT \
-         FROM NOTE WHERE SOURCE_FK = ?1 AND {project_clause} ORDER BY CREATED_AT ASC"
-    );
-
     let mut params: Vec<i64> = vec![source_fk];
     if !all_projects {
         if let Some(id) = project_id {
             params.push(id);
         }
     }
-
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params_from_iter(params), |row| {
-        // TITLE nullable, NOTE is a BLOB holding text — both coalesce to "" (Python `or ""`).
-        Ok((
-            row.get::<_, Option<i64>>("NOTE_SK")?,
-            row.get::<_, i64>("SOURCE_FK")?,
-            row.get::<_, Option<i64>>("PAPER_ID_FK")?,
-            row.get::<_, Option<i64>>("PROJECT_FK")?,
-            row.get::<_, Option<String>>("TITLE")?,
-            row.get::<_, Option<String>>("NOTE")?,
-            row.get::<_, String>("CREATED_AT")?,
-            row.get::<_, String>("UPDATED_AT")?,
-        ))
-    })?;
-
-    let mut out = Vec::new();
-    for r in rows {
-        let (note_id, src, paper_id_fk, proj, title, content, created, updated) = r?;
-        out.push(NoteDetails {
-            note_id,
-            source_fk: src,
-            paper_id_fk,
-            project_id: proj,
-            title: title.unwrap_or_default(),
-            content: content.unwrap_or_default(),
-            // TIMESTAMP cols are NOT NULL — parse via the db decltype converter.
-            created_at: Some(timestamp_from_sql(&created)?),
-            updated_at: Some(timestamp_from_sql(&updated)?),
-        });
-    }
-    Ok(out)
+    query_notes(
+        conn,
+        &format!(
+            "SELECT {NOTE_COLS} FROM NOTE WHERE SOURCE_FK = ?1 AND {project_clause} \
+             ORDER BY CREATED_AT ASC"
+        ),
+        &params,
+    )
 }
 
 /// `storage/notes.py::get_note` — single note by NOTE_SK, None if absent.
 pub fn get_note(conn: &Connection, note_id: i64) -> Result<Option<NoteDetails>> {
-    let sql = format!("SELECT {NOTE_COLS} FROM NOTE WHERE NOTE_SK = ?1");
-    let mut stmt = conn.prepare(&sql)?;
-    let note = stmt
-        .query_row([note_id], note_from_row)
-        .map(Some)
-        .or_else(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => Ok(None),
-            other => Err(other),
-        })?;
-    Ok(note)
+    Ok(conn
+        .query_row(
+            &format!("SELECT {NOTE_COLS} FROM NOTE WHERE NOTE_SK = ?1"),
+            [note_id],
+            note_from_row,
+        )
+        .optional()?)
 }
 
 /// `storage/notes.py::create_note` — INSERT a note, returns the new NOTE_SK.
@@ -159,19 +127,11 @@ pub fn delete_note(conn: &Connection, note_id: i64) -> Result<bool> {
 /// `storage/notes.py::count_paper_notes` (`config.queries.count_notes`) — count
 /// notes on a paper, optionally narrowed to a project.
 pub fn count_notes(conn: &Connection, source_fk: i64, project_id: Option<i64>) -> Result<i64> {
-    let n = match project_id {
-        Some(pid) => conn.query_row(
-            "SELECT COUNT(*) FROM NOTE WHERE SOURCE_FK = ?1 AND PROJECT_FK = ?2",
-            params![source_fk, pid],
-            |r| r.get(0),
-        )?,
-        None => conn.query_row(
-            "SELECT COUNT(*) FROM NOTE WHERE SOURCE_FK = ?1",
-            [source_fk],
-            |r| r.get(0),
-        )?,
-    };
-    Ok(n)
+    Ok(conn.query_row(
+        "SELECT COUNT(*) FROM NOTE WHERE SOURCE_FK = ?1 AND (?2 IS NULL OR PROJECT_FK = ?2)",
+        params![source_fk, project_id],
+        |r| r.get(0),
+    )?)
 }
 
 /// `storage/notes.py::count_project_notes` — total notes scoped to a project.
@@ -188,11 +148,7 @@ pub fn count_project_notes(conn: &Connection, project_id: i64) -> Result<i64> {
 fn query_notes(conn: &Connection, sql: &str, params: &[i64]) -> Result<Vec<NoteDetails>> {
     let mut stmt = conn.prepare(sql)?;
     let rows = stmt.query_map(params_from_iter(params.iter().copied()), note_from_row)?;
-    let mut out = Vec::new();
-    for r in rows {
-        out.push(r?);
-    }
-    Ok(out)
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 /// `storage/notes.py::list_all_notes` — every note, CREATED_AT ASC.
@@ -251,11 +207,7 @@ pub fn note_counts_by_paper_for_project(
             r.get::<_, i64>("note_count")?,
         ))
     })?;
-    let mut out = Vec::new();
-    for r in rows {
-        out.push(r?);
-    }
-    Ok(out)
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 /// Escape LIKE wildcards so a literal query matches literally (`\` is the ESCAPE
@@ -280,11 +232,7 @@ pub fn search_notes_source_fks(conn: &Connection, query: &str, limit: i64) -> Re
          LIMIT ?2",
     )?;
     let rows = stmt.query_map(params![pattern, limit], |r| r.get::<_, i64>(0))?;
-    let mut out = Vec::new();
-    for r in rows {
-        out.push(r?);
-    }
-    Ok(out)
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 #[cfg(test)]

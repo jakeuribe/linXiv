@@ -239,11 +239,6 @@ fn version_check_table(conn: &Connection) -> Result<()> {
 /// the table existed, so index any pre-existing note. `NOT IN` skips rows
 /// already indexed.
 fn notes_fts_backfill(conn: &Connection) -> Result<()> {
-    let note_count: i64 = conn.query_row("SELECT COUNT(*) FROM NOTE", [], |r| r.get(0))?;
-    let fts_count: i64 = conn.query_row("SELECT COUNT(*) FROM notes_fts", [], |r| r.get(0))?;
-    if note_count == fts_count {
-        return Ok(());
-    }
     conn.execute_batch(
         "INSERT INTO notes_fts(rowid, title, note, source_fk)
          SELECT NOTE_SK, TITLE, CAST(NOTE AS TEXT), SOURCE_FK FROM NOTE

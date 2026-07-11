@@ -1,12 +1,13 @@
 //! Group `project` — cmd_project_* (incl. export/import) in `linxiv_cli.py`.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use clap::{Subcommand, ValueEnum};
 use serde::Serialize;
 use serde_json::json;
 
 use linxiv_core::error::Result as CoreResult;
+use linxiv_core::formats::with_default_ext;
 use linxiv_core::models::{PaperDetails, ProjectIn, ProjectUpdateIn, Status};
 use linxiv_core::service::{export_import, paper, project};
 
@@ -140,14 +141,6 @@ fn resolve_or_exit(ctx: &Ctx, project_id: i64) -> linxiv_core::models::ProjectDe
     }
 }
 
-fn status_str(s: Status) -> &'static str {
-    match s {
-        Status::Active => "active",
-        Status::Archived => "archived",
-        Status::Deleted => "deleted",
-    }
-}
-
 /// Resolve a project's papers, mirroring `get_many(Papers(source_fks=...)) if source_fks else []`.
 fn project_papers(ctx: &Ctx, source_fks: &[i64]) -> CoreResult<Vec<PaperDetails>> {
     if source_fks.is_empty() {
@@ -181,7 +174,7 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                 id: Option<i64>,
                 name: String,
                 description: String,
-                status: &'static str,
+                status: Status,
                 paper_count: usize,
                 color: Option<i32>,
                 project_tags: Vec<String>,
@@ -192,7 +185,7 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                     id: p.id,
                     name: p.name,
                     description: p.description,
-                    status: status_str(p.status),
+                    status: p.status,
                     paper_count: p.source_fks.len(),
                     color: p.color,
                     project_tags: p.project_tags,
@@ -227,17 +220,7 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                     source_fks: Vec::new(),
                 },
             )?;
-            #[derive(Serialize)]
-            struct Out {
-                id: i64,
-                name: String,
-                status: &'static str,
-            }
-            output(&Out {
-                id,
-                name,
-                status: "active",
-            });
+            output(&json!({ "id": id, "name": name, "status": "active" }));
         }
 
         ProjectCmd::Update {
@@ -250,22 +233,21 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         } => {
             // Mirror `_resolve_project_or_exit` before mutating.
             resolve_or_exit(ctx, project_id);
-            let res = (|| -> CoreResult<()> {
-                let color = match color {
-                    Some(hex) => Some(Some(project::color_from_hex(&hex)?)),
-                    None => None,
-                };
-                let upd = ProjectUpdateIn {
+            let color = color
+                .map(|hex| project::color_from_hex(&hex).map(Some))
+                .transpose()
+                .unwrap_or_else(|e| fail(e));
+            if let Err(e) = project::update(
+                &mut ctx.conn,
+                &ProjectUpdateIn {
                     project_fk: project_id,
                     name,
                     description,
                     color,
                     project_tags: tags,
                     status: status.map(|s| s.to_status()),
-                };
-                project::update(&mut ctx.conn, &upd)
-            })();
-            if let Err(e) = res {
+                },
+            ) {
                 fail(e);
             }
             let updated = resolve_or_exit(ctx, project_id);
@@ -332,15 +314,7 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             if !failed.is_empty() {
                 fail(format!("Paper {source_id} not found in database"));
             }
-            #[derive(Serialize)]
-            struct Out {
-                project_id: i64,
-                source_id: String,
-            }
-            output(&Out {
-                project_id,
-                source_id,
-            });
+            output(&json!({ "project_id": project_id, "source_id": source_id }));
         }
 
         ProjectCmd::RemovePaper {
@@ -359,17 +333,7 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             if !failed.is_empty() {
                 fail(format!("Paper {source_id} not found in database"));
             }
-            #[derive(Serialize)]
-            struct Out {
-                project_id: i64,
-                source_id: String,
-                removed: bool,
-            }
-            output(&Out {
-                project_id,
-                source_id,
-                removed: true,
-            });
+            output(&json!({ "project_id": project_id, "source_id": source_id, "removed": true }));
         }
 
         ProjectCmd::Export {
@@ -387,15 +351,7 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                 Ok(out) => out,
                 Err(e) => fail(e),
             };
-            #[derive(Serialize)]
-            struct Out {
-                path: String,
-                project_id: i64,
-            }
-            output(&Out {
-                path: out.display().to_string(),
-                project_id,
-            });
+            output(&json!({ "path": out.display().to_string(), "project_id": project_id }));
         }
 
         ProjectCmd::Import {
@@ -430,15 +386,7 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             let bibtex = linxiv_core::formats::bibtex_export(&papers);
             let dest = with_default_ext(&dest, "bib");
             std::fs::write(&dest, bibtex)?;
-            #[derive(Serialize)]
-            struct Out {
-                path: String,
-                project_id: i64,
-            }
-            output(&Out {
-                path: dest.display().to_string(),
-                project_id,
-            });
+            output(&json!({ "path": dest.display().to_string(), "project_id": project_id }));
         }
 
         ProjectCmd::ExportObsidian { project_id, dest } => {
@@ -447,25 +395,8 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             let md = linxiv_core::formats::obsidian_export(&papers);
             let dest = with_default_ext(&dest, "md");
             std::fs::write(&dest, md)?;
-            #[derive(Serialize)]
-            struct Out {
-                path: String,
-                project_id: i64,
-            }
-            output(&Out {
-                path: dest.display().to_string(),
-                project_id,
-            });
+            output(&json!({ "path": dest.display().to_string(), "project_id": project_id }));
         }
     }
     Ok(())
-}
-
-/// `Path(dest)` + `with_suffix` only when the path has no extension.
-fn with_default_ext(dest: &str, ext: &str) -> PathBuf {
-    let mut p = PathBuf::from(dest);
-    if p.extension().is_none() {
-        p.set_extension(ext);
-    }
-    p
 }

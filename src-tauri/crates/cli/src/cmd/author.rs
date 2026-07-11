@@ -30,6 +30,13 @@ pub enum AuthorCmd {
     Delete { author_id: i64 },
 }
 
+fn by_id(author_id: i64) -> Author {
+    Author {
+        author_id: Some(author_id),
+        ..Default::default()
+    }
+}
+
 pub async fn run(cmd: AuthorCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
     match cmd {
         // cmd_author_list: every author + active-paper count (min_papers=0 default).
@@ -38,15 +45,8 @@ pub async fn run(cmd: AuthorCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         }
         // cmd_author_get: author dict with an inlined "papers" preview list.
         AuthorCmd::Get { author_id } => {
-            let author = match svc_author::get(
-                &ctx.conn,
-                &Author {
-                    author_id: Some(author_id),
-                    ..Default::default()
-                },
-            )? {
-                Some(a) => a,
-                None => fail(format!("Author {author_id} not found")),
+            let Some(author) = svc_author::get(&ctx.conn, &by_id(author_id))? else {
+                fail(format!("Author {author_id} not found"))
             };
             let previews = svc_author::get_paper_previews(&ctx.conn, author_id)?;
             let mut result = serde_json::to_value(&author)?;
@@ -61,15 +61,7 @@ pub async fn run(cmd: AuthorCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             last_name,
             orcid,
         } => {
-            if svc_author::get(
-                &ctx.conn,
-                &Author {
-                    author_id: Some(author_id),
-                    ..Default::default()
-                },
-            )?
-            .is_none()
-            {
+            if svc_author::get(&ctx.conn, &by_id(author_id))?.is_none() {
                 fail(format!("Author {author_id} not found"));
             }
             if full_name.is_none() && first_name.is_none() && last_name.is_none() && orcid.is_none()
@@ -94,13 +86,7 @@ pub async fn run(cmd: AuthorCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                     "Author {author_id} is linked to {link_count} paper(s); unlink first"
                 ));
             }
-            svc_author::delete(
-                &ctx.conn,
-                &Author {
-                    author_id: Some(author_id),
-                    ..Default::default()
-                },
-            )?;
+            svc_author::delete(&ctx.conn, &by_id(author_id))?;
             output(&json!({ "deleted_author_id": author_id }));
         }
     }

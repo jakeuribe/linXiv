@@ -74,18 +74,7 @@ fn by_sfk(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     let source_fk = path_i64(fk)?;
     // FastAPI Query(default=None, ge=1): a present-but-non-integer or <1 version is
     // a 422, not a silent fall-through to the latest version.
-    let version = match ctx.q("version") {
-        None => None,
-        Some(v) => {
-            let n: i64 = v
-                .parse()
-                .map_err(|_| ApiError::new(422, "version must be an integer >= 1"))?;
-            if n < 1 {
-                return Err(ApiError::new(422, "version must be an integer >= 1"));
-            }
-            Some(n)
-        }
-    };
+    let version = crate::route::q_version(ctx)?;
     state.with_conn(|conn| -> Result<Value, ApiError> {
         let paper = if let Some(version) = version {
             // version branch: resolve source_id first, then the pinned version.
@@ -227,13 +216,9 @@ struct RepairBody {
     published: chrono::NaiveDate,
     #[serde(default)]
     summary: String,
-    #[serde(default)]
     category: Option<String>,
-    #[serde(default)]
     doi: Option<String>,
-    #[serde(default)]
     url: Option<String>,
-    #[serde(default)]
     tags: Option<Vec<String>>,
 }
 
@@ -257,17 +242,14 @@ fn sfk_key(source_fk: i64) -> Paper {
     }
 }
 
-fn sid_key(source_id: &str) -> Paper {
+pub(crate) fn sid_key(source_id: &str) -> Paper {
     Paper {
         source_id: Some(source_id.to_string()),
         ..Default::default()
     }
 }
 
-/// Serialize a domain struct == Python `to_dict()`; an encode failure is a 500.
-fn to_value<T: serde::Serialize>(v: &T) -> Result<Value, ApiError> {
-    serde_json::to_value(v).map_err(|e| ApiError::new(500, e.to_string()))
-}
+use super::to_value;
 
 #[cfg(test)]
 mod tests {

@@ -1,11 +1,9 @@
 use std::collections::HashMap;
 
-use chrono::NaiveDate;
-use rusqlite::{Connection, Row};
+use rusqlite::Connection;
 
 use crate::error::Result;
 use crate::models::PaperDetails;
-use crate::storage::db::{bool_from_sql, date_from_sql, list_from_sql};
 
 /// `storage/db.py::search_full_text` — FTS5 over TeX source AND note content.
 /// Returns the latest version of each matching paper, ranked by bm25 (lower =
@@ -48,26 +46,23 @@ pub fn search_full_text(conn: &Connection, query: &str, limit: i64) -> Result<Ve
 
     let mut scored: Vec<(String, f64)> = best.into_iter().collect();
     scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-    if limit >= 0 {
-        scored.truncate(limit as usize);
-    }
+    scored.truncate(limit as usize);
     if scored.is_empty() {
         return Ok(Vec::new());
     }
 
-    let placeholders: Vec<String> = (1..=scored.len()).map(|i| format!("?{i}")).collect();
     let sql = format!(
         "SELECT p.* FROM latest_papers p WHERE p.source_id IN ({})",
-        placeholders.join(", ")
+        vec!["?"; scored.len()].join(", ")
     );
     let mut stmt = conn.prepare(&sql)?;
     let ids: Vec<&str> = scored.iter().map(|(sid, _)| sid.as_str()).collect();
-    // Manual loop (not query_map): map_row returns CoreError on a bad
+    // Manual loop (not query_map): row_to_paper returns CoreError on a bad
     // DATE/LIST decode, which query_map's rusqlite::Result closure can't carry.
     let mut rows = stmt.query(rusqlite::params_from_iter(ids))?;
     let mut by_source_id: HashMap<String, PaperDetails> = HashMap::new();
     while let Some(row) = rows.next()? {
-        let details = map_row(row)?;
+        let details = super::paper::row_to_paper(row)?;
         by_source_id.insert(details.source_id.clone(), details);
     }
     Ok(scored
@@ -104,51 +99,11 @@ fn fts_matches(conn: &Connection, sql: &str, query: &str) -> Vec<(String, f64)> 
     out
 }
 
-/// Map a `latest_papers` (== `papers`) view row into `PaperDetails`, using the
-/// decltype converters in storage::db for LIST/DATE/BOOL columns.
-fn map_row(row: &Row) -> Result<PaperDetails> {
-    Ok(PaperDetails {
-        paper_id: row.get("paper_id")?,
-        source_id: row.get("source_id")?,
-        version: row.get("version")?,
-        title: row.get("title")?,
-        summary: row.get("summary")?,
-        published: opt_date(row.get("published")?)?,
-        updated: opt_date(row.get("updated")?)?,
-        url: row.get("url")?,
-        doi: row.get("doi")?,
-        category: row.get("category")?,
-        categories: opt_list(row.get("categories")?)?,
-        journal_ref: row.get("journal_ref")?,
-        comment: row.get("comment")?,
-        authors: opt_list(row.get("authors")?)?,
-        tags: opt_list(row.get("tags")?)?,
-        has_pdf: bool_from_sql(row.get("has_pdf")?),
-        pdf_path: row.get("pdf_path")?,
-        source: row.get("source")?,
-        full_text: row.get("full_text")?,
-        downloaded_source: bool_from_sql(
-            row.get::<_, Option<i64>>("downloaded_source")?.unwrap_or(0),
-        ),
-        source_fk: row.get("source_fk")?,
-    })
-}
-
-fn opt_date(s: Option<String>) -> Result<Option<NaiveDate>> {
-    s.as_deref().map(date_from_sql).transpose()
-}
-
-fn opt_list(s: Option<String>) -> Result<Vec<String>> {
-    Ok(s.as_deref()
-        .map(list_from_sql)
-        .transpose()?
-        .unwrap_or_default())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::storage::{self, db};
+    use chrono::NaiveDate;
 
     fn seed(conn: &Connection, source_id: &str, full_text: &str) {
         conn.execute(

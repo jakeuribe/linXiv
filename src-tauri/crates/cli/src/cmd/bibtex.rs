@@ -53,15 +53,10 @@ pub async fn run(cmd: BibtexCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             };
             let entries = parse_bib(&text);
 
-            let mut metas: Vec<PaperMetadata> = Vec::with_capacity(entries.len());
+            let mut results: Vec<(String, i64)> = Vec::with_capacity(entries.len());
             for e in &entries {
-                metas.push(entry_to_meta(e)?);
-            }
-
-            // save_papers_metadata: per-entry save, collecting (source_id, version).
-            let mut results: Vec<(String, i64)> = Vec::with_capacity(metas.len());
-            for m in &metas {
-                results.push(svc_paper::save_paper_metadata(&mut ctx.conn, m, None)?);
+                let m = entry_to_meta(e)?;
+                results.push(svc_paper::save_paper_metadata(&mut ctx.conn, &m, None)?);
             }
 
             // link_imported only when something was actually saved. A project that

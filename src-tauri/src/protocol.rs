@@ -24,7 +24,7 @@ use linxiv_core::error::CoreError;
 use linxiv_core::service::paper::{self as svc_paper, Paper};
 use linxiv_core::sources::http as core_http;
 
-use crate::route::{pct_decode, pdfs::resolve_local_pdf, route, ApiRequest};
+use crate::route::{pct_decode, pdfs::resolve_local_pdf, route, split_segments, ApiRequest};
 use crate::state::AppState;
 
 /// The scheme name registered on the Tauri builder.
@@ -55,14 +55,7 @@ async fn serve<R: Runtime>(
     app: &AppHandle<R>,
     req: Request<Vec<u8>>,
 ) -> Response<Cow<'static, [u8]>> {
-    let segs: Vec<String> = req
-        .uri()
-        .path()
-        .trim_matches('/')
-        .split('/')
-        .filter(|s| !s.is_empty())
-        .map(pct_decode)
-        .collect();
+    let segs = split_segments(req.uri().path());
     let query = req.uri().query().unwrap_or("");
     match segs
         .iter()
@@ -95,10 +88,10 @@ async fn serve_api_json<R: Runtime>(
     if req.method() != tauri::http::Method::GET {
         return empty(StatusCode::METHOD_NOT_ALLOWED);
     }
-    let path = match req.uri().query() {
-        Some(q) => format!("{}?{}", req.uri().path(), q),
-        None => req.uri().path().to_string(),
-    };
+    let path = req
+        .uri()
+        .path_and_query()
+        .map_or_else(|| req.uri().path().to_string(), |pq| pq.to_string());
     let api_req = ApiRequest {
         method: req.method().as_str().to_string(),
         path,

@@ -6,6 +6,8 @@
 //! Author nodes are keyed by the JSON author NAME (`author::<name>`), not the
 //! AUTHOR_FK — the FK is attached only for navigation when a name resolves to one.
 
+use std::collections::{BTreeMap, HashMap, HashSet};
+
 use rusqlite::Connection;
 use serde_json::{json, Value};
 
@@ -57,8 +59,7 @@ pub fn augmented_graph_data(conn: &Connection, exclude_single_authors: bool) -> 
             status: Some(Status::Active),
         },
     )?;
-    let mut paper_to_projects: std::collections::HashMap<i64, Vec<i64>> =
-        std::collections::HashMap::new();
+    let mut paper_to_projects: HashMap<i64, Vec<i64>> = HashMap::new();
     for proj in &active {
         if let Some(pid) = proj.id {
             for &sfk in &proj.source_fks {
@@ -68,10 +69,8 @@ pub fn augmented_graph_data(conn: &Connection, exclude_single_authors: bool) -> 
     }
 
     // tag_node_id -> display label; insertion guards dedup edges.
-    let mut tag_labels: std::collections::BTreeMap<String, String> =
-        std::collections::BTreeMap::new();
-    let mut seen_tag_edges: std::collections::HashSet<(i64, String)> =
-        std::collections::HashSet::new();
+    let mut tag_labels: BTreeMap<String, String> = BTreeMap::new();
+    let mut seen_tag_edges: HashSet<(i64, String)> = HashSet::new();
     let mut tag_edges: Vec<Value> = Vec::new();
     let mut out_nodes: Vec<Value> = Vec::with_capacity(paper_nodes.len() + author_nodes.len());
 
@@ -136,40 +135,33 @@ fn graph_data(
         paper_nodes.push((source_fk, node, tags));
     }
 
-    let authors_sql = if exclude_single_authors {
-        format!(
-            "WITH {NAME_FK_CTE}, \
-             name_counts AS ( \
-                 SELECT a.AUTHOR_FULL_NAME AS author_name, MAX(apc.paper_count) AS paper_count \
-                 FROM AUTHOR a JOIN author_paper_counts apc ON apc.author_fk = a.AUTHOR_FK \
-                 GROUP BY a.AUTHOR_FULL_NAME COLLATE NOCASE \
-             ) \
-             SELECT r.SOURCE_FK AS source_fk, je.value AS author_name, \
-                    nc.paper_count AS paper_count, nf.author_fk AS author_fk \
-             FROM PAPER_ROOTS r \
-             JOIN PAPER p ON p.SOURCE_FK = r.SOURCE_FK \
-             JOIN PAPER_META m ON m.PAPER_ID = p.PAPER_ID, json_each(m.AUTHORS) je \
-             LEFT JOIN name_counts nc ON nc.author_name = je.value COLLATE NOCASE \
-             LEFT JOIN name_fk nf ON nf.author_name = je.value COLLATE NOCASE \
-             WHERE p.VERSION = (SELECT MAX(VERSION) FROM PAPER WHERE SOURCE_FK = r.SOURCE_FK) \
-               AND r.STATUS = 'active'"
+    let (count_cte, count_col, count_join) = if exclude_single_authors {
+        (
+            ", name_counts AS ( \
+             SELECT a.AUTHOR_FULL_NAME AS author_name, MAX(apc.paper_count) AS paper_count \
+             FROM AUTHOR a JOIN author_paper_counts apc ON apc.author_fk = a.AUTHOR_FK \
+             GROUP BY a.AUTHOR_FULL_NAME COLLATE NOCASE \
+         )",
+            "nc.paper_count AS paper_count, ",
+            "LEFT JOIN name_counts nc ON nc.author_name = je.value COLLATE NOCASE ",
         )
     } else {
-        format!(
-            "WITH {NAME_FK_CTE} \
-             SELECT r.SOURCE_FK AS source_fk, je.value AS author_name, nf.author_fk AS author_fk \
-             FROM PAPER_ROOTS r \
-             JOIN PAPER p ON p.SOURCE_FK = r.SOURCE_FK \
-             JOIN PAPER_META m ON m.PAPER_ID = p.PAPER_ID, json_each(m.AUTHORS) je \
-             LEFT JOIN name_fk nf ON nf.author_name = je.value COLLATE NOCASE \
-             WHERE p.VERSION = (SELECT MAX(VERSION) FROM PAPER WHERE SOURCE_FK = r.SOURCE_FK) \
-               AND r.STATUS = 'active'"
-        )
+        ("", "", "")
     };
+    let authors_sql = format!(
+        "WITH {NAME_FK_CTE}{count_cte} \
+         SELECT r.SOURCE_FK AS source_fk, je.value AS author_name, {count_col}nf.author_fk AS author_fk \
+         FROM PAPER_ROOTS r \
+         JOIN PAPER p ON p.SOURCE_FK = r.SOURCE_FK \
+         JOIN PAPER_META m ON m.PAPER_ID = p.PAPER_ID, json_each(m.AUTHORS) je \
+         {count_join}LEFT JOIN name_fk nf ON nf.author_name = je.value COLLATE NOCASE \
+         WHERE p.VERSION = (SELECT MAX(VERSION) FROM PAPER WHERE SOURCE_FK = r.SOURCE_FK) \
+           AND r.STATUS = 'active'"
+    );
 
     let mut author_stmt = conn.prepare(&authors_sql)?;
     let mut rows = author_stmt.query([])?;
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen: HashSet<String> = HashSet::new();
     let mut author_nodes = Vec::new();
     let mut edges = Vec::new();
     while let Some(row) = rows.next()? {

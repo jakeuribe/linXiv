@@ -47,12 +47,11 @@ pub fn backup(conn: &Connection, dest: &Path) -> Result<BackupInfo> {
     })
 }
 
-/// True when the error is SQLite's "another handle holds a lock".
-fn is_busy(e: &rusqlite::Error) -> bool {
-    matches!(
-        e.sqlite_error_code(),
-        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
-    )
+/// `p` with `suffix` appended to its file name (e.g. `db.sqlite` → `db.sqlite-wal`).
+fn sidecar(p: &Path, suffix: &str) -> PathBuf {
+    let mut s = p.as_os_str().to_owned();
+    s.push(suffix);
+    s.into()
 }
 
 /// Refuse to swap the DB file out from under a live SQLite handle: an open
@@ -73,13 +72,19 @@ fn ensure_no_live_connections(db_path: &Path) -> Result<()> {
         .query_row("PRAGMA journal_mode=DELETE", [], |_| Ok(()))
         .and_then(|()| conn.execute_batch("BEGIN EXCLUSIVE; COMMIT;"));
     match probe {
-        Err(e) if is_busy(&e) => Err(CoreError::Conflict(
-            "database is in use by another linXiv process (app, CLI, or MCP server) — \
-             close it and retry"
-                .to_string(),
-        )),
-        // ponytail: TOCTOU window between probe and rename; non-busy errors allowed
-        // (broken/corrupted DB is what restore fixes). Upgrade if per-file locking added.
+        Err(e)
+            if matches!(
+                e.sqlite_error_code(),
+                Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+            ) =>
+        {
+            Err(CoreError::Conflict(
+                "database is in use by another linXiv process (app, CLI, or MCP server) — \
+                 close it and retry"
+                    .to_string(),
+            ))
+        }
+        // Non-busy errors allowed: a broken/corrupted DB is what restore fixes.
         Err(_) => Ok(()),
         Ok(_) => Ok(()),
     }
@@ -113,7 +118,6 @@ pub fn validate_backup_source(src: &Path) -> Result<()> {
             "not a valid linXiv database: no PAPER table".to_string(),
         ));
     }
-    drop(check);
     Ok(())
 }
 
@@ -147,13 +151,9 @@ pub fn restore(src: &Path, db_path: &Path) -> Result<()> {
             ))
         })?;
         for suffix in ["-journal", "-wal", "-shm"] {
-            let mut src_sidecar = db_path.as_os_str().to_owned();
-            src_sidecar.push(suffix);
-            let src_sidecar_path = PathBuf::from(&src_sidecar);
-            if src_sidecar_path.exists() {
-                let mut dst_sidecar = pre_restore.as_os_str().to_owned();
-                dst_sidecar.push(suffix);
-                std::fs::copy(&src_sidecar_path, PathBuf::from(dst_sidecar)).map_err(|e| {
+            let src_sc = sidecar(db_path, suffix);
+            if src_sc.exists() {
+                std::fs::copy(&src_sc, sidecar(&pre_restore, suffix)).map_err(|e| {
                     CoreError::Internal(format!(
                         "could not snapshot sidecar {suffix} before restore \
                          (nothing was changed): {e}"
@@ -172,9 +172,7 @@ pub fn restore(src: &Path, db_path: &Path) -> Result<()> {
 
     // Drop stale sidecars from the pre-restore DB before the fresh file lands.
     for suffix in ["-journal", "-wal", "-shm"] {
-        let mut sidecar = db_path.as_os_str().to_owned();
-        sidecar.push(suffix);
-        let _ = std::fs::remove_file(PathBuf::from(sidecar));
+        let _ = std::fs::remove_file(sidecar(db_path, suffix));
     }
 
     if let Err(e) = std::fs::rename(&tmp, db_path) {
@@ -277,9 +275,7 @@ mod tests {
         let dest = dir.join("dest.db");
         std::fs::write(&dest, b"prior contents").unwrap();
         for suffix in ["-journal", "-wal", "-shm"] {
-            let mut sidecar = dest.as_os_str().to_owned();
-            sidecar.push(suffix);
-            std::fs::write(PathBuf::from(sidecar), b"stale").unwrap();
+            std::fs::write(sidecar(&dest, suffix), b"stale").unwrap();
         }
 
         let src = dir.join("src.db");
@@ -288,9 +284,7 @@ mod tests {
         restore(&src, &dest).unwrap();
 
         for suffix in ["-journal", "-wal", "-shm"] {
-            let mut sidecar = dest.as_os_str().to_owned();
-            sidecar.push(suffix);
-            assert!(!PathBuf::from(sidecar).exists());
+            assert!(!sidecar(&dest, suffix).exists());
         }
 
         std::fs::remove_dir_all(&dir).ok();

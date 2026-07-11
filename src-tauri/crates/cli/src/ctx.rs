@@ -1,7 +1,5 @@
 //! The DB / data-dir seam. Opened once, lazily, in `main` before dispatch — every
 //! group `run` borrows it `&mut` (the rusqlite `Connection` needs `&mut` for txns).
-// Skeleton stage: fields are read by the per-group `run` bodies (still `todo!()`).
-#![allow(dead_code)]
 
 use std::path::PathBuf;
 
@@ -15,7 +13,6 @@ use linxiv_core::storage;
 pub struct Ctx {
     pub conn: Connection,
     pub pdf_dir: PathBuf,
-    pub vault_root: PathBuf,
     pub settings: config::UserSettings,
 }
 
@@ -30,7 +27,6 @@ impl Ctx {
         Ok(Self {
             conn,
             pdf_dir: config::pdf_dir(),
-            vault_root: config::vault_dir(),
             settings,
         })
     }

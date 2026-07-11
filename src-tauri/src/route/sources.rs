@@ -6,8 +6,8 @@
 //! The shared wire shape is `SearchResultOut` (models.rs SERIALIZER 1): it strips
 //! the source namespace from `source_id`, blanks `published` on the `date.min`
 //! sentinel, renames url→paper_url / category→primary_category, and keeps the full
-//! id in `entry_id`. `to_search_result` is the single mapping point for every
-//! arxiv/openalex search + fetch arm.
+//! id in `entry_id`. `SearchResultOut::from` is the single mapping point for
+//! every arxiv/openalex search + fetch arm.
 
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -34,16 +34,7 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
     }
 }
 
-/// `SearchResultOut.from_metadata` — the one mapping shared by every search/fetch
-/// arm. Delegates to the core serializer (models.rs SERIALIZER 1).
-fn to_search_result(meta: PaperMetadata) -> SearchResultOut {
-    SearchResultOut::from(meta)
-}
-
-/// OpenAlex polite-pool address, mirroring the CLI/MCP/Python source clients.
-fn mailto() -> String {
-    std::env::var("OPENALEX_MAILTO").unwrap_or_default()
-}
+use linxiv_core::config::openalex_mailto as mailto;
 
 /// `api/app.py`'s `except Exception: 502` for the search/fetch source calls.
 fn upstream_502(e: CoreError) -> ApiError {
@@ -134,7 +125,7 @@ async fn arxiv_search(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiEr
         Vec::new()
     };
 
-    let results: Vec<SearchResultOut> = results.into_iter().map(to_search_result).collect();
+    let results: Vec<SearchResultOut> = results.into_iter().map(SearchResultOut::from).collect();
     Ok(json!({ "results": results, "saved_source_ids": saved }))
 }
 
@@ -163,7 +154,7 @@ async fn arxiv_fetch(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiErr
             state.with_conn(|conn| svc_paper::save_paper_metadata(conn, &meta, None))?;
         source_id = strip_namespace(&stored);
     }
-    let paper = to_search_result(meta);
+    let paper = SearchResultOut::from(meta);
     Ok(json!({ "paper": paper, "saved": b.save, "source_id": source_id }))
 }
 
@@ -193,7 +184,7 @@ async fn openalex_search(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     )
     .await
     .map_err(upstream_502)?;
-    let results: Vec<SearchResultOut> = results.into_iter().map(to_search_result).collect();
+    let results: Vec<SearchResultOut> = results.into_iter().map(SearchResultOut::from).collect();
     Ok(json!({ "results": results }))
 }
 
@@ -295,7 +286,7 @@ mod tests {
 
     #[test]
     fn to_search_result_strips_namespace_and_renames_fields() {
-        let v = serde_json::to_value(to_search_result(meta(
+        let v = serde_json::to_value(SearchResultOut::from(meta(
             "2024-01-15",
             json!("http://x"),
             json!("cs.LG"),
@@ -310,7 +301,7 @@ mod tests {
 
     #[test]
     fn to_search_result_blanks_date_min_and_defaults_nulls() {
-        let v = serde_json::to_value(to_search_result(meta(
+        let v = serde_json::to_value(SearchResultOut::from(meta(
             "0001-01-01",
             Value::Null,
             Value::Null,

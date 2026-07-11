@@ -5,33 +5,13 @@
 //! PRAGMA set there.
 
 use chrono::Utc;
-use rusqlite::{params, params_from_iter, Connection, Row};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
 
 use crate::error::Result;
 use crate::models::AnnotationDetails;
 use crate::storage::db::{timestamp_from_sql, timestamp_to_sql};
 
-macro_rules! annotation_cols {
-    () => {
-        "ANNOTATION_SK, SOURCE_FK, PROJECT_FK, ANCHOR, COMMENT, CREATED_AT, UPDATED_AT"
-    };
-}
-
-const GET_ANNOTATION_SQL: &str = concat!(
-    "SELECT ",
-    annotation_cols!(),
-    " FROM ANNOTATION WHERE ANNOTATION_SK = ?1"
-);
-const LIST_ALL_SQL: &str = concat!(
-    "SELECT ",
-    annotation_cols!(),
-    " FROM ANNOTATION ORDER BY CREATED_AT ASC"
-);
-const PROJECT_ANNOTATIONS_SQL: &str = concat!(
-    "SELECT ",
-    annotation_cols!(),
-    " FROM ANNOTATION WHERE PROJECT_FK = ?1 ORDER BY SOURCE_FK ASC, CREATED_AT ASC"
-);
+const COLS: &str = "ANNOTATION_SK, SOURCE_FK, PROJECT_FK, ANCHOR, COMMENT, CREATED_AT, UPDATED_AT";
 
 fn annotation_from_row(row: &Row) -> rusqlite::Result<AnnotationDetails> {
     let created: String = row.get("CREATED_AT")?;
@@ -72,31 +52,23 @@ pub fn get_annotations(
         "PROJECT_FK IS NULL"
     };
     let sql = format!(
-        "SELECT {cols} FROM ANNOTATION \
-         WHERE SOURCE_FK = ?1 AND {project_clause} ORDER BY CREATED_AT ASC",
-        cols = annotation_cols!(),
+        "SELECT {COLS} FROM ANNOTATION \
+         WHERE SOURCE_FK = ?1 AND {project_clause} ORDER BY CREATED_AT ASC"
     );
 
     let mut params: Vec<i64> = vec![source_fk];
-    if !all_projects {
-        if let Some(id) = project_id {
-            params.push(id);
-        }
-    }
+    params.extend(if all_projects { None } else { project_id });
     query_annotations(conn, &sql, &params)
 }
 
 /// Single annotation by ANNOTATION_SK, None if absent.
 pub fn get_annotation(conn: &Connection, annotation_id: i64) -> Result<Option<AnnotationDetails>> {
-    let mut stmt = conn.prepare(GET_ANNOTATION_SQL)?;
-    let row = stmt
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLS} FROM ANNOTATION WHERE ANNOTATION_SK = ?1"
+    ))?;
+    Ok(stmt
         .query_row([annotation_id], annotation_from_row)
-        .map(Some)
-        .or_else(|e| match e {
-            rusqlite::Error::QueryReturnedNoRows => Ok(None),
-            other => Err(other),
-        })?;
-    Ok(row)
+        .optional()?)
 }
 
 /// INSERT an annotation, returns the new ANNOTATION_SK. Both timestamps stamped now.
@@ -142,20 +114,19 @@ fn query_annotations(
     params: &[i64],
 ) -> Result<Vec<AnnotationDetails>> {
     let mut stmt = conn.prepare(sql)?;
-    let rows = stmt.query_map(
-        params_from_iter(params.iter().copied()),
-        annotation_from_row,
-    )?;
-    let mut out = Vec::new();
-    for r in rows {
-        out.push(r?);
-    }
-    Ok(out)
+    let rows = stmt
+        .query_map(params_from_iter(params), annotation_from_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
 /// Every annotation, CREATED_AT ASC.
 pub fn list_all_annotations(conn: &Connection) -> Result<Vec<AnnotationDetails>> {
-    query_annotations(conn, LIST_ALL_SQL, &[])
+    query_annotations(
+        conn,
+        &format!("SELECT {COLS} FROM ANNOTATION ORDER BY CREATED_AT ASC"),
+        &[],
+    )
 }
 
 /// All annotations scoped to a project, SOURCE_FK ASC then CREATED_AT ASC.
@@ -164,7 +135,13 @@ pub fn get_project_annotations(
     conn: &Connection,
     project_id: i64,
 ) -> Result<Vec<AnnotationDetails>> {
-    query_annotations(conn, PROJECT_ANNOTATIONS_SQL, &[project_id])
+    query_annotations(
+        conn,
+        &format!(
+            "SELECT {COLS} FROM ANNOTATION WHERE PROJECT_FK = ?1 ORDER BY SOURCE_FK ASC, CREATED_AT ASC"
+        ),
+        &[project_id],
+    )
 }
 
 #[cfg(test)]

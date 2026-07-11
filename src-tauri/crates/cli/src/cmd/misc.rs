@@ -25,58 +25,43 @@ pub enum SettingsCmd {
     },
 }
 
-#[derive(Subcommand)]
-pub enum MiscCmd {
-    Stats,
-    Categories,
-    Settings {
-        #[command(subcommand)]
-        cmd: SettingsCmd,
-    },
-    /// Snapshot the database to a backup file.
-    Backup {
-        dest: PathBuf,
-    },
+// cmd_stats
+pub async fn stats(ctx: &mut Ctx) -> anyhow::Result<()> {
+    let papers = svc_paper::list_papers(&ctx.conn, true, None, 0, None)?;
+    let categories = svc_paper::get_categories(&ctx.conn)?;
+    let all_tags = svc_tag::list_all_tags(&ctx.conn)?;
+    let pdf_count = papers.iter().filter(|p| p.has_pdf).count();
+    output(&json!({
+        "paper_count": papers.len(),
+        "tag_count": all_tags.len(),
+        "category_count": categories.len(),
+        "pdf_count": pdf_count,
+    }));
+    Ok(())
 }
 
-pub async fn run(cmd: MiscCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
+// cmd_categories
+pub async fn categories(ctx: &mut Ctx) -> anyhow::Result<()> {
+    output(&svc_paper::get_categories(&ctx.conn)?);
+    Ok(())
+}
+
+// cmd_settings_get / cmd_settings_update (JSON-parse the value, else keep it as a string).
+pub async fn settings(cmd: SettingsCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
     match cmd {
-        // cmd_stats
-        MiscCmd::Stats => {
-            let papers = svc_paper::list_papers(&ctx.conn, true, None, 0, None)?;
-            let categories = svc_paper::get_categories(&ctx.conn)?;
-            let all_tags = svc_tag::list_all_tags(&ctx.conn)?;
-            let pdf_count = papers.iter().filter(|p| p.has_pdf).count();
-            output(&json!({
-                "paper_count": papers.len(),
-                "tag_count": all_tags.len(),
-                "category_count": categories.len(),
-                "pdf_count": pdf_count,
-            }));
-        }
-        // cmd_categories
-        MiscCmd::Categories => {
-            output(&svc_paper::get_categories(&ctx.conn)?);
-        }
-        // cmd_settings_get
-        MiscCmd::Settings {
-            cmd: SettingsCmd::Get,
-        } => {
-            output(&ctx.settings.all());
-        }
-        // cmd_settings_update: JSON-parse the value, else keep it as a string.
-        MiscCmd::Settings {
-            cmd: SettingsCmd::Update { key, value },
-        } => {
+        SettingsCmd::Get => output(&ctx.settings.all()),
+        SettingsCmd::Update { key, value } => {
             let parsed: Value =
                 serde_json::from_str(&value).unwrap_or_else(|_| Value::String(value.clone()));
             ctx.settings.set(key.clone(), parsed.clone())?;
             output(&json!({ key: parsed }));
         }
-        MiscCmd::Backup { dest } => {
-            output(&storage::backup(&ctx.conn, &dest)?);
-        }
     }
+    Ok(())
+}
+
+pub async fn backup(dest: PathBuf, ctx: &mut Ctx) -> anyhow::Result<()> {
+    output(&storage::backup(&ctx.conn, &dest)?);
     Ok(())
 }
 
@@ -101,9 +86,7 @@ mod tests {
             .unwrap();
 
         let dest = dir.join("snapshot.db");
-        run(MiscCmd::Backup { dest: dest.clone() }, &mut ctx)
-            .await
-            .unwrap();
+        backup(dest.clone(), &mut ctx).await.unwrap();
         assert!(dest.exists());
 
         // Simulate a corrupted/unreadable live DB: drop the handle, then clobber the file.

@@ -19,29 +19,19 @@ pub enum DoiCmd {
 }
 
 pub async fn run(cmd: DoiCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
-    let data_dir = config::data_dir();
+    let (DoiCmd::Resolve { doi } | DoiCmd::Save { doi }) = &cmd;
+    // The `[doi] {e}` prefix line + error JSON mirror Python's two-line stderr on failure.
+    let meta = resolve_doi(doi, &config::data_dir())
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("[doi] {e}");
+            fail(e)
+        });
     match cmd {
-        // cmd_doi_resolve: resolve, dump metadata. The `[doi] {e}` prefix line +
-        // error JSON mirror Python's two-line stderr on failure.
-        DoiCmd::Resolve { doi } => {
-            let meta = match resolve_doi(&doi, &data_dir).await {
-                Ok(m) => m,
-                Err(e) => {
-                    eprintln!("[doi] {e}");
-                    fail(e);
-                }
-            };
-            output(&meta);
-        }
-        // cmd_doi_save: resolve, persist, then emit {source_id, version, title}.
-        DoiCmd::Save { doi } => {
-            let meta = match resolve_doi(&doi, &data_dir).await {
-                Ok(m) => m,
-                Err(e) => {
-                    eprintln!("[doi] {e}");
-                    fail(e);
-                }
-            };
+        // cmd_doi_resolve: dump metadata.
+        DoiCmd::Resolve { .. } => output(&meta),
+        // cmd_doi_save: persist, then emit {source_id, version, title}.
+        DoiCmd::Save { .. } => {
             let (source_id, version) = svc_paper::save_paper_metadata(&mut ctx.conn, &meta, None)?;
             output(&json!({
                 "source_id": source_id,

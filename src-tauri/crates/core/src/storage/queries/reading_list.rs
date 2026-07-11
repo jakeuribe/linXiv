@@ -52,10 +52,7 @@ pub fn get_reading_status(
             |r| r.get(0),
         )
         .optional()?;
-    match status {
-        Some(s) => ReadingStatus::from_sql(&s),
-        None => Ok(ReadingStatus::Unread),
-    }
+    status.map_or(Ok(ReadingStatus::Unread), |s| ReadingStatus::from_sql(&s))
 }
 
 /// `PROJECT.IS_READING_LIST` for the given project, or `None` if the project

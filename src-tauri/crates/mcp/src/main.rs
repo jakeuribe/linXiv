@@ -23,17 +23,13 @@ use tracing_subscriber::EnvFilter;
 use linxiv_core::{config, storage};
 
 /// Shared MCP server state. Holds the single SQLite connection (guarded by a
-/// `Mutex`, opened once at startup) plus the managed PDF/vault roots, and the
+/// `Mutex`, opened once at startup) plus the managed PDF root, and the
 /// merged tool router built from the four cluster impls.
 #[derive(Clone)]
 pub struct Server {
     conn: Arc<Mutex<Connection>>,
     /// Managed PDF directory (`config::pdf_dir()`). Used by the PDF tools.
-    #[allow(dead_code)]
     pdf_dir: PathBuf,
-    /// Obsidian vault root (`config::vault_dir()`). Used by the export tools.
-    #[allow(dead_code)]
-    vault_root: PathBuf,
     tool_router: ToolRouter<Self>,
 }
 
@@ -48,7 +44,6 @@ impl Server {
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             pdf_dir: config::pdf_dir(),
-            vault_root: config::vault_dir(),
             tool_router: Self::tools_papers()
                 + Self::tools_projects_tags()
                 + Self::tools_notes_pdf_trash()

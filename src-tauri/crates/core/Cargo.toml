@@ -13,12 +13,10 @@ serde = { version = "1.0.228", features = ["derive"] }
 # and any json! object byte-match Python's json.dump (insertion order), not alphabetical.
 serde_json = { version = "1.0.150", features = ["preserve_order"] }
 thiserror = "2.0.18"
-anyhow = "1.0.99"
 chrono = { version = "0.4", features = ["serde"] }
 # bundled = statically compiles SQLite with FTS5 + JSON1 (no system libsqlite3 dep).
 rusqlite = { version = "0.40", features = ["bundled", "chrono", "serde_json"] }
 directories = "6"
-dotenvy = "0.15.7"
 tracing = "0.1"
 # .lxproj is a ZIP_DEFLATED archive (Python uses zipfile); deflate-only, no extras.
 zip = { version = "2", default-features = false, features = ["deflate"] }
@@ -37,6 +35,9 @@ flate2 = "1"
 # BibTeX import parser (pybtex's role). Used by formats::bibtex_import, shared by
 # the CLI/MCP/app-router import paths.
 biblatex = "0.12"
+# Editor-bridge file uploads arrive base64-encoded (service::vault). Same version
+# as the app crate, so it dedupes to one compile unit.
+base64 = "0.22"
 
 [dev-dependencies]
 tempfile = "3"

@@ -51,14 +51,9 @@ struct ImportState {
     final_path: Option<PathBuf>,
     /// Root did NOT pre-exist → this import created it (rollback may hard-delete).
     inserted_new_root: bool,
-    /// This exact version did NOT pre-exist → a PAPER row is new.
-    inserted_new_version: bool,
     /// We adopted a soft-deleted root; `save_paper_metadata` auto-restored it, so
     /// rollback must re-soft-delete to restore prior state.
     restored_deleted_root: bool,
-    /// Adopting + the version's PDF already sits at the canonical path → preserve
-    /// the user's copy, don't overwrite (no file write happened).
-    pre_existing_pdf_on_disk: bool,
     /// We actually wrote a fresh file at `final_path` (distinct from "inserted a
     /// row": a same-version adopt with NULL PDF_PATH writes a file but no new row).
     wrote_final_path: bool,
@@ -187,7 +182,6 @@ pub async fn import_pdf_default(
 /// parse; `import_pdf` always re-runs it, so the early call is an optimization, not a duty.
 /// A re-import whose PDF already sits on disk (nothing new written) is still checked —
 /// acceptable false reject at a full quota, the user's storage is full either way.
-// ponytail: dir walk per import; track a running total only if libraries get huge.
 pub fn check_pdf_storage_quota(
     pdf_dir: &Path,
     incoming_len: usize,
@@ -215,7 +209,7 @@ fn import_body(
     external: Option<(String, i64)>,
     st: &mut ImportState,
 ) -> Result<String> {
-    {
+    let (sid, ver, pre_existing_pdf) = {
         // Serialize check-then-upsert against concurrent imports of the same paper.
         let _guard = IMPORT_ROOT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
 
@@ -237,24 +231,22 @@ fn import_body(
         let pre_existing_version =
             store::get_paper(conn, &meta.source_id, Some(meta.version))?.is_some();
         // Adopting + the canonical PDF already on disk → preserve the user's copy.
-        st.pre_existing_pdf_on_disk = pre_existing_version
+        let pre_existing_pdf = pre_existing_version
             && pdf_dir
                 .join(pdf_on_disk_name(&meta.source_id, meta.version))
                 .exists();
 
         let (sid, ver) = store::save_paper_metadata(conn, &meta, None)?;
-        st.source_id = Some(sid);
+        st.source_id = Some(sid.clone());
         st.version = Some(ver);
         st.inserted_new_root = !pre_existing_root;
-        st.inserted_new_version = !pre_existing_version;
-    }
+        (sid, ver, pre_existing_pdf)
+    };
 
-    let sid = st.source_id.clone().expect("set under lock above");
-    let ver = st.version.expect("set under lock above");
     let final_path = pdf_dir.join(pdf_on_disk_name(&sid, ver));
     st.final_path = Some(final_path.clone());
 
-    if st.pre_existing_pdf_on_disk {
+    if pre_existing_pdf {
         // Dedupe: keep the existing PDF, drop the upload.
         let _ = fs::remove_file(tmp_path);
     } else {

@@ -28,12 +28,10 @@ fn open_pdf_in_system(app: tauri::AppHandle, path: String) -> Result<(), String>
     if !candidate.is_file() {
         return Err("PDF file not found on disk".to_string());
     }
-    let is_pdf = candidate
+    if !candidate
         .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.eq_ignore_ascii_case("pdf"))
-        .unwrap_or(false);
-    if !is_pdf {
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
+    {
         return Err("Refusing to open a non-PDF file in the system viewer".to_string());
     }
     app.opener()
@@ -45,9 +43,7 @@ fn main() {
     tauri::Builder::default()
         // linxiv:// serves PDF bytes to the webview and bridges the graph iframe's
         // /api/* GETs — the in-process replacement for what invoke() can't stream.
-        .register_asynchronous_uri_scheme_protocol(protocol::SCHEME, |ctx, req, responder| {
-            protocol::handler(ctx, req, responder)
-        })
+        .register_asynchronous_uri_scheme_protocol(protocol::SCHEME, protocol::handler)
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())

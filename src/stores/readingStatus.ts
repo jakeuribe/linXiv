@@ -2,9 +2,8 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { cycleStatus, type ReadingStatus } from "../lib/readingStatus";
 
-// ponytail: statuses persist to localStorage keyed by paper source_id. This
-// store is the swap point for the backend paper↔reading-status table: replace
-// persistence with API calls + react-query invalidation when endpoints land.
+// Statuses persist to localStorage keyed by paper source_id. This store is the
+// swap point for the backend paper↔reading-status table.
 interface ReadingStatusState {
   statuses: Record<string, ReadingStatus>;
   cycle: (sourceId: string) => void;

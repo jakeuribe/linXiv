@@ -82,37 +82,18 @@ struct Entry {
 }
 
 /// Local part of a (possibly `arxiv:`-prefixed) qualified name.
-fn local(name: &[u8]) -> &[u8] {
+pub(crate) fn local(name: &[u8]) -> &[u8] {
     match name.iter().position(|&b| b == b':') {
         Some(i) => &name[i + 1..],
         None => name,
     }
 }
 
-fn attr(e: &BytesStart, key: &[u8]) -> Option<String> {
+pub(crate) fn attr(e: &BytesStart, key: &[u8]) -> Option<String> {
     e.attributes()
         .flatten()
         .find(|a| a.key.as_ref() == key)
         .map(|a| String::from_utf8_lossy(&a.value).into_owned())
-}
-
-/// `<arxiv:primary_category>` / `<category>` / `<link>` carry their data in
-/// attributes and arrive as self-closing (Empty) or Start tags.
-fn attr_tag(l: &[u8], e: &BytesStart, b: &mut Entry) {
-    match l {
-        b"primary_category" => b.category = attr(e, b"term"),
-        b"category" => {
-            if let Some(t) = attr(e, b"term") {
-                b.categories.push(t);
-            }
-        }
-        b"link" => match attr(e, b"title").as_deref() {
-            Some("pdf") => b.url = attr(e, b"href"),
-            Some("doi") => b.doi_link = attr(e, b"href"),
-            _ => {}
-        },
-        _ => {}
-    }
 }
 
 fn parse_date(s: &str) -> Result<chrono::NaiveDate> {
@@ -121,16 +102,12 @@ fn parse_date(s: &str) -> Result<chrono::NaiveDate> {
         .map_err(|e| CoreError::Upstream(format!("arXiv bad date {s:?}: {e}")))
 }
 
-fn collapse_ws(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 fn finalize(b: Entry) -> Result<PaperMetadata> {
     let (source_id, version) = parse_arxiv_id(&b.entry_id);
     Ok(PaperMetadata {
         source_id,
         version,
-        title: collapse_ws(&b.title),
+        title: b.title.split_whitespace().collect::<Vec<_>>().join(" "),
         authors: b.authors,
         published: parse_date(&b.published)?,
         updated: if b.updated.trim().is_empty() {
@@ -174,7 +151,18 @@ pub fn parse_atom(xml: &[u8]) -> Result<Vec<PaperMetadata>> {
                     cur = Some(Entry::default());
                 } else if let Some(b) = cur.as_mut() {
                     match l {
-                        b"primary_category" | b"category" | b"link" => attr_tag(l, &e, b),
+                        // primary_category/category/link carry data in attributes (Start or Empty tags)
+                        b"primary_category" => b.category = attr(&e, b"term"),
+                        b"category" => {
+                            if let Some(t) = attr(&e, b"term") {
+                                b.categories.push(t);
+                            }
+                        }
+                        b"link" => match attr(&e, b"title").as_deref() {
+                            Some("pdf") => b.url = attr(&e, b"href"),
+                            Some("doi") => b.doi_link = attr(&e, b"href"),
+                            _ => {}
+                        },
                         b"author" => in_author = true,
                         _ => {}
                     }
@@ -194,30 +182,16 @@ pub fn parse_atom(xml: &[u8]) -> Result<Vec<PaperMetadata>> {
             // quick-xml emits entities (`&amp;`, `&#38;`) as their own events.
             Event::GeneralRef(e) => {
                 if cur.is_some() {
-                    let resolved = match e.resolve_char_ref() {
-                        Ok(Some(c)) => Some(c.to_string()),
+                    match e.resolve_char_ref() {
+                        Ok(Some(c)) => text.push(c),
                         Ok(None) => match e.decode() {
-                            Ok(name) => {
-                                if let Some(s) = quick_xml::escape::resolve_predefined_entity(&name)
-                                {
-                                    Some(s.to_string())
-                                } else {
-                                    warn!("Unknown XML entity: &{};", name);
-                                    None
-                                }
-                            }
-                            Err(err) => {
-                                warn!("arXiv XML entity decode failed: {}", err);
-                                None
-                            }
+                            Ok(name) => match quick_xml::escape::resolve_predefined_entity(&name) {
+                                Some(s) => text.push_str(s),
+                                None => warn!("Unknown XML entity: &{};", name),
+                            },
+                            Err(err) => warn!("arXiv XML entity decode failed: {}", err),
                         },
-                        Err(err) => {
-                            warn!("arXiv XML char ref resolution failed: {}", err);
-                            None
-                        }
-                    };
-                    if let Some(s) = resolved {
-                        text.push_str(&s);
+                        Err(err) => warn!("arXiv XML char ref resolution failed: {}", err),
                     }
                 }
             }

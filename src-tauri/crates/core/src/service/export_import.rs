@@ -299,14 +299,7 @@ pub fn build_manifest(
     if include_pdfs {
         for p in &papers {
             let Some(stored) = &p.pdf_path else { continue };
-            let local = {
-                let raw = Path::new(stored);
-                if raw.is_absolute() {
-                    raw.to_path_buf()
-                } else {
-                    pdf_dir.join(raw)
-                }
-            };
+            let local = pdf_dir.join(stored);
             if local.is_file() {
                 pdf_files.push((format!("pdfs/{}_v{}.pdf", p.source_id, p.version), local));
             }
@@ -485,9 +478,8 @@ fn commit_body(
     let mut source_ids: Vec<String> = Vec::new();
     for pe in &manifest.papers {
         let source_id = pe.source_id.clone();
-        let existing = paperq::get_paper_root(conn, &source_id)?;
-        match (existing, on_conflict) {
-            (Some(root), OnConflict::Merge) => {
+        match paperq::get_paper_root(conn, &source_id)? {
+            Some(root) => {
                 if root.status == "deleted" {
                     paper::restore(
                         conn,
@@ -496,6 +488,9 @@ fn commit_body(
                             ..Default::default()
                         },
                     )?;
+                }
+                if on_conflict == OnConflict::Overwrite {
+                    paper::repair_paper(conn, root.source_fk, &pe.to_metadata())?;
                 }
                 // UNION the archive paper's tags onto the existing paper (Python
                 // `_paper.add_paper_tags`) so a merge-import never discards them.
@@ -503,22 +498,7 @@ fn commit_body(
                     paperq::add_paper_tags(conn, &source_id, &pe.tags)?;
                 }
             }
-            (Some(root), OnConflict::Overwrite) => {
-                if root.status == "deleted" {
-                    paper::restore(
-                        conn,
-                        &paper::Paper {
-                            source_id: Some(source_id.clone()),
-                            ..Default::default()
-                        },
-                    )?;
-                }
-                paper::repair_paper(conn, root.source_fk, &pe.to_metadata())?;
-                if !pe.tags.is_empty() {
-                    paperq::add_paper_tags(conn, &source_id, &pe.tags)?;
-                }
-            }
-            (None, _) => {
+            None => {
                 let meta = pe.to_metadata();
                 let extra = (!pe.tags.is_empty()).then(|| pe.tags.clone());
                 paper::save_paper_metadata(conn, &meta, extra.as_deref())?;

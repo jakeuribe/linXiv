@@ -42,13 +42,9 @@ fn update(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     let author_id = path_i64(id)?;
     #[derive(Deserialize)]
     struct Body {
-        #[serde(default)]
         full_name: Option<String>,
-        #[serde(default)]
         first_name: Option<String>,
-        #[serde(default)]
         last_name: Option<String>,
-        #[serde(default)]
         orcid: Option<String>,
     }
     let b: Body = ctx.parse_body()?;
@@ -115,13 +111,10 @@ fn detail_response(state: &AppState, author_id: i64) -> Result<Value, ApiError> 
         let author = svc_author::get(conn, &author_ref(author_id))?
             .ok_or_else(|| ApiError::new(404, "Author not found"))?;
         let previews = svc_author::get_paper_previews(conn, author_id)?;
-        let mut v = serde_json::to_value(&author).map_err(|e| ApiError::new(500, e.to_string()))?;
+        let mut v = crate::route::to_value(&author)?;
         if let Value::Object(map) = &mut v {
             map.insert("paper_count".into(), json!(previews.len()));
-            map.insert(
-                "papers".into(),
-                serde_json::to_value(&previews).map_err(|e| ApiError::new(500, e.to_string()))?,
-            );
+            map.insert("papers".into(), crate::route::to_value(&previews)?);
         }
         Ok(v)
     })
@@ -149,25 +142,18 @@ mod tests {
         AppState::from_parts(conn, std::env::temp_dir(), std::env::temp_dir())
     }
 
-    async fn req(st: &AppState, method: &str, path: &str) -> Result<Value, ApiError> {
+    async fn req(
+        st: &AppState,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Value, ApiError> {
         route(
             st,
             ApiRequest {
                 method: method.into(),
                 path: path.into(),
-                body: None,
-            },
-        )
-        .await
-    }
-
-    async fn post(st: &AppState, path: &str, body: Value) -> Result<Value, ApiError> {
-        route(
-            st,
-            ApiRequest {
-                method: "POST".into(),
-                path: path.into(),
-                body: Some(body),
+                body,
             },
         )
         .await
@@ -220,8 +206,10 @@ mod tests {
         };
         let canonical = author(conn);
         let dup = author(conn);
-        svc_author::link_author_to_paper(conn, canonical, pid1, Some(0)).unwrap();
-        svc_author::link_author_to_paper(conn, dup, pid2, Some(0)).unwrap();
+        linxiv_core::storage::queries::author::link_author_to_paper(conn, canonical, pid1, Some(0))
+            .unwrap();
+        linxiv_core::storage::queries::author::link_author_to_paper(conn, dup, pid2, Some(0))
+            .unwrap();
         (canonical, dup, pid1, pid2)
     }
 
@@ -230,10 +218,11 @@ mod tests {
         let st = state();
         let (canonical, dup, pid1, pid2) = st.with_conn(seed_two_authors_with_papers);
 
-        let resp = post(
+        let resp = req(
             &st,
+            "POST",
             &format!("/api/authors/{canonical}/merge"),
-            json!({ "duplicate_ids": [dup] }),
+            Some(json!({ "duplicate_ids": [dup] })),
         )
         .await
         .unwrap();
@@ -252,10 +241,11 @@ mod tests {
 
     #[tokio::test]
     async fn merge_missing_canonical_is_404() {
-        let err = post(
+        let err = req(
             &state(),
+            "POST",
             "/api/authors/999/merge",
-            json!({ "duplicate_ids": [] }),
+            Some(json!({ "duplicate_ids": [] })),
         )
         .await
         .unwrap_err();
@@ -278,10 +268,11 @@ mod tests {
             .unwrap()
         });
 
-        let resp = post(
+        let resp = req(
             &st,
+            "POST",
             &format!("/api/authors/{canonical}/merge"),
-            json!({ "duplicate_ids": [999_999] }),
+            Some(json!({ "duplicate_ids": [999_999] })),
         )
         .await
         .unwrap();
@@ -292,27 +283,31 @@ mod tests {
     #[tokio::test]
     async fn list_on_empty_db_wraps_empty_array() {
         assert_eq!(
-            req(&state(), "GET", "/api/authors").await.unwrap(),
+            req(&state(), "GET", "/api/authors", None).await.unwrap(),
             json!({ "authors": [] })
         );
     }
 
     #[tokio::test]
     async fn get_missing_author_is_404() {
-        let err = req(&state(), "GET", "/api/authors/999").await.unwrap_err();
+        let err = req(&state(), "GET", "/api/authors/999", None)
+            .await
+            .unwrap_err();
         assert_eq!(err.status, 404);
         assert_eq!(err.detail, "Author not found");
     }
 
     #[tokio::test]
     async fn non_integer_id_is_422() {
-        let err = req(&state(), "GET", "/api/authors/abc").await.unwrap_err();
+        let err = req(&state(), "GET", "/api/authors/abc", None)
+            .await
+            .unwrap_err();
         assert_eq!(err.status, 422);
     }
 
     #[tokio::test]
     async fn delete_missing_author_is_404() {
-        let err = req(&state(), "DELETE", "/api/authors/999")
+        let err = req(&state(), "DELETE", "/api/authors/999", None)
             .await
             .unwrap_err();
         assert_eq!(err.status, 404);

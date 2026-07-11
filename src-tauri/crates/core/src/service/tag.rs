@@ -51,6 +51,9 @@ pub fn get(conn: &Connection, tag: &Tag) -> Result<Option<TagDetails>> {
 
 /// `service/tag.py::get_tags` — tags matching the `Tags` filter.
 ///
+/// Currently unwired above the service layer — kept as the pending
+/// paper/project-scoped tag-filter seam (see `get_many`).
+///
 /// Mirrors Python `storage.tags.list_tags`'s priority: `paper_id` wins (the real
 /// tags linked to that paper, via PAPER_TO_TAG), else `project_id`/`label` narrow
 /// the full set in-service (keeping real TAG_FKs).
@@ -293,14 +296,6 @@ mod tests {
         .unwrap();
         let paper_id = conn.last_insert_rowid();
         // link Neural + Vision (not RL) to the paper.
-        let neural = get(
-            &conn,
-            &Tag {
-                label: Some("Neural".into()),
-                ..Default::default()
-            },
-        )
-        .unwrap();
         let neural_fk: i64 = conn
             .query_row("SELECT TAG_FK FROM TAG WHERE TAG = 'Neural'", [], |r| {
                 r.get(0)
@@ -311,7 +306,6 @@ mod tests {
                 r.get(0)
             })
             .unwrap();
-        let _ = neural; // label-path sentinel, unused here
         conn.execute(
             "INSERT INTO PAPER_TO_TAG (PAPER_ID, TAG_FK) VALUES (?1, ?2), (?1, ?3)",
             [paper_id, neural_fk, vision_fk],
