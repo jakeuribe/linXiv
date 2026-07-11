@@ -136,13 +136,15 @@ fn graph_data(
     }
 
     let (count_cte, count_col, count_join) = if exclude_single_authors {
-        (", name_counts AS ( \
+        (
+            ", name_counts AS ( \
              SELECT a.AUTHOR_FULL_NAME AS author_name, MAX(apc.paper_count) AS paper_count \
              FROM AUTHOR a JOIN author_paper_counts apc ON apc.author_fk = a.AUTHOR_FK \
              GROUP BY a.AUTHOR_FULL_NAME COLLATE NOCASE \
          )",
-         "nc.paper_count AS paper_count, ",
-         "LEFT JOIN name_counts nc ON nc.author_name = je.value COLLATE NOCASE ")
+            "nc.paper_count AS paper_count, ",
+            "LEFT JOIN name_counts nc ON nc.author_name = je.value COLLATE NOCASE ",
+        )
     } else {
         ("", "", "")
     };

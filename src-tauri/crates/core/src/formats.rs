@@ -106,7 +106,12 @@ fn bib_quote(value: &str) -> String {
 
 /// `(source_id or "unknown").replace("/","_").replace(".","_")`.
 fn bib_key(source_id: &str) -> String {
-    if source_id.is_empty() { "unknown" } else { source_id }.replace(['/', '.'], "_")
+    if source_id.is_empty() {
+        "unknown"
+    } else {
+        source_id
+    }
+    .replace(['/', '.'], "_")
 }
 
 /// `ObsidianFormat.export_papers` — YAML frontmatter + one `##` section per paper.

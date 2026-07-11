@@ -356,5 +356,4 @@ mod tests {
         assert!(parse_search_body(br#"{"message":{"items":[]}}"#).is_empty());
         assert!(parse_search_body(b"garbage").is_empty());
     }
-
 }

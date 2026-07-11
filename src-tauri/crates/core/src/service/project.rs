@@ -105,16 +105,23 @@ pub fn get(conn: &Connection, project: &Project) -> Result<Option<ProjectDetails
     let Some(fk) = project.project_fk else {
         return Ok(None);
     };
-    pq::get_project(conn, fk, true)?.map(|p| fill_tags(conn, p)).transpose()
+    pq::get_project(conn, fk, true)?
+        .map(|p| fill_tags(conn, p))
+        .transpose()
 }
 
 /// `service/project.py::get_many` — projects matching any combination of the
 /// `Projects` filter fields (with tags).
 pub fn get_many(conn: &Connection, projects: &Projects) -> Result<Vec<ProjectDetails>> {
     let condition = [
-        projects.project_fks.as_deref().filter(|fks| !fks.is_empty())
+        projects
+            .project_fks
+            .as_deref()
+            .filter(|fks| !fks.is_empty())
             .map(|fks| query::_in("PROJECT_FK", fks.iter().copied())),
-        projects.status.map(|s| Q::new("STATUS = ?", pq::status_to_sql(s))),
+        projects
+            .status
+            .map(|s| Q::new("STATUS = ?", pq::status_to_sql(s))),
     ]
     .into_iter()
     .flatten()
@@ -419,7 +426,11 @@ pub fn purge_old(conn: &mut Connection, days: i64) -> Result<usize> {
 
 /// `service/project.py::get_projects` — the legacy `ProjectPage` list (default ACTIVE).
 pub fn get_projects(conn: &Connection, status: Status) -> Result<ProjectPage> {
-    let projects = pq::list_projects(conn, Some(Q::new("STATUS = ?", pq::status_to_sql(status))), true)?;
+    let projects = pq::list_projects(
+        conn,
+        Some(Q::new("STATUS = ?", pq::status_to_sql(status))),
+        true,
+    )?;
     let mut page = ProjectPage {
         num_projects: projects.len(),
         ..Default::default()

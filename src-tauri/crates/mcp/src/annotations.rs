@@ -98,9 +98,7 @@ impl Server {
         &self,
         Parameters(p): Parameters<AnnotationIdParams>,
     ) -> Result<String, ErrorData> {
-        self.with_conn(|conn| {
-            json_ok(&svc_ann::get(conn, p.annotation_id).map_err(core_err)?)
-        })
+        self.with_conn(|conn| json_ok(&svc_ann::get(conn, p.annotation_id).map_err(core_err)?))
     }
 
     #[tool(description = "List PDF annotations, optionally filtered by paper or project.")]

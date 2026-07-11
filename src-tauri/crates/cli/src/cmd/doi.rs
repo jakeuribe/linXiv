@@ -21,10 +21,12 @@ pub enum DoiCmd {
 pub async fn run(cmd: DoiCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
     let (DoiCmd::Resolve { doi } | DoiCmd::Save { doi }) = &cmd;
     // The `[doi] {e}` prefix line + error JSON mirror Python's two-line stderr on failure.
-    let meta = resolve_doi(doi, &config::data_dir()).await.unwrap_or_else(|e| {
-        eprintln!("[doi] {e}");
-        fail(e)
-    });
+    let meta = resolve_doi(doi, &config::data_dir())
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("[doi] {e}");
+            fail(e)
+        });
     match cmd {
         // cmd_doi_resolve: dump metadata.
         DoiCmd::Resolve { .. } => output(&meta),

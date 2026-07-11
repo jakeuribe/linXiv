@@ -134,14 +134,21 @@ fn summary_json(s: &linxiv_share::SharedSummary) -> Value {
 
 /// `GET /api/share/projects` — summaries of every published shared project.
 fn list_shared(share: &ShareState) -> Result<Value, ApiError> {
-    let out: Vec<Value> = share.store.list_shared()?.iter().map(summary_json).collect();
+    let out: Vec<Value> = share
+        .store
+        .list_shared()?
+        .iter()
+        .map(summary_json)
+        .collect();
     Ok(json!({ "shared_projects": out }))
 }
 
 /// `GET /api/share/received` — summaries of every mirror materialized by `join`.
 fn list_received(share: &ShareState) -> Result<Value, ApiError> {
-    let out: Vec<Value> =
-        linxiv_share::ShareNode::list_received(share.store.share_dir())?.iter().map(summary_json).collect();
+    let out: Vec<Value> = linxiv_share::ShareNode::list_received(share.store.share_dir())?
+        .iter()
+        .map(summary_json)
+        .collect();
     Ok(json!({ "received": out }))
 }
 
@@ -185,7 +192,11 @@ fn publish(state: &AppState, share: &ShareState, id: &str) -> Result<Value, ApiE
 // Clone the node Arc out from under the lock, then release it: the 30s network
 // op must not hold the guard `shutdown()` also needs.
 async fn live_node(share: &ShareState) -> Result<Arc<ShareNode>, ApiError> {
-    share.node.lock().await.clone()
+    share
+        .node
+        .lock()
+        .await
+        .clone()
         .ok_or_else(|| ApiError::new(503, "share transport not initialized"))
 }
 

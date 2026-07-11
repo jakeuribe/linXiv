@@ -123,7 +123,10 @@ fn restore(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
         *conn = storage::open(&db_path)
             .and_then(|fresh| storage::init_db(&fresh).map(|()| fresh))
             .map_err(|e| {
-                ApiError::new(500, format!("could not reopen the database — restart linXiv: {e}"))
+                ApiError::new(
+                    500,
+                    format!("could not reopen the database — restart linXiv: {e}"),
+                )
             })?;
         result?;
         Ok(json!({ "ok": true }))

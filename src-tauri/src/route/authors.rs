@@ -206,8 +206,10 @@ mod tests {
         };
         let canonical = author(conn);
         let dup = author(conn);
-        linxiv_core::storage::queries::author::link_author_to_paper(conn, canonical, pid1, Some(0)).unwrap();
-        linxiv_core::storage::queries::author::link_author_to_paper(conn, dup, pid2, Some(0)).unwrap();
+        linxiv_core::storage::queries::author::link_author_to_paper(conn, canonical, pid1, Some(0))
+            .unwrap();
+        linxiv_core::storage::queries::author::link_author_to_paper(conn, dup, pid2, Some(0))
+            .unwrap();
         (canonical, dup, pid1, pid2)
     }
 

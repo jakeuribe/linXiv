@@ -28,7 +28,10 @@ fn open_pdf_in_system(app: tauri::AppHandle, path: String) -> Result<(), String>
     if !candidate.is_file() {
         return Err("PDF file not found on disk".to_string());
     }
-    if !candidate.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("pdf")) {
+    if !candidate
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("pdf"))
+    {
         return Err("Refusing to open a non-PDF file in the system viewer".to_string());
     }
     app.opener()

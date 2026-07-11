@@ -72,10 +72,11 @@ fn ensure_no_live_connections(db_path: &Path) -> Result<()> {
         .query_row("PRAGMA journal_mode=DELETE", [], |_| Ok(()))
         .and_then(|()| conn.execute_batch("BEGIN EXCLUSIVE; COMMIT;"));
     match probe {
-        Err(e) if matches!(
-            e.sqlite_error_code(),
-            Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
-        ) =>
+        Err(e)
+            if matches!(
+                e.sqlite_error_code(),
+                Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+            ) =>
         {
             Err(CoreError::Conflict(
                 "database is in use by another linXiv process (app, CLI, or MCP server) — \

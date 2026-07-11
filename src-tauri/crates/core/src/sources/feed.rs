@@ -147,10 +147,7 @@ pub fn parse_feed(xml: &[u8]) -> Result<Feed> {
                         // alternate/plain link over enclosure/self rels).
                         b"link" => {
                             if let Some(href) = attr(&e, b"href") {
-                                if matches!(
-                                    attr(&e, b"rel").as_deref(),
-                                    None | Some("alternate")
-                                ) {
+                                if matches!(attr(&e, b"rel").as_deref(), None | Some("alternate")) {
                                     explicit_link = Some(href);
                                 }
                             }

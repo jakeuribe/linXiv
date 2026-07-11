@@ -364,12 +364,21 @@ mod tests {
 
     fn db_checksum(conn: &Connection) -> Vec<(String, i64)> {
         [
-            "PAPER", "PAPER_ROOTS", "PROJECT", "PROJECT_TO_PAPER", "NOTE", "ANNOTATION", "TAG",
+            "PAPER",
+            "PAPER_ROOTS",
+            "PROJECT",
+            "PROJECT_TO_PAPER",
+            "NOTE",
+            "ANNOTATION",
+            "TAG",
         ]
         .iter()
         .map(|t| {
             let sql = format!("SELECT COUNT(*) FROM {t}");
-            (t.to_string(), conn.query_row(&sql, [], |r| r.get(0)).unwrap())
+            (
+                t.to_string(),
+                conn.query_row(&sql, [], |r| r.get(0)).unwrap(),
+            )
         })
         .collect()
     }

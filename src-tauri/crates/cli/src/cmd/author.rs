@@ -31,7 +31,10 @@ pub enum AuthorCmd {
 }
 
 fn by_id(author_id: i64) -> Author {
-    Author { author_id: Some(author_id), ..Default::default() }
+    Author {
+        author_id: Some(author_id),
+        ..Default::default()
+    }
 }
 
 pub async fn run(cmd: AuthorCmd, ctx: &mut Ctx) -> anyhow::Result<()> {

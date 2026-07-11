@@ -54,7 +54,10 @@ pub enum PaperCmd {
 }
 
 /// `_resolve_paper_or_exit`: load a paper or fail with the not-found error.
-pub(super) fn resolve_paper_or_exit(ctx: &Ctx, source_id: &str) -> linxiv_core::models::PaperDetails {
+pub(super) fn resolve_paper_or_exit(
+    ctx: &Ctx,
+    source_id: &str,
+) -> linxiv_core::models::PaperDetails {
     match svc_paper::get(&ctx.conn, &paper(source_id)) {
         Ok(Some(p)) => p,
         Ok(None) => fail(format!(

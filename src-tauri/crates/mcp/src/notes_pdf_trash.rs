@@ -29,9 +29,14 @@ use crate::Server;
 
 /// Shared trash-tool guard: the project must exist and be soft-deleted.
 fn require_trashed_project(conn: &rusqlite::Connection, id: i64) -> Result<(), ErrorData> {
-    let d = svc_project::get(conn, &svc_project::Project { project_fk: Some(id) })
-        .map_err(core_err)?
-        .ok_or_else(|| invalid(format!("Project {id} not found.")))?;
+    let d = svc_project::get(
+        conn,
+        &svc_project::Project {
+            project_fk: Some(id),
+        },
+    )
+    .map_err(core_err)?
+    .ok_or_else(|| invalid(format!("Project {id} not found.")))?;
     if d.status != Status::Deleted {
         return Err(invalid(format!("Project {id} is not in trash.")));
     }

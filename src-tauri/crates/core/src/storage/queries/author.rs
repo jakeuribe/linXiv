@@ -54,7 +54,8 @@ pub fn get_many(conn: &Connection, name: Option<&str>) -> Result<Vec<BasicAuthor
     };
     let mut stmt = conn.prepare(sql)?;
     let rows = stmt.query_map(params_from_iter(&p), row_to_basic)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 /// `authors.py::list_authors(paper_id=...)` via `_LIST_AUTHORS_FROM_PAPER_SQL` —
@@ -67,7 +68,8 @@ pub fn get_paper_authors(conn: &Connection, paper_id: i64) -> Result<Vec<BasicAu
          WHERE pta.PAPER_ID = ? ORDER BY pta.AUTHOR_INDEX",
     )?;
     let rows = stmt.query_map(params![paper_id], row_to_basic)?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 /// `authors.py::list_authors_with_paper_count` — authors with their distinct

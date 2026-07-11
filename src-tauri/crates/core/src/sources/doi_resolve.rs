@@ -39,11 +39,16 @@ const RATELIMIT_MSG: &str = "arXiv rate limit reached. Please wait ~60 s and try
 /// mirroring `re.sub(r"^https?://(dx\.)?doi\.org/", "", doi.strip())`.
 pub fn strip_doi_url(doi: &str) -> String {
     let t = doi.trim();
-    ["https://doi.org/", "http://doi.org/", "https://dx.doi.org/", "http://dx.doi.org/"]
-        .iter()
-        .find_map(|p| t.strip_prefix(p))
-        .unwrap_or(t)
-        .to_string()
+    [
+        "https://doi.org/",
+        "http://doi.org/",
+        "https://dx.doi.org/",
+        "http://dx.doi.org/",
+    ]
+    .iter()
+    .find_map(|p| t.strip_prefix(p))
+    .unwrap_or(t)
+    .to_string()
 }
 
 /// An arXiv error is a rate-limit iff its message mentions `429`, matching
