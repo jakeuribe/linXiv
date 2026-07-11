@@ -5,15 +5,6 @@ use tauri::{AppHandle, Manager};
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Return the platform target triple (e.g. "x86_64-unknown-linux-gnu").
-///
-/// Only needed in dev mode, where staged sidecars keep the triple suffix; in
-/// release the suffix is stripped at bundle time.
-#[cfg(debug_assertions)]
-fn target_triple() -> Result<String, String> {
-    tauri::utils::platform::target_triple().map_err(|e| e.to_string())
-}
-
 /// Resolve the on-disk path to a bundled sidecar binary for installation.
 ///
 /// This is an *install-time* resolver (only called by `install_cli` /
@@ -65,7 +56,7 @@ fn resolve_install_sidecar(app: &AppHandle, name: &str) -> Result<PathBuf, Strin
     #[cfg(debug_assertions)]
     let path = {
         // Dev binaries keep the triple suffix (see scripts/stage_sidecar.py).
-        let triple = target_triple()?;
+        let triple = tauri::utils::platform::target_triple().map_err(|e| e.to_string())?;
         #[cfg(not(target_os = "windows"))]
         let filename = format!("{}-{}", name, triple);
         #[cfg(target_os = "windows")]
@@ -201,7 +192,7 @@ fn appimage_stable_copy(app: &AppHandle, name: &str, in_mount: &Path) -> Result<
 fn cli_shim_path() -> Result<PathBuf, String> {
     #[cfg(not(target_os = "windows"))]
     {
-        let home = dirs_home().ok_or("Could not determine home directory")?;
+        let home = std::env::home_dir().ok_or("Could not determine home directory")?;
         Ok(home.join(".local").join("bin").join("linxiv"))
     }
 
@@ -414,7 +405,7 @@ impl Roots {
     fn current() -> Result<Roots, String> {
         Ok(Roots {
             os: Os::current(),
-            home: dirs_home().ok_or("Could not determine home directory")?,
+            home: std::env::home_dir().ok_or("Could not determine home directory")?,
             appdata: std::env::var("APPDATA").ok().map(PathBuf::from),
             local_appdata: std::env::var("LOCALAPPDATA").ok().map(PathBuf::from),
         })
@@ -529,7 +520,7 @@ fn client_app_markers(client_id: &str, roots: &Roots) -> Vec<PathBuf> {
         ("cursor", Os::Windows) => lad
             .map(|l| vec![l.join("Programs").join("cursor")])
             .unwrap_or_default(),
-        // ponytail: fixed path list; an unintegrated AppImage is undetectable
+        // Fixed path list; an unintegrated AppImage is undetectable.
         ("cursor", Os::Linux) => vec![
             PathBuf::from("/usr/bin/cursor"),
             PathBuf::from("/usr/local/bin/cursor"),
@@ -830,30 +821,6 @@ pub fn is_mcp_installed(client_id: String) -> bool {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Platform utilities
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Cross-platform home directory lookup without pulling in the `dirs` crate.
-fn dirs_home() -> Option<PathBuf> {
-    #[cfg(target_os = "windows")]
-    {
-        std::env::var("USERPROFILE")
-            .ok()
-            .map(PathBuf::from)
-            .or_else(|| {
-                let drive = std::env::var("HOMEDRIVE").ok()?;
-                let path = std::env::var("HOMEPATH").ok()?;
-                Some(PathBuf::from(format!("{}{}", drive, path)))
-            })
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        std::env::var("HOME").ok().map(PathBuf::from)
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Windows PATH registry helpers (compiled only on Windows)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -869,16 +836,9 @@ fn decode_utf16le(bytes: &[u8]) -> String {
 }
 
 #[cfg(target_os = "windows")]
-fn encode_utf16le(s: &str) -> Vec<u8> {
-    s.encode_utf16()
-        .chain(std::iter::once(0))
-        .flat_map(|u| u.to_le_bytes())
-        .collect()
-}
-
-#[cfg(target_os = "windows")]
 fn windows_path_add(dir: &str) -> Result<(), String> {
     use winreg::enums::{RegType, HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
+    use winreg::types::ToRegValue;
     use winreg::{RegKey, RegValue};
 
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
@@ -910,7 +870,7 @@ fn windows_path_add(dir: &str) -> Result<(), String> {
         "Path",
         &RegValue {
             vtype,
-            bytes: encode_utf16le(&new_path),
+            bytes: new_path.to_reg_value().bytes,
         },
     )
     .map_err(|e| e.to_string())
@@ -919,6 +879,7 @@ fn windows_path_add(dir: &str) -> Result<(), String> {
 #[cfg(target_os = "windows")]
 fn windows_path_remove(dir: &str) -> Result<(), String> {
     use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
+    use winreg::types::ToRegValue;
     use winreg::{RegKey, RegValue};
 
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
@@ -941,7 +902,7 @@ fn windows_path_remove(dir: &str) -> Result<(), String> {
         "Path",
         &RegValue {
             vtype,
-            bytes: encode_utf16le(&new_path.join(";")),
+            bytes: new_path.join(";").to_reg_value().bytes,
         },
     )
     .map_err(|e| e.to_string())

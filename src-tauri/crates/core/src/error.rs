@@ -4,8 +4,6 @@
 //! return the same `{"error": "<msg>"}` body + status the FastAPI layer did.
 //! Plan §5 + D21.
 
-use serde::ser::{Serialize, SerializeStruct, Serializer};
-
 #[derive(thiserror::Error, Debug)]
 pub enum CoreError {
     // ── Typed failure modes (named so callers can branch + word them) ──────
@@ -75,25 +73,6 @@ impl CoreError {
             Internal(_) => 500,
         }
     }
-
-    /// CLI exit code. 1 for every failure today.
-    pub fn exit_code(&self) -> i32 {
-        1
-    }
-
-    /// `{"error": "<msg>"}` JSON body, matching the FastAPI error shape.
-    pub fn to_json(&self) -> String {
-        serde_json::to_string(self)
-            .unwrap_or_else(|_| format!("{{\"error\":{:?}}}", self.to_string()))
-    }
-}
-
-impl Serialize for CoreError {
-    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-        let mut st = serializer.serialize_struct("CoreError", 1)?;
-        st.serialize_field("error", &self.to_string())?;
-        st.end()
-    }
 }
 
 /// rusqlite failures surface as Internal (500) — same as Python's bare sqlite3
@@ -105,6 +84,20 @@ impl From<rusqlite::Error> for CoreError {
     }
 }
 
+/// IO/JSON failures likewise surface as Internal (500), matching the Python
+/// layer's unhandled OSError/JSONDecodeError bubbling to the 500 handler.
+impl From<std::io::Error> for CoreError {
+    fn from(e: std::io::Error) -> Self {
+        CoreError::Internal(e.to_string())
+    }
+}
+
+impl From<serde_json::Error> for CoreError {
+    fn from(e: serde_json::Error) -> Self {
+        CoreError::Internal(e.to_string())
+    }
+}
+
 pub type Result<T> = std::result::Result<T, CoreError>;
 
 #[cfg(test)]
@@ -112,7 +105,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn status_and_json_match_contract() {
+    fn status_matches_contract() {
         assert_eq!(CoreError::ProjectNotFound.http_status(), 404);
         assert_eq!(CoreError::ProjectDeleted("gone".into()).http_status(), 400);
         assert_eq!(CoreError::PdfImport("x".into()).http_status(), 422);
@@ -121,10 +114,5 @@ mod tests {
         assert_eq!(CoreError::OpenAlexHttp("502".into()).http_status(), 502);
         assert_eq!(CoreError::Conflict("dup".into()).http_status(), 409);
         assert_eq!(CoreError::Internal("boom".into()).http_status(), 500);
-        assert_eq!(CoreError::ProjectNotFound.exit_code(), 1);
-        assert_eq!(
-            CoreError::ProjectNotFound.to_json(),
-            r#"{"error":"Project not found"}"#
-        );
     }
 }

@@ -77,17 +77,11 @@ pub fn timestamp_from_sql(s: &str) -> Result<NaiveDateTime> {
     let t = s.trim();
     let norm = t.replacen('T', " ", 1);
     NaiveDateTime::parse_from_str(&norm, "%Y-%m-%d %H:%M:%S%.f")
-        .or_else(|_| NaiveDateTime::parse_from_str(&norm, "%Y-%m-%d %H:%M:%S"))
         // Legacy rows from the Python backend used datetime.isoformat() with a UTC
         // offset (e.g. "2026-06-04T03:10:47.041006+00:00"); RFC3339-parse those and
         // normalize to naive UTC so the offset isn't trailing input.
         .or_else(|_| DateTime::parse_from_rfc3339(t).map(|dt| dt.naive_utc()))
         .map_err(|e| CoreError::Internal(format!("bad TIMESTAMP {s:?}: {e}")))
-}
-
-/// BOOL column ⇄ integer 0/1 (SQLite has no native bool).
-pub fn bool_to_sql(b: bool) -> i64 {
-    b as i64
 }
 
 pub fn bool_from_sql(i: i64) -> bool {
@@ -116,7 +110,7 @@ mod tests {
         let dt = NaiveDateTime::parse_from_str("2024-03-05 12:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
         assert_eq!(timestamp_from_sql("2024-03-05T12:00:00").unwrap(), dt);
         assert_eq!(timestamp_from_sql("2024-03-05 12:00:00").unwrap(), dt);
-        assert!(bool_from_sql(bool_to_sql(true)));
+        assert!(bool_from_sql(1));
         assert!(!bool_from_sql(0));
     }
 

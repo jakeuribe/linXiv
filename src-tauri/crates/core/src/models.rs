@@ -30,7 +30,7 @@ pub fn strip_namespace(source_id: &str) -> String {
 }
 
 /// The `date.min` sentinel (`0001-01-01`) used to mark "no published date".
-fn date_min() -> NaiveDate {
+pub(crate) fn date_min() -> NaiveDate {
     NaiveDate::from_ymd_opt(1, 1, 1).expect("0001-01-01 is a valid date")
 }
 
@@ -213,16 +213,6 @@ pub struct BasicAuthorDetails {
     pub last_name: Option<String>,
 }
 
-/// `FullAuthorDetails(BasicAuthorDetails)` — flattened (no Rust inheritance);
-/// `to_dict` emits a flat object.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FullAuthorDetails {
-    #[serde(flatten)]
-    pub base: BasicAuthorDetails,
-    #[serde(default)]
-    pub paper_ids: Option<Vec<i64>>,
-}
-
 /// `AuthorWithCount(BasicAuthorDetails)` — flattened base + `paper_count`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthorWithCount {
@@ -254,18 +244,13 @@ pub struct AuthorPaperPreview {
 // ---------------------------------------------------------------------------
 
 /// Literal["active","archived","deleted"] — validates at deserialize.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
+    #[default]
     Active,
     Archived,
     Deleted,
-}
-
-impl Default for Status {
-    fn default() -> Self {
-        Status::Active
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -364,17 +349,13 @@ pub struct AnnotationDetails {
     pub updated_at: Option<NaiveDateTime>,
 }
 
-/// Upper bound on stored ANCHOR JSON, enforced at every write boundary (HTTP,
-/// MCP, CLI). The frontend caps rects/quote; this caps the serialized whole.
-pub const MAX_ANCHOR_BYTES: usize = 65_536;
-
 /// Reject an empty/whitespace-only or over-cap ANCHOR. Returns the message each
-/// write boundary surfaces in its own error type.
+/// write boundary surfaces in its own error type; cap is 64 KiB.
 pub fn validate_anchor(anchor: &str) -> std::result::Result<(), &'static str> {
     if anchor.trim().is_empty() {
         return Err("anchor must not be empty");
     }
-    if anchor.len() > MAX_ANCHOR_BYTES {
+    if anchor.len() > 65_536 {
         return Err("anchor exceeds maximum size");
     }
     Ok(())
@@ -612,19 +593,16 @@ mod tests {
     #[test]
     fn project_details_emits_paper_count_in_order() {
         let p = ProjectDetails {
+            id: Some(5),
+            name: "n".into(),
+            description: String::new(),
+            color: None,
+            project_tags: vec![],
             source_fks: vec![1, 2, 3],
-            ..ProjectDetails {
-                id: Some(5),
-                name: "n".into(),
-                description: String::new(),
-                color: None,
-                project_tags: vec![],
-                source_fks: vec![],
-                status: Status::Active,
-                created_at: None,
-                updated_at: None,
-                archived_at: None,
-            }
+            status: Status::Active,
+            created_at: None,
+            updated_at: None,
+            archived_at: None,
         };
         let s = serde_json::to_string(&p).unwrap();
         // derived field present and correct (a derive(Serialize) would drop it)

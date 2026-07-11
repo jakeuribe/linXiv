@@ -4,14 +4,14 @@
 //! reaches the DB through `with_conn`. Replaces the HTTP hop to the Python sidecar.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use rusqlite::Connection;
 
 use linxiv_core::{config, storage};
 
 pub struct AppState {
-    conn: Arc<Mutex<Connection>>,
+    conn: Mutex<Connection>,
     /// Managed PDF directory (`config::pdf_dir()`), used by the PDF/export arms.
     pub pdf_dir: PathBuf,
     /// Obsidian vault root (`config::vault_dir()`), used by the export arms.
@@ -28,7 +28,7 @@ impl AppState {
         let conn = storage::open(&config::db_path())?;
         storage::init_db(&conn)?;
         Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
+            conn: Mutex::new(conn),
             pdf_dir: config::pdf_dir(),
             vault_root: config::vault_dir(),
         })
@@ -40,7 +40,7 @@ impl AppState {
     #[cfg(test)]
     pub fn from_parts(conn: Connection, pdf_dir: PathBuf, vault_root: PathBuf) -> Self {
         Self {
-            conn: Arc::new(Mutex::new(conn)),
+            conn: Mutex::new(conn),
             pdf_dir,
             vault_root,
         }

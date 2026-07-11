@@ -39,9 +39,7 @@ fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
         project_name: String,
         #[serde(default = "default_main_file")]
         main_file: String,
-        #[serde(default)]
         source_id: Option<String>,
-        #[serde(default)]
         project_id: Option<i64>,
     }
     let b: Body = ctx.parse_body()?;
@@ -89,17 +87,13 @@ fn vault_fs(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiEr
         return Err(ApiError::new(404, "Editor project not found"));
     }
     let vault_root = state.vault_root.join(format!("note_{note_id}"));
-    let result = vault::run_fs_op(&vault_root, &op).map_err(map_fs_err)?;
-    serde_json::to_value(&result).map_err(|e| ApiError::new(500, e.to_string()))
-}
-
-/// `except FileNotFoundError → 404 "Not found: {exc}"; except (ValueError, OSError) → 400`.
-/// (`run_fs_op` only yields NotFound / BadRequest / Internal here, so the catch-all is 400.)
-fn map_fs_err(e: CoreError) -> ApiError {
-    match e {
+    // except FileNotFoundError → 404 "Not found: {exc}"; except (ValueError, OSError) → 400
+    // (run_fs_op only yields NotFound / BadRequest / Internal here, so the catch-all is 400.)
+    let result = vault::run_fs_op(&vault_root, &op).map_err(|e| match e {
         CoreError::NotFound(s) => ApiError::new(404, format!("Not found: {s}")),
         other => ApiError::new(400, other.to_string()),
-    }
+    })?;
+    serde_json::to_value(&result).map_err(|e| ApiError::new(500, e.to_string()))
 }
 
 #[cfg(test)]
@@ -107,28 +101,16 @@ mod tests {
     use super::*;
     use crate::route::{route, ApiRequest};
     use linxiv_core::storage;
-    use std::path::PathBuf;
-
-    /// Isolated temp vault root under the system temp dir (never the real data dir).
-    /// tempfile is not a dev-dep of this crate, so roll a unique dir with std only.
-    fn unique_tmp() -> PathBuf {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static N: AtomicU64 = AtomicU64::new(0);
-        let n = N.fetch_add(1, Ordering::Relaxed);
-        let t = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let p =
-            std::env::temp_dir().join(format!("linxiv_editor_test_{}_{t}_{n}", std::process::id()));
-        std::fs::create_dir_all(&p).unwrap();
-        p
-    }
 
     fn state() -> AppState {
         let conn = storage::open_in_memory().unwrap();
         storage::init_db(&conn).unwrap();
-        AppState::from_parts(conn, std::env::temp_dir(), unique_tmp())
+        // keep() persists the temp vault past the guard (tests never clean up, matching prior behavior).
+        AppState::from_parts(
+            conn,
+            std::env::temp_dir(),
+            tempfile::tempdir().unwrap().keep(),
+        )
     }
 
     async fn req(

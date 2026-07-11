@@ -130,17 +130,7 @@ pub async fn run(cmd: NoteCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             source_id,
             project_id,
         } => {
-            let mut source_fk: Option<i64> = None;
-            if let Some(raw) = source_id {
-                let sid = as_source_id(&raw, "arxiv");
-                match paper_q::get_paper_root(conn, &sid)? {
-                    Some(root) => source_fk = Some(root.source_fk),
-                    None => fail(format!(
-                        "Paper {} not found in DB",
-                        crate::output::pyrepr(&sid)
-                    )),
-                }
-            }
+            let source_fk = crate::output::resolve_source_fk(conn, source_id)?;
             let notes = if source_fk.is_none() && project_id.is_none() {
                 svc_note::list_all(conn)?
             } else {
@@ -187,22 +177,14 @@ pub async fn run(cmd: NoteCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             });
         }
         NoteCmd::Delete { note_id } => {
-            if svc_note::get(
+            if !svc_note::delete(
                 conn,
                 &Note {
                     note_id: Some(note_id),
                 },
-            )?
-            .is_none()
-            {
+            )? {
                 fail(format!("Note {note_id} not found"));
             }
-            svc_note::delete(
-                conn,
-                &Note {
-                    note_id: Some(note_id),
-                },
-            )?;
             output(&DeletedNote {
                 deleted_note_id: note_id,
             });

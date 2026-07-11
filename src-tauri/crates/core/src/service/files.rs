@@ -14,27 +14,9 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{CoreError, Result};
 
-/// Characters Python's `_UNSAFE_FNAME_RE = [/\:*?"<>|]` strips from a paper id before
-/// it becomes a filename stem. Old-style arXiv ids (`math.GT/0309136`) contain `/`.
-const UNSAFE_FNAME_CHARS: &[char] = &['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
-
-/// Sanitise a paper id into a filename-safe stem (each unsafe char → `_`).
-fn safe_name(paper_id: &str) -> String {
-    paper_id
-        .chars()
-        .map(|c| {
-            if UNSAFE_FNAME_CHARS.contains(&c) {
-                '_'
-            } else {
-                c
-            }
-        })
-        .collect()
-}
-
 /// Standard managed PDF location for a (paper_id, version): `<pdf_dir>/<safe_id>v<n>.pdf`.
 fn pdf_file(pdf_dir: &Path, paper_id: &str, version: i64) -> PathBuf {
-    pdf_dir.join(format!("{}v{}.pdf", safe_name(paper_id), version))
+    pdf_dir.join(crate::service::paper::pdf_on_disk_name(paper_id, version))
 }
 
 /// Local path to a paper's PDF if it exists, else `None`. Checks `custom_path` first
@@ -61,19 +43,14 @@ pub fn pdf_path(
 /// Also the basis of the `pdf_save_limit_mb` total-storage cap (see
 /// `paper_import::check_pdf_storage_quota` and `download_pdf` below).
 pub fn pdf_storage_bytes(pdf_dir: &Path) -> u64 {
-    let entries = match std::fs::read_dir(pdf_dir) {
-        Ok(e) => e,
-        Err(_) => return 0, // missing dir (or unreadable) → no managed storage
-    };
-    let mut total: u64 = 0;
-    for entry in entries.flatten() {
-        if entry.file_name().to_string_lossy().ends_with(".pdf") {
-            if let Ok(meta) = entry.metadata() {
-                total += meta.len();
-            }
-        }
-    }
-    total
+    std::fs::read_dir(pdf_dir).map_or(0, |entries| {
+        entries
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".pdf"))
+            .filter_map(|e| e.metadata().ok())
+            .map(|m| m.len())
+            .sum()
+    })
 }
 
 /// `pdf_storage_bytes` in MB. Port of `files.pdf_storage_mb`.
@@ -129,7 +106,6 @@ pub fn delete_pdf(pdf_dir: &Path, path: &str) -> bool {
 /// SSRF/memory ceiling still applies on top (the smaller of the two wins).
 /// An already-downloaded dest is returned as-is — re-fetching writes nothing new, so the
 /// quota never blocks it.
-// ponytail: dir walk per download; track a running total only if libraries get huge.
 pub async fn download_pdf(
     pdf_dir: &Path,
     paper_id: &str,
@@ -160,13 +136,6 @@ mod tests {
         let p = dir.join(name);
         fs::write(&p, vec![0u8; bytes]).unwrap();
         p
-    }
-
-    #[test]
-    fn safe_name_strips_unsafe_chars() {
-        assert_eq!(safe_name("2204.00001"), "2204.00001"); // dots are safe
-        assert_eq!(safe_name("math.GT/0309136"), "math.GT_0309136");
-        assert_eq!(safe_name(r#"a:b*c?d"e<f>g|h\i"#), "a_b_c_d_e_f_g_h_i");
     }
 
     #[test]

@@ -47,23 +47,12 @@ fn status_from_sql(s: &str) -> Result<Status> {
     }
 }
 
-fn status_to_sql(s: Status) -> &'static str {
+pub(crate) fn status_to_sql(s: Status) -> &'static str {
     match s {
         Status::Active => "active",
         Status::Archived => "archived",
         Status::Deleted => "deleted",
     }
-}
-
-// ── Colour helpers — Python `projects.py::color_to_hex`/`color_from_hex`. ──────
-
-pub fn color_to_hex(color: i32) -> String {
-    format!("#{color:06x}")
-}
-
-pub fn color_from_hex(hex: &str) -> Result<i32> {
-    i32::from_str_radix(hex.trim_start_matches('#'), 16)
-        .map_err(|e| CoreError::Internal(format!("bad colour hex {hex:?}: {e}")))
 }
 
 /// Maps a row to ProjectDetails. `source_fks` is left empty for the caller to
@@ -112,23 +101,21 @@ pub fn get_project(
     project_id: i64,
     load_sources: bool,
 ) -> Result<Option<ProjectDetails>> {
-    let raw = conn
+    let Some(raw) = conn
         .query_row(
             &format!("SELECT {SELECT_COLS} WHERE PROJECT_FK = ?"),
             [project_id],
             raw_from_row,
         )
-        .optional()?;
-    match raw {
-        None => Ok(None),
-        Some(raw) => {
-            let mut proj = to_model(raw)?;
-            if load_sources {
-                proj.source_fks = load_source_fks(conn, project_id)?;
-            }
-            Ok(Some(proj))
-        }
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    let mut proj = to_model(raw)?;
+    if load_sources {
+        proj.source_fks = load_source_fks(conn, project_id)?;
     }
+    Ok(Some(proj))
 }
 
 /// `storage/projects.py::filter_projects` — list projects by optional predicate.
@@ -231,13 +218,7 @@ pub fn save_source_fks(tx: &Transaction, project_fk: i64, source_fks: &[i64]) ->
         "DELETE FROM PROJECT_TO_PAPER WHERE PROJECT_FK = ?1",
         [project_fk],
     )?;
-    let mut stmt = tx.prepare(
-        "INSERT OR IGNORE INTO PROJECT_TO_PAPER (PROJECT_FK, SOURCE_FK) VALUES (?1, ?2)",
-    )?;
-    for &sfk in source_fks {
-        stmt.execute(params![project_fk, sfk])?;
-    }
-    Ok(())
+    add_papers(tx, project_fk, source_fks)
 }
 
 /// Incremental add — INSERT OR IGNORE per row (idx_project_to_paper_unique makes
@@ -288,14 +269,7 @@ pub fn get_paper_project_fks(conn: &Connection, source_fk: i64) -> Result<Vec<i6
 /// Python `remove_paper_from_all_projects` (select-then-delete, transactional).
 pub fn remove_paper_from_all_projects(conn: &mut Connection, source_fk: i64) -> Result<Vec<i64>> {
     transaction(conn, |tx| {
-        let fks: Vec<i64> = {
-            let mut stmt =
-                tx.prepare("SELECT PROJECT_FK FROM PROJECT_TO_PAPER WHERE SOURCE_FK = ?1")?;
-            let v = stmt
-                .query_map([source_fk], |r| r.get::<_, i64>(0))?
-                .collect::<rusqlite::Result<Vec<i64>>>()?;
-            v
-        };
+        let fks = get_paper_project_fks(tx, source_fk)?;
         if !fks.is_empty() {
             tx.execute(
                 "DELETE FROM PROJECT_TO_PAPER WHERE SOURCE_FK = ?1",
@@ -498,9 +472,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(tag_links, 0, "hard_delete removed PROJECT_TO_TAG links");
-
-        assert_eq!(color_to_hex(0x00ff00), "#00ff00");
-        assert_eq!(color_from_hex("#00ff00").unwrap(), 0x00ff00);
     }
 
     #[test]

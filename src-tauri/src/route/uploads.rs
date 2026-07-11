@@ -20,7 +20,7 @@ use linxiv_core::config;
 use linxiv_core::error::CoreError;
 use linxiv_core::formats::bibtex_import;
 use linxiv_core::service::export_import::{self, OnConflict};
-use linxiv_core::service::paper::{self as svc_paper, pdf_on_disk_name, Paper};
+use linxiv_core::service::paper::{self as svc_paper, pdf_on_disk_name};
 use linxiv_core::service::paper_import;
 use linxiv_core::service::project as svc_project;
 use linxiv_core::sources::pdf_metadata::resolve_pdf_metadata;
@@ -76,9 +76,6 @@ fn attach_pdf(state: &AppState, source_id: &str, ctx: &ReqCtx<'_>) -> Result<Val
     state.with_conn(|conn| -> Result<Value, ApiError> {
         let paper = svc_paper::get(conn, &sid_key(source_id))?
             .ok_or_else(|| ApiError::new(404, "Paper not found"))?;
-        if content.len() > MAX_PDF_BYTES {
-            return Err(ApiError::new(413, "PDF exceeds size limit"));
-        }
         if !content.starts_with(b"%PDF") {
             return Err(ApiError::new(400, "Not a valid PDF"));
         }
@@ -107,7 +104,6 @@ async fn import_pdf(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     #[derive(Deserialize)]
     struct Body {
         file_b64: String,
-        #[serde(default)]
         filename: Option<String>,
     }
     let b: Body = ctx.parse_body()?;
@@ -123,12 +119,6 @@ async fn import_pdf(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
         "Upload rejected: file size exceeds 100 MB limit",
     )?;
     let content = decode_b64(&b.file_b64)?;
-    if content.len() > MAX_PDF_BYTES {
-        return Err(ApiError::new(
-            413,
-            "Upload rejected: file size exceeds 100 MB limit",
-        ));
-    }
     if !content.starts_with(b"%PDF") {
         return Err(ApiError::new(400, "File does not appear to be a valid PDF"));
     }
@@ -160,7 +150,6 @@ fn import_bibtex(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> 
     #[derive(Deserialize)]
     struct Body {
         file_b64: String,
-        #[serde(default)]
         project_id: Option<i64>,
     }
     let b: Body = ctx.parse_body()?;
@@ -176,11 +165,10 @@ fn import_bibtex(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> 
         }
         let metas = bibtex_import(&text)
             .map_err(|m| ApiError::new(400, format!("BibTeX parse error: {m}")))?;
-        let mut saved: Vec<String> = Vec::new();
-        for meta in &metas {
-            let (sid, _) = svc_paper::save_paper_metadata(conn, meta, None)?;
-            saved.push(sid);
-        }
+        let saved = metas
+            .iter()
+            .map(|m| Ok(svc_paper::save_paper_metadata(conn, m, None)?.0))
+            .collect::<Result<Vec<String>, ApiError>>()?;
         if let Some(pid) = b.project_id {
             if !saved.is_empty() {
                 svc_project::link_imported(conn, pid, &saved).map_err(|e| {
@@ -224,7 +212,6 @@ fn import_commit(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> 
     #[derive(Deserialize)]
     struct Body {
         file_b64: String,
-        #[serde(default)]
         on_conflict: Option<String>,
     }
     let b: Body = ctx.parse_body()?;
@@ -288,12 +275,7 @@ fn write_temp_lxproj(content: &[u8]) -> Result<PathBuf, ApiError> {
     Err(ApiError::new(500, "could not create a unique temp file"))
 }
 
-fn sid_key(source_id: &str) -> Paper {
-    Paper {
-        source_id: Some(source_id.to_string()),
-        ..Default::default()
-    }
-}
+use crate::route::papers::sid_key;
 
 #[cfg(test)]
 mod tests {

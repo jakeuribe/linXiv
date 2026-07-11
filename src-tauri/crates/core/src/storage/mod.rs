@@ -12,10 +12,9 @@ pub mod queries;
 pub mod query;
 pub mod schema;
 
-pub use backup::{backup, restore, validate_backup_source, BackupInfo};
-pub use db::{open, open_in_memory, transaction};
+pub use backup::{backup, restore, validate_backup_source};
+pub use db::{open, open_in_memory};
 pub use queries::*;
-pub use query::{_in, Q};
 
 use rusqlite::Connection;
 

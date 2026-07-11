@@ -12,16 +12,8 @@ export const isTauri =
 export const BASE_URL = "";
 
 // Webviews can't send a multipart body through Tauri `invoke`, so file uploads
-// travel as a base64 `file_b64` JSON field instead. Chunked btoa avoids the
-// call-stack overflow of String.fromCharCode(...hugeArray).
-export function bytesToBase64(bytes: Uint8Array): string {
-  let binary = "";
-  const chunk = 0x8000; // 32KB
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
-}
+// travel as a base64 `file_b64` JSON field instead.
+export { bytesToBase64 } from "../lib/base64.ts";
 
 export class ApiError extends Error {
   constructor(

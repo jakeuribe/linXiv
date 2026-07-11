@@ -38,8 +38,6 @@ function stripTrailingSuffixes(tokens: string[]): { rest: string[]; suffix: stri
 //   initials ("J. R. R. Tolkien" → first "J. R. R.", last "Tolkien"),
 //   particled surnames ("Ludwig van Beethoven" → last "van Beethoven"),
 //   and mononyms ("Aristotle" → last "Aristotle").
-// ponytail: naive token heuristic; swap for a real name parser only if users hit
-// its limits (compound given names, some non-Western orderings).
 export function parseFullName(full: string): ParsedName {
   const name = full.trim();
   if (!name) return { first: "", last: "" };

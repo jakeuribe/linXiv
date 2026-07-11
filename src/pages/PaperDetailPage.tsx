@@ -774,7 +774,7 @@ function AnnotationCard({
   });
 
   // Long quotes clamp to 3 lines; offer the toggle only when there's plausibly
-  // more to show. ponytail: length heuristic, not exact overflow measurement.
+  // more to show (length heuristic, not exact overflow measurement).
   const quote = anchor?.quote ?? "";
   const clampable = quote.length > 160;
 

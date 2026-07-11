@@ -3,7 +3,7 @@
 //! the home page doesn't re-hit the upstream on every render.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -15,12 +15,8 @@ use crate::state::AppState;
 
 const CACHE_TTL: Duration = Duration::from_secs(300);
 
-// ponytail: unbounded per-URL map — in practice one home-feed URL lives here;
-// swap for an LRU if the UI ever shows many feeds.
-fn cache() -> &'static Mutex<HashMap<String, (Instant, Value)>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, (Instant, Value)>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
+// Unbounded per-URL map — in practice one home-feed URL lives here.
+static CACHE: LazyLock<Mutex<HashMap<String, (Instant, Value)>>> = LazyLock::new(Default::default);
 
 pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<Value, ApiError>> {
     match (ctx.method, ctx.segs) {
@@ -33,25 +29,19 @@ fn get_saved_arxiv_ids(state: &AppState, feed_value: &Value) -> Vec<String> {
     if let Some(entries) = feed_value.get("entries").and_then(|e| e.as_array()) {
         use linxiv_core::storage::queries::paper;
 
-        // ponytail: lookup by source_id assumes arxiv_id maps to source_id directly; refine if arXiv ID format changes.
-        // Collect source_ids to check (limited to 200 entries) and batch the existence check.
-        let to_check: Vec<(String, String)> = entries
+        let ids: Vec<&str> = entries
             .iter()
             .take(200)
             .filter_map(|entry| entry.get("arxiv_id").and_then(|id| id.as_str()))
-            .map(|arxiv_id| {
-                let source_id = format!("arxiv:{}", arxiv_id);
-                (source_id, arxiv_id.to_string())
-            })
             .collect();
 
         // Batch check in a single DB connection, filtering to active papers only.
         state.with_conn(|conn| {
-            to_check
-                .into_iter()
-                .filter_map(|(source_id, arxiv_id)| {
+            ids.into_iter()
+                .filter_map(|arxiv_id| {
+                    let source_id = format!("arxiv:{arxiv_id}");
                     match paper::get_paper(conn, &source_id, None) {
-                        Ok(Some(_)) => Some(arxiv_id),
+                        Ok(Some(_)) => Some(arxiv_id.to_string()),
                         Ok(None) => None,
                         Err(e) => {
                             eprintln!("[linxiv] feed saved-check failed: source_id={source_id}, error={e}");
@@ -72,41 +62,36 @@ async fn get_feed(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError>
         .filter(|u| !u.trim().is_empty())
         .ok_or_else(|| ApiError::new(422, "url query parameter is required"))?;
 
-    // Check cache for a fresh entry
-    {
-        let cache_lock = cache().lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((at, v)) = cache_lock.get(url) {
-            if at.elapsed() < CACHE_TTL {
-                let feed_value = v.clone();
-                drop(cache_lock);
-                // Cache hit: recompute saved_arxiv_ids fresh against current DB state
-                let saved_arxiv_ids = get_saved_arxiv_ids(state, &feed_value);
-                let mut result = feed_value;
-                result["saved_arxiv_ids"] = serde_json::json!(saved_arxiv_ids);
-                return Ok(result);
-            }
-        }
-    }
-
-    // Cache miss or expired: fetch fresh from upstream
-    // data_dir carries the shared .arxiv_ratelimit file (same one arxiv_get uses).
-    let feed = svc_feed::fetch_feed(url, &linxiv_core::config::data_dir()).await?;
-    let v = serde_json::to_value(&feed).map_err(|e| ApiError::new(500, e.to_string()))?;
-    cache()
+    let cached = CACHE
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(url.to_string(), (Instant::now(), v.clone()));
+        .get(url)
+        .filter(|(at, _)| at.elapsed() < CACHE_TTL)
+        .map(|(_, v)| v.clone());
 
-    // Recompute saved_arxiv_ids fresh against current DB state
-    let saved_arxiv_ids = get_saved_arxiv_ids(state, &v);
-    let mut result = v;
-    result["saved_arxiv_ids"] = serde_json::json!(saved_arxiv_ids);
+    let mut result = match cached {
+        Some(v) => v,
+        None => {
+            // Cache miss or expired: fetch fresh from upstream.
+            // data_dir carries the shared .arxiv_ratelimit file (same one arxiv_get uses).
+            let feed = svc_feed::fetch_feed(url, &linxiv_core::config::data_dir()).await?;
+            let v = serde_json::to_value(&feed).map_err(|e| ApiError::new(500, e.to_string()))?;
+            CACHE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(url.to_string(), (Instant::now(), v.clone()));
+            v
+        }
+    };
+
+    // Recompute saved_arxiv_ids fresh against current DB state (cache hit or miss).
+    result["saved_arxiv_ids"] = serde_json::json!(get_saved_arxiv_ids(state, &result));
     Ok(result)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::cache;
+    use super::CACHE;
     use crate::route::{route, ApiRequest};
     use crate::state::AppState;
     use linxiv_core::storage;
@@ -148,7 +133,7 @@ mod tests {
         use wiremock::matchers::method;
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        cache().lock().unwrap().clear();
+        CACHE.lock().unwrap().clear();
 
         let mock_server = MockServer::start().await;
         let feed_url = format!("{}/feed.xml", mock_server.uri());
@@ -184,7 +169,7 @@ mod tests {
         use wiremock::matchers::method;
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        cache().lock().unwrap().clear();
+        CACHE.lock().unwrap().clear();
 
         let mock_server = MockServer::start().await;
         let feed_url = format!("{}/feed.json", mock_server.uri());
@@ -220,7 +205,7 @@ mod tests {
         use wiremock::matchers::method;
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        cache().lock().unwrap().clear();
+        CACHE.lock().unwrap().clear();
 
         let mock_server = MockServer::start().await;
         let feed_url = format!("{}/feed.json", mock_server.uri());

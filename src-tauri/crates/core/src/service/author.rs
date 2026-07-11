@@ -52,16 +52,18 @@ pub fn get(conn: &Connection, author: &Author) -> Result<Option<BasicAuthorDetai
         return store::get_author(conn, id);
     }
     if let Some(orcid) = author.orcid.as_deref() {
-        for row in list_authors(conn, None, None)? {
-            if row.orcid.as_deref() == Some(orcid) {
-                return Ok(Some(row));
-            }
-        }
+        return Ok(store::get_many(conn, None)?
+            .into_iter()
+            .find(|r| r.orcid.as_deref() == Some(orcid)));
     }
     Ok(None)
 }
 
 /// Fetch authors matching any combination of `Authors` filter fields.
+///
+/// Currently unwired above the service layer — kept as the pending filter
+/// seam for author-merge candidate lookup (`link_author_to_paper` /
+/// `unlink_author_from_paper` below share the same "wire it up soon" status).
 pub fn get_many(conn: &Connection, authors: &Authors) -> Result<Vec<BasicAuthorDetails>> {
     // A single name pushes down to the SQL exact-match; multiple names are
     // post-filtered (storage takes one name only).
@@ -147,6 +149,8 @@ pub fn delete(conn: &Connection, author: &Author) -> Result<()> {
 
 // ── PAPER_TO_AUTHOR links ───────────────────────────────────────────────────
 
+/// Currently unwired above the service layer — kept for the author-merge
+/// candidate flow (see `get_many`).
 pub fn link_author_to_paper(
     conn: &Connection,
     author_id: i64,
@@ -156,6 +160,8 @@ pub fn link_author_to_paper(
     store::link_author_to_paper(conn, author_id, paper_id, author_index)
 }
 
+/// Currently unwired above the service layer — kept for the author-merge
+/// candidate flow (see `get_many`).
 pub fn unlink_author_from_paper(conn: &Connection, author_id: i64, paper_id: i64) -> Result<()> {
     store::unlink_author_from_paper(conn, author_id, paper_id)
 }

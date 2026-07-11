@@ -145,23 +145,8 @@ pub(crate) fn looks_junk_author(author: &str) -> bool {
     if matches!(t, "user" | "admin" | "benutzer" | "utilisateur") {
         return true;
     }
-    contains_word(&la, b"windows")
-}
-
-fn contains_word(hay: &str, needle: &[u8]) -> bool {
-    let hb = hay.as_bytes();
-    let mut i = 0;
-    while i + needle.len() <= hb.len() {
-        if &hb[i..i + needle.len()] == needle {
-            let before = i == 0 || !is_word(hb[i - 1]);
-            let after = i + needle.len() == hb.len() || !is_word(hb[i + needle.len()]);
-            if before && after {
-                return true;
-            }
-        }
-        i += 1;
-    }
-    false
+    la.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .any(|w| w == "windows")
 }
 
 /// `\b[A-Z][a-z]+,\s*\d` — a surname-then-affiliation-superscript line.
@@ -221,24 +206,13 @@ pub(crate) fn extract_title_from_text(text: &str) -> Option<String> {
 // Jaccard title similarity (used by deferred CrossRef enrichment).
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)] // consumed by the deferred CrossRef enrichment (enrich_external)
 fn words(s: &str) -> std::collections::HashSet<String> {
-    let mut set = std::collections::HashSet::new();
-    let mut cur = String::new();
-    for c in s.chars() {
-        if c.is_alphanumeric() || c == '_' {
-            cur.extend(c.to_lowercase());
-        } else if !cur.is_empty() {
-            set.insert(std::mem::take(&mut cur));
-        }
-    }
-    if !cur.is_empty() {
-        set.insert(cur);
-    }
-    set
+    s.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+        .filter(|w| !w.is_empty())
+        .map(|w| w.chars().flat_map(char::to_lowercase).collect())
+        .collect()
 }
 
-#[allow(dead_code)] // consumed by the deferred CrossRef enrichment (enrich_external)
 pub(crate) fn title_similarity(a: &str, b: &str) -> f64 {
     let wa = words(a);
     let wb = words(b);
@@ -435,8 +409,6 @@ fn sweep_stale_pdfmeta_temps() {
 
 /// Extraction behind the crash boundary: routed through the worker subprocess
 /// when one is found, else run in-process (the pre-boundary behavior).
-/// ponytail: process-per-call (spawn + libpdfium load per import); pool the
-/// worker if import throughput ever matters.
 pub(crate) fn extract_pdf_metadata_isolated(bytes: &[u8]) -> Extracted {
     extract_isolated_with(pdf_worker_path().as_deref(), bytes)
 }
@@ -500,35 +472,18 @@ fn extract_via_worker(
         std::process::id(),
         SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
+    use std::io::Write;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::fs::OpenOptions;
-        use std::io::Write;
         use std::os::unix::fs::OpenOptionsExt;
-        let write_result = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&tmp)
-            .and_then(|mut f| f.write_all(bytes));
-        if write_result.is_err() {
-            let _ = std::fs::remove_file(&tmp);
-            return None;
-        }
+        opts.mode(0o600);
     }
-    #[cfg(not(unix))]
-    {
-        use std::fs::OpenOptions;
-        use std::io::Write;
-        let write_result = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)
-            .and_then(|mut f| f.write_all(bytes));
-        if write_result.is_err() {
-            let _ = std::fs::remove_file(&tmp);
-            return None;
-        }
+    let write_result = opts.open(&tmp).and_then(|mut f| f.write_all(bytes));
+    if write_result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return None;
     }
     let result = run_worker(worker, &tmp, timeout);
     let _ = std::fs::remove_file(&tmp);
@@ -558,19 +513,17 @@ fn run_worker(worker: &Path, pdf: &Path, timeout: std::time::Duration) -> Option
 
     let stdout = child.stdout.take().expect("stdout piped above");
     let stderr = child.stderr.take().expect("stderr piped above");
-    let (tx, rx) = std::sync::mpsc::channel();
-    let (stderr_tx, stderr_rx) = std::sync::mpsc::channel();
     let reader = std::thread::spawn(move || {
         let mut out = String::new();
         use std::io::Read;
         let _ = stdout.take(1_000_000).read_to_string(&mut out);
-        let _ = tx.send(out);
+        out
     });
     let stderr_reader = std::thread::spawn(move || {
         let mut err = String::new();
         use std::io::Read;
         let _ = stderr.take(1_000_000).read_to_string(&mut err);
-        let _ = stderr_tx.send(err);
+        err
     });
 
     let deadline = std::time::Instant::now() + timeout;
@@ -595,7 +548,7 @@ fn run_worker(worker: &Path, pdf: &Path, timeout: std::time::Duration) -> Option
     };
     if !status.success() {
         let _ = reader.join();
-        let stderr_out = stderr_rx.recv().ok().unwrap_or_default();
+        let stderr_out = stderr_reader.join().unwrap_or_default();
         let stderr_snippet = stderr_out.chars().take(200).collect::<String>();
         #[cfg(unix)]
         {
@@ -616,10 +569,9 @@ fn run_worker(worker: &Path, pdf: &Path, timeout: std::time::Duration) -> Option
         {
             tracing::warn!(code = ?status.code(), stderr = %stderr_snippet, "pdf-worker exited non-zero");
         }
-        let _ = stderr_reader.join();
         return None;
     }
-    let out = reader.join().ok().and_then(|_| rx.recv().ok())?;
+    let out = reader.join().ok()?;
     match serde_json::from_str(&out) {
         Ok(extracted) => Some(extracted),
         Err(e) => {

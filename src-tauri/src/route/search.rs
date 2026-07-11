@@ -86,11 +86,6 @@ fn save(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
         .and_then(Value::as_i64)
         .unwrap_or(200);
 
-    let clauses = json!(body.clauses);
-    let results = Value::Array(body.results);
-    let saved_ids = json!(body.saved_ids);
-    let sort_prefs = body.sort_prefs.map(Value::Object);
-
     state.with_conn(|conn| -> Result<(), ApiError> {
         if enabled {
             for clause in &body.clauses {
@@ -103,12 +98,12 @@ fn save(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
         }
         search_state::save_state(
             conn,
-            &clauses,
+            &json!(body.clauses),
             &body.source,
             body.max_results,
-            &results,
-            &saved_ids,
-            sort_prefs.as_ref(),
+            &Value::Array(body.results),
+            &json!(body.saved_ids),
+            body.sort_prefs.map(Value::Object).as_ref(),
         )?;
         Ok(())
     })?;

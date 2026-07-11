@@ -22,6 +22,30 @@ fn canon_or_raw(path: &Path) -> PathBuf {
         .unwrap_or_else(|| path.to_path_buf())
 }
 
+/// 422 if relative or non-UTF-8; 400 if it resolves to the live DB.
+fn reject_live_db(path: &Path, field: &str, role: &str) -> Result<(), ApiError> {
+    if !path.is_absolute() {
+        return Err(ApiError::new(422, format!("{field} must be absolute")));
+    }
+    if path.to_str().is_none() {
+        return Err(ApiError::new(422, format!("{field} is not valid UTF-8")));
+    }
+    let (a, b) = (canon_or_raw(path), canon_or_raw(&config::db_path()));
+    // Case-insensitive comparison only on case-insensitive filesystems.
+    let same = if cfg!(windows) || cfg!(target_os = "macos") {
+        a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
+    } else {
+        a == b
+    };
+    if same {
+        return Err(ApiError::new(
+            400,
+            format!("{role} is the live database itself — choose another file"),
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<Value, ApiError>> {
     match (ctx.method, ctx.segs) {
         ("POST", ["api", "storage", "backup"]) => Some(backup(state, ctx)),
@@ -38,27 +62,7 @@ fn backup(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
         dest_path: PathBuf,
     }
     let b: Body = ctx.parse_body()?;
-    if !b.dest_path.is_absolute() {
-        return Err(ApiError::new(422, "dest_path must be absolute"));
-    }
-    if b.dest_path.to_str().is_none() {
-        return Err(ApiError::new(422, "dest_path is not valid UTF-8"));
-    }
-    let dest_canon = canon_or_raw(&b.dest_path);
-    let db_path = config::db_path();
-    let db_canon = canon_or_raw(&db_path);
-    // Case-insensitive comparison only on case-insensitive filesystems.
-    let paths_match = if cfg!(windows) || cfg!(target_os = "macos") {
-        dest_canon.to_string_lossy().to_lowercase() == db_canon.to_string_lossy().to_lowercase()
-    } else {
-        dest_canon == db_canon
-    };
-    if paths_match {
-        return Err(ApiError::new(
-            400,
-            "destination is the live database itself — choose another file",
-        ));
-    }
+    reject_live_db(&b.dest_path, "dest_path", "destination")?;
     let temp_path = {
         let mut path = b.dest_path.clone();
         path.set_extension(format!("tmp-backup-{}", std::process::id()));
@@ -98,27 +102,8 @@ fn restore(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
         src_path: PathBuf,
     }
     let b: Body = ctx.parse_body()?;
-    if !b.src_path.is_absolute() {
-        return Err(ApiError::new(422, "src_path must be absolute"));
-    }
-    if b.src_path.to_str().is_none() {
-        return Err(ApiError::new(422, "src_path is not valid UTF-8"));
-    }
+    reject_live_db(&b.src_path, "src_path", "source")?;
     let db_path = config::db_path();
-    let src_canon = canon_or_raw(&b.src_path);
-    let db_canon = canon_or_raw(&db_path);
-    // Case-insensitive comparison only on case-insensitive filesystems.
-    let paths_match = if cfg!(windows) || cfg!(target_os = "macos") {
-        src_canon.to_string_lossy().to_lowercase() == db_canon.to_string_lossy().to_lowercase()
-    } else {
-        src_canon == db_canon
-    };
-    if paths_match {
-        return Err(ApiError::new(
-            400,
-            "source is the live database itself — choose another file",
-        ));
-    }
     // Validate the backup source early, before parking the live connection.
     storage::validate_backup_source(&b.src_path)?;
     state.with_conn(|conn| {
@@ -135,23 +120,14 @@ fn restore(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
         let result = storage::restore(&b.src_path, &db_path).map_err(ApiError::from);
         // Reopen whatever now sits at db_path — the app needs a working handle
         // even when the restore itself was refused.
-        match storage::open(&db_path) {
-            Ok(fresh) => {
-                if let Err(e) = storage::init_db(&fresh) {
-                    return Err(ApiError::new(
-                        500,
-                        format!("could not reopen the database — restart linXiv: {e}"),
-                    ));
-                }
-                *conn = fresh;
-            }
-            Err(e) => {
-                return Err(ApiError::new(
+        *conn = storage::open(&db_path)
+            .and_then(|fresh| storage::init_db(&fresh).map(|()| fresh))
+            .map_err(|e| {
+                ApiError::new(
                     500,
                     format!("could not reopen the database — restart linXiv: {e}"),
-                ));
-            }
-        }
+                )
+            })?;
         result?;
         Ok(json!({ "ok": true }))
     })

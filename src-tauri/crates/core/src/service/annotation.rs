@@ -2,19 +2,12 @@
 //!
 //! Thin delegation over `storage::queries::annotation`. DB-touching fns take
 //! `conn: &Connection` first (DI seam — never open from config). The
-//! `Annotation`/`Annotations` query objects are the one lookup seam.
+//! `Annotations` query object is the one lookup seam.
 
 use crate::error::{CoreError, Result};
 use crate::models::{validate_anchor, AnnotationDetails, AnnotationIn, AnnotationUpdateIn};
 use crate::storage::queries::annotation as q;
 use rusqlite::Connection;
-
-/// Single-annotation lookup key (ANNOTATION_SK). `None` short-circuits to a
-/// None/false result.
-#[derive(Debug, Clone, Default)]
-pub struct Annotation {
-    pub annotation_id: Option<i64>,
-}
 
 /// Multi-annotation filter. Valid combos: `source_fk` (+ optional
 /// `project_fk`/`all_projects`), or `project_fk` alone.
@@ -25,12 +18,9 @@ pub struct Annotations {
     pub all_projects: bool,
 }
 
-/// Fetch a single annotation by id. `Ok(None)` if absent or id unset.
-pub fn get(conn: &Connection, ann: &Annotation) -> Result<Option<AnnotationDetails>> {
-    match ann.annotation_id {
-        Some(id) => Ok(q::get_annotation(conn, id)?),
-        None => Ok(None),
-    }
+/// Fetch a single annotation by id. `Ok(None)` if absent.
+pub fn get(conn: &Connection, id: i64) -> Result<Option<AnnotationDetails>> {
+    Ok(q::get_annotation(conn, id)?)
 }
 
 /// Every annotation, CREATED_AT ASC.
@@ -79,12 +69,9 @@ pub fn create(conn: &Connection, ann: &AnnotationIn) -> Result<i64> {
     )?)
 }
 
-/// Delete an annotation by id. `false` if absent or id unset.
-pub fn delete(conn: &Connection, ann: &Annotation) -> Result<bool> {
-    match ann.annotation_id {
-        Some(id) => Ok(q::delete_annotation(conn, id)?),
-        None => Ok(false),
-    }
+/// Delete an annotation by id. `false` if absent.
+pub fn delete(conn: &Connection, id: i64) -> Result<bool> {
+    Ok(q::delete_annotation(conn, id)?)
 }
 
 /// Update the written comment. `false` if no row matched. The anchor is immutable.
@@ -130,14 +117,7 @@ mod tests {
         )
         .unwrap();
 
-        let got = get(
-            &conn,
-            &Annotation {
-                annotation_id: Some(id),
-            },
-        )
-        .unwrap()
-        .unwrap();
+        let got = get(&conn, id).unwrap().unwrap();
         assert_eq!(got.comment, "");
         assert_eq!(got.project_id, Some(10));
 
@@ -149,34 +129,10 @@ mod tests {
             },
         )
         .unwrap());
-        assert_eq!(
-            get(
-                &conn,
-                &Annotation {
-                    annotation_id: Some(id)
-                }
-            )
-            .unwrap()
-            .unwrap()
-            .comment,
-            "hello"
-        );
+        assert_eq!(get(&conn, id).unwrap().unwrap().comment, "hello");
 
-        assert!(delete(
-            &conn,
-            &Annotation {
-                annotation_id: Some(id)
-            }
-        )
-        .unwrap());
-        assert!(get(
-            &conn,
-            &Annotation {
-                annotation_id: Some(id)
-            }
-        )
-        .unwrap()
-        .is_none());
+        assert!(delete(&conn, id).unwrap());
+        assert!(get(&conn, id).unwrap().is_none());
     }
 
     #[test]
@@ -198,25 +154,5 @@ mod tests {
             get_many(&conn, &Annotations::default()).unwrap_err(),
             CoreError::Validation(_)
         ));
-    }
-
-    #[test]
-    fn unset_id_short_circuits() {
-        let conn = setup();
-        assert!(get(
-            &conn,
-            &Annotation {
-                annotation_id: None
-            }
-        )
-        .unwrap()
-        .is_none());
-        assert!(!delete(
-            &conn,
-            &Annotation {
-                annotation_id: None
-            }
-        )
-        .unwrap());
     }
 }

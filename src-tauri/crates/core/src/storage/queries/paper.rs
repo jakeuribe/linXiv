@@ -13,20 +13,18 @@ use crate::storage::db::{
 // Both functions select `*` from the `papers` / `latest_papers` views (same
 // column set), so one row->model mapper serves both. LIST/DATE/BOOL columns go
 // through the storage::db decltype converters — no inline re-parsing.
-fn row_to_paper(row: &Row) -> Result<PaperDetails> {
+pub(super) fn row_to_paper(row: &Row) -> Result<PaperDetails> {
     // LIST column (JSON TEXT) -> Vec<String>; NULL -> empty (model default).
     let list = |name: &str| -> Result<Vec<String>> {
-        match row.get::<_, Option<String>>(name)? {
-            Some(s) => list_from_sql(&s),
-            None => Ok(Vec::new()),
-        }
+        row.get::<_, Option<String>>(name)?
+            .map_or(Ok(Vec::new()), |s| list_from_sql(&s))
     };
     // DATE column (ISO TEXT) -> NaiveDate; NULL -> None.
     let date = |name: &str| -> Result<Option<NaiveDate>> {
-        match row.get::<_, Option<String>>(name)? {
-            Some(s) => Ok(Some(date_from_sql(&s)?)),
-            None => Ok(None),
-        }
+        row.get::<_, Option<String>>(name)?
+            .as_deref()
+            .map(date_from_sql)
+            .transpose()
     };
     Ok(PaperDetails {
         paper_id: row.get("paper_id")?,
@@ -81,15 +79,14 @@ pub fn get_paper(
     }
 }
 
-/// `storage/db.py::list_papers` — latest version per paper by default.
-/// Optional exact-category filter; limit/offset apply to the filtered result.
-pub fn list_papers(
-    conn: &Connection,
+/// Shared SQL + bind params for the list-papers filter/order/pagination, used by
+/// `list_papers` here and the CLI's raw-row `cmd_list`.
+pub fn list_papers_sql(
     latest_only: bool,
     limit: Option<i64>,
     offset: i64,
     category: Option<&str>,
-) -> Result<Vec<PaperDetails>> {
+) -> (String, Vec<Value>) {
     let mut sql = if latest_only {
         "SELECT * FROM latest_papers".to_string()
     } else {
@@ -114,7 +111,19 @@ pub fn list_papers(
         }
         None => {}
     }
+    (sql, params)
+}
 
+/// `storage/db.py::list_papers` — latest version per paper by default.
+/// Optional exact-category filter; limit/offset apply to the filtered result.
+pub fn list_papers(
+    conn: &Connection,
+    latest_only: bool,
+    limit: Option<i64>,
+    offset: i64,
+    category: Option<&str>,
+) -> Result<Vec<PaperDetails>> {
+    let (sql, params) = list_papers_sql(latest_only, limit, offset, category);
     let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query(params_from_iter(&params))?;
     let mut out = Vec::new();
@@ -147,8 +156,8 @@ fn opt_date_val(d: &Option<NaiveDate>) -> Value {
 }
 
 /// `_ensure_paper_root_row` — INSERT OR IGNORE the root, then reactivate it if it
-/// was soft-deleted. Returns (SOURCE_FK, was_restored). Runs in the caller's tx.
-fn ensure_paper_root_row(tx: &Transaction, source_id: &str) -> Result<(i64, bool)> {
+/// was soft-deleted. Returns SOURCE_FK. Runs in the caller's tx.
+fn ensure_paper_root_row(tx: &Transaction, source_id: &str) -> Result<i64> {
     tx.execute(
         "INSERT OR IGNORE INTO PAPER_ROOTS (SOURCE_ID) VALUES (?)",
         [source_id],
@@ -158,15 +167,14 @@ fn ensure_paper_root_row(tx: &Transaction, source_id: &str) -> Result<(i64, bool
         [source_id],
         |r| Ok((r.get(0)?, r.get(1)?)),
     )?;
-    let restored = status == "deleted";
-    if restored {
+    if status == "deleted" {
         tx.execute(
             "UPDATE PAPER_ROOTS SET STATUS = 'active', DELETED_AT = NULL, \
              UPDATED_AT = datetime('now') WHERE SOURCE_ID = ?",
             [source_id],
         )?;
     }
-    Ok((fk, restored))
+    Ok(fk)
 }
 
 /// `_author_fk_for_name` — find (case-insensitive) or create an AUTHOR row.
@@ -185,22 +193,6 @@ fn author_fk_for_name(tx: &Transaction, full_name: &str) -> Result<i64> {
         "INSERT INTO AUTHOR (AUTHOR_FULL_NAME) VALUES (?)",
         [full_name],
     )?;
-    Ok(tx.last_insert_rowid())
-}
-
-/// `_tag_fk_for_label` — find (case-insensitive) or create a TAG row.
-fn tag_fk_for_label(tx: &Transaction, label: &str) -> Result<i64> {
-    if let Some(fk) = tx
-        .query_row(
-            "SELECT TAG_FK FROM TAG WHERE TAG = ? COLLATE NOCASE LIMIT 1",
-            [label],
-            |r| r.get::<_, i64>(0),
-        )
-        .optional()?
-    {
-        return Ok(fk);
-    }
-    tx.execute("INSERT INTO TAG (TAG) VALUES (?)", [label])?;
     Ok(tx.last_insert_rowid())
 }
 
@@ -251,7 +243,7 @@ fn sync_paper_tags(
         if label.is_empty() {
             continue;
         }
-        let tid = tag_fk_for_label(tx, label)?;
+        let tid = super::tag::tag_fk_for_label(tx, label)?;
         tx.execute(
             "INSERT INTO PAPER_TO_TAG (PAPER_ID, SOURCE_ID, VERSION, TAG_FK) VALUES (?, ?, ?, ?)",
             params![paper_id, source_id, version, tid],
@@ -283,12 +275,17 @@ fn merge_tags(base: &Option<Vec<String>>, extra: Option<&[String]>) -> Option<Ve
 /// a no-op (matches Python's early return). `pdf_path`/`full_text`/
 /// `downloaded_source` are always NULL on this path; FTS is not touched here
 /// (full_text is None) — set_full_text/repair/restore own the FTS index.
-fn write_paper_version(
+/// `extra_tags` are merged into the paper's own tags. tx-level, for callers that
+/// need the write to share a transaction with other statements of their own
+/// (e.g. version_monitor saving a new version and flagging it as checked as one
+/// atomic unit instead of two ordered-but-separate writes).
+pub(crate) fn write_paper_version_in_tx(
     tx: &Transaction,
     meta: &PaperMetadata,
-    merged_tags: &Option<Vec<String>>,
+    extra_tags: Option<&[String]>,
 ) -> Result<()> {
-    let (source_fk, _) = ensure_paper_root_row(tx, &meta.source_id)?;
+    let merged_tags = merge_tags(&meta.tags, extra_tags);
+    let source_fk = ensure_paper_root_row(tx, &meta.source_id)?;
     let changed = tx.execute(
         "INSERT OR IGNORE INTO PAPER (SOURCE_ID, VERSION, TITLE, CATEGORY, HAS_PDF, SOURCE_FK) \
          VALUES (?, ?, ?, ?, 0, ?)",
@@ -322,7 +319,7 @@ fn write_paper_version(
             meta.summary,
             source,
             list_to_sql(&meta.authors),
-            opt_list_val(merged_tags),
+            opt_list_val(&merged_tags),
         ],
     )?;
     tx.execute(
@@ -338,19 +335,6 @@ fn write_paper_version(
         merged_tags.as_deref(),
     )?;
     Ok(())
-}
-
-/// tx-level `save_paper_metadata`, for callers that need the paper-version write
-/// to share a transaction with other statements of their own (e.g. version_monitor
-/// saving a new version and flagging it as checked as one atomic unit instead of
-/// two ordered-but-separate writes).
-pub(crate) fn write_paper_version_in_tx(
-    tx: &Transaction,
-    meta: &PaperMetadata,
-    extra_tags: Option<&[String]>,
-) -> Result<()> {
-    let merged = merge_tags(&meta.tags, extra_tags);
-    write_paper_version(tx, meta, &merged)
 }
 
 /// `save_paper_metadata` — persist one paper version atomically (PAPER +
@@ -464,7 +448,7 @@ pub fn remove_paper_tags(
 /// `ensure_paper_root` — INSERT OR IGNORE the root (reactivating if deleted).
 /// Returns its SOURCE_FK.
 pub fn ensure_paper_root(conn: &mut Connection, source_id: &str) -> Result<i64> {
-    transaction(conn, |tx| Ok(ensure_paper_root_row(tx, source_id)?.0))
+    transaction(conn, |tx| ensure_paper_root_row(tx, source_id))
 }
 
 /// `get_source_id` — SOURCE_ID for a SOURCE_FK, or None.
@@ -790,49 +774,38 @@ pub struct PaperRoot {
 }
 
 fn opt_ts(s: Option<String>) -> Result<Option<NaiveDateTime>> {
-    match s {
-        Some(s) => Ok(Some(timestamp_from_sql(&s)?)),
-        None => Ok(None),
-    }
+    s.as_deref().map(timestamp_from_sql).transpose()
 }
 
 /// `get_paper_root` — the PAPER_ROOTS row for a source_id, or None.
 pub fn get_paper_root(conn: &Connection, source_id: &str) -> Result<Option<PaperRoot>> {
-    let raw: Option<(
-        i64,
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    )> = conn
-        .query_row(
-            "SELECT SOURCE_FK, SOURCE_ID, STATUS, DELETED_AT, CREATED_AT, UPDATED_AT \
-             FROM PAPER_ROOTS WHERE SOURCE_ID = ?",
-            [source_id],
-            |r| {
-                Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get(4)?,
-                    r.get(5)?,
-                ))
-            },
-        )
-        .optional()?;
-    match raw {
-        Some((source_fk, source_id, status, del, cre, upd)) => Ok(Some(PaperRoot {
+    conn.query_row(
+        "SELECT SOURCE_FK, SOURCE_ID, STATUS, DELETED_AT, CREATED_AT, UPDATED_AT \
+         FROM PAPER_ROOTS WHERE SOURCE_ID = ?",
+        [source_id],
+        |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<String>>(5)?,
+            ))
+        },
+    )
+    .optional()?
+    .map(|(source_fk, source_id, status, del, cre, upd)| {
+        Ok(PaperRoot {
             source_fk,
             source_id,
             status,
             deleted_at: opt_ts(del)?,
             created_at: opt_ts(cre)?,
             updated_at: opt_ts(upd)?,
-        })),
-        None => Ok(None),
-    }
+        })
+    })
+    .transpose()
 }
 
 /// A soft-deleted paper from the `deleted_papers` view. Local struct (no model;
@@ -855,14 +828,14 @@ pub fn list_deleted_papers(conn: &Connection) -> Result<Vec<DeletedPaper>> {
     let mut rows = stmt.query([])?;
     let mut out = Vec::new();
     while let Some(row) = rows.next()? {
-        let authors = match row.get::<_, Option<String>>("authors")? {
-            Some(s) => list_from_sql(&s)?,
-            None => Vec::new(),
-        };
-        let published = match row.get::<_, Option<String>>("published")? {
-            Some(s) => Some(date_from_sql(&s)?),
-            None => None,
-        };
+        let authors = row
+            .get::<_, Option<String>>("authors")?
+            .map_or(Ok(Vec::new()), |s| list_from_sql(&s))?;
+        let published = row
+            .get::<_, Option<String>>("published")?
+            .as_deref()
+            .map(date_from_sql)
+            .transpose()?;
         out.push(DeletedPaper {
             source_fk: row.get("source_fk")?,
             source_id: row.get("source_id")?,

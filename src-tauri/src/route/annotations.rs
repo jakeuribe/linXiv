@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use linxiv_core::models::{AnnotationIn, AnnotationUpdateIn};
-use linxiv_core::service::annotation::{self as svc_ann, Annotation, Annotations};
+use linxiv_core::service::annotation::{self as svc_ann, Annotations};
 use linxiv_core::service::paper as svc_paper;
 use linxiv_core::storage::queries::paper as store_paper;
 
@@ -106,12 +106,7 @@ fn update(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
 fn delete(state: &AppState, id: &str) -> Result<Value, ApiError> {
     let annotation_id = path_i64(id)?;
     state.with_conn(|conn| {
-        if !svc_ann::delete(
-            conn,
-            &Annotation {
-                annotation_id: Some(annotation_id),
-            },
-        )? {
+        if !svc_ann::delete(conn, annotation_id)? {
             return Err(ApiError::new(404, "Annotation not found"));
         }
         Ok(json!({ "ok": true }))
@@ -121,33 +116,9 @@ fn delete(state: &AppState, id: &str) -> Result<Value, ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::route::{route, ApiRequest};
-    use linxiv_core::storage;
+    use crate::route::testutil::{req, state};
 
     const ANCHOR: &str = r##"{"v":1,"version":1,"page":1,"color":"#ffd400","quote":"q","rects":[{"x":0,"y":0,"w":0.5,"h":0.1}]}"##;
-
-    fn state() -> AppState {
-        let conn = storage::open_in_memory().unwrap();
-        storage::init_db(&conn).unwrap();
-        AppState::from_parts(conn, std::env::temp_dir(), std::env::temp_dir())
-    }
-
-    async fn req(
-        st: &AppState,
-        method: &str,
-        path: &str,
-        body: Option<Value>,
-    ) -> Result<Value, ApiError> {
-        route(
-            st,
-            ApiRequest {
-                method: method.into(),
-                path: path.into(),
-                body,
-            },
-        )
-        .await
-    }
 
     #[tokio::test]
     async fn list_unknown_paper_returns_empty_not_404() {

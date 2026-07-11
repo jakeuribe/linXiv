@@ -6,11 +6,11 @@ use serde_json::json;
 use linxiv_core::error::CoreError;
 use linxiv_core::models::TagIn;
 use linxiv_core::service::paper::{self as svc_paper, Paper};
-use linxiv_core::service::project::{self as svc_project, Project};
 use linxiv_core::service::tag::{self as svc_tag, Tag};
 use linxiv_core::storage::queries::paper as paperq;
 use linxiv_core::storage::queries::tag as tagq;
 
+use crate::cmd::trash::resolve_project_or_exit;
 use crate::ctx::Ctx;
 use crate::output::{as_source_id, fail, output};
 
@@ -130,20 +130,4 @@ pub async fn run(cmd: TagCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         }
     }
     Ok(())
-}
-
-/// `_resolve_project_or_exit`: None -> `{"error": "Project {id} not found"}` + exit(1).
-fn resolve_project_or_exit(
-    ctx: &Ctx,
-    project_id: i64,
-) -> anyhow::Result<linxiv_core::models::ProjectDetails> {
-    match svc_project::get(
-        &ctx.conn,
-        &Project {
-            project_fk: Some(project_id),
-        },
-    )? {
-        Some(d) => Ok(d),
-        None => fail(format!("Project {project_id} not found")),
-    }
 }

@@ -12,7 +12,7 @@
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_router, ErrorData};
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 use linxiv_core::config;
@@ -24,21 +24,23 @@ use linxiv_core::service::{
 use linxiv_core::sources::pdf_metadata::resolve_pdf_metadata;
 use linxiv_core::storage::queries::paper as store_paper;
 
+use crate::util::{core_err, invalid, json_ok};
 use crate::Server;
 
-/// `ValueError` → MCP invalid-params, preserving the Python message verbatim.
-fn invalid(msg: impl Into<String>) -> ErrorData {
-    ErrorData::invalid_params(msg.into(), None)
-}
-
-/// Unexpected core failure (not one of the explicit `ValueError` paths).
-fn core_err(e: CoreError) -> ErrorData {
-    ErrorData::internal_error(e.to_string(), None)
-}
-
-/// Serialize a core value to the tool's text result (compact JSON string).
-fn json_ok<T: Serialize>(v: &T) -> Result<String, ErrorData> {
-    serde_json::to_string(v).map_err(|e| ErrorData::internal_error(e.to_string(), None))
+/// Shared trash-tool guard: the project must exist and be soft-deleted.
+fn require_trashed_project(conn: &rusqlite::Connection, id: i64) -> Result<(), ErrorData> {
+    let d = svc_project::get(
+        conn,
+        &svc_project::Project {
+            project_fk: Some(id),
+        },
+    )
+    .map_err(core_err)?
+    .ok_or_else(|| invalid(format!("Project {id} not found.")))?;
+    if d.status != Status::Deleted {
+        return Err(invalid(format!("Project {id} is not in trash.")));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -144,16 +146,15 @@ impl Server {
         Parameters(p): Parameters<CreateNoteParams>,
     ) -> Result<String, ErrorData> {
         self.with_conn(|conn| {
-            let root = store_paper::get_paper_root(conn, &p.paper_id).map_err(core_err)?;
-            let source_fk = match root {
-                Some(r) => r.source_fk,
-                None => {
-                    return Err(invalid(format!(
+            let source_fk = store_paper::get_paper_root(conn, &p.paper_id)
+                .map_err(core_err)?
+                .ok_or_else(|| {
+                    invalid(format!(
                         "Paper {} not found. Run fetch_paper first.",
                         crate::util::pyrepr(&p.paper_id)
-                    )))
-                }
-            };
+                    ))
+                })?
+                .source_fk;
             let note_id = svc_note::create(
                 conn,
                 &NoteIn {
@@ -214,18 +215,17 @@ impl Server {
                 svc_note::list_all(conn).map_err(core_err)?
             } else {
                 let source_fk = match &p.paper_id {
-                    Some(pid) => {
-                        let root = store_paper::get_paper_root(conn, pid).map_err(core_err)?;
-                        match root {
-                            Some(r) => Some(r.source_fk),
-                            None => {
-                                return Err(invalid(format!(
+                    Some(pid) => Some(
+                        store_paper::get_paper_root(conn, pid)
+                            .map_err(core_err)?
+                            .ok_or_else(|| {
+                                invalid(format!(
                                     "Paper {} not found in database.",
                                     crate::util::pyrepr(pid)
-                                )))
-                            }
-                        }
-                    }
+                                ))
+                            })?
+                            .source_fk,
+                    ),
                     None => None,
                 };
                 svc_note::get_many(
@@ -309,16 +309,15 @@ impl Server {
         Parameters(p): Parameters<GetNotesForPaperParams>,
     ) -> Result<String, ErrorData> {
         self.with_conn(|conn| {
-            let root = store_paper::get_paper_root(conn, &p.paper_id).map_err(core_err)?;
-            let source_fk = match root {
-                Some(r) => r.source_fk,
-                None => {
-                    return Err(invalid(format!(
+            let source_fk = store_paper::get_paper_root(conn, &p.paper_id)
+                .map_err(core_err)?
+                .ok_or_else(|| {
+                    invalid(format!(
                         "Paper {} not found in database.",
                         crate::util::pyrepr(&p.paper_id)
-                    )))
-                }
-            };
+                    ))
+                })?
+                .source_fk;
             let notes = svc_note::get_many(
                 conn,
                 &svc_note::Notes {
@@ -366,16 +365,13 @@ impl Server {
                     ..Default::default()
                 },
             )
-            .map_err(core_err)?;
-            let paper = match paper {
-                Some(paper) => paper,
-                None => {
-                    return Err(invalid(format!(
-                        "Paper {} not found in database.",
-                        crate::util::pyrepr(&p.paper_id)
-                    )))
-                }
-            };
+            .map_err(core_err)?
+            .ok_or_else(|| {
+                invalid(format!(
+                    "Paper {} not found in database.",
+                    crate::util::pyrepr(&p.paper_id)
+                ))
+            })?;
             let ver = paper.version;
             let path =
                 svc_files::pdf_path(&pdf_dir, &paper.source_id, ver, paper.pdf_path.as_deref());
@@ -396,7 +392,7 @@ impl Server {
         // Resolve the paper (and its concrete version) under the lock, then drop
         // it before the network download — the mutex must not span the await.
         let (source_id, ver) = self.with_conn(|conn| {
-            let paper = svc_paper::get(
+            svc_paper::get(
                 conn,
                 &svc_paper::Paper {
                     source_id: Some(p.paper_id.clone()),
@@ -404,14 +400,14 @@ impl Server {
                     ..Default::default()
                 },
             )
-            .map_err(core_err)?;
-            match paper {
-                Some(paper) => Ok((paper.source_id, paper.version)),
-                None => Err(invalid(format!(
+            .map_err(core_err)?
+            .ok_or_else(|| {
+                invalid(format!(
                     "Paper {} not found in database.",
                     crate::util::pyrepr(&p.paper_id)
-                ))),
-            }
+                ))
+            })
+            .map(|paper| (paper.source_id, paper.version))
         })?;
         let max_pdf_bytes = config::UserSettings::load()
             .map_err(core_err)?
@@ -495,23 +491,7 @@ impl Server {
         Parameters(p): Parameters<ProjectIdParams>,
     ) -> Result<String, ErrorData> {
         self.with_conn(|conn| {
-            let details = svc_project::get(
-                conn,
-                &svc_project::Project {
-                    project_fk: Some(p.project_id),
-                },
-            )
-            .map_err(core_err)?;
-            let details = match details {
-                Some(d) => d,
-                None => return Err(invalid(format!("Project {} not found.", p.project_id))),
-            };
-            if details.status != Status::Deleted {
-                return Err(invalid(format!(
-                    "Project {} is not in trash.",
-                    p.project_id
-                )));
-            }
+            require_trashed_project(conn, p.project_id)?;
             svc_project::restore(
                 conn,
                 &svc_project::Project {
@@ -531,23 +511,7 @@ impl Server {
         Parameters(p): Parameters<ProjectIdParams>,
     ) -> Result<String, ErrorData> {
         self.with_conn(|conn| {
-            let details = svc_project::get(
-                conn,
-                &svc_project::Project {
-                    project_fk: Some(p.project_id),
-                },
-            )
-            .map_err(core_err)?;
-            let details = match details {
-                Some(d) => d,
-                None => return Err(invalid(format!("Project {} not found.", p.project_id))),
-            };
-            if details.status != Status::Deleted {
-                return Err(invalid(format!(
-                    "Project {} is not in trash.",
-                    p.project_id
-                )));
-            }
+            require_trashed_project(conn, p.project_id)?;
             svc_project::hard_delete(
                 conn,
                 &svc_project::Project {

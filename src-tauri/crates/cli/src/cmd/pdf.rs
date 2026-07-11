@@ -7,8 +7,6 @@ use serde::Serialize;
 
 use linxiv_core::config;
 use linxiv_core::service::files as svc_files;
-use linxiv_core::service::paper as svc_paper;
-use linxiv_core::service::paper::Paper;
 use linxiv_core::service::paper_import;
 
 use crate::ctx::Ctx;
@@ -66,33 +64,11 @@ struct ImportedPdf {
     title: String,
 }
 
-/// `_resolve_paper_or_exit(_as_source_id(source_id))`. Returns the resolved
-/// PaperDetails or exits with the `Paper {id!r} not found in DB` error.
-fn resolve_paper_or_exit(
-    conn: &rusqlite::Connection,
-    raw: &str,
-) -> linxiv_core::models::PaperDetails {
-    let source_id = as_source_id(raw, "arxiv");
-    match svc_paper::get(
-        conn,
-        &Paper {
-            source_id: Some(source_id.clone()),
-            ..Default::default()
-        },
-    ) {
-        Ok(Some(details)) => details,
-        Ok(None) => fail(format!(
-            "Paper {} not found in DB",
-            crate::output::pyrepr(&source_id)
-        )),
-        Err(e) => fail(e),
-    }
-}
-
 pub async fn run(cmd: PdfCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
     match cmd {
         PdfCmd::Path { source_id, version } => {
-            let paper = resolve_paper_or_exit(&ctx.conn, &source_id);
+            let source_id = as_source_id(&source_id, "arxiv");
+            let paper = super::paper::resolve_paper_or_exit(ctx, &source_id);
             // Python `args.version if args.version else paper.version` — 0/None fall back.
             let version = version.filter(|&v| v != 0).unwrap_or(paper.version);
             let path = svc_files::pdf_path(
@@ -112,10 +88,11 @@ pub async fn run(cmd: PdfCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             url,
             version,
         } => {
-            let paper = resolve_paper_or_exit(&ctx.conn, &source_id);
+            let source_id = as_source_id(&source_id, "arxiv");
+            let paper = super::paper::resolve_paper_or_exit(ctx, &source_id);
             let version = version.filter(|&v| v != 0).unwrap_or(paper.version);
             let max_pdf_bytes = ctx.settings.pdf_save_limit_bytes();
-            let path = match svc_files::download_pdf(
+            let path = svc_files::download_pdf(
                 &ctx.pdf_dir,
                 &paper.source_id,
                 version,
@@ -123,13 +100,10 @@ pub async fn run(cmd: PdfCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                 max_pdf_bytes,
             )
             .await
-            {
-                Ok(p) => p,
-                Err(e) => {
-                    eprintln!("[pdf] {e}");
-                    fail(e);
-                }
-            };
+            .unwrap_or_else(|e| {
+                eprintln!("[pdf] {e}");
+                fail(e)
+            });
             output(&PdfLocation {
                 source_id: paper.source_id,
                 version,
@@ -148,16 +122,13 @@ pub async fn run(cmd: PdfCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         PdfCmd::Import { file, project_id } => {
             // import_pdf applies the membership guards itself; any failure (read,
             // extract, guard) becomes the JSON error exit.
-            let content = match std::fs::read(&file) {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("[pdf-import] {e}");
-                    fail(e);
-                }
-            };
+            let content = std::fs::read(&file).unwrap_or_else(|e| {
+                eprintln!("[pdf-import] {e}");
+                fail(e)
+            });
             let data_dir = config::data_dir();
             let max_pdf_bytes = ctx.settings.pdf_save_limit_bytes();
-            let result = match paper_import::import_pdf_default(
+            let result = paper_import::import_pdf_default(
                 &mut ctx.conn,
                 &ctx.pdf_dir,
                 &content,
@@ -166,13 +137,10 @@ pub async fn run(cmd: PdfCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                 &data_dir,
             )
             .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!("[pdf-import] {e}");
-                    fail(e);
-                }
-            };
+            .unwrap_or_else(|e| {
+                eprintln!("[pdf-import] {e}");
+                fail(e)
+            });
             output(&ImportedPdf {
                 source_id: result.source_id,
                 title: result.title,

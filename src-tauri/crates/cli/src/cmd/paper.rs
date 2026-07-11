@@ -1,7 +1,6 @@
 //! Group `paper` — cmd_paper_* in `linxiv_cli.py`.
 
 use clap::Subcommand;
-use serde::Serialize;
 use serde_json::json;
 
 use crate::ctx::Ctx;
@@ -55,7 +54,10 @@ pub enum PaperCmd {
 }
 
 /// `_resolve_paper_or_exit`: load a paper or fail with the not-found error.
-fn resolve_paper_or_exit(ctx: &Ctx, source_id: &str) -> linxiv_core::models::PaperDetails {
+pub(super) fn resolve_paper_or_exit(
+    ctx: &Ctx,
+    source_id: &str,
+) -> linxiv_core::models::PaperDetails {
     match svc_paper::get(&ctx.conn, &paper(source_id)) {
         Ok(Some(p)) => p,
         Ok(None) => fail(format!(
@@ -157,7 +159,18 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         // cmd_paper_restore: only valid from trash; returns pdf path + project links.
         PaperCmd::Restore { source_id } => {
             let source_id = as_source_id(&source_id, "arxiv");
-            output(&do_restore(ctx, &source_id)?);
+            if !svc_paper::is_paper_deleted(&ctx.conn, &source_id)? {
+                fail(format!(
+                    "Paper {} not found in trash",
+                    crate::output::pyrepr(&source_id)
+                ));
+            }
+            let (pdf_path, project_fks) = svc_paper::restore(&mut ctx.conn, &paper(&source_id))?;
+            output(&json!({
+                "restored": source_id,
+                "pdf_path": pdf_path,
+                "project_fks": project_fks,
+            }));
         }
 
         // cmd_paper_hard_delete: permanently remove an existing paper.
@@ -212,10 +225,10 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         PaperCmd::RemoveFromAllProjects { source_id } => {
             let source_id = as_source_id(&source_id, "arxiv");
             match svc_project::remove_paper_from_all_projects_by_id(&mut ctx.conn, &source_id)? {
-                Some(removed) => output(&RemoveFromAll {
-                    source_id,
-                    removed_from_projects: removed,
-                }),
+                Some(removed) => output(&json!({
+                    "source_id": source_id,
+                    "removed_from_projects": removed,
+                })),
                 None => fail(format!(
                     "Paper {} not found",
                     crate::output::pyrepr(&source_id)
@@ -224,33 +237,4 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         }
     }
     Ok(())
-}
-
-/// `_do_paper_restore`: trash-guard then restore, mirroring the Python dict shape.
-fn do_restore(ctx: &mut Ctx, source_id: &str) -> anyhow::Result<Restore> {
-    if !svc_paper::is_paper_deleted(&ctx.conn, source_id)? {
-        fail(format!(
-            "Paper {} not found in trash",
-            crate::output::pyrepr(source_id)
-        ));
-    }
-    let (pdf_path, project_fks) = svc_paper::restore(&mut ctx.conn, &paper(source_id))?;
-    Ok(Restore {
-        restored: source_id.to_string(),
-        pdf_path,
-        project_fks,
-    })
-}
-
-#[derive(Serialize)]
-struct Restore {
-    restored: String,
-    pdf_path: Option<String>,
-    project_fks: Vec<i64>,
-}
-
-#[derive(Serialize)]
-struct RemoveFromAll {
-    source_id: String,
-    removed_from_projects: Vec<i64>,
 }

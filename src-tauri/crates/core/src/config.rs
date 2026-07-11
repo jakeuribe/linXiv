@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use directories::BaseDirs;
 use serde_json::{Map, Value};
 
-use crate::error::{CoreError, Result};
+use crate::error::Result;
 
 const ENV_DATA_DIR: &str = "LINXIV_DATA_DIR";
 /// Must match `src-tauri/tauri.conf.json` "identifier" and `config.py` _APP_IDENTIFIER.
@@ -19,36 +19,24 @@ const USER_SETTINGS_FILE: &str = "user_settings.json";
 /// Rust defaults can never drift from `formats/default_settings.json`.
 const BUNDLED_DEFAULTS: &str = include_str!("../assets/default_settings.json");
 
-fn map_io(e: std::io::Error) -> CoreError {
-    CoreError::Internal(e.to_string())
-}
-
-fn map_json(e: serde_json::Error) -> CoreError {
-    CoreError::Internal(e.to_string())
-}
-
-/// OS per-user app-data dir for `com.linxiv.app`, byte-matching Tauri's `app_data_dir()`
-/// (which is `dirs::data_dir().join(identifier)`) on Linux/macOS/Windows. Used only when
-/// LINXIV_DATA_DIR is unset (dev / CLI / MCP launched without Tauri). Never the repo.
+/// Runtime data dir (DB, PDFs, user settings, vaults). Resolved on every call so it tracks
+/// LINXIV_DATA_DIR dynamically; falls back to the OS app-data dir when unset. Never the repo.
+///
+/// The fallback is the OS per-user app-data dir for `com.linxiv.app`, byte-matching Tauri's
+/// `app_data_dir()` (which is `dirs::data_dir().join(identifier)`) on Linux/macOS/Windows.
 //
 // `BaseDirs::data_dir()` is the `directories`-crate equivalent of `dirs::data_dir()`:
 //   Linux   $XDG_DATA_HOME or ~/.local/share
 //   macOS   ~/Library/Application Support
 //   Windows %APPDATA% (Roaming)
 // then we append the identifier as a single path segment, exactly like Tauri.
-fn _default_data_dir() -> PathBuf {
-    BaseDirs::new()
-        .expect("no home directory: cannot resolve the OS data dir")
-        .data_dir()
-        .join(APP_IDENTIFIER)
-}
-
-/// Runtime data dir (DB, PDFs, user settings, vaults). Resolved on every call so it tracks
-/// LINXIV_DATA_DIR dynamically; falls back to the OS app-data dir when unset. Never the repo.
 pub fn data_dir() -> PathBuf {
     match env::var_os(ENV_DATA_DIR) {
         Some(v) if !v.is_empty() => PathBuf::from(v),
-        _ => _default_data_dir(),
+        _ => BaseDirs::new()
+            .expect("no home directory: cannot resolve the OS data dir")
+            .data_dir()
+            .join(APP_IDENTIFIER),
     }
 }
 
@@ -59,7 +47,7 @@ pub fn init_data_dir() -> Result<PathBuf> {
     let path = data_dir();
     // edition-2021: env::set_var is safe (becomes `unsafe` only under edition-2024).
     env::set_var(ENV_DATA_DIR, &path);
-    std::fs::create_dir_all(&path).map_err(map_io)?;
+    std::fs::create_dir_all(&path)?;
     Ok(path)
 }
 
@@ -77,22 +65,10 @@ pub fn vault_dir() -> PathBuf {
     data_dir().join("vaults")
 }
 
-/// Legacy PDF location (`storage/paths.py::old_pdf_dir`) — only the blue→green
-/// `migrate_db` path reads it (ported last, plan §5.3).
-pub fn old_pdf_dir() -> PathBuf {
-    data_dir().join("gui").join("pdfs")
-}
-
-/// Loads a dev `.env` (dev API keys) if present; a missing file is a silent no-op
-/// (matching python-dotenv). Unlike Python's pinned `load_dotenv(ENV_PATH)` (repo
-/// `.env`), dotenvy walks up from CWD — fine for `cargo run` in the repo; prod keys
-/// come from the real environment / SQLite settings (D20).
-pub fn load_dotenv() -> Result<()> {
-    match dotenvy::dotenv() {
-        Ok(_) => Ok(()),
-        Err(e) if e.not_found() => Ok(()),
-        Err(e) => Err(CoreError::Internal(e.to_string())),
-    }
+/// OpenAlex polite-pool address (`OPENALEX_MAILTO`); CR/LF are stripped downstream
+/// in `openalex::user_agent`, matching `OpenAlexSource`.
+pub fn openalex_mailto() -> String {
+    std::env::var("OPENALEX_MAILTO").unwrap_or_default()
 }
 
 /// User settings: bundled defaults overlaid by the user's overrides (shallow merge), mirroring
@@ -111,7 +87,7 @@ impl UserSettings {
         let overrides = match std::fs::read_to_string(&path) {
             Ok(s) => parse_obj(&s)?,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Map::new(),
-            Err(e) => return Err(map_io(e)),
+            Err(e) => return Err(e.into()),
         };
         Ok(Self {
             defaults,
@@ -144,8 +120,9 @@ impl UserSettings {
     /// Persist only the overrides (pretty-printed, like the Python `json.dumps(indent=2)` writer).
     pub fn save(&self) -> Result<()> {
         let path = data_dir().join(USER_SETTINGS_FILE);
-        let body = serde_json::to_string_pretty(&self.overrides).map_err(map_json)?;
-        std::fs::write(path, body).map_err(map_io)
+        let body = serde_json::to_string_pretty(&self.overrides)?;
+        std::fs::write(path, body)?;
+        Ok(())
     }
 
     /// `pdf_save_limit_mb`, converted to bytes — the TOTAL-storage cap across all managed
@@ -164,7 +141,7 @@ impl UserSettings {
 }
 
 fn parse_obj(s: &str) -> Result<Map<String, Value>> {
-    serde_json::from_str(s).map_err(map_json)
+    Ok(serde_json::from_str(s)?)
 }
 
 #[cfg(test)]

@@ -11,7 +11,7 @@ use chrono::NaiveDate;
 use serde_json::Value;
 
 use crate::error::{CoreError, Result};
-use crate::models::PaperMetadata;
+use crate::models::{date_min, PaperMetadata};
 use crate::sources::http;
 
 const BASE_URL: &str = "https://api.openalex.org";
@@ -21,11 +21,6 @@ const ALLOW: &[&str] = &["api.openalex.org"];
 /// Fixed `select` field list — only the fields `work_to_metadata` reads.
 const WORK_FIELDS: &str =
     "id,title,authorships,publication_date,doi,primary_topic,abstract_inverted_index";
-
-/// `date.min` sentinel (0001-01-01); models' copy is private, so mirror it here.
-fn date_min() -> NaiveDate {
-    NaiveDate::from_ymd_opt(1, 1, 1).expect("0001-01-01 is valid")
-}
 
 /// Polite-pool UA: `linXiv/1.0 (mailto:<addr>)`, or bare UA when no address.
 /// CR/LF stripped so a tainted mailto can't inject extra request headers.
@@ -41,17 +36,11 @@ fn user_agent(mailto: &str) -> String {
 /// OpenAlex reads `| ! * ?` in `search` as query operators (HTTP 400 on free
 /// text); replace each with a space and collapse the resulting whitespace.
 fn sanitize_search_query(query: &str) -> String {
-    let spaced: String = query
-        .chars()
-        .map(|c| {
-            if matches!(c, '|' | '!' | '*' | '?') {
-                ' '
-            } else {
-                c
-            }
-        })
-        .collect();
-    spaced.split_whitespace().collect::<Vec<_>>().join(" ")
+    query
+        .split(|c: char| c.is_whitespace() || matches!(c, '|' | '!' | '*' | '?'))
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// `^W\d+$` — bare OpenAlex Work ID.
@@ -98,12 +87,11 @@ fn reconstruct_abstract(inverted: Option<&Value>) -> Option<String> {
 /// Convert an OpenAlex Work object to `PaperMetadata`. Errors (mapped to the
 /// search skip-loop) only when the Work has no usable ID.
 fn work_to_metadata(work: &Value) -> Result<PaperMetadata> {
-    let raw_id = work.get("id").and_then(Value::as_str).unwrap_or("");
-    let openalex_id = if raw_id.is_empty() {
-        ""
-    } else {
-        raw_id.rsplit('/').next().unwrap_or("")
-    };
+    let openalex_id = work
+        .get("id")
+        .and_then(Value::as_str)
+        .and_then(|s| s.rsplit('/').next())
+        .unwrap_or("");
     if openalex_id.is_empty() {
         return Err(CoreError::OpenAlexInput(format!(
             "OpenAlex work has no valid ID: {work}"
@@ -113,28 +101,19 @@ fn work_to_metadata(work: &Value) -> Result<PaperMetadata> {
     let authors: Vec<String> = work
         .get("authorships")
         .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(|x| {
-                    x.get("author")
-                        .and_then(|au| au.get("display_name"))
-                        .and_then(Value::as_str)
-                })
-                .filter(|s| !s.is_empty())
-                .map(String::from)
-                .collect()
+        .into_iter()
+        .flatten()
+        .filter_map(|x| {
+            let s = x.get("author")?.get("display_name")?.as_str()?;
+            (!s.is_empty()).then(|| s.to_string())
         })
-        .unwrap_or_default();
+        .collect();
 
-    let pub_str = work
+    let published = work
         .get("publication_date")
         .and_then(Value::as_str)
-        .unwrap_or("");
-    let published = if pub_str.is_empty() {
-        date_min()
-    } else {
-        NaiveDate::parse_from_str(pub_str, "%Y-%m-%d").unwrap_or_else(|_| date_min())
-    };
+        .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+        .unwrap_or_else(date_min);
 
     // Category — the primary topic's subfield display name, if any.
     let category = work

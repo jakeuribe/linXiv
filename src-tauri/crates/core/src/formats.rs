@@ -19,7 +19,44 @@ use chrono::NaiveDate;
 
 use crate::models::{PaperDetails, PaperMetadata};
 
-const FALLBACK_DATE: (i32, u32, u32) = (1900, 1, 1);
+/// Python `repr()` of a string, for `!r` error-message parity. Python defaults to single
+/// quotes, switching to double only when the string holds a `'` but no `"`. Rust's `{:?}`
+/// always uses double quotes, so it diverges byte-for-byte on every id in an error message.
+pub fn pyrepr(s: &str) -> String {
+    let quote = if s.contains('\'') && !s.contains('"') {
+        '"'
+    } else {
+        '\''
+    };
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push(quote);
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c == quote => {
+                out.push('\\');
+                out.push(c);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push(quote);
+    out
+}
+
+/// `Path(dest)` + `with_suffix` only when the path has no extension
+/// (Python `out.with_suffix(...) if not out.suffix`). Shared by the CLI and
+/// MCP export commands.
+pub fn with_default_ext(dest: &str, ext: &str) -> std::path::PathBuf {
+    let mut p = std::path::PathBuf::from(dest);
+    if p.extension().is_none() {
+        p.set_extension(ext);
+    }
+    p
+}
 
 /// One `@article` entry per paper, byte-matching pybtex `bib.to_string("bibtex")`:
 /// 4-space indent, `field = "value"`, no trailing comma on the last field, one
@@ -69,22 +106,17 @@ fn bib_quote(value: &str) -> String {
 
 /// `(source_id or "unknown").replace("/","_").replace(".","_")`.
 fn bib_key(source_id: &str) -> String {
-    let base = if source_id.is_empty() {
+    if source_id.is_empty() {
         "unknown"
     } else {
         source_id
-    };
-    base.replace(['/', '.'], "_")
+    }
+    .replace(['/', '.'], "_")
 }
 
 /// `ObsidianFormat.export_papers` — YAML frontmatter + one `##` section per paper.
 pub fn obsidian_export(papers: &[PaperDetails]) -> String {
-    let mut all_tags: BTreeSet<String> = BTreeSet::new();
-    for p in papers {
-        for t in &p.tags {
-            all_tags.insert(t.clone());
-        }
-    }
+    let all_tags: BTreeSet<&String> = papers.iter().flat_map(|p| &p.tags).collect();
 
     let mut lines: Vec<String> = vec!["---".into(), format!("papers: {}", papers.len())];
     if !all_tags.is_empty() {
@@ -136,8 +168,10 @@ fn paper_url(sid: &str, stored_url: Option<&str>) -> String {
     String::new()
 }
 
-/// Port of `_ARXIV_ID_RE`: `^\d{4}\.\d{4,5}(v\d+)?$ | ^[a-z-]+/\d{7}$`.
-fn is_arxiv_id(sid: &str) -> bool {
+/// Port of `_ARXIV_ID_RE`: `^\d{4}\.\d{4,5}(v\d+)?$ | ^[a-z\-]+(\.[A-Z]{2})?/\d{7}(v\d+)?$`.
+/// Also the single source of truth for `linxiv-cli`'s `validate_arxiv_id` — pub
+/// so the CLI doesn't need its own copy (was a duplicate `regex` crate + static).
+pub fn is_arxiv_id(sid: &str) -> bool {
     new_style_arxiv(sid) || old_style_arxiv(sid)
 }
 
@@ -157,13 +191,31 @@ fn new_style_arxiv(sid: &str) -> bool {
 }
 
 fn old_style_arxiv(sid: &str) -> bool {
-    let Some((cat, num)) = sid.split_once('/') else {
+    let Some((cat_part, rest)) = sid.split_once('/') else {
         return false;
     };
-    !cat.is_empty()
-        && cat.chars().all(|c| c.is_ascii_lowercase() || c == '-')
-        && num.len() == 7
-        && num.chars().all(|c| c.is_ascii_digit())
+    // Optional `.XX` archive-class suffix (e.g. "math.NT") directly before the
+    // slash; strip it only when it's exactly 2 uppercase letters, matching the
+    // regex's `(\.[A-Z]{2})?` group.
+    let cat = match cat_part.rfind('.') {
+        Some(i)
+            if cat_part[i + 1..].len() == 2
+                && cat_part[i + 1..].chars().all(|c| c.is_ascii_uppercase()) =>
+        {
+            &cat_part[..i]
+        }
+        _ => cat_part,
+    };
+    if cat.is_empty() || !cat.chars().all(|c| c.is_ascii_lowercase() || c == '-') {
+        return false;
+    }
+    // Optional `vN` version suffix, matching the regex's trailing `(v\d+)?`.
+    let num = match rest.split_once('v') {
+        Some((n, v)) if !v.is_empty() && v.chars().all(|c| c.is_ascii_digit()) => n,
+        Some(_) => return false,
+        None => rest,
+    };
+    num.len() == 7 && num.chars().all(|c| c.is_ascii_digit())
 }
 
 // ── BibTeX import (`BibTeXFormat.import_string` / `_bib_to_metadata`) ────────
@@ -224,9 +276,7 @@ fn parse_year(entry: &biblatex::Entry) -> NaiveDate {
         .ok()
         .or_else(|| field(entry, "year").and_then(|s| s.parse::<i64>().ok()));
     year.and_then(|y| NaiveDate::from_ymd_opt(y as i32, 1, 1))
-        .unwrap_or_else(|| {
-            NaiveDate::from_ymd_opt(FALLBACK_DATE.0, FALLBACK_DATE.1, FALLBACK_DATE.2).unwrap()
-        })
+        .unwrap_or_else(|| NaiveDate::from_ymd_opt(1900, 1, 1).unwrap())
 }
 
 /// "Given Last" display name (prefix/suffix folded in), trimmed.
@@ -247,6 +297,17 @@ fn format_person(p: &biblatex::Person) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pyrepr_matches_python_repr() {
+        // Python: repr("arxiv:1234.5678") == "'arxiv:1234.5678'"
+        assert_eq!(pyrepr("arxiv:1234.5678"), "'arxiv:1234.5678'");
+        // repr of a string with a single quote and no double → switches to double quotes.
+        assert_eq!(pyrepr("O'Brien"), "\"O'Brien\"");
+        // Both quote kinds present → stays single, escapes the single.
+        assert_eq!(pyrepr("a'b\"c"), "'a\\'b\"c'");
+        assert_eq!(pyrepr("tab\there"), "'tab\\there'");
+    }
 
     fn paper(source_id: &str, title: &str) -> PaperDetails {
         PaperDetails {
@@ -316,6 +377,9 @@ mod tests {
         assert!(is_arxiv_id("2204.12985"));
         assert!(is_arxiv_id("2204.12985v3"));
         assert!(is_arxiv_id("math-ph/0309136"));
+        assert!(is_arxiv_id("math.NT/0309136")); // archive-class suffix
+        assert!(is_arxiv_id("hep-th/9901001v2")); // old-style with version
+        assert!(!is_arxiv_id("math.nt/0309136")); // suffix must be uppercase
         assert!(!is_arxiv_id("2204.123456")); // suffix too long
         assert!(!is_arxiv_id("openalex:W123"));
     }
