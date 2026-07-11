@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { applyZoom, clampZoom, DEFAULT_ZOOM } from "../lib/zoom";
-import { applyDensity, normalizeDensity, DEFAULT_DENSITY, type Density } from "../lib/density";
+import { applyZoom, clampZoom, DEFAULT_ZOOM } from "../lib/zoom.ts";
+import { applyDensity, normalizeDensity, DEFAULT_DENSITY, type Density } from "../lib/density.ts";
 
 export type SidebarPageKey = "graph" | "search" | "doi" | "tags" | "notes";
 
