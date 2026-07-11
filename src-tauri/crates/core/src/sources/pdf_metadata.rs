@@ -857,7 +857,8 @@ fn sha256(data: &[u8]) -> [u8; 32] {
 
 // ---------------------------------------------------------------------------
 // Tests — pure scanners + the D10 spike against the committed real PDFs.
-// No network: enrichment is not exercised here.
+// No network: enrichment is not exercised here. The D10 spikes skip (not
+// panic) when libpdfium or a fixture is unavailable — see `load_spike_pdf`.
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -1007,12 +1008,29 @@ mod tests {
 
     // ---- D10 SPIKE: real committed PDFs (pdfium extraction, no network) ----
 
-    fn read_test_pdf(name: &str) -> Vec<u8> {
+    // Skip guard (not panic) for the spike tests below: a dev checkout without
+    // `scripts/fetch_pdfium.sh` run (no libpdfium) or a shallow/sparse checkout
+    // missing the committed fixture shouldn't fail the suite, per this repo's
+    // fixture-gating convention — print why and return `None` for the caller to
+    // early-return on, same as `bind_pdfium`'s own missing-library warning.
+    fn load_spike_pdf(name: &str) -> Option<Vec<u8>> {
+        if bind_pdfium().is_none() {
+            eprintln!(
+                "skipping {name}: libpdfium not available (run scripts/fetch_pdfium.sh or set LINXIV_PDFIUM_LIB)"
+            );
+            return None;
+        }
         let p = format!(
             "{}/../../../tests/test_file/{name}",
             env!("CARGO_MANIFEST_DIR")
         );
-        std::fs::read(&p).unwrap_or_else(|e| panic!("read {p}: {e}"))
+        match std::fs::read(&p) {
+            Ok(b) => Some(b),
+            Err(e) => {
+                eprintln!("skipping {name}: fixture not found ({p}): {e}");
+                None
+            }
+        }
     }
 
     // D10 RESOLVED: pdf-extract rendered this 76-page/29MB paper's first page in
@@ -1021,13 +1039,19 @@ mod tests {
     // supplies the real title/authors.
     #[test]
     fn spike_multi_author_2411_fast() {
-        let m = extract_pdf_metadata(&read_test_pdf("2411.10406v2.pdf"));
+        let Some(bytes) = load_spike_pdf("2411.10406v2.pdf") else {
+            return;
+        };
+        let m = extract_pdf_metadata(&bytes);
         assert_eq!(m.arxiv_id.as_deref(), Some("2411.10406v2"));
     }
 
     #[test]
     fn spike_embedded_meta_2604_21547() {
-        let m = extract_pdf_metadata(&read_test_pdf("2604.21547v1.pdf"));
+        let Some(bytes) = load_spike_pdf("2604.21547v1.pdf") else {
+            return;
+        };
+        let m = extract_pdf_metadata(&bytes);
         assert_eq!(m.arxiv_id.as_deref(), Some("2604.21547v1"));
         assert!(
             m.title.as_deref().unwrap_or("").contains("Yang-Baxter"),
@@ -1040,7 +1064,10 @@ mod tests {
 
     #[test]
     fn spike_junk_author_2604_00068() {
-        let m = extract_pdf_metadata(&read_test_pdf("2604.00068v2.pdf"));
+        let Some(bytes) = load_spike_pdf("2604.00068v2.pdf") else {
+            return;
+        };
+        let m = extract_pdf_metadata(&bytes);
         let title = m.title.expect("text-heuristic title");
         assert!(title.contains("Chandrasekhar"), "got title: {title:?}");
         assert_eq!(m.authors, None, "OS-junk author filtered out");
@@ -1053,7 +1080,10 @@ mod tests {
     // visual line). Asserts byte-parity with the Python/pypdf baseline for paper.pdf.
     #[test]
     fn non_arxiv_text_title_is_bounded() {
-        let m = extract_pdf_metadata(&read_test_pdf("paper.pdf"));
+        let Some(bytes) = load_spike_pdf("paper.pdf") else {
+            return;
+        };
+        let m = extract_pdf_metadata(&bytes);
         let title = m.title.expect("text-heuristic title");
         assert!(
             title.chars().count() < 200,
