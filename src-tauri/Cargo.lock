@@ -3406,7 +3406,6 @@ dependencies = [
  "anyhow",
  "clap",
  "linxiv-core",
- "regex",
  "rusqlite",
  "serde",
  "serde_json",

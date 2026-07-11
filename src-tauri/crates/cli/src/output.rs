@@ -6,22 +6,15 @@
 
 use std::fmt::Display;
 use std::io::Write;
-use std::sync::LazyLock;
 
-use regex::Regex;
 use serde::Serialize;
 
+use linxiv_core::formats::is_arxiv_id;
 use linxiv_core::models::PaperMetadata;
 
 /// arXiv template, embedded so it ships with the binary. Only `arxiv` has one —
 /// other sources fall back to a JSON dump (see `render_paper`).
 const ARXIV_TEMPLATE: &str = include_str!("../assets/arxiv_paper.md");
-
-/// `_ARXIV_ID_RE` from `linxiv_cli.py`, verbatim.
-static ARXIV_ID_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\d{4}\.\d{4,5}(v\d+)?$|^[a-z\-]+(\.[A-Z]{2})?/\d{7}(v\d+)?$")
-        .expect("static arXiv-id regex is valid")
-});
 
 /// `_output`: pretty JSON (2-space indent, matching Python `indent=2`) + trailing "\n".
 pub fn output<T: Serialize>(v: &T) {
@@ -69,7 +62,7 @@ pub fn pyrepr(s: &str) -> String {
 
 /// `_validate_arxiv_id`: on miss, fail with the `!r`-quoted id (Python single-quote repr).
 pub fn validate_arxiv_id(source_id: &str) -> String {
-    if !ARXIV_ID_RE.is_match(source_id) {
+    if !is_arxiv_id(source_id) {
         fail(format!("Invalid arXiv ID format: {}", pyrepr(source_id)));
     }
     source_id.to_string()

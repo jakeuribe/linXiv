@@ -472,55 +472,17 @@ mod tests {
 
     /// `download_pdf`'s effective cap is the REMAINING `pdf_save_limit_mb` total-storage
     /// allowance (quota minus PDFs already in pdf_dir, computed by `service::files::
-    /// download_pdf`), clamped under the fixed SSRF/memory ceiling. These two seed a quota
-    /// dir and drive the derived allowance through `fetch_to_dest` — same workaround the
-    /// other tests here use, since the SSRF guard rejects a wiremock host on the public
-    /// `download_pdf` entry point (see `download_pdf_refuses_ssrf_and_leaves_no_file` in
-    /// `service::files`; the zero-remaining early reject is tested there too).
-    #[tokio::test]
-    async fn remaining_storage_allowance_under_body_size_is_rejected() {
+    /// download_pdf`), clamped under the fixed SSRF/memory ceiling. Seeds a 95-byte PDF,
+    /// derives `remaining` from `quota`, and drives it through `fetch_to_dest` directly —
+    /// same workaround the other tests here use, since the SSRF guard rejects a wiremock
+    /// host on the public `download_pdf` entry point (see
+    /// `download_pdf_refuses_ssrf_and_leaves_no_file` in `service::files`; the
+    /// zero-remaining early reject is tested there too).
+    async fn remaining_allowance_case(quota: u64, body_len: usize, expect_ok: bool) {
         let server = MockServer::start().await;
+        let body = vec![0u8; body_len];
         Mock::given(method("GET"))
-            .and(path("/small-cap"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "application/pdf")
-                    .set_body_bytes(vec![0u8; 10]),
-            )
-            .mount(&server)
-            .await;
-        let client = build_client().unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let dest = dir.path().join("o.pdf");
-        // Existing PDFs consume all but 5 bytes of a 100-byte quota: the 10-byte body
-        // fits the quota alone, but not the remaining total-storage allowance.
-        std::fs::write(dir.path().join("seedv1.pdf"), vec![0u8; 95]).unwrap();
-        let quota = 100u64;
-        let remaining = quota
-            .saturating_sub(crate::service::files::pdf_storage_bytes(dir.path()))
-            .min(MAX_PDF_BYTES);
-        assert_eq!(remaining, 5);
-        let err = fetch_to_dest(
-            &client,
-            &format!("{}/small-cap", server.uri()),
-            &dest,
-            remaining,
-            &|_| true,
-        )
-        .await
-        .unwrap_err();
-        assert!(
-            matches!(err, CoreError::Validation(m) if m.contains("too large") || m.contains("exceeded"))
-        );
-        assert!(!dest.exists());
-    }
-
-    #[tokio::test]
-    async fn remaining_storage_allowance_over_body_size_passes() {
-        let server = MockServer::start().await;
-        let body = vec![0u8; 10];
-        Mock::given(method("GET"))
-            .and(path("/small-cap-ok"))
+            .and(path("/cap"))
             .respond_with(
                 ResponseTemplate::new(200)
                     .insert_header("content-type", "application/pdf")
@@ -531,24 +493,41 @@ mod tests {
         let client = build_client().unwrap();
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("o.pdf");
-        // Existing PDFs leave 29 bytes of a 124-byte quota — comfortably above the
-        // 10-byte body → saved.
         std::fs::write(dir.path().join("seedv1.pdf"), vec![0u8; 95]).unwrap();
-        let remaining = 124u64
+        let remaining = quota
             .saturating_sub(crate::service::files::pdf_storage_bytes(dir.path()))
             .min(MAX_PDF_BYTES);
-        assert_eq!(remaining, 29);
-        let out = fetch_to_dest(
+        let result = fetch_to_dest(
             &client,
-            &format!("{}/small-cap-ok", server.uri()),
+            &format!("{}/cap", server.uri()),
             &dest,
             remaining,
             &|_| true,
         )
-        .await
-        .unwrap();
-        assert_eq!(out, dest);
-        assert_eq!(std::fs::read(&dest).unwrap(), body);
+        .await;
+        if expect_ok {
+            let out = result.unwrap();
+            assert_eq!(out, dest);
+            assert_eq!(std::fs::read(&dest).unwrap(), body);
+        } else {
+            assert!(matches!(
+                result.unwrap_err(),
+                CoreError::Validation(m) if m.contains("too large") || m.contains("exceeded")
+            ));
+            assert!(!dest.exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn remaining_storage_allowance_under_body_size_is_rejected() {
+        // 95-byte seed leaves 5 of a 100-byte quota — under the 10-byte body.
+        remaining_allowance_case(100, 10, false).await;
+    }
+
+    #[tokio::test]
+    async fn remaining_storage_allowance_over_body_size_passes() {
+        // 95-byte seed leaves 29 of a 124-byte quota — comfortably over the 10-byte body.
+        remaining_allowance_case(124, 10, true).await;
     }
 
     #[tokio::test]

@@ -136,8 +136,10 @@ fn paper_url(sid: &str, stored_url: Option<&str>) -> String {
     String::new()
 }
 
-/// Port of `_ARXIV_ID_RE`: `^\d{4}\.\d{4,5}(v\d+)?$ | ^[a-z-]+/\d{7}$`.
-fn is_arxiv_id(sid: &str) -> bool {
+/// Port of `_ARXIV_ID_RE`: `^\d{4}\.\d{4,5}(v\d+)?$ | ^[a-z\-]+(\.[A-Z]{2})?/\d{7}(v\d+)?$`.
+/// Also the single source of truth for `linxiv-cli`'s `validate_arxiv_id` — pub
+/// so the CLI doesn't need its own copy (was a duplicate `regex` crate + static).
+pub fn is_arxiv_id(sid: &str) -> bool {
     new_style_arxiv(sid) || old_style_arxiv(sid)
 }
 
@@ -157,13 +159,31 @@ fn new_style_arxiv(sid: &str) -> bool {
 }
 
 fn old_style_arxiv(sid: &str) -> bool {
-    let Some((cat, num)) = sid.split_once('/') else {
+    let Some((cat_part, rest)) = sid.split_once('/') else {
         return false;
     };
-    !cat.is_empty()
-        && cat.chars().all(|c| c.is_ascii_lowercase() || c == '-')
-        && num.len() == 7
-        && num.chars().all(|c| c.is_ascii_digit())
+    // Optional `.XX` archive-class suffix (e.g. "math.NT") directly before the
+    // slash; strip it only when it's exactly 2 uppercase letters, matching the
+    // regex's `(\.[A-Z]{2})?` group.
+    let cat = match cat_part.rfind('.') {
+        Some(i)
+            if cat_part[i + 1..].len() == 2
+                && cat_part[i + 1..].chars().all(|c| c.is_ascii_uppercase()) =>
+        {
+            &cat_part[..i]
+        }
+        _ => cat_part,
+    };
+    if cat.is_empty() || !cat.chars().all(|c| c.is_ascii_lowercase() || c == '-') {
+        return false;
+    }
+    // Optional `vN` version suffix, matching the regex's trailing `(v\d+)?`.
+    let num = match rest.split_once('v') {
+        Some((n, v)) if !v.is_empty() && v.chars().all(|c| c.is_ascii_digit()) => n,
+        Some(_) => return false,
+        None => rest,
+    };
+    num.len() == 7 && num.chars().all(|c| c.is_ascii_digit())
 }
 
 // ── BibTeX import (`BibTeXFormat.import_string` / `_bib_to_metadata`) ────────
@@ -316,6 +336,9 @@ mod tests {
         assert!(is_arxiv_id("2204.12985"));
         assert!(is_arxiv_id("2204.12985v3"));
         assert!(is_arxiv_id("math-ph/0309136"));
+        assert!(is_arxiv_id("math.NT/0309136")); // archive-class suffix
+        assert!(is_arxiv_id("hep-th/9901001v2")); // old-style with version
+        assert!(!is_arxiv_id("math.nt/0309136")); // suffix must be uppercase
         assert!(!is_arxiv_id("2204.123456")); // suffix too long
         assert!(!is_arxiv_id("openalex:W123"));
     }

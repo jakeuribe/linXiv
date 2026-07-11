@@ -25,6 +25,7 @@ import {
   writeFile,
   writeTextFile,
 } from "@tauri-apps/plugin-fs";
+import { base64ToBytes, bytesToBase64 } from "./base64.ts";
 import type { FsResponder } from "./editorBridge";
 import type { FsResult } from "./editorBridgeTypes";
 
@@ -89,24 +90,6 @@ async function resolvePathChecked(root: string, rel: string): Promise<string> {
     }
   }
   return abs;
-}
-
-// ---- base64 <-> bytes (binary file payloads ride the wire as base64) --------
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = "";
-  const chunk = 0x8000; // avoid call-stack limits on large files
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunk)));
-  }
-  return btoa(binary);
-}
-
-function base64ToBytes(b64: string): Uint8Array {
-  const binary = atob(b64);
-  const out = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
-  return out;
 }
 
 /** FsResponder over a user-picked absolute directory, via the Tauri fs plugin. */
