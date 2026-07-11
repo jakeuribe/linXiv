@@ -257,6 +257,18 @@ function AuthorDetailView({ authorId }: AuthorDetailViewProps) {
     enabled: mergeActive,
   });
 
+  // Filtered merge candidates. Only cap the list while unfiltered (browse mode) —
+  // once the user types a query, show every match so nothing is unreachable.
+  const mergeFilterActive = mergeFilter.trim().length > 0;
+  const mergeCandidates = useMemo(
+    () =>
+      allAuthors
+        .filter((a) => a.author_id !== authorId)
+        .filter((a) => authorMatchesQuery(a, mergeFilter)),
+    [allAuthors, authorId, mergeFilter]
+  );
+  const mergeOptions = mergeFilterActive ? mergeCandidates : mergeCandidates.slice(0, 50);
+
   const mergeMutation = useMutation({
     mutationFn: () => mergeAuthors(authorId, mergeIds),
     onSuccess: () => {
@@ -479,16 +491,17 @@ function AuthorDetailView({ authorId }: AuthorDetailViewProps) {
           className="w-full rounded-md border px-2 py-1 bg-transparent text-sm"
           style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
         >
-          {allAuthors
-            .filter((a) => a.author_id !== authorId)
-            .filter((a) => authorMatchesQuery(a, mergeFilter))
-            .slice(0, 50)
-            .map((a) => (
-              <option key={a.author_id} value={a.author_id}>
-                {a.full_name ?? "(unnamed)"} ({a.paper_count ?? 0})
-              </option>
-            ))}
+          {mergeOptions.map((a) => (
+            <option key={a.author_id} value={a.author_id}>
+              {a.full_name ?? "(unnamed)"} ({a.paper_count ?? 0})
+            </option>
+          ))}
         </select>
+        {!mergeFilterActive && mergeCandidates.length > mergeOptions.length && (
+          <p className="text-xs" style={{ color: "var(--color-muted)" }}>
+            Showing {mergeOptions.length} of {mergeCandidates.length} authors — type to narrow.
+          </p>
+        )}
         {mergeMutation.error && (
           <p className="text-sm" style={{ color: "var(--color-danger)" }}>
             {(mergeMutation.error as Error).message}
