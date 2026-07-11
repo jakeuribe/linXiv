@@ -94,11 +94,17 @@ pub fn import_pdf<R>(
     pdf_dir: &Path,
     content: &[u8],
     project_id: Option<i64>,
+    max_total_bytes: u64,
     resolve: R,
 ) -> Result<PaperImportResult>
 where
     R: Fn(&[u8]) -> Result<(PaperMetadata, Option<(String, i64)>)>,
 {
+    // `pdf_save_limit_mb` enforcement (config::UserSettings::pdf_save_limit_bytes, DI'd by the
+    // caller — this module never reads config). Checked first, before any FS/DB write, so an
+    // upload that would push total PDF storage over the cap never touches disk.
+    check_pdf_storage_quota(pdf_dir, content.len(), max_total_bytes)?;
+
     // Pre-import membership guard: fail before mutating the library.
     if let Some(pid) = project_id {
         ensure_membership_writable(conn, pid)?;
@@ -163,10 +169,39 @@ pub async fn import_pdf_default(
     pdf_dir: &Path,
     content: &[u8],
     project_id: Option<i64>,
+    max_total_bytes: u64,
     data_dir: &Path,
 ) -> Result<PaperImportResult> {
+    // Quota first: don't spend a full pdfium parse + network enrichment on a PDF
+    // that's about to be rejected anyway (import_pdf re-checks — cheap, idempotent).
+    check_pdf_storage_quota(pdf_dir, content.len(), max_total_bytes)?;
     let resolved = crate::sources::pdf_metadata::resolve_pdf_metadata(content, data_dir).await?;
-    import_pdf(conn, pdf_dir, content, project_id, |_| Ok(resolved.clone()))
+    import_pdf(conn, pdf_dir, content, project_id, max_total_bytes, |_| {
+        Ok(resolved.clone())
+    })
+}
+
+/// The `pdf_save_limit_mb` TOTAL-storage check: reject `incoming_len` if writing it would
+/// push the combined size of the PDFs already in `pdf_dir` over `max_total_bytes`. Public so
+/// callers that resolve metadata themselves (route/MCP) can run it BEFORE that expensive
+/// parse; `import_pdf` always re-runs it, so the early call is an optimization, not a duty.
+/// A re-import whose PDF already sits on disk (nothing new written) is still checked —
+/// acceptable false reject at a full quota, the user's storage is full either way.
+// ponytail: dir walk per import; track a running total only if libraries get huge.
+pub fn check_pdf_storage_quota(
+    pdf_dir: &Path,
+    incoming_len: usize,
+    max_total_bytes: u64,
+) -> Result<()> {
+    let existing = crate::service::files::pdf_storage_bytes(pdf_dir);
+    let would_be = existing.saturating_add(incoming_len as u64);
+    if would_be > max_total_bytes {
+        return Err(CoreError::PdfTooLarge(format!(
+            "Saving this {incoming_len} byte PDF would put total PDF storage at {would_be} bytes, \
+             over the {max_total_bytes} byte limit (pdf_save_limit_mb; currently {existing} bytes saved)."
+        )));
+    }
+    Ok(())
 }
 
 /// The DB + FS write section. Any error here triggers the rollback matrix in
@@ -329,6 +364,10 @@ mod tests {
     use chrono::NaiveDate;
     use tempfile::tempdir;
 
+    /// A generous cap for tests that aren't exercising the size limit itself —
+    /// every fixture PDF here is a few bytes.
+    const NO_LIMIT: u64 = 1_000_000;
+
     fn mem() -> Connection {
         let conn = open_in_memory().unwrap();
         init_db(&conn).unwrap();
@@ -372,6 +411,7 @@ mod tests {
             dir.path(),
             b"%PDF-1.4 fake",
             None,
+            NO_LIMIT,
             resolver(meta("local:abc", 1), None),
         )
         .unwrap();
@@ -406,11 +446,72 @@ mod tests {
     }
 
     #[test]
+    fn import_pdf_within_total_storage_limit_is_saved() {
+        let mut conn = mem();
+        let dir = tempdir().unwrap();
+        // Existing PDFs consume part of the total-storage quota.
+        let seed = b"already-saved pdf bytes";
+        fs::write(dir.path().join("seedv1.pdf"), seed).unwrap();
+        let content = b"%PDF-1.4 small";
+        let res = import_pdf(
+            &mut conn,
+            dir.path(),
+            content,
+            None,
+            (seed.len() + content.len()) as u64, // total lands exactly at the limit — not over it
+            resolver(meta("local:small", 1), None),
+        )
+        .unwrap();
+        assert_eq!(res.source_id, "local:small");
+        assert!(dir.path().join("local_smallv1.pdf").exists());
+    }
+
+    #[test]
+    fn import_pdf_over_total_storage_limit_is_rejected_and_writes_nothing() {
+        let mut conn = mem();
+        let dir = tempdir().unwrap();
+        // Existing PDFs consume most of the quota; the new file alone would fit,
+        // but existing + new pushes the TOTAL over → rejected.
+        let seed = b"existing pdf consuming most of the quota";
+        fs::write(dir.path().join("seedv1.pdf"), seed).unwrap();
+        let content = b"%PDF-1.4 the last straw";
+        let err = import_pdf(
+            &mut conn,
+            dir.path(),
+            content,
+            None,
+            (seed.len() + content.len() - 1) as u64, // one byte under what the total needs
+            resolver(meta("local:big", 1), None),
+        )
+        .unwrap_err();
+        assert!(matches!(err, CoreError::PdfTooLarge(_)));
+        // Rejected before any DB row or file was written: only the seed remains.
+        assert!(paper::list_papers(&conn, false, None, 0, None)
+            .unwrap()
+            .is_empty());
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
+
+        // Trivial case (existing = 0): a single file bigger than the whole quota.
+        let empty = tempdir().unwrap();
+        let err = import_pdf(
+            &mut conn,
+            empty.path(),
+            content,
+            None,
+            (content.len() - 1) as u64,
+            resolver(meta("local:big", 1), None),
+        )
+        .unwrap_err();
+        assert!(matches!(err, CoreError::PdfTooLarge(_)));
+        assert_eq!(fs::read_dir(empty.path()).unwrap().count(), 0);
+    }
+
+    #[test]
     fn resolve_failure_is_pdf_import_and_leaves_nothing() {
         let mut conn = mem();
         let dir = tempdir().unwrap();
         let bad = |_: &[u8]| Err(CoreError::Internal("corrupt pdf".into()));
-        let err = import_pdf(&mut conn, dir.path(), b"junk", None, bad).unwrap_err();
+        let err = import_pdf(&mut conn, dir.path(), b"junk", None, NO_LIMIT, bad).unwrap_err();
         assert!(matches!(err, CoreError::PdfImport(_)));
         // No paper saved, temp file cleaned up (dir empty).
         assert!(paper::list_papers(&conn, false, None, 0, None)
@@ -432,6 +533,7 @@ mod tests {
             dir.path(),
             b"pdf",
             None,
+            NO_LIMIT,
             resolver(meta("local:xyz", 1), Some(("arxiv:2204.0001".into(), 1))),
         )
         .unwrap();
@@ -456,6 +558,7 @@ mod tests {
             dir.path(),
             b"pdf",
             None,
+            NO_LIMIT,
             resolver(meta("local:xyz", 1), Some(("arxiv:2308.0001".into(), 1))),
         )
         .unwrap();
@@ -489,6 +592,7 @@ mod tests {
             dir.path(),
             b"NEW UPLOAD",
             None,
+            NO_LIMIT,
             resolver(meta("arxiv:keep", 1), Some(("arxiv:keep".into(), 1))),
         )
         .unwrap();
@@ -516,6 +620,7 @@ mod tests {
             dir.path(),
             b"pdf",
             None,
+            NO_LIMIT,
             resolver(meta("local:new", 1), None),
         )
         .unwrap_err();
@@ -560,6 +665,7 @@ mod tests {
             dir.path(),
             b"pdf",
             None,
+            NO_LIMIT,
             resolver(meta("local:ignored", 1), Some(("arxiv:dead".into(), 1))),
         )
         .unwrap_err();
@@ -582,6 +688,7 @@ mod tests {
             dir.path(),
             b"%PDF-1.4 junk",
             None,
+            NO_LIMIT,
             data_dir.path(),
         )
         .await
@@ -610,6 +717,7 @@ mod tests {
             dir.path(),
             b"pdf",
             Some(999),
+            NO_LIMIT,
             resolver(meta("local:p1", 1), None),
         )
         .unwrap_err();
@@ -630,6 +738,7 @@ mod tests {
             dir.path(),
             b"pdf",
             Some(pid),
+            NO_LIMIT,
             resolver(meta("local:p2", 1), None),
         )
         .unwrap_err();
@@ -650,6 +759,7 @@ mod tests {
             dir.path(),
             b"pdf",
             Some(pid),
+            NO_LIMIT,
             resolver(meta("local:p3", 1), None),
         )
         .unwrap();
