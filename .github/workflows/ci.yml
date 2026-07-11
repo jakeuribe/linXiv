@@ -41,12 +41,14 @@ jobs:
         run: cargo fmt --all --check
 
   frontend:
-    name: Frontend (tsc)
+    name: Frontend (tsc + test)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # npm test uses --experimental-transform-types, which needs Node 22+.
+          node-version: "22"
       - run: npm ci
       - run: npx tsc --noEmit
+      - run: npm test
