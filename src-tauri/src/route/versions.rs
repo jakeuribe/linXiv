@@ -3,9 +3,6 @@
 //! ask arXiv for their latest versions in ONE rate-limited request, and capture
 //! anything newer through the existing save path. `new`/`ack` surface and clear
 //! the "new version found" flags.
-//!
-//! ponytail: manual/on-demand pass only — scheduled background polling when a
-//! scheduler exists; then this route body becomes the tick.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -19,8 +16,6 @@ use linxiv_core::sources::arxiv;
 use crate::route::{ApiError, ReqCtx};
 use crate::state::AppState;
 
-// ponytail: single global flag; upgrade to per-account locks if
-// throughput needs multiple concurrent checks.
 static CHECK_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 struct CheckGuard;
@@ -101,36 +96,12 @@ fn ack(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::route::{route, ApiRequest};
-    use linxiv_core::storage;
+    use crate::route::testutil::{req, state};
     use std::sync::Mutex;
 
     // Serialize access to CHECK_IN_PROGRESS across all tests to prevent race
     // conditions (flag must reset on Drop even if test panics).
     static TEST_MUTEX: Mutex<()> = Mutex::new(());
-
-    fn state() -> AppState {
-        let conn = storage::open_in_memory().unwrap();
-        storage::init_db(&conn).unwrap();
-        AppState::from_parts(conn, std::env::temp_dir(), std::env::temp_dir())
-    }
-
-    async fn req(
-        st: &AppState,
-        method: &str,
-        path: &str,
-        body: Option<Value>,
-    ) -> Result<Value, ApiError> {
-        route(
-            st,
-            ApiRequest {
-                method: method.into(),
-                path: path.into(),
-                body,
-            },
-        )
-        .await
-    }
 
     #[tokio::test]
     async fn check_on_empty_library_returns_zero_without_network() {

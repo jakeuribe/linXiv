@@ -97,14 +97,11 @@ pub fn parse_work(msg: &Value, doi: &str) -> PaperMetadata {
         .and_then(Value::as_str)
         .unwrap_or("");
 
-    let paper_doi = if !doi.is_empty() {
-        doi.to_string()
-    } else {
-        msg.get("DOI")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_string()
-    };
+    let paper_doi = Some(doi)
+        .filter(|d| !d.is_empty())
+        .or_else(|| msg.get("DOI").and_then(Value::as_str))
+        .unwrap_or("")
+        .to_string();
 
     // URL from the message, else a doi.org link, else None.
     let url = msg
@@ -194,11 +191,13 @@ pub async fn fetch_by_doi(doi: &str) -> Option<PaperMetadata> {
 
 /// Search CrossRef by title. Empty vec on any error.
 pub async fn search_by_title(title: &str, limit: u32) -> Vec<PaperMetadata> {
-    let url = format!(
-        "{CROSSREF_BASE}?query.title={}&rows={limit}",
-        urlencode(title)
-    );
-    let Ok(resp) = http::get_guarded(&url, ALLOW).await else {
+    let Ok(url) = reqwest::Url::parse_with_params(
+        CROSSREF_BASE,
+        [("query.title", title), ("rows", &limit.to_string())],
+    ) else {
+        return Vec::new();
+    };
+    let Ok(resp) = http::get_guarded(url.as_str(), ALLOW).await else {
         return Vec::new();
     };
     if resp.status() != reqwest::StatusCode::OK {
@@ -208,21 +207,6 @@ pub async fn search_by_title(title: &str, limit: u32) -> Vec<PaperMetadata> {
         return Vec::new();
     };
     parse_search_body(&body)
-}
-
-/// Minimal query-component encoder (space + the handful of reserved chars that
-/// break a query string).
-fn urlencode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }
 
 // ---------------------------------------------------------------------------
@@ -373,9 +357,4 @@ mod tests {
         assert!(parse_search_body(b"garbage").is_empty());
     }
 
-    #[test]
-    fn urlencode_escapes_spaces_and_reserved() {
-        assert_eq!(urlencode("neural networks"), "neural%20networks");
-        assert_eq!(urlencode("a&b#c"), "a%26b%23c");
-    }
 }

@@ -100,13 +100,7 @@ fn delete_saved(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
 /// `GET /api/papers/{source_id:path}/pdf-path?version=` — `api_paper_pdf_path`.
 fn pdf_path(state: &AppState, source_id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     // Query(default=None, ge=1): absent → latest; present must be a positive int.
-    let version = match ctx.q("version") {
-        None => None,
-        Some(v) => match v.parse::<i64>() {
-            Ok(n) if n >= 1 => Some(n),
-            _ => return Err(ApiError::new(422, "version must be an integer >= 1")),
-        },
-    };
+    let version = crate::route::q_version(ctx)?;
     let pdf_dir = state.pdf_dir.clone();
     state.with_conn(|conn| {
         let paper = svc_paper::get(

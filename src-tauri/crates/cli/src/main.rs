@@ -102,12 +102,10 @@ enum Commands {
 }
 
 async fn dispatch(command: Commands, ctx: &mut Ctx) -> anyhow::Result<()> {
-    use cmd::library::LibraryCmd;
-    use cmd::misc::MiscCmd;
     match command {
-        Commands::Search(a) => cmd::library::run(LibraryCmd::Search(a), ctx).await,
-        Commands::Fetch(a) => cmd::library::run(LibraryCmd::Fetch(a), ctx).await,
-        Commands::List(a) => cmd::library::run(LibraryCmd::List(a), ctx).await,
+        Commands::Search(a) => cmd::library::search(a, ctx).await,
+        Commands::Fetch(a) => cmd::library::fetch(a, ctx).await,
+        Commands::List(a) => cmd::library::list(a, ctx).await,
         Commands::Paper { cmd } => cmd::paper::run(cmd, ctx).await,
         Commands::Tag { cmd } => cmd::tag::run(cmd, ctx).await,
         Commands::Project { cmd } => cmd::project::run(cmd, ctx).await,
@@ -118,10 +116,10 @@ async fn dispatch(command: Commands, ctx: &mut Ctx) -> anyhow::Result<()> {
         Commands::Doi { cmd } => cmd::doi::run(cmd, ctx).await,
         Commands::Author { cmd } => cmd::author::run(cmd, ctx).await,
         Commands::Bibtex { cmd } => cmd::bibtex::run(cmd, ctx).await,
-        Commands::Stats => cmd::misc::run(MiscCmd::Stats, ctx).await,
-        Commands::Categories => cmd::misc::run(MiscCmd::Categories, ctx).await,
-        Commands::Settings { cmd } => cmd::misc::run(MiscCmd::Settings { cmd }, ctx).await,
-        Commands::Backup { dest } => cmd::misc::run(MiscCmd::Backup { dest }, ctx).await,
+        Commands::Stats => cmd::misc::stats(ctx).await,
+        Commands::Categories => cmd::misc::categories(ctx).await,
+        Commands::Settings { cmd } => cmd::misc::settings(cmd, ctx).await,
+        Commands::Backup { dest } => cmd::misc::backup(dest, ctx).await,
         // `main` intercepts Restore and PdfMeta before Ctx::open()
         // (see above); these arms exist only for match exhaustiveness.
         Commands::Restore { .. } => unreachable!("restore is handled in main() before dispatch"),
@@ -135,7 +133,6 @@ async fn main() {
     match cli.command {
         // Bypasses Ctx::open(): the worker must not touch the DB (no contention
         // with the parent) and must stay silent on stdout except the JSON record.
-        // ponytail: compact JSON (direct println, no output::output) is intentional — worker IPC only, not user-facing CLI contract.
         Commands::PdfMeta { path } => {
             let bytes = std::fs::read(&path).unwrap_or_else(|e| output::fail(e));
             println!(

@@ -27,15 +27,14 @@ fn row_to_basic(row: &Row) -> rusqlite::Result<BasicAuthorDetails> {
 
 /// `authors.py::get_author` — one author by FK, or None.
 pub fn get_author(conn: &Connection, author_id: i64) -> Result<Option<BasicAuthorDetails>> {
-    let mut stmt = conn.prepare(
-        "SELECT AUTHOR_FK, AUTHOR_ORCID, AUTHOR_FULL_NAME, AUTHOR_FIRST, AUTHOR_LAST \
-         FROM AUTHOR WHERE AUTHOR_FK = ?",
-    )?;
-    let mut rows = stmt.query(params![author_id])?;
-    match rows.next()? {
-        Some(row) => Ok(Some(row_to_basic(row)?)),
-        None => Ok(None),
-    }
+    Ok(conn
+        .query_row(
+            "SELECT AUTHOR_FK, AUTHOR_ORCID, AUTHOR_FULL_NAME, AUTHOR_FIRST, AUTHOR_LAST \
+             FROM AUTHOR WHERE AUTHOR_FK = ?",
+            params![author_id],
+            row_to_basic,
+        )
+        .optional()?)
 }
 
 /// `authors.py::list_authors` (non-paper path). `name` Some -> exact match under
@@ -54,12 +53,8 @@ pub fn get_many(conn: &Connection, name: Option<&str>) -> Result<Vec<BasicAuthor
         ),
     };
     let mut stmt = conn.prepare(sql)?;
-    let mut rows = stmt.query(params_from_iter(&p))?;
-    let mut out = Vec::new();
-    while let Some(row) = rows.next()? {
-        out.push(row_to_basic(row)?);
-    }
-    Ok(out)
+    let rows = stmt.query_map(params_from_iter(&p), row_to_basic)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
 
 /// `authors.py::list_authors(paper_id=...)` via `_LIST_AUTHORS_FROM_PAPER_SQL` —
@@ -71,12 +66,8 @@ pub fn get_paper_authors(conn: &Connection, paper_id: i64) -> Result<Vec<BasicAu
          JOIN PAPER_TO_AUTHOR pta ON pta.AUTHOR_FK = a.AUTHOR_FK \
          WHERE pta.PAPER_ID = ? ORDER BY pta.AUTHOR_INDEX",
     )?;
-    let mut rows = stmt.query(params![paper_id])?;
-    let mut out = Vec::new();
-    while let Some(row) = rows.next()? {
-        out.push(row_to_basic(row)?);
-    }
-    Ok(out)
+    let rows = stmt.query_map(params![paper_id], row_to_basic)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
 
 /// `authors.py::list_authors_with_paper_count` — authors with their distinct
@@ -157,26 +148,6 @@ pub fn create_author(
         "INSERT INTO AUTHOR (AUTHOR_FULL_NAME, AUTHOR_FIRST, AUTHOR_LAST, AUTHOR_ORCID) \
          VALUES (?, ?, ?, ?)",
         params![full_name, first_name, last_name, orcid],
-    )?;
-    Ok(conn.last_insert_rowid())
-}
-
-/// `db.py::_author_fk_for_name` — get-or-create by full name under COLLATE NOCASE.
-/// Used by paper ingestion's author sync; returns the existing or new AUTHOR_FK.
-pub fn upsert_author_by_name(conn: &Connection, full_name: &str) -> Result<i64> {
-    let existing: Option<i64> = conn
-        .query_row(
-            "SELECT AUTHOR_FK FROM AUTHOR WHERE AUTHOR_FULL_NAME = ? COLLATE NOCASE LIMIT 1",
-            params![full_name],
-            |r| r.get(0),
-        )
-        .ok();
-    if let Some(fk) = existing {
-        return Ok(fk);
-    }
-    conn.execute(
-        "INSERT INTO AUTHOR (AUTHOR_FULL_NAME) VALUES (?)",
-        params![full_name],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -433,22 +404,6 @@ mod tests {
         );
 
         assert!(get_author(&conn, 9999).unwrap().is_none());
-    }
-
-    #[test]
-    fn upsert_by_name_is_get_or_create_nocase() {
-        let conn = open_in_memory().unwrap();
-        init_db(&conn).unwrap();
-        let first = upsert_author_by_name(&conn, "Carl Friedrich").unwrap();
-        // case-insensitive hit -> same FK, no new row.
-        let again = upsert_author_by_name(&conn, "carl friedrich").unwrap();
-        assert_eq!(first, again);
-        let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM AUTHOR", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(n, 1);
-        // new name -> new FK.
-        assert_ne!(upsert_author_by_name(&conn, "Other Person").unwrap(), first);
     }
 
     #[test]

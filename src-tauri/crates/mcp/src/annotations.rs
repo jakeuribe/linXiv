@@ -5,27 +5,16 @@
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_router, ErrorData};
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde::Deserialize;
+use serde_json::json;
 
 use linxiv_core::error::CoreError;
 use linxiv_core::models::{AnnotationIn, AnnotationUpdateIn};
 use linxiv_core::service::annotation as svc_ann;
 use linxiv_core::storage::queries::paper as store_paper;
 
+use crate::util::{core_err, invalid, json_ok};
 use crate::Server;
-
-fn invalid(msg: impl Into<String>) -> ErrorData {
-    ErrorData::invalid_params(msg.into(), None)
-}
-
-fn core_err(e: CoreError) -> ErrorData {
-    ErrorData::internal_error(e.to_string(), None)
-}
-
-fn json_ok<T: Serialize>(v: &T) -> Result<String, ErrorData> {
-    serde_json::to_string(v).map_err(|e| ErrorData::internal_error(e.to_string(), None))
-}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CreateAnnotationParams {
@@ -75,16 +64,15 @@ impl Server {
         Parameters(p): Parameters<CreateAnnotationParams>,
     ) -> Result<String, ErrorData> {
         self.with_conn(|conn| {
-            let root = store_paper::get_paper_root(conn, &p.paper_id).map_err(core_err)?;
-            let source_fk = match root {
-                Some(r) => r.source_fk,
-                None => {
-                    return Err(invalid(format!(
+            let source_fk = store_paper::get_paper_root(conn, &p.paper_id)
+                .map_err(core_err)?
+                .ok_or_else(|| {
+                    invalid(format!(
                         "Paper {} not found. Run fetch_paper first.",
                         crate::util::pyrepr(&p.paper_id)
-                    )))
-                }
-            };
+                    ))
+                })?
+                .source_fk;
             let id = svc_ann::create(
                 conn,
                 &AnnotationIn {
@@ -98,14 +86,7 @@ impl Server {
                 CoreError::Validation(m) => invalid(m),
                 other => core_err(other),
             })?;
-            match svc_ann::get(
-                conn,
-                &svc_ann::Annotation {
-                    annotation_id: Some(id),
-                },
-            )
-            .map_err(core_err)?
-            {
+            match svc_ann::get(conn, id).map_err(core_err)? {
                 Some(a) => json_ok(&a),
                 None => json_ok(&json!({ "id": id })),
             }
@@ -118,17 +99,7 @@ impl Server {
         Parameters(p): Parameters<AnnotationIdParams>,
     ) -> Result<String, ErrorData> {
         self.with_conn(|conn| {
-            match svc_ann::get(
-                conn,
-                &svc_ann::Annotation {
-                    annotation_id: Some(p.annotation_id),
-                },
-            )
-            .map_err(core_err)?
-            {
-                Some(a) => json_ok(&a),
-                None => json_ok(&Value::Null),
-            }
+            json_ok(&svc_ann::get(conn, p.annotation_id).map_err(core_err)?)
         })
     }
 
@@ -142,15 +113,17 @@ impl Server {
                 svc_ann::list_all(conn).map_err(core_err)?
             } else {
                 let source_fk = match &p.paper_id {
-                    Some(pid) => match store_paper::get_paper_root(conn, pid).map_err(core_err)? {
-                        Some(r) => Some(r.source_fk),
-                        None => {
-                            return Err(invalid(format!(
-                                "Paper {} not found in database.",
-                                crate::util::pyrepr(pid)
-                            )))
-                        }
-                    },
+                    Some(pid) => Some(
+                        store_paper::get_paper_root(conn, pid)
+                            .map_err(core_err)?
+                            .ok_or_else(|| {
+                                invalid(format!(
+                                    "Paper {} not found in database.",
+                                    crate::util::pyrepr(pid)
+                                ))
+                            })?
+                            .source_fk,
+                    ),
                     None => None,
                 };
                 svc_ann::get_many(
@@ -187,14 +160,7 @@ impl Server {
                     p.annotation_id
                 )));
             }
-            match svc_ann::get(
-                conn,
-                &svc_ann::Annotation {
-                    annotation_id: Some(p.annotation_id),
-                },
-            )
-            .map_err(core_err)?
-            {
+            match svc_ann::get(conn, p.annotation_id).map_err(core_err)? {
                 Some(a) => json_ok(&a),
                 None => json_ok(&json!({})),
             }
@@ -207,14 +173,7 @@ impl Server {
         Parameters(p): Parameters<AnnotationIdParams>,
     ) -> Result<String, ErrorData> {
         self.with_conn(|conn| {
-            if !svc_ann::delete(
-                conn,
-                &svc_ann::Annotation {
-                    annotation_id: Some(p.annotation_id),
-                },
-            )
-            .map_err(core_err)?
-            {
+            if !svc_ann::delete(conn, p.annotation_id).map_err(core_err)? {
                 return Err(invalid(format!(
                     "Annotation {} not found.",
                     p.annotation_id

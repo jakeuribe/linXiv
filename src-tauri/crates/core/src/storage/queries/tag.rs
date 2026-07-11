@@ -90,21 +90,25 @@ pub fn get_tag(conn: &Connection, tag_id: i64) -> Result<Option<TagDetails>> {
     .map_err(Into::into)
 }
 
+/// Find (COLLATE NOCASE) or create a TAG row inside the caller's transaction.
+/// Shared by `create_tag` and paper.rs's tag sync.
+pub(crate) fn tag_fk_for_label(tx: &rusqlite::Transaction, label: &str) -> Result<i64> {
+    if let Some(id) = tx
+        .query_row(TAG_FK_BY_LABEL_SQL, [label], |r| r.get::<_, i64>(0))
+        .optional()?
+    {
+        return Ok(id);
+    }
+    tx.execute("INSERT INTO TAG (TAG) VALUES (?)", [label])?;
+    Ok(tx.last_insert_rowid())
+}
+
 /// `storage/tags.py::create_tag` — get-or-create. Returns the existing TAG_FK on
 /// a COLLATE NOCASE label match (the UNIQUE index), else inserts and returns the
 /// new id. Select+insert run in one transaction so a concurrent insert can't slip
 /// a duplicate between the two statements.
 pub fn create_tag(conn: &mut Connection, label: &str) -> Result<i64> {
-    db::transaction(conn, |tx| {
-        if let Some(id) = tx
-            .query_row(TAG_FK_BY_LABEL_SQL, [label], |r| r.get::<_, i64>(0))
-            .optional()?
-        {
-            return Ok(id);
-        }
-        tx.execute("INSERT INTO TAG (TAG) VALUES (?)", [label])?;
-        Ok(tx.last_insert_rowid())
-    })
+    db::transaction(conn, |tx| tag_fk_for_label(tx, label))
 }
 
 /// `storage/tags.py::delete_tag` — hard delete by id. No-op if absent.
@@ -124,42 +128,36 @@ pub fn get_project_tags(conn: &Connection, project_id: i64) -> Result<Vec<String
     let rows = stmt.query_map([project_id], |r| r.get::<_, Option<String>>(1))?;
     // TAG is nullable; Python keeps None rows, but linked tags always carry a
     // label in practice — drop nulls rather than surface a None label.
-    Ok(rows
-        .collect::<rusqlite::Result<Vec<_>>>()?
-        .into_iter()
-        .flatten()
-        .collect())
+    rows.filter_map(|r| r.transpose())
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
 }
 
 /// `storage/tags.py::add_project_tags` — get-or-create each (trimmed, deduped
-/// case-insensitively) label, then link it to the project. INSERT OR IGNORE +
-/// re-SELECT is safe under the UNIQUE NOCASE index. Returns the project's tags
-/// after the write. All statements run in one transaction.
+/// case-insensitively) label, then link it to the project. Returns the project's
+/// tags after the write. All statements run in one transaction.
 pub fn add_project_tags(
     conn: &mut Connection,
     project_id: i64,
     tags: &[String],
 ) -> Result<Vec<String>> {
     db::transaction(conn, |tx| {
-        let mut tag_fks: Vec<i64> = Vec::new();
-        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut seen = std::collections::HashSet::new();
         for raw in tags {
             let label = raw.trim();
             if label.is_empty() || !seen.insert(label.to_lowercase()) {
                 continue;
             }
-            tx.execute("INSERT OR IGNORE INTO TAG (TAG) VALUES (?)", [label])?;
-            let fk = tx
+            let fk = match tx
                 .query_row(TAG_FK_BY_LABEL_SQL, [label], |r| r.get::<_, i64>(0))
                 .optional()?
-                .ok_or_else(|| {
-                    crate::error::CoreError::Internal(format!(
-                        "Could not get or create TAG for label {label:?}"
-                    ))
-                })?;
-            tag_fks.push(fk);
-        }
-        for fk in tag_fks {
+            {
+                Some(id) => id,
+                None => {
+                    tx.execute("INSERT INTO TAG (TAG) VALUES (?)", [label])?;
+                    tx.last_insert_rowid()
+                }
+            };
             tx.execute(
                 "INSERT OR IGNORE INTO PROJECT_TO_TAG (PROJECT_FK, TAG_FK) VALUES (?, ?)",
                 [project_id, fk],

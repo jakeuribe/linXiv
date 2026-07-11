@@ -19,11 +19,6 @@ pub use crate::storage::queries::version_check::{
     MAX_VERSION_CHECK_BATCH,
 };
 
-/// True iff the fetched version should be captured.
-fn is_newer(fetched: i64, known: i64) -> bool {
-    fetched > known
-}
-
 /// Process one candidate: check root status. For roots that are active and
 /// resolvable, save any newer version and record the check (with the new version
 /// if found, or None if not). Errors are caught and logged by apply_results,
@@ -44,7 +39,7 @@ fn process_candidate(
     let newer = fetched
         .iter()
         .find(|m| m.source_id == cand.source_id)
-        .filter(|m| is_newer(m.version, cand.known_version));
+        .filter(|m| m.version > cand.known_version);
     if let Some(m) = newer {
         // Save + flag as one transaction: either both land or neither does, so a
         // crash mid-write can't silently raise known_version without capturing it.

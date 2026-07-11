@@ -74,9 +74,7 @@ fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     #[derive(Deserialize)]
     struct Body {
         source_id: String,
-        #[serde(default)]
         project_id: Option<i64>,
-        #[serde(default)]
         paper_id: Option<i64>,
         #[serde(default)]
         title: String,
@@ -111,9 +109,7 @@ fn update(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     let note_id = path_i64(id)?;
     #[derive(Deserialize)]
     struct Body {
-        #[serde(default)]
         title: Option<String>,
-        #[serde(default)]
         content: Option<String>,
     }
     let b: Body = ctx.parse_body()?;

@@ -39,17 +39,11 @@ const RATELIMIT_MSG: &str = "arXiv rate limit reached. Please wait ~60 s and try
 /// mirroring `re.sub(r"^https?://(dx\.)?doi\.org/", "", doi.strip())`.
 pub fn strip_doi_url(doi: &str) -> String {
     let t = doi.trim();
-    for p in [
-        "https://doi.org/",
-        "http://doi.org/",
-        "https://dx.doi.org/",
-        "http://dx.doi.org/",
-    ] {
-        if let Some(rest) = t.strip_prefix(p) {
-            return rest.to_string();
-        }
-    }
-    t.to_string()
+    ["https://doi.org/", "http://doi.org/", "https://dx.doi.org/", "http://dx.doi.org/"]
+        .iter()
+        .find_map(|p| t.strip_prefix(p))
+        .unwrap_or(t)
+        .to_string()
 }
 
 /// An arXiv error is a rate-limit iff its message mentions `429`, matching
@@ -202,10 +196,7 @@ async fn try_semantic_scholar(doi: &str, data_dir: &Path) -> Result<Option<Paper
         Ok(r) if r.status() == StatusCode::OK => r,
         _ => return Ok(None),
     };
-    let Ok(body) = resp.bytes().await else {
-        return Ok(None);
-    };
-    let Ok(data) = serde_json::from_slice::<Value>(&body) else {
+    let Ok(data) = resp.json::<Value>().await else {
         return Ok(None);
     };
     if data.get("title").is_none() {

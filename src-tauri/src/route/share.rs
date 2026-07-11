@@ -122,39 +122,26 @@ pub(crate) fn handle(
     }
 }
 
+fn summary_json(s: &linxiv_share::SharedSummary) -> Value {
+    json!({
+        "share_id": s.share_id,
+        "name": s.name,
+        "paper_count": s.paper_count,
+        "note_count": s.note_count,
+        "tag_count": s.tag_count,
+    })
+}
+
 /// `GET /api/share/projects` — summaries of every published shared project.
 fn list_shared(share: &ShareState) -> Result<Value, ApiError> {
-    let out: Vec<Value> = share
-        .store
-        .list_shared()?
-        .into_iter()
-        .map(|s| {
-            json!({
-                "share_id": s.share_id,
-                "name": s.name,
-                "paper_count": s.paper_count,
-                "note_count": s.note_count,
-                "tag_count": s.tag_count,
-            })
-        })
-        .collect();
+    let out: Vec<Value> = share.store.list_shared()?.iter().map(summary_json).collect();
     Ok(json!({ "shared_projects": out }))
 }
 
 /// `GET /api/share/received` — summaries of every mirror materialized by `join`.
 fn list_received(share: &ShareState) -> Result<Value, ApiError> {
-    let out: Vec<Value> = linxiv_share::ShareNode::list_received(share.store.share_dir())?
-        .into_iter()
-        .map(|s| {
-            json!({
-                "share_id": s.share_id,
-                "name": s.name,
-                "paper_count": s.paper_count,
-                "note_count": s.note_count,
-                "tag_count": s.tag_count,
-            })
-        })
-        .collect();
+    let out: Vec<Value> =
+        linxiv_share::ShareNode::list_received(share.store.share_dir())?.iter().map(summary_json).collect();
     Ok(json!({ "received": out }))
 }
 
@@ -195,6 +182,13 @@ fn publish(state: &AppState, share: &ShareState, id: &str) -> Result<Value, ApiE
     Ok(json!({ "share_id": sp.share_id }))
 }
 
+// Clone the node Arc out from under the lock, then release it: the 30s network
+// op must not hold the guard `shutdown()` also needs.
+async fn live_node(share: &ShareState) -> Result<Arc<ShareNode>, ApiError> {
+    share.node.lock().await.clone()
+        .ok_or_else(|| ApiError::new(503, "share transport not initialized"))
+}
+
 /// `POST /api/share/project/{id}/ticket` — ensure the project is published
 /// (Phase-0 publish, read-only over the canonical connection), then mint a
 /// pasteable ticket carrying the sender's address + an unguessable capability.
@@ -203,14 +197,7 @@ async fn ticket(state: &AppState, share: &ShareState, id: &str) -> Result<Value,
     let sp = state.with_conn(|conn| build_shared_project(conn, project_id))?;
     save(share.store.share_dir(), &sp)?;
 
-    // Clone the node Arc out from under the lock, then release it: the 30s network
-    // op must not hold the guard `shutdown()` also needs.
-    let node = share
-        .node
-        .lock()
-        .await
-        .clone()
-        .ok_or_else(node_unavailable)?;
+    let node = live_node(share).await?;
     let ticket = tokio::time::timeout(SHARE_NET_TIMEOUT, node.ticket(&sp.share_id))
         .await
         .map_err(|_| ApiError::new(504, "share ticket timed out"))??;
@@ -230,13 +217,7 @@ async fn join(share: &ShareState, body: Option<&Value>) -> Result<Value, ApiErro
         .parse()
         .map_err(|e: ShareError| ApiError::new(400, e.to_string()))?;
 
-    // Release the node lock before the 30s fetch so `shutdown()` can take it.
-    let node = share
-        .node
-        .lock()
-        .await
-        .clone()
-        .ok_or_else(node_unavailable)?;
+    let node = live_node(share).await?;
     let sp = tokio::time::timeout(
         SHARE_NET_TIMEOUT,
         node.fetch(&ticket, share.store.share_dir()),
@@ -251,10 +232,6 @@ async fn join(share: &ShareState, body: Option<&Value>) -> Result<Value, ApiErro
         "note_count": sp.notes.len(),
         "tag_count": sp.tags.len(),
     }))
-}
-
-fn node_unavailable() -> ApiError {
-    ApiError::new(503, "share transport not initialized")
 }
 
 /// Map a `fetch` failure to a status: a refused/unknown capability is a 404 (the

@@ -10,12 +10,13 @@
 use std::path::Path;
 use std::time::Duration;
 
-use quick_xml::events::{BytesStart, Event};
+use quick_xml::events::Event;
 use quick_xml::Reader;
 use reqwest::Url;
 use serde::Serialize;
 
 use crate::error::{CoreError, Result};
+use crate::sources::arxiv::{attr, local};
 use crate::sources::http;
 
 /// Body ceiling — arXiv daily feeds run ~1 MB; anything bigger is not a feed.
@@ -63,13 +64,8 @@ pub fn arxiv_id_from_link(link: &str) -> Option<String> {
         return None;
     }
     // Validate against arXiv's two real id shapes: new (YYYY.XXXXX) or old (archive/NNNNNNN).
-    if base.contains('/') {
+    if let Some((archive, digits)) = base.split_once('/') {
         // Old-style: archive/7digits
-        let parts: Vec<&str> = base.split('/').collect();
-        if parts.len() != 2 {
-            return None;
-        }
-        let (archive, digits) = (parts[0], parts[1]);
         if digits.len() != 7 || !digits.bytes().all(|b| b.is_ascii_digit()) {
             return None;
         }
@@ -78,34 +74,15 @@ pub fn arxiv_id_from_link(link: &str) -> Option<String> {
         }
     } else {
         // New-style: 4digits.4-5digits
-        let parts: Vec<&str> = base.split('.').collect();
-        if parts.len() != 2 {
-            return None;
-        }
-        let (year, number) = (parts[0], parts[1]);
+        let (year, number) = base.split_once('.')?;
         if year.len() != 4 || !year.bytes().all(|b| b.is_ascii_digit()) {
             return None;
         }
-        if (number.len() < 4 || number.len() > 5) || !number.bytes().all(|b| b.is_ascii_digit()) {
+        if !(4..=5).contains(&number.len()) || !number.bytes().all(|b| b.is_ascii_digit()) {
             return None;
         }
     }
     Some(base.to_string())
-}
-
-fn attr(e: &BytesStart, key: &[u8], _decoder: quick_xml::encoding::Decoder) -> Option<String> {
-    e.attributes()
-        .flatten()
-        .find(|a| a.key.as_ref() == key)
-        .map(|a| String::from_utf8_lossy(&a.value).into_owned())
-}
-
-/// Local part of a (possibly namespaced) qualified name, e.g. `dc:creator` → `creator`.
-fn local(name: &[u8]) -> &[u8] {
-    match name.iter().position(|&b| b == b':') {
-        Some(i) => &name[i + 1..],
-        None => name,
-    }
 }
 
 fn finalize(mut e: FeedEntry) -> FeedEntry {
@@ -120,14 +97,6 @@ fn finalize(mut e: FeedEntry) -> FeedEntry {
     }
     e.arxiv_id = arxiv_id_from_link(&e.link);
     e
-}
-
-/// Resolve link from explicit <link> / Atom @href or fallback to <guid isPermaLink>.
-fn resolve_link(explicit: Option<String>, guid_fallback: Option<String>) -> String {
-    explicit
-        .filter(|l| !l.is_empty())
-        .or_else(|| guid_fallback.filter(|l| !l.is_empty()))
-        .unwrap_or_default()
 }
 
 /// Parse RSS 2.0 or Atom bytes into a `Feed`. Pure + sync, fixture-tested below.
@@ -177,9 +146,9 @@ pub fn parse_feed(xml: &[u8]) -> Result<Feed> {
                         // Atom link carries its target in @href (prefer the
                         // alternate/plain link over enclosure/self rels).
                         b"link" => {
-                            if let Some(href) = attr(&e, b"href", reader.decoder()) {
+                            if let Some(href) = attr(&e, b"href") {
                                 if matches!(
-                                    attr(&e, b"rel", reader.decoder()).as_deref(),
+                                    attr(&e, b"rel").as_deref(),
                                     None | Some("alternate")
                                 ) {
                                     explicit_link = Some(href);
@@ -188,7 +157,7 @@ pub fn parse_feed(xml: &[u8]) -> Result<Feed> {
                             text.clear();
                         }
                         b"guid" => {
-                            guid_is_permalink = attr(&e, b"isPermaLink", reader.decoder())
+                            guid_is_permalink = attr(&e, b"isPermaLink")
                                 .map(|v| v != "false")
                                 .unwrap_or(true);
                             text.clear();
@@ -259,7 +228,12 @@ pub fn parse_feed(xml: &[u8]) -> Result<Feed> {
                 let l = local(name.as_ref());
                 if l == b"item" || l == b"entry" {
                     if let Some(mut b) = cur.take() {
-                        b.link = resolve_link(explicit_link.take(), guid_permalink.take());
+                        // Explicit <link>/Atom @href wins; <guid isPermaLink> is the fallback.
+                        b.link = explicit_link
+                            .take()
+                            .filter(|l| !l.is_empty())
+                            .or_else(|| guid_permalink.take().filter(|l| !l.is_empty()))
+                            .unwrap_or_default();
                         entries.push(finalize(b));
                     }
                 } else if let Some(b) = cur.as_mut() {

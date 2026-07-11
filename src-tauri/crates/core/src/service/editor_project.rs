@@ -61,9 +61,6 @@ Hello, world!
 /// `---` block (or an unterminated one) yields `({}, content)`. Mirrors
 /// `parse_frontmatter`.
 pub fn parse_frontmatter(content: &str) -> (HashMap<String, String>, String) {
-    if content.is_empty() {
-        return (HashMap::new(), String::new());
-    }
     let lines: Vec<&str> = content.lines().collect();
     if lines.first().map(|l| l.trim()) != Some("---") {
         return (HashMap::new(), content.to_string());
@@ -105,20 +102,6 @@ fn is_editor_project(meta: &HashMap<String, String>) -> bool {
         .unwrap_or(false)
 }
 
-/// First non-empty of the candidates (mirrors Python's `a or b or c` falsy-on-"").
-fn first_nonempty(candidates: &[&str]) -> Option<String> {
-    candidates
-        .iter()
-        .find(|s| !s.is_empty())
-        .map(|s| s.to_string())
-}
-
-/// `note.updated_at.isoformat()`.
-fn iso(note: &NoteDetails) -> Option<String> {
-    note.updated_at
-        .map(|dt| dt.format("%Y-%m-%dT%H:%M:%S").to_string())
-}
-
 /// Wire shape of `_to_summary` (camelCase keys to match the FastAPI dicts).
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -132,11 +115,13 @@ pub struct EditorProjectSummary {
 }
 
 fn to_summary(note: &NoteDetails, meta: &HashMap<String, String>) -> EditorProjectSummary {
-    let project_name = first_nonempty(&[
-        meta.get("projectName").map(String::as_str).unwrap_or(""),
-        &note.title,
-    ])
-    .unwrap_or_else(|| format!("project {}", note.note_id.unwrap_or_default()));
+    // Mirrors Python's `a or b or c` falsy-on-"".
+    let project_name = meta
+        .get("projectName")
+        .filter(|s| !s.is_empty())
+        .cloned()
+        .or_else(|| Some(note.title.clone()).filter(|s| !s.is_empty()))
+        .unwrap_or_else(|| format!("project {}", note.note_id.unwrap_or_default()));
     let main_file = meta
         .get("mainFile")
         .filter(|s| !s.is_empty())
@@ -148,7 +133,9 @@ fn to_summary(note: &NoteDetails, meta: &HashMap<String, String>) -> EditorProje
         main_file,
         source_fk: note.source_fk,
         project_id: note.project_id,
-        updated_at: iso(note),
+        updated_at: note
+            .updated_at
+            .map(|dt| dt.format("%Y-%m-%dT%H:%M:%S").to_string()),
     }
 }
 
@@ -210,34 +197,21 @@ pub fn create_project(
     source_id: Option<&str>,
     project_id: Option<i64>,
 ) -> Result<CreatedProject> {
-    let name = {
-        let n = sanitize_line(project_name);
-        if n.is_empty() {
-            "Untitled".to_string()
-        } else {
-            n
-        }
-    };
-    let main = {
-        let m = sanitize_line(main_file);
-        if m.is_empty() {
-            "main.tex".to_string()
-        } else {
-            m
-        }
-    };
+    let name = Some(sanitize_line(project_name))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Untitled".to_string());
+    let main = Some(sanitize_line(main_file))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "main.tex".to_string());
     // Validate the main file is a safe, contained relative path BEFORE creating the
     // note, so a bad name fails clean rather than orphaning a note with no vault.
     // (Python validates against note 0's root; the relpath shape is what matters.)
     vault::safe_path(&vault_root(vault_dir, 0), &main)?;
 
     // `(source_id or STANDALONE).strip()` — only "" (not whitespace) is falsy.
-    let raw = source_id.unwrap_or("");
-    let source_id = if raw.is_empty() {
-        STANDALONE_SOURCE_ID
-    } else {
-        raw
-    };
+    let source_id = source_id
+        .filter(|s| !s.is_empty())
+        .unwrap_or(STANDALONE_SOURCE_ID);
     let source_fk = paper::ensure_paper_root(conn, source_id.trim())?;
 
     let note_id = note::create(
@@ -304,38 +278,26 @@ pub fn get_doc(
         Some(x) => x,
         None => return Ok(None),
     };
-    let mut main = meta
-        .get("mainFile")
-        .filter(|s| !s.is_empty())
-        .cloned()
-        .unwrap_or_else(|| "main.tex".to_string());
+    let summary = to_summary(&note, &meta);
+    let mut main = summary.main_file;
 
     let existing = vault::list_files(&vault_root(vault_dir, note_id))?;
     if !existing.contains(&main) {
-        let mut tex: Vec<&String> = existing
+        if existing.iter().any(|p| p == "main.tex") {
+            main = "main.tex".to_string();
+        } else if let Some(first) = existing
             .iter()
             .filter(|p| p.to_lowercase().ends_with(".tex"))
-            .collect();
-        tex.sort();
-        if let Some(first) = tex.first() {
-            main = if existing.iter().any(|p| p == "main.tex") {
-                "main.tex".to_string()
-            } else {
-                (*first).clone()
-            };
+            .min()
+        {
+            main = first.clone();
         }
     }
-
-    let project_name = first_nonempty(&[
-        meta.get("projectName").map(String::as_str).unwrap_or(""),
-        &note.title,
-    ])
-    .unwrap_or_else(|| format!("project {note_id}"));
 
     Ok(Some(DocOpenPayload {
         main_file: main,
         files: HashMap::new(),
-        project_name,
+        project_name: summary.project_name,
     }))
 }
 

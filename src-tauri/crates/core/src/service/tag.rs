@@ -1,6 +1,6 @@
 //! tag service — Phase 2 port of `service/tag.py`.
 //!
-//! Lookup seam (D17): the `Tag` / `Tags` query objects are the ONE lookup form.
+//! Lookup seam (D17): the `Tag` query object is the ONE lookup form.
 //! Python's redundant `get_tag_details` (a 1-line forward to `get`) is dropped.
 //!
 //! These query structs live in `service/tag.py` itself (not `service/models/`),
@@ -17,14 +17,6 @@ use crate::storage::queries::tag as q;
 #[derive(Debug, Default, Clone)]
 pub struct Tag {
     pub tag_id: Option<i64>,
-    pub label: Option<String>,
-}
-
-/// `service/tag.py::Tags` — multi-tag filter (any combination of fields).
-#[derive(Debug, Default, Clone)]
-pub struct Tags {
-    pub paper_id: Option<i64>,
-    pub project_id: Option<i64>,
     pub label: Option<String>,
 }
 
@@ -47,45 +39,6 @@ pub fn get(conn: &Connection, tag: &Tag) -> Result<Option<TagDetails>> {
         }
     }
     Ok(None)
-}
-
-/// `service/tag.py::get_tags` — tags matching the `Tags` filter.
-///
-/// Mirrors Python `storage.tags.list_tags`'s priority: `paper_id` wins (the real
-/// tags linked to that paper, via PAPER_TO_TAG), else `project_id`/`label` narrow
-/// the full set in-service (keeping real TAG_FKs).
-pub fn get_tags(conn: &Connection, tags: &Tags) -> Result<Vec<TagDetails>> {
-    if let Some(pid) = tags.paper_id {
-        // Python list_tags(paper_id) -> list_tags_by_paper: the paper's actual
-        // tags (PAPER_TO_TAG join), and paper_id takes priority over the rest.
-        return q::list_tags_by_paper(conn, pid);
-    }
-    let mut rows = q::list_tags(conn)?;
-    if let Some(pid) = tags.project_id {
-        let proj = q::get_project_tags(conn, pid)?;
-        rows.retain(|t| {
-            t.label
-                .as_deref()
-                .is_some_and(|l| proj.iter().any(|p| p.eq_ignore_ascii_case(l)))
-        });
-    }
-    if let Some(label) = &tags.label {
-        rows.retain(|t| {
-            t.label
-                .as_deref()
-                .is_some_and(|l| l.eq_ignore_ascii_case(label))
-        });
-    }
-    Ok(rows)
-}
-
-/// `service/tag.py::get_many` — filtered tags.
-///
-/// Python falls back to synthesising `tag_id = -1` rows when storage returns
-/// nothing, but that path is unreachable once `storage::list_tags` is the
-/// authoritative TAG-table read (same table the fallback scans).
-pub fn get_many(conn: &Connection, tags: &Tags) -> Result<Vec<TagDetails>> {
-    get_tags(conn, tags)
 }
 
 /// `service/tag.py::upsert` — case-insensitive get-or-create. Returns the TAG_FK.
@@ -245,102 +198,5 @@ mod tests {
         assert!(q::get_tag(&conn, id).unwrap().is_none());
         // no tag_id -> no-op, no error
         delete(&conn, &Tag::default()).unwrap();
-    }
-
-    #[test]
-    fn get_tags_filters_by_label_and_project() {
-        let mut conn = seeded();
-        conn.execute("INSERT INTO PROJECT (PROJECT_FK, NAME) VALUES (1, 'p')", [])
-            .unwrap();
-        q::add_project_tags(&mut conn, 1, &["RL".into(), "Vision".into()]).unwrap();
-
-        // label filter (NOCASE) -> the single Neural row, real id
-        let by_label = get_tags(
-            &conn,
-            &Tags {
-                label: Some("NEURAL".into()),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(by_label.len(), 1);
-        assert_eq!(by_label[0].label.as_deref(), Some("Neural"));
-        assert!(by_label[0].tag_id > 0);
-
-        // project filter -> only the two linked tags, ordered by label
-        let by_proj = get_tags(
-            &conn,
-            &Tags {
-                project_id: Some(1),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let labels: Vec<_> = by_proj.iter().filter_map(|t| t.label.clone()).collect();
-        assert_eq!(labels, vec!["RL", "Vision"]);
-
-        // no filter -> all tags (get_many delegates here)
-        assert_eq!(get_many(&conn, &Tags::default()).unwrap().len(), 3);
-
-        // paper_id filter -> the paper's REAL tags via PAPER_TO_TAG (Python parity).
-        conn.execute("INSERT INTO PAPER_ROOTS (SOURCE_ID) VALUES ('arxiv:1')", [])
-            .unwrap();
-        let src_fk = conn.last_insert_rowid();
-        conn.execute(
-            "INSERT INTO PAPER (SOURCE_ID, VERSION, TITLE, SOURCE_FK) VALUES ('arxiv:1', 1, 'T', ?1)",
-            [src_fk],
-        )
-        .unwrap();
-        let paper_id = conn.last_insert_rowid();
-        // link Neural + Vision (not RL) to the paper.
-        let neural = get(
-            &conn,
-            &Tag {
-                label: Some("Neural".into()),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let neural_fk: i64 = conn
-            .query_row("SELECT TAG_FK FROM TAG WHERE TAG = 'Neural'", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        let vision_fk: i64 = conn
-            .query_row("SELECT TAG_FK FROM TAG WHERE TAG = 'Vision'", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        let _ = neural; // label-path sentinel, unused here
-        conn.execute(
-            "INSERT INTO PAPER_TO_TAG (PAPER_ID, TAG_FK) VALUES (?1, ?2), (?1, ?3)",
-            [paper_id, neural_fk, vision_fk],
-        )
-        .unwrap();
-
-        let by_paper = get_tags(
-            &conn,
-            &Tags {
-                paper_id: Some(paper_id),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let labels: Vec<_> = by_paper.iter().filter_map(|t| t.label.clone()).collect();
-        assert_eq!(labels, vec!["Neural", "Vision"]); // ORDER BY label, RL excluded
-        assert!(
-            by_paper.iter().all(|t| t.tag_id > 0),
-            "real TAG_FKs, not sentinels"
-        );
-        // a paper with no links -> []
-        assert!(get_tags(
-            &conn,
-            &Tags {
-                paper_id: Some(999),
-                ..Default::default()
-            }
-        )
-        .unwrap()
-        .is_empty());
     }
 }

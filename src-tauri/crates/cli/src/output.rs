@@ -1,9 +1,5 @@
 //! Output + error parity helpers. Byte-for-byte mirrors of `linxiv_cli.py`'s
 //! `_output` / error-exit / `_validate_arxiv_id` / `_as_source_id` / `_render_paper`.
-// Skeleton stage: consumed by the per-group `run` bodies (still `todo!()`), so
-// every helper here reads as dead until those land.
-#![allow(dead_code)]
-
 use std::fmt::Display;
 use std::io::Write;
 
@@ -32,40 +28,13 @@ pub fn fail(msg: impl Display) -> ! {
     std::process::exit(1);
 }
 
-/// Python `repr()` of a string, for `!r` error-message parity. Python defaults to single
-/// quotes, switching to double only when the string holds a `'` but no `"`. Rust's `{:?}`
-/// always uses double quotes, so it diverges byte-for-byte on every id in an error message.
-pub fn pyrepr(s: &str) -> String {
-    let quote = if s.contains('\'') && !s.contains('"') {
-        '"'
-    } else {
-        '\''
-    };
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push(quote);
-    for c in s.chars() {
-        match c {
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c == quote => {
-                out.push('\\');
-                out.push(c);
-            }
-            c => out.push(c),
-        }
-    }
-    out.push(quote);
-    out
-}
+pub use linxiv_core::formats::pyrepr;
 
 /// `_validate_arxiv_id`: on miss, fail with the `!r`-quoted id (Python single-quote repr).
-pub fn validate_arxiv_id(source_id: &str) -> String {
+pub fn validate_arxiv_id(source_id: &str) {
     if !is_arxiv_id(source_id) {
         fail(format!("Invalid arXiv ID format: {}", pyrepr(source_id)));
     }
-    source_id.to_string()
 }
 
 /// `_as_source_id`: prefix a bare id with its namespace; already-prefixed ids pass through.
@@ -75,6 +44,23 @@ pub fn as_source_id(raw: &str, source: &str) -> String {
     } else {
         format!("{source}:{raw}")
     }
+}
+
+/// Resolve an optional CLI paper id to its SOURCE_FK, failing like the Python CLI on a miss.
+pub fn resolve_source_fk(
+    conn: &rusqlite::Connection,
+    raw: Option<String>,
+) -> anyhow::Result<Option<i64>> {
+    Ok(match raw {
+        Some(raw) => {
+            let sid = as_source_id(&raw, "arxiv");
+            match linxiv_core::storage::queries::paper::get_paper_root(conn, &sid)? {
+                Some(root) => Some(root.source_fk),
+                None => fail(format!("Paper {} not found in DB", pyrepr(&sid))),
+            }
+        }
+        None => None,
+    })
 }
 
 /// `_render_paper`: only `arxiv` has a template; non-arxiv sources return `None`
@@ -99,20 +85,4 @@ pub fn render_paper(meta: &PaperMetadata) -> Option<String> {
 
 fn opt(v: Option<&str>) -> String {
     v.map(str::to_string).unwrap_or_else(|| "None".to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::pyrepr;
-
-    #[test]
-    fn pyrepr_matches_python_repr() {
-        // Python: repr("arxiv:1234.5678") == "'arxiv:1234.5678'"
-        assert_eq!(pyrepr("arxiv:1234.5678"), "'arxiv:1234.5678'");
-        // repr of a string with a single quote and no double → switches to double quotes.
-        assert_eq!(pyrepr("O'Brien"), "\"O'Brien\"");
-        // Both quote kinds present → stays single, escapes the single.
-        assert_eq!(pyrepr("a'b\"c"), "'a\\'b\"c'");
-        assert_eq!(pyrepr("tab\there"), "'tab\\there'");
-    }
 }

@@ -15,7 +15,6 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
 
-use linxiv_core::error::CoreError;
 use linxiv_core::models::PaperMetadata;
 use linxiv_core::service::paper as svc_paper;
 use linxiv_core::sources::fetch as svc_fetch;
@@ -25,21 +24,9 @@ use linxiv_core::{config, service::project as svc_project};
 
 use crate::Server;
 
-/// OpenAlex polite-pool address (`OPENALEX_MAILTO`), mirroring the CLI/Python
-/// source clients. CR/LF are stripped downstream in `openalex::user_agent`.
-fn mailto() -> String {
-    std::env::var("OPENALEX_MAILTO").unwrap_or_default()
-}
+use linxiv_core::config::openalex_mailto as mailto;
 
-/// Serialize a core value to the tool's text result (compact JSON string).
-fn json_ok<T: serde::Serialize>(v: &T) -> Result<String, ErrorData> {
-    serde_json::to_string(v).map_err(|e| ErrorData::internal_error(e.to_string(), None))
-}
-
-/// Map an unexpected core error (DB/FS) to an MCP internal error.
-fn core_err(e: CoreError) -> ErrorData {
-    ErrorData::internal_error(e.to_string(), None)
-}
+use crate::util::{core_err, json_ok};
 
 /// `Paper(source_id=paper_id)` lookup key, as the Python tools build it.
 fn paper_key(paper_id: &str) -> svc_paper::Paper {
@@ -202,10 +189,7 @@ impl Server {
         let paper = self
             .with_conn(|conn| svc_paper::get(conn, &paper_key(&paper_id)))
             .map_err(core_err)?;
-        match paper {
-            Some(p) => json_ok(&p),
-            None => json_ok(&Value::Null),
-        }
+        json_ok(&paper)
     }
 
     #[tool(description = "Soft-delete a paper from the local database (moves it to trash).")]
@@ -238,10 +222,7 @@ impl Server {
         let all_ver = self
             .with_conn(|conn| svc_paper::get_all(conn, &paper_key(&paper_id)))
             .map_err(core_err)?;
-        match all_ver {
-            Some(v) => json_ok(&v),
-            None => json_ok(&Value::Null),
-        }
+        json_ok(&all_ver)
     }
 
     #[tool(description = "Full-text search over downloaded TeX source content.")]

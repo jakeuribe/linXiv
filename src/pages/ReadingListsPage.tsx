@@ -117,8 +117,6 @@ export default function ReadingListsPage() {
     queryFn: () => listProjects("active"),
   });
 
-  // ponytail: mirrors ProjectDetailPage — fetch first 200 papers and filter
-  // client-side; switch to a filtered endpoint when libraries outgrow that.
   const { data: papersData, isLoading: papersLoading, isError: papersError, error: papersErrorMsg } = useQuery({
     queryKey: ["papers"],
     queryFn: () => listPapers(),

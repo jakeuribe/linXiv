@@ -237,6 +237,24 @@ pub(crate) fn split_segments(raw_path: &str) -> Vec<String> {
 }
 
 /// Parse a raw `k=v&k2=v2` query string, percent-decoding keys and values.
+/// Serialize a domain struct == Python `to_dict()`; an encode failure is a 500.
+pub(crate) fn to_value<T: serde::Serialize>(v: &T) -> Result<Value, ApiError> {
+    serde_json::to_value(v).map_err(|e| ApiError::new(500, e.to_string()))
+}
+
+/// FastAPI `Query(default=None, ge=1)` semantics for `?version=`: absent → None;
+/// present must be an int >= 1, else a 422 (not a silent fall-through to latest).
+pub(crate) fn q_version(ctx: &ReqCtx<'_>) -> Result<Option<i64>, ApiError> {
+    ctx.q("version")
+        .map(|v| {
+            v.parse::<i64>()
+                .ok()
+                .filter(|&n| n >= 1)
+                .ok_or_else(|| ApiError::new(422, "version must be an integer >= 1"))
+        })
+        .transpose()
+}
+
 pub(crate) fn parse_query(raw: &str) -> HashMap<String, String> {
     raw.split('&')
         .filter(|s| !s.is_empty())
@@ -268,18 +286,43 @@ pub(crate) fn pct_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// Shared test helpers for the per-group route test modules (each previously
+/// carried its own copy of `state`/`req`).
 #[cfg(test)]
-mod tests {
+pub(crate) mod testutil {
     use super::*;
     use linxiv_core::storage;
 
-    fn state() -> AppState {
-        // DI: an in-memory DB, never the real data dir. pdf/vault roots are unused
-        // by these arms but must be present.
+    /// DI: an in-memory DB, never the real data dir. pdf/vault roots are unused
+    /// by most arms but must be present.
+    pub(crate) fn state() -> AppState {
         let conn = storage::open_in_memory().unwrap();
         storage::init_db(&conn).unwrap();
         AppState::from_parts(conn, std::env::temp_dir(), std::env::temp_dir())
     }
+
+    pub(crate) async fn req(
+        st: &AppState,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Value, ApiError> {
+        route(
+            st,
+            ApiRequest {
+                method: method.into(),
+                path: path.into(),
+                body,
+            },
+        )
+        .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testutil::state;
+    use super::*;
 
     async fn get(st: &AppState, path: &str) -> Result<Value, ApiError> {
         route(

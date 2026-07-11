@@ -114,20 +114,6 @@ pub fn update(conn: &Connection, note: &NoteUpdateIn) -> Result<bool> {
     )?)
 }
 
-/// Count notes on a paper, optionally narrowed to a project.
-pub fn count_paper_notes(
-    conn: &Connection,
-    source_fk: i64,
-    project_id: Option<i64>,
-) -> Result<i64> {
-    Ok(q::count_notes(conn, source_fk, project_id)?)
-}
-
-/// Total notes scoped to a project.
-pub fn count_project_notes(conn: &Connection, project_id: i64) -> Result<i64> {
-    Ok(q::count_project_notes(conn, project_id)?)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,9 +371,6 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(count_paper_notes(&conn, 1, None).unwrap(), 2);
-        assert_eq!(count_paper_notes(&conn, 1, Some(10)).unwrap(), 1);
-        assert_eq!(count_project_notes(&conn, 10).unwrap(), 2);
         assert_eq!(list_all(&conn).unwrap().len(), 3);
     }
 }

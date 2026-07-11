@@ -16,14 +16,9 @@ use reqwest::Url;
 
 use crate::error::{CoreError, Result};
 
-/// Deletes its path on drop unless `disarm`ed — so any error after the temp file is created
-/// removes it (mirrors Python's `tmp.unlink(missing_ok=True)` on failure).
+/// Deletes its path on drop unless disarmed (`guard.0 = None`) — so any error after the temp
+/// file is created removes it (mirrors Python's `tmp.unlink(missing_ok=True)` on failure).
 struct TmpGuard(Option<PathBuf>);
-impl TmpGuard {
-    fn disarm(&mut self) {
-        self.0 = None;
-    }
-}
 impl Drop for TmpGuard {
     fn drop(&mut self) {
         if let Some(p) = &self.0 {
@@ -91,7 +86,7 @@ async fn fetch_to_dest(
         Url::parse(url).map_err(|e| CoreError::BadRequest(format!("Invalid URL: {e}")))?;
     let mut hops = 0u32;
 
-    let resp = loop {
+    let mut resp = loop {
         let scheme = current.scheme();
         if scheme != "http" && scheme != "https" {
             return Err(CoreError::Validation(format!(
@@ -138,14 +133,11 @@ async fn fetch_to_dest(
     }
 
     // Content-Type: reject a present type that isn't a PDF/octet-stream (empty → allowed).
-    let ct = resp
+    let ct_main = resp
         .headers()
         .get(CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-    let ct_main = ct
-        .split(';')
-        .next()
+        .and_then(|ct| ct.split(';').next())
         .unwrap_or("")
         .trim()
         .to_ascii_lowercase();
@@ -180,7 +172,6 @@ async fn fetch_to_dest(
     let mut guard = TmpGuard(Some(tmp_path.clone()));
 
     let mut total: u64 = 0;
-    let mut resp = resp;
     while let Some(chunk) = resp
         .chunk()
         .await
@@ -200,7 +191,7 @@ async fn fetch_to_dest(
     drop(file); // close before rename (matters on Windows; harmless on unix)
     std::fs::rename(&tmp_path, dest)
         .map_err(|e| CoreError::Internal(format!("atomic rename failed: {e}")))?;
-    guard.disarm();
+    guard.0 = None;
     Ok(dest.to_path_buf())
 }
 
@@ -235,14 +226,9 @@ fn host_is_public(url: &Url) -> bool {
     }
     match (host, 0u16).to_socket_addrs() {
         Ok(addrs) => {
-            let mut any = false;
-            for a in addrs {
-                any = true;
-                if !is_public_addr(a.ip()) {
-                    return false;
-                }
-            }
-            any // no addresses == unresolved == unsafe
+            let mut addrs = addrs.peekable();
+            // no addresses == unresolved == unsafe
+            addrs.peek().is_some() && addrs.all(|a| is_public_addr(a.ip()))
         }
         Err(_) => false,
     }

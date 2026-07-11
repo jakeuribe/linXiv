@@ -43,12 +43,8 @@ pub fn get_suggestions(conn: &Connection, prefix: &str, limit: i64) -> Result<Ve
         "SELECT TERM FROM SEARCH_HISTORY WHERE TERM LIKE ?1 COLLATE NOCASE \
          ORDER BY USE_COUNT DESC, LAST_USED_AT DESC LIMIT ?2",
     )?;
-    let rows = stmt.query_map(params![pattern, limit], |r| r.get::<_, String>(0))?;
-    let mut out = Vec::new();
-    for term in rows {
-        out.push(term?);
-    }
-    Ok(out)
+    let rows = stmt.query_map(params![pattern, limit], |r| r.get(0))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<String>>>()?)
 }
 
 #[cfg(test)]

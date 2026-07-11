@@ -47,14 +47,6 @@ pub struct ProjectPage {
     pub note_counts: Vec<i64>,
 }
 
-fn status_sql(s: Status) -> &'static str {
-    match s {
-        Status::Active => "active",
-        Status::Archived => "archived",
-        Status::Deleted => "deleted",
-    }
-}
-
 // ── Tag helpers (shared by create/update) — Python `_normalize_tags`/`_sync_tags`. ──
 
 /// Strip + case-insensitive dedup, case-preserving, dropping blanks.
@@ -113,28 +105,20 @@ pub fn get(conn: &Connection, project: &Project) -> Result<Option<ProjectDetails
     let Some(fk) = project.project_fk else {
         return Ok(None);
     };
-    match pq::get_project(conn, fk, true)? {
-        Some(p) => Ok(Some(fill_tags(conn, p)?)),
-        None => Ok(None),
-    }
+    pq::get_project(conn, fk, true)?.map(|p| fill_tags(conn, p)).transpose()
 }
 
 /// `service/project.py::get_many` — projects matching any combination of the
 /// `Projects` filter fields (with tags).
 pub fn get_many(conn: &Connection, projects: &Projects) -> Result<Vec<ProjectDetails>> {
-    let mut condition: Option<Q> = None;
-    if let Some(fks) = &projects.project_fks {
-        if !fks.is_empty() {
-            condition = Some(query::_in("PROJECT_FK", fks.iter().copied()));
-        }
-    }
-    if let Some(status) = projects.status {
-        let q = Q::new("STATUS = ?", status_sql(status));
-        condition = Some(match condition {
-            Some(c) => c.and(q),
-            None => q,
-        });
-    }
+    let condition = [
+        projects.project_fks.as_deref().filter(|fks| !fks.is_empty())
+            .map(|fks| query::_in("PROJECT_FK", fks.iter().copied())),
+        projects.status.map(|s| Q::new("STATUS = ?", pq::status_to_sql(s))),
+    ]
+    .into_iter()
+    .flatten()
+    .reduce(Q::and);
     pq::list_projects(conn, condition, true)?
         .into_iter()
         .map(|p| fill_tags(conn, p))
@@ -345,9 +329,7 @@ pub fn link_imported(conn: &Connection, project_fk: i64, source_ids: &[String]) 
 
 /// `service/project.py::remove_paper_from_all_projects` — delete this paper's membership
 /// rows across all projects (single transaction). Returns the PROJECT_FKs it was in.
-pub fn remove_paper_from_all_projects(conn: &mut Connection, source_fk: i64) -> Result<Vec<i64>> {
-    pq::remove_paper_from_all_projects(conn, source_fk)
-}
+pub use crate::storage::queries::project::remove_paper_from_all_projects;
 
 /// `service/project.py::remove_paper_from_all_projects_by_id` — resolve a paper id
 /// (stripped) then delete its membership everywhere. `None` if the id is unknown.
@@ -355,13 +337,9 @@ pub fn remove_paper_from_all_projects_by_id(
     conn: &mut Connection,
     source_id: &str,
 ) -> Result<Option<Vec<i64>>> {
-    match paperq::get_paper_root(conn, source_id.trim())? {
-        None => Ok(None),
-        Some(root) => Ok(Some(pq::remove_paper_from_all_projects(
-            conn,
-            root.source_fk,
-        )?)),
-    }
+    paperq::get_paper_root(conn, source_id.trim())?
+        .map(|root| pq::remove_paper_from_all_projects(conn, root.source_fk))
+        .transpose()
 }
 
 // ── Status transitions / trash ──────────────────────────────────────────────────
@@ -441,7 +419,7 @@ pub fn purge_old(conn: &mut Connection, days: i64) -> Result<usize> {
 
 /// `service/project.py::get_projects` — the legacy `ProjectPage` list (default ACTIVE).
 pub fn get_projects(conn: &Connection, status: Status) -> Result<ProjectPage> {
-    let projects = pq::list_projects(conn, Some(Q::new("STATUS = ?", status_sql(status))), true)?;
+    let projects = pq::list_projects(conn, Some(Q::new("STATUS = ?", pq::status_to_sql(status))), true)?;
     let mut page = ProjectPage {
         num_projects: projects.len(),
         ..Default::default()
@@ -458,14 +436,15 @@ pub fn get_projects(conn: &Connection, status: Status) -> Result<ProjectPage> {
     Ok(page)
 }
 
-// ── Colour helpers — delegate to storage (Python `color_to_hex`/`color_from_hex`). ──
+// ── Colour helpers — Python `projects.py::color_to_hex`/`color_from_hex`. ──────
 
 pub fn color_to_hex(color: i32) -> String {
-    pq::color_to_hex(color)
+    format!("#{color:06x}")
 }
 
 pub fn color_from_hex(hex: &str) -> Result<i32> {
-    pq::color_from_hex(hex)
+    i32::from_str_radix(hex.trim_start_matches('#'), 16)
+        .map_err(|e| CoreError::Internal(format!("bad colour hex {hex:?}: {e}")))
 }
 
 #[cfg(test)]

@@ -44,19 +44,13 @@ const VIEW_DDL: &[&str] = &[
 /// Create all bundled tables (FK-safe order). FTS5 + JSON1 are compiled in via
 /// rusqlite's `bundled` feature, so `papers_fts` and `json_each` are available.
 pub fn apply_tables(conn: &Connection) -> Result<()> {
-    for ddl in TABLE_DDL {
-        conn.execute_batch(ddl)?;
-    }
-    Ok(())
+    Ok(TABLE_DDL.iter().try_for_each(|ddl| conn.execute_batch(ddl))?)
 }
 
 /// (Re)create the `papers` / `latest_papers` / `deleted_papers` and
 /// `author_paper_counts` views.
 pub fn apply_views(conn: &Connection) -> Result<()> {
-    for ddl in VIEW_DDL {
-        conn.execute_batch(ddl)?;
-    }
-    Ok(())
+    Ok(VIEW_DDL.iter().try_for_each(|ddl| conn.execute_batch(ddl))?)
 }
 
 // No tables+views shortcut: the sole init path is `super::init_db`, which runs

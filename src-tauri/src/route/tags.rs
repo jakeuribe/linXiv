@@ -42,11 +42,8 @@ fn detail(state: &AppState, label: &str) -> Result<Value, ApiError> {
         .and_then(|t| t.label)
         .unwrap_or_else(|| label.to_string());
 
-        let papers = svc_paper::get_papers_by_tag(conn, label)?;
-        let papers: Vec<Value> = papers
-            .iter()
-            .map(|p| serde_json::to_value(p).map_err(|e| ApiError::new(500, e.to_string())))
-            .collect::<Result<_, _>>()?;
+        let papers = serde_json::to_value(svc_paper::get_papers_by_tag(conn, label)?)
+            .map_err(|e| ApiError::new(500, e.to_string()))?;
 
         // Status::Active filter matches Python's `_LIST_PROJECTS_BY_TAG_SQL`
         // (`AND pr.STATUS = 'active'`): PROJECT_TO_TAG rows survive soft-delete, so
@@ -57,20 +54,9 @@ fn detail(state: &AppState, label: &str) -> Result<Value, ApiError> {
         };
         let mut projects = Vec::new();
         for p in svc_project::get_many(conn, &active)? {
-            if !p.project_tags.iter().any(|t| t.eq_ignore_ascii_case(label)) {
-                continue;
+            if p.project_tags.iter().any(|t| t.eq_ignore_ascii_case(label)) {
+                projects.push(super::projects::project_to_dict_with_count(conn, p)?);
             }
-            let source_ids = svc_paper::sfks_to_source_ids(conn, &p.source_fks)?;
-            projects.push(json!({
-                "id": p.id,
-                "name": p.name,
-                "description": p.description,
-                "color_hex": p.color.map(svc_project::color_to_hex),
-                "project_tags": p.project_tags,
-                "source_ids": source_ids,
-                "status": p.status,
-                "paper_count": source_ids.len(),
-            }));
         }
 
         Ok(json!({ "label": canonical, "papers": papers, "projects": projects }))

@@ -74,7 +74,6 @@ function createComponents(math: string[], forceInline: boolean): Components {
 // Minimal markdown preview: basic CommonMark (headings, lists, emphasis, code,
 // blockquotes, links) plus inline/display math via the existing MathText. No
 // remark-gfm, so tables/strikethrough aren't rendered.
-// ponytail: CommonMark-only; add remark-gfm if notes need tables.
 export function NoteMarkdown({
   content,
   className,

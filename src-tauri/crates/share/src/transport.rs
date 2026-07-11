@@ -311,10 +311,8 @@ impl ShareNode {
             return Err(ShareError::NotFound("capability refused".into()));
         }
 
-        let sp: SharedProject = {
-            let doc = automerge::AutoCommit::load(&doc).map_err(super::crdt)?;
-            autosurgeon::hydrate(&doc).map_err(super::crdt)?
-        };
+        let doc = automerge::AutoCommit::load(&doc).map_err(super::crdt)?;
+        let sp: SharedProject = autosurgeon::hydrate(&doc).map_err(super::crdt)?;
         // The doc-internal share_id is attacker-controlled and feeds save()'s paths.
         if !valid_share_id(&sp.share_id) {
             return Err(net(format!("remote share_id is unsafe: {:?}", sp.share_id)));

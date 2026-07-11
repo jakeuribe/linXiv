@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 
 use linxiv_core::error::CoreError;
 use linxiv_core::formats;
-use linxiv_core::models::{ProjectDetails, ProjectIn, ProjectUpdateIn, Status};
+use linxiv_core::models::{PaperDetails, ProjectDetails, ProjectIn, ProjectUpdateIn, Status};
 use linxiv_core::service::export_import;
 use linxiv_core::service::paper as svc_paper;
 use linxiv_core::service::project::{self, Project, Projects};
@@ -34,19 +34,13 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
         ("DELETE", ["api", "projects", id, "papers", sid]) => Some(remove_paper(state, id, sid)),
         ("POST", ["api", "projects", id, "export"]) => Some(export(state, id, ctx)),
         ("GET", ["api", "projects", id, "export", "bibtex"]) => {
-            Some(export_text(state, id, ctx, Fmt::Bibtex))
+            Some(export_text(state, id, ctx, formats::bibtex_export))
         }
         ("GET", ["api", "projects", id, "export", "obsidian"]) => {
-            Some(export_text(state, id, ctx, Fmt::Obsidian))
+            Some(export_text(state, id, ctx, formats::obsidian_export))
         }
         _ => None,
     }
-}
-
-#[derive(Clone, Copy)]
-enum Fmt {
-    Bibtex,
-    Obsidian,
 }
 
 /// `POST /api/projects/{id}/export` — `api_project_export` (dest_path branch only).
@@ -56,7 +50,6 @@ fn export(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     let project_fk = path_i64(id)?;
     #[derive(Deserialize)]
     struct Body {
-        #[serde(default)]
         dest_path: Option<String>,
         #[serde(default)]
         include_pdfs: bool,
@@ -99,7 +92,12 @@ fn export(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
 
 /// `GET /api/projects/{id}/export/{bibtex,obsidian}?dest_path=` — the dest_path
 /// branch of the text exporters. Writes the formatted project to disk, `{ok}`.
-fn export_text(state: &AppState, id: &str, ctx: &ReqCtx<'_>, fmt: Fmt) -> Result<Value, ApiError> {
+fn export_text(
+    state: &AppState,
+    id: &str,
+    ctx: &ReqCtx<'_>,
+    fmt: fn(&[PaperDetails]) -> String,
+) -> Result<Value, ApiError> {
     let project_fk = path_i64(id)?;
     let Some(dest) = ctx.q("dest_path").filter(|s| !s.is_empty()) else {
         return Err(ApiError::new(
@@ -124,10 +122,7 @@ fn export_text(state: &AppState, id: &str, ctx: &ReqCtx<'_>, fmt: Fmt) -> Result
             .into_iter()
             .filter(|p| ids.contains(&p.source_id))
             .collect();
-        Ok(match fmt {
-            Fmt::Bibtex => formats::bibtex_export(&papers),
-            Fmt::Obsidian => formats::obsidian_export(&papers),
-        })
+        Ok(fmt(&papers))
     })?;
     std::fs::write(dest, content).map_err(|e| ApiError::new(500, e.to_string()))?;
     Ok(json!({ "ok": true }))
@@ -135,12 +130,7 @@ fn export_text(state: &AppState, id: &str, ctx: &ReqCtx<'_>, fmt: Fmt) -> Result
 
 /// `Status(s)` — the three lifecycle strings, else None (caller decides the error).
 fn status_from_str(s: &str) -> Option<Status> {
-    match s {
-        "active" => Some(Status::Active),
-        "archived" => Some(Status::Archived),
-        "deleted" => Some(Status::Deleted),
-        _ => None,
-    }
+    serde_json::from_value(Value::String(s.into())).ok()
 }
 
 /// `app.py` builds each project dict the same way for list + get. Consumes the row
@@ -158,6 +148,18 @@ fn project_to_dict(conn: &Connection, p: ProjectDetails) -> Result<Value, ApiErr
         "source_ids": source_ids,
         "status": p.status,
     }))
+}
+
+/// `project_to_dict` + the trailing `paper_count` key — shared by the projects
+/// list arm and the tag-detail projects scan.
+pub(crate) fn project_to_dict_with_count(
+    conn: &Connection,
+    p: ProjectDetails,
+) -> Result<Value, ApiError> {
+    let mut obj = project_to_dict(conn, p)?;
+    let count = obj["source_ids"].as_array().map_or(0, Vec::len);
+    obj["paper_count"] = json!(count);
+    Ok(obj)
 }
 
 /// `GET /api/projects?status=` — `api_projects`. Default "active"; "all" => no filter.
@@ -179,15 +181,7 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
             if p.id.is_none() {
                 continue; // app.py drops null-id rows (data-integrity guard)
             }
-            let mut obj = project_to_dict(conn, p)?;
-            if let Value::Object(m) = &mut obj {
-                let count = m
-                    .get("source_ids")
-                    .and_then(Value::as_array)
-                    .map_or(0, Vec::len);
-                m.insert("paper_count".into(), json!(count));
-            }
-            out.push(obj);
+            out.push(project_to_dict_with_count(conn, p)?);
         }
         Ok(out)
     })?;
@@ -201,7 +195,6 @@ fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
         name: String,
         #[serde(default)]
         description: String,
-        #[serde(default)]
         color_hex: Option<String>,
         #[serde(default)]
         project_tags: Vec<String>,
@@ -254,15 +247,10 @@ fn patch(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError
     let pid = path_i64(id)?;
     #[derive(Deserialize)]
     struct Body {
-        #[serde(default)]
         name: Option<String>,
-        #[serde(default)]
         description: Option<String>,
-        #[serde(default)]
         color_hex: Option<String>,
-        #[serde(default)]
         status: Option<String>,
-        #[serde(default)]
         project_tags: Option<Vec<String>>,
     }
     let b: Body = ctx.parse_body()?;
@@ -282,16 +270,10 @@ fn patch(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError
     } else {
         None
     };
-    let name = match b.name {
-        Some(n) => {
-            let n = n.trim().to_string();
-            if n.is_empty() {
-                return Err(ApiError::new(400, "name cannot be blank"));
-            }
-            Some(n)
-        }
-        None => None,
-    };
+    let name = b.name.map(|n| n.trim().to_string());
+    if name.as_deref() == Some("") {
+        return Err(ApiError::new(400, "name cannot be blank"));
+    }
     let upd = ProjectUpdateIn {
         project_fk: pid,
         name,
@@ -314,23 +296,14 @@ fn patch(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError
 /// `DELETE /api/projects/{id}` — `api_project_delete`. 404 if absent, then soft-delete.
 fn delete(state: &AppState, id: &str) -> Result<Value, ApiError> {
     let pid = path_i64(id)?;
+    let proj = Project {
+        project_fk: Some(pid),
+    };
     state.with_conn(|conn| -> Result<(), ApiError> {
-        if project::get(
-            conn,
-            &Project {
-                project_fk: Some(pid),
-            },
-        )?
-        .is_none()
-        {
+        if project::get(conn, &proj)?.is_none() {
             return Err(ApiError::new(404, "Project not found"));
         }
-        project::delete(
-            conn,
-            &Project {
-                project_fk: Some(pid),
-            },
-        )?;
+        project::delete(conn, &proj)?;
         Ok(())
     })?;
     Ok(json!({ "ok": true }))

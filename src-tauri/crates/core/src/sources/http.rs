@@ -82,13 +82,7 @@ pub async fn get_guarded(url: &str, allow: &[&str]) -> Result<reqwest::Response>
 
 /// True iff the URL's host is arxiv.org or any subdomain (rss./export./ar5iv…).
 pub(crate) fn is_arxiv_url(url: &str) -> bool {
-    Url::parse(url)
-        .ok()
-        .and_then(|u| {
-            u.host_str()
-                .map(|h| h == "arxiv.org" || h.ends_with(".arxiv.org"))
-        })
-        .unwrap_or(false)
+    assert_host_allowed(url, &["arxiv.org"]).is_ok()
 }
 
 /// Cap the GCS mirror attempt so a stalled mirror degrades to arXiv well inside

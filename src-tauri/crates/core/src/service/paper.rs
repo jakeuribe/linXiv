@@ -35,14 +35,12 @@ pub struct Paper {
     pub version: Option<i64>,
 }
 
-/// Filter criteria for listing multiple papers. (`project_fks` is carried for
-/// API symmetry but, as in Python `get_many`, is not applied here.)
+/// Filter criteria for listing multiple papers.
 #[derive(Debug, Default, Clone)]
 pub struct Papers {
     pub source_fks: Option<Vec<i64>>,
     pub paper_ids: Option<Vec<i64>>,
     pub source_ids: Option<Vec<String>>,
-    pub project_fks: Option<Vec<i64>>,
     pub tags: Option<Vec<String>>,
 }
 
@@ -79,26 +77,6 @@ pub fn pdf_filename_safe(source_id: &str) -> String {
 /// `{source_id}_v{version}.pdf` — do not unify.
 pub fn pdf_on_disk_name(source_id: &str, version: i64) -> String {
     format!("{}v{}.pdf", pdf_filename_safe(source_id), version)
-}
-
-/// `storage/db.py::parse_entry_id` — split e.g.
-/// `http://arxiv.org/abs/2204.12985v4` → `("2204.12985", 4)`; no `v` → version 1.
-/// Pure string logic (no DB), so ported here rather than into storage.
-pub fn parse_entry_id(entry_id: &str) -> (String, i64) {
-    let raw = entry_id.rsplit('/').next().unwrap_or(entry_id);
-    // A trailing `v<digits>` only matches when those digits run to end-of-string,
-    // which is exactly the last `v` whose suffix is all-ASCII-digits — so the
-    // greedy rfind matches Python's non-greedy `^(.+?)(?:v(\d+))?$`.
-    if let Some(idx) = raw.rfind('v') {
-        let (head, tail) = raw.split_at(idx);
-        let digits = &tail[1..];
-        if !head.is_empty() && !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
-            if let Ok(v) = digits.parse::<i64>() {
-                return (head.to_string(), v);
-            }
-        }
-    }
-    (raw.to_string(), 1)
 }
 
 // ── composed reads (no dedicated storage fn exists yet) ──────────────────────
@@ -183,7 +161,6 @@ pub fn get_all(conn: &Connection, paper: &Paper) -> Result<Option<PaperDetailsAl
 
 /// Fetch multiple papers matching any combination of `Papers` filters
 /// (latest version per paper). Empty filter lists are no-ops (Python truthiness).
-/// `project_fks` is intentionally not applied (matches Python `get_many`).
 pub fn get_many(conn: &Connection, papers: &Papers) -> Result<Vec<PaperDetails>> {
     let mut results = store::list_papers(conn, true, None, 0, None)?;
 
@@ -909,13 +886,5 @@ mod tests {
             pdf_on_disk_name("arxiv:2204.12985", 4),
             "arxiv_2204.12985v4.pdf"
         );
-
-        assert_eq!(
-            parse_entry_id("http://arxiv.org/abs/2204.12985v4"),
-            ("2204.12985".to_string(), 4)
-        );
-        assert_eq!(parse_entry_id("2204.12985"), ("2204.12985".to_string(), 1)); // no version -> 1
-        assert_eq!(parse_entry_id("1v2v3"), ("1v2".to_string(), 3)); // last trailing v<digits>
-        assert_eq!(parse_entry_id("1v2x"), ("1v2x".to_string(), 1)); // non-digit tail -> no version
     }
 }

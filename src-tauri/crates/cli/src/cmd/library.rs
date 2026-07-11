@@ -1,7 +1,7 @@
 //! Group `library` — the flat top-level commands `search`, `fetch`, `list`.
 //! cmd_search / cmd_fetch / cmd_list in `linxiv_cli.py`.
 
-use clap::{Args, Subcommand, ValueEnum};
+use clap::{Args, ValueEnum};
 
 use linxiv_core::config;
 use linxiv_core::service::paper as svc_paper;
@@ -18,22 +18,7 @@ pub enum Source {
     Crossref,
 }
 
-impl Source {
-    /// The `_SOURCES` key the core dispatcher routes on.
-    fn name(self) -> &'static str {
-        match self {
-            Source::Arxiv => "arxiv",
-            Source::Openalex => "openalex",
-            Source::Crossref => "crossref",
-        }
-    }
-}
-
-/// OpenAlex polite-pool address (`OPENALEX_MAILTO`); CR/LF are stripped downstream
-/// in `openalex::user_agent`, matching `OpenAlexSource`.
-fn mailto() -> String {
-    std::env::var("OPENALEX_MAILTO").unwrap_or_default()
-}
+use linxiv_core::config::openalex_mailto as mailto;
 
 #[derive(Args)]
 pub struct SearchArgs {
@@ -67,71 +52,62 @@ pub struct ListArgs {
     pub category: Option<String>,
 }
 
-#[derive(Subcommand)]
-pub enum LibraryCmd {
-    Search(SearchArgs),
-    Fetch(FetchArgs),
-    List(ListArgs),
+// cmd_search: search the source, dump the metadata list. The `[search] {e}`
+// prefix line + error JSON mirror Python's two-line stderr on failure.
+pub async fn search(args: SearchArgs, _ctx: &mut Ctx) -> anyhow::Result<()> {
+    // Python `source.search` defaults sort="relevance"; the CLI never overrides it.
+    let results = match svc_fetch::search(
+        args.source.to_possible_value().unwrap().get_name(),
+        &args.query,
+        args.max as u32,
+        "relevance",
+        &config::data_dir(),
+        &mailto(),
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[search] {e}");
+            fail(e);
+        }
+    };
+    output(&results);
+    Ok(())
 }
 
-pub async fn run(cmd: LibraryCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
-    let data_dir = config::data_dir();
-    match cmd {
-        // cmd_search: search the source, dump the metadata list. The `[search] {e}`
-        // prefix line + error JSON mirror Python's two-line stderr on failure.
-        LibraryCmd::Search(args) => {
-            // Python `source.search` defaults sort="relevance"; the CLI never overrides it.
-            let results = match svc_fetch::search(
-                args.source.name(),
-                &args.query,
-                args.max as u32,
-                "relevance",
-                &data_dir,
-                &mailto(),
-            )
-            .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!("[search] {e}");
-                    fail(e);
-                }
-            };
-            output(&results);
-        }
-        // cmd_fetch: validate (arxiv only), fetch, persist, then render-or-dump.
-        LibraryCmd::Fetch(args) => {
-            if matches!(args.source, Source::Arxiv) {
-                validate_arxiv_id(&args.source_id);
-            }
-            let meta = match svc_fetch::fetch_by_id(
-                args.source.name(),
-                &args.source_id,
-                &data_dir,
-                &mailto(),
-            )
-            .await
-            {
-                Ok(m) => m,
-                Err(e) => {
-                    eprintln!("[fetch] {e}");
-                    fail(e);
-                }
-            };
-            svc_paper::save_paper_metadata(&mut ctx.conn, &meta, None)?;
-            match render_paper(&meta) {
-                Some(rendered) => println!("{rendered}"),
-                None => output(&meta),
-            }
-        }
-        // cmd_list: latest-version rows, optional category/limit/offset filter.
-        // Python dumps the RAW `latest_papers` view rows, not curated structs.
-        LibraryCmd::List(args) => {
-            let papers =
-                list_papers_raw(&ctx.conn, args.limit, args.offset, args.category.as_deref())?;
-            output(&papers);
-        }
+// cmd_fetch: validate (arxiv only), fetch, persist, then render-or-dump.
+pub async fn fetch(args: FetchArgs, ctx: &mut Ctx) -> anyhow::Result<()> {
+    if matches!(args.source, Source::Arxiv) {
+        validate_arxiv_id(&args.source_id);
     }
+    let meta = match svc_fetch::fetch_by_id(
+        args.source.to_possible_value().unwrap().get_name(),
+        &args.source_id,
+        &config::data_dir(),
+        &mailto(),
+    )
+    .await
+    {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("[fetch] {e}");
+            fail(e);
+        }
+    };
+    svc_paper::save_paper_metadata(&mut ctx.conn, &meta, None)?;
+    match render_paper(&meta) {
+        Some(rendered) => println!("{rendered}"),
+        None => output(&meta),
+    }
+    Ok(())
+}
+
+// cmd_list: latest-version rows, optional category/limit/offset filter.
+// Python dumps the RAW `latest_papers` view rows, not curated structs.
+pub async fn list(args: ListArgs, ctx: &mut Ctx) -> anyhow::Result<()> {
+    let papers = list_papers_raw(&ctx.conn, args.limit, args.offset, args.category.as_deref())?;
+    output(&papers);
     Ok(())
 }
 
@@ -147,28 +123,10 @@ fn list_papers_raw(
     offset: i64,
     category: Option<&str>,
 ) -> rusqlite::Result<Vec<serde_json::Value>> {
-    use rusqlite::types::{Value, ValueRef};
+    use rusqlite::types::ValueRef;
 
-    let mut sql = "SELECT * FROM latest_papers".to_string();
-    let mut params: Vec<Value> = Vec::new();
-    if let Some(cat) = category {
-        sql.push_str(" WHERE category = ?");
-        params.push(Value::Text(cat.to_string()));
-    }
-    sql.push_str(" ORDER BY published DESC");
-    match limit {
-        Some(l) => {
-            sql.push_str(" LIMIT ? OFFSET ?");
-            params.push(Value::Integer(l));
-            params.push(Value::Integer(offset));
-        }
-        // No limit but a nonzero offset still needs LIMIT -1 (all rows) to skip.
-        None if offset != 0 => {
-            sql.push_str(" LIMIT -1 OFFSET ?");
-            params.push(Value::Integer(offset));
-        }
-        None => {}
-    }
+    let (sql, params) =
+        linxiv_core::storage::queries::paper::list_papers_sql(true, limit, offset, category);
 
     let mut stmt = conn.prepare(&sql)?;
     let cols: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();

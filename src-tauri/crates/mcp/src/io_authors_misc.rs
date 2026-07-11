@@ -39,10 +39,7 @@ fn map_core(e: CoreError) -> ErrorData {
     }
 }
 
-/// Serialize a core value to the tool's text result (compact JSON string).
-fn json_ok<T: serde::Serialize>(v: &T) -> Result<String, ErrorData> {
-    serde_json::to_string(v).map_err(|e| ErrorData::internal_error(e.to_string(), None))
-}
+use crate::util::json_ok;
 
 /// Resolve a project to its papers, erroring with the Python message when the
 /// project is missing. Empty `source_fks` yields no papers without a query.
@@ -71,16 +68,7 @@ fn project_papers(
     .map_err(map_core)
 }
 
-/// `Path(dest)` with `ext` forced only when the destination has no extension
-/// (Python `out.with_suffix(...) if not out.suffix`).
-fn with_default_ext(dest: &str, ext: &str) -> std::path::PathBuf {
-    let p = std::path::PathBuf::from(dest);
-    if p.extension().is_none() {
-        p.with_extension(ext)
-    } else {
-        p
-    }
-}
+use linxiv_core::formats::with_default_ext;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ExportProjectParams {
@@ -187,20 +175,16 @@ impl Server {
         } = params.0;
         let pdf_dir = self.pdf_dir.clone();
         let path = self.with_conn(|conn| -> Result<String, ErrorData> {
-            if svc_project::get(
+            svc_project::get(
                 conn,
                 &Project {
                     project_fk: Some(project_id),
                 },
             )
             .map_err(map_core)?
-            .is_none()
-            {
-                return Err(ErrorData::invalid_params(
-                    format!("Project {project_id} not found."),
-                    None,
-                ));
-            }
+            .ok_or_else(|| {
+                ErrorData::invalid_params(format!("Project {project_id} not found."), None)
+            })?;
             let out =
                 svc_ei::export_project(conn, project_id, Path::new(&dest), include_pdfs, &pdf_dir)
                     .map_err(map_core)?;
@@ -318,13 +302,8 @@ impl Server {
             let previews = svc_author::get_paper_previews(conn, author_id).map_err(map_core)?;
             let mut value = serde_json::to_value(&author)
                 .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-            if let Value::Object(map) = &mut value {
-                map.insert(
-                    "papers".to_string(),
-                    serde_json::to_value(&previews)
-                        .map_err(|e| ErrorData::internal_error(e.to_string(), None))?,
-                );
-            }
+            value["papers"] = serde_json::to_value(&previews)
+                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
             Ok(value)
         })?;
         json_ok(&value)
@@ -462,12 +441,10 @@ impl Server {
                     Err(e) => return Err(map_core(e)),
                 }
             }
-            let mut saved = Vec::new();
-            for meta in &metas {
-                let (source_id, version) =
-                    svc_paper::save_paper_metadata(conn, meta, None).map_err(map_core)?;
-                saved.push((source_id, version));
-            }
+            let saved: Vec<(String, i64)> = metas
+                .iter()
+                .map(|meta| svc_paper::save_paper_metadata(conn, meta, None).map_err(map_core))
+                .collect::<Result<_, _>>()?;
             if let Some(pid) = project_id {
                 if !saved.is_empty() {
                     let ids: Vec<String> = saved.iter().map(|(s, _)| s.clone()).collect();
@@ -535,8 +512,6 @@ impl Server {
         settings
             .set(key.clone(), parsed.clone())
             .map_err(map_core)?;
-        let mut out = serde_json::Map::new();
-        out.insert(key, parsed);
-        json_ok(&Value::Object(out))
+        json_ok(&json!({ key: parsed }))
     }
 }

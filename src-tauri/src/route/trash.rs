@@ -136,25 +136,11 @@ fn hard_delete_project(state: &AppState, id: &str) -> Result<Value, ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::route::{route, ApiRequest};
-    use linxiv_core::storage;
+    use crate::route::testutil::state;
 
-    fn state() -> AppState {
-        let conn = storage::open_in_memory().unwrap();
-        storage::init_db(&conn).unwrap();
-        AppState::from_parts(conn, std::env::temp_dir(), std::env::temp_dir())
-    }
-
+    // Trash routes never take a body.
     async fn req(st: &AppState, method: &str, path: &str) -> Result<Value, ApiError> {
-        route(
-            st,
-            ApiRequest {
-                method: method.into(),
-                path: path.into(),
-                body: None,
-            },
-        )
-        .await
+        crate::route::testutil::req(st, method, path, None).await
     }
 
     #[tokio::test]
