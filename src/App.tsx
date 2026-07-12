@@ -8,6 +8,7 @@ const PaperDetailPage = lazy(() => import("./pages/PaperDetailPage"));
 const ProjectsPage = lazy(() => import("./pages/ProjectsPage"));
 const ProjectDetailPage = lazy(() => import("./pages/ProjectDetailPage"));
 const ReadingListsPage = lazy(() => import("./pages/ReadingListsPage"));
+const SharePage = lazy(() => import("./pages/SharePage"));
 const DoiPage = lazy(() => import("./pages/DoiPage"));
 const SearchPage = lazy(() => import("./pages/SearchPage"));
 const SettingsPage = lazy(() => import("./pages/SettingsPage"));
@@ -34,6 +35,7 @@ const router = createBrowserRouter([
       { path: "projects", element: <ProjectsPage /> },
       { path: "projects/:id", element: <ProjectDetailPage /> },
       { path: "reading", element: <ReadingListsPage /> },
+      { path: "shared", element: <SharePage /> },
       { path: "graph", element: null },
       { path: "editor", element: null },
       { path: "search", element: <SearchPage /> },

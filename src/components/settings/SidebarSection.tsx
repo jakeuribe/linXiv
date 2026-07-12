@@ -8,6 +8,7 @@ const SIDEBAR_PAGE_OPTIONS: { key: SidebarPageKey; label: string; description: s
   { key: "doi",    label: "DOI Lookup", description: "Resolve papers by DOI" },
   { key: "tags",   label: "Tags",       description: "Tag browser" },
   { key: "notes",  label: "Editor (Notes)", description: "LaTeX editor (TeXbrain)" },
+  { key: "shared", label: "Shared",     description: "P2P shared projects" },
 ];
 
 export function SidebarSection() {

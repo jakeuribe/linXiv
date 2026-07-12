@@ -27,8 +27,16 @@ export interface SharedSummary {
   name: string;
   paper_count: number;
   note_count: number;
-  annotation_count: number;
   tag_count: number;
+}
+
+/** Summaries of every project published (shared out) from this library. */
+export async function listShared(): Promise<SharedSummary[]> {
+  const res = await shareApi<{ shared_projects: SharedSummary[] }>(
+    "GET",
+    "/api/share/projects"
+  );
+  return res.shared_projects;
 }
 
 /** Publish the project (if needed) and mint a one-time, pasteable ticket
