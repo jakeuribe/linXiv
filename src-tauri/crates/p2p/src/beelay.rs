@@ -19,31 +19,41 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet, VecDeque},
     fmt,
+    path::{Path, PathBuf},
     str::FromStr,
     sync::Arc,
 };
 
 use automerge::{Automerge, Change, ChangeHash};
 use beelay_core::{
-    Beelay, Commit, CommitHash, CommitOrBundle, DocumentId, Envelope, Event, PeerId, StorageKey,
-    StoryId, StoryResult,
+    Beelay, Commit, CommitCategory, CommitHash, CommitOrBundle, DocumentId, Envelope, Event,
+    PeerId, StorageKey, StoryId, StoryResult,
     io::{IoAction, IoResult, IoTask},
     messages::stream::{Connected, Connecting, Message, Step},
 };
 use iroh::{
     Endpoint, EndpointAddr, EndpointId,
-    endpoint::{Connection, RecvStream, SendStream, presets},
+    endpoint::{Connection, ConnectionError, RecvStream, SendStream, presets},
     protocol::{AcceptError, ProtocolHandler, Router},
 };
-use iroh_blobs::{BlobFormat, BlobsProtocol, store::mem::MemStore, ticket::BlobTicket};
+use iroh_blobs::{
+    BlobFormat, BlobsProtocol,
+    api::{Store, remote::GetProgressItem},
+    store::fs::FsStore,
+    store::mem::MemStore,
+    ticket::BlobTicket,
+};
 use iroh_tickets::{ParseError, Ticket, endpoint::EndpointTicket};
-use n0_error::{Result, StackResultExt, StdResultExt, anyerr};
+use n0_error::{AnyError, Result, StackResultExt, StdResultExt, anyerr};
 use rand::rngs::OsRng;
 use tokio::sync::Mutex;
 
 use crate::{
-    auth::{DecryptError, MemberId, ProjectAuth},
-    sync::{DeviceIdentity, MAX_SYNC_ROUNDS, recv_frame, send_frame},
+    auth::{AuthIdentity, DecryptError, DeviceBinding, MemberId, ProjectAuth},
+    sync::{
+        DeviceIdentity, JoinError, MAX_SYNC_ROUNDS, REFUSED_CODE, ShareNode, recv_frame,
+        recv_frame_max, send_frame,
+    },
 };
 
 /// ALPN for linXiv beelay sync sessions.
@@ -118,6 +128,36 @@ pub struct SyncOutcome {
     pub undecryptable: Vec<DecryptError>,
 }
 
+// --- blob errors ---------------------------------------------------------------
+
+/// Typed blob failure, wrapped as the direct [`AnyError`] payload so
+/// callers can `downcast_ref::<BlobError>()` it.
+#[derive(Debug)]
+pub enum BlobError {
+    /// The blob is larger than the caller's byte cap.
+    TooLarge,
+    /// The stored ciphertext did not decrypt.
+    Decrypt(DecryptError),
+}
+
+impl fmt::Display for BlobError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BlobError::TooLarge => f.write_str("blob exceeds the byte cap"),
+            BlobError::Decrypt(e) => write!(f, "decrypting blob: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for BlobError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            BlobError::TooLarge => None,
+            BlobError::Decrypt(e) => Some(e),
+        }
+    }
+}
+
 // --- invite ------------------------------------------------------------------
 
 /// A pasteable invite for one member: host address, project/doc ids, and the
@@ -132,6 +172,9 @@ pub struct ProjectInvite {
     project_id: String,
     beelay_doc: [u8; 16],
     keyhive_doc: [u8; 32],
+    // vendor-edit: membership group rides the invite so the invitee can manage
+    // membership (per its granted role) after adopting.
+    group: [u8; 32],
     events: Vec<u8>,
 }
 
@@ -151,18 +194,21 @@ impl Ticket for ProjectInvite {
             &self.project_id,
             self.beelay_doc,
             self.keyhive_doc,
+            self.group,
             &self.events,
         ))
         .expect("postcard serialization failed")
     }
 
     fn decode_bytes(bytes: &[u8]) -> std::result::Result<Self, ParseError> {
-        let (endpoint, project_id, beelay_doc, keyhive_doc, events) = postcard::from_bytes(bytes)?;
+        let (endpoint, project_id, beelay_doc, keyhive_doc, group, events) =
+            postcard::from_bytes(bytes)?;
         Ok(Self {
             endpoint,
             project_id,
             beelay_doc,
             keyhive_doc,
+            group,
             events,
         })
     }
@@ -184,28 +230,170 @@ impl FromStr for ProjectInvite {
 
 // --- beelay core wrapper -------------------------------------------------------
 
+// vendor-edit: disk-backed KV — postcard file helpers shared by the beelay
+// storage map and the project registry; writes are tmp+rename.
+
+fn write_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write as _;
+    let tmp = path.with_extension("tmp");
+    let mut f = std::fs::File::create(&tmp).map_err(|e| anyerr!("writing {path:?}: {e}"))?;
+    f.write_all(bytes)
+        .map_err(|e| anyerr!("writing {path:?}: {e}"))?;
+    f.sync_all().map_err(|e| anyerr!("writing {path:?}: {e}"))?;
+    std::fs::rename(&tmp, path).map_err(|e| anyerr!("writing {path:?}: {e}"))?;
+    if let Some(dir) = path.parent() {
+        fsync_dir(dir).map_err(|e| anyerr!("writing {path:?}: {e}"))?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn fsync_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::File::open(dir)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn fsync_dir(_dir: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// Rebuilds a [`StorageKey`] from its `components()` strings. The crate's
+/// `TryFrom<Vec<String>>` drops a component and maps namespaces to `Other`,
+/// hence this by-shape rebuild.
+fn key_from_components(parts: &[String]) -> Result<StorageKey> {
+    let parts: Vec<&str> = parts.iter().map(String::as_str).collect();
+    match parts.as_slice() {
+        ["blobs", hash] => Ok(StorageKey::blob(
+            hash.parse().map_err(|e| anyerr!("bad blob key: {e}"))?,
+        )),
+        ["sedimentrees", doc, category, rest @ ..] => {
+            let category = match *category {
+                "content" => CommitCategory::Content,
+                "index" => CommitCategory::Index,
+                other => return Err(anyerr!("unknown commit category {other}")),
+            };
+            let doc = doc
+                .parse()
+                .map_err(|e| anyerr!("bad doc id in storage key: {e}"))?;
+            let mut key = StorageKey::sedimentree_root(&doc, category);
+            for part in rest {
+                key = key.with_subcomponent(part);
+            }
+            Ok(key)
+        }
+        other => Err(anyerr!("unknown storage key shape {other:?}")),
+    }
+}
+
+/// The document a sedimentree key belongs to; `None` for blob/other keys.
+fn key_doc(key: &StorageKey) -> Option<DocumentId> {
+    let mut parts = key.components();
+    match (parts.next(), parts.next()) {
+        (Some("sedimentrees"), Some(doc)) => doc.parse().ok(),
+        _ => None,
+    }
+}
+
+/// Owns kv.bin: [`Core::persist_kv`] publishes whole-map snapshots into `tx`;
+/// one writer task writes them in order, newest snapshot wins.
+struct KvWriter {
+    tx: tokio::sync::watch::Sender<Vec<u8>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl KvWriter {
+    fn spawn(path: PathBuf) -> Self {
+        let (tx, mut rx) = tokio::sync::watch::channel(Vec::new());
+        let task = tokio::spawn(async move {
+            loop {
+                let open = rx.changed().await.is_ok();
+                let bytes = rx.borrow_and_update().clone();
+                if !bytes.is_empty() {
+                    let path = path.clone();
+                    match tokio::task::spawn_blocking(move || write_file(&path, &bytes)).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => eprintln!("beelay: persisting kv.bin failed: {e}"),
+                        Err(e) => eprintln!("beelay: kv write task failed: {e}"),
+                    }
+                }
+                if !open {
+                    return;
+                }
+            }
+        });
+        Self { tx, task }
+    }
+}
+
 /// The sans-IO beelay state machine plus its synchronously-answered storage.
 struct Core {
     beelay: Beelay<OsRng>,
-    // ponytail: in-memory KV — every restart re-syncs from peers. Swap for a
-    // disk-backed store answering IoTasks when persistence matters.
+    // vendor-edit: live map answers IoTasks; every Put/Delete is mirrored to
+    // disk through the kv writer (when set) so synced docs survive a restart.
     storage: BTreeMap<StorageKey, Vec<u8>>,
+    kv: Option<KvWriter>,
+    /// Set by Put/Delete; [`Core::drive_scoped`] snapshots once per pump.
+    dirty: bool,
     stories: HashMap<StoryId, StoryResult>,
 }
 
 impl Core {
-    fn new(peer_id: PeerId) -> Self {
-        Self {
-            beelay: Beelay::new(peer_id, OsRng),
-            storage: BTreeMap::new(),
-            stories: HashMap::new(),
+    fn new(peer_id: PeerId, kv_path: Option<PathBuf>) -> Result<Self> {
+        let mut storage = BTreeMap::new();
+        if let Some(path) = &kv_path
+            && path.exists()
+        {
+            let bytes = std::fs::read(path).map_err(|e| anyerr!("reading beelay kv: {e}"))?;
+            match postcard::from_bytes::<Vec<(Vec<String>, Vec<u8>)>>(&bytes) {
+                Ok(entries) => {
+                    for (parts, value) in entries {
+                        match key_from_components(&parts) {
+                            Ok(key) => {
+                                storage.insert(key, value);
+                            }
+                            Err(e) => eprintln!("beelay: skipping kv entry {parts:?}: {e}"),
+                        }
+                    }
+                }
+                Err(e) => eprintln!("beelay: malformed kv.bin, starting empty: {e}"),
+            }
         }
+        Ok(Self {
+            beelay: Beelay::new(peer_id, OsRng),
+            storage,
+            kv: kv_path.map(KvWriter::spawn),
+            dirty: false,
+            stories: HashMap::new(),
+        })
+    }
+
+    // ponytail: whole-map snapshot per dirty drive, sent to the single kv
+    // writer task; per-key files when docs grow.
+    fn persist_kv(&self) -> Result<()> {
+        let Some(kv) = &self.kv else {
+            return Ok(());
+        };
+        let entries: Vec<(Vec<String>, &Vec<u8>)> = self
+            .storage
+            .iter()
+            .map(|(k, v)| (k.components().map(str::to_owned).collect(), v))
+            .collect();
+        let bytes =
+            postcard::to_stdvec(&entries).map_err(|e| anyerr!("encoding beelay kv: {e}"))?;
+        kv.tx.send_replace(bytes);
+        Ok(())
     }
 
     /// Feeds `event` through the state machine, answering every IoTask from
     /// the KV until quiescent. Returns outbound envelopes; completed stories
     /// land in `self.stories`.
     fn drive(&mut self, event: Event) -> Result<Vec<Envelope>> {
+        self.drive_scoped(event, None)
+    }
+
+    /// [`Self::drive`] with storage access confined to one document: loads
+    /// outside `scope`'s sedimentree answer empty and writes are dropped.
+    fn drive_scoped(&mut self, event: Event, scope: Option<DocumentId>) -> Result<Vec<Envelope>> {
         let mut inbox = VecDeque::from([event]);
         let mut out = Vec::new();
         while let Some(event) = inbox.pop_front() {
@@ -215,38 +403,57 @@ impl Core {
                 .map_err(|e| anyerr!("beelay: {e}"))?;
             out.extend(results.new_messages);
             for task in results.new_tasks {
-                inbox.push_back(Event::io_complete(self.io(task)));
+                inbox.push_back(Event::io_complete(self.io(task, scope)?));
             }
             self.stories.extend(results.completed_stories);
             // notifications only come from `listen` stories, which we never
             // start — sessions are one-shot pulls like Phase 1.
         }
+        if self.dirty {
+            self.persist_kv()?;
+            self.dirty = false;
+        }
         Ok(out)
     }
 
-    fn io(&mut self, task: IoTask) -> IoResult {
+    fn io(&mut self, task: IoTask, scope: Option<DocumentId>) -> Result<IoResult> {
+        // ponytail: blob keys carry no doc id, so scoping covers sedimentree
+        // keys only; scope blobs per doc once a blob -> doc mapping exists.
+        let in_scope =
+            |key: &StorageKey| scope.is_none() || key_doc(key).is_none_or(|d| Some(d) == scope);
         let id = task.id();
-        match task.take_action() {
-            IoAction::Load { key } => IoResult::load(id, self.storage.get(&key).cloned()),
+        Ok(match task.take_action() {
+            IoAction::Load { key } => IoResult::load(
+                id,
+                in_scope(&key)
+                    .then(|| self.storage.get(&key).cloned())
+                    .flatten(),
+            ),
             IoAction::LoadRange { prefix } => IoResult::load_range(
                 id,
                 self.storage
                     .iter()
-                    .filter(|(k, _)| prefix.is_prefix_of(k))
+                    .filter(|(k, _)| prefix.is_prefix_of(k) && in_scope(k))
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect(),
             ),
             IoAction::Put { key, data } => {
-                self.storage.insert(key, data);
+                if in_scope(&key) {
+                    self.storage.insert(key, data);
+                    self.dirty = true;
+                }
                 IoResult::put(id)
             }
             IoAction::Delete { key } => {
-                self.storage.remove(&key);
+                if in_scope(&key) {
+                    self.storage.remove(&key);
+                    self.dirty = true;
+                }
                 IoResult::delete(id)
             }
             // pure p2p: never forward requests for a doc to other peers.
             IoAction::Ask { .. } => IoResult::ask(id, HashSet::new()),
-        }
+        })
     }
 
     /// Result of a story that completes without network round trips.
@@ -269,6 +476,9 @@ struct ProjectState {
     change_to_commit: HashMap<ChangeHash, CommitHash>,
     /// Commits already applied to `doc` (or produced from it).
     applied: HashSet<CommitHash>,
+    /// Set when a refresh failed and `doc` may be missing history; flush
+    /// refuses until a later refresh succeeds and clears it.
+    unhealthy: bool,
 }
 
 struct State {
@@ -279,15 +489,71 @@ struct State {
 struct Shared {
     auth: ProjectAuth,
     peer_id: PeerId,
+    /// This device's cross-signed (iroh, keyhive) binding, sent in every
+    /// keyhive preamble hello.
+    binding: DeviceBinding,
+    // vendor-edit: project registry file (id -> beelay doc + host), so a
+    // restart can rebuild `State.projects` and re-decrypt from the KV.
+    registry_path: Option<PathBuf>,
+    // registry writes happen off the state lock; this lock keeps them one at
+    // a time (it is acquired before the state guard drops).
+    registry_write: Mutex<()>,
+    // endpoint -> keyhive member, learned from binding-verified preambles and
+    // persisted with the registry; the blobs gate resolves dialers through it.
+    peers: std::sync::Mutex<HashMap<EndpointId, MemberId>>,
     // Beelay is Send-not-Sync; the tokio Mutex makes it shareable. The lock is
     // never held across a network await — only across local compute (including
     // keyhive encrypt/decrypt).
     state: Mutex<State>,
 }
 
+/// registry.bin entry: (project id, beelay doc bytes, host endpoint ticket).
+type RegistryEntry = (String, [u8; 16], Option<String>);
+/// registry.bin payload: project entries plus the peer map
+/// (endpoint id bytes -> member id bytes).
+type RegistryFile = (Vec<RegistryEntry>, Vec<([u8; 32], [u8; 32])>);
+
 impl Shared {
     async fn project_ids(&self) -> Vec<String> {
         self.state.lock().await.projects.keys().cloned().collect()
+    }
+
+    /// Serializes the registry under the state lock, then consumes the guard
+    /// and writes on the blocking pool.
+    async fn persist_registry(&self, state: tokio::sync::MutexGuard<'_, State>) -> Result<()> {
+        let Some(path) = &self.registry_path else {
+            return Ok(());
+        };
+        let entries: Vec<RegistryEntry> = state
+            .projects
+            .iter()
+            .map(|(id, p)| {
+                (
+                    id.clone(),
+                    *p.beelay_doc.as_bytes(),
+                    p.host
+                        .clone()
+                        .map(|addr| EndpointTicket::new(addr).encode_string()),
+                )
+            })
+            .collect();
+        let peers: Vec<([u8; 32], [u8; 32])> = self
+            .peers
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(endpoint, member)| (*endpoint.as_bytes(), member.0))
+            .collect();
+        let bytes = postcard::to_stdvec(&(entries, peers))
+            .map_err(|e| anyerr!("encoding project registry: {e}"))?;
+        let path = path.clone();
+        let write_guard = self.registry_write.lock().await;
+        drop(state);
+        let result = tokio::task::spawn_blocking(move || write_file(&path, &bytes))
+            .await
+            .map_err(|e| anyerr!("registry write task: {e}"))?;
+        drop(write_guard);
+        result
     }
 
     /// Encrypts every not-yet-flushed local change into a beelay commit.
@@ -298,6 +564,11 @@ impl Shared {
             .projects
             .get_mut(project_id)
             .ok_or_else(|| anyerr!("unknown project {project_id}"))?;
+        if proj.unhealthy {
+            return Err(anyerr!(
+                "project {project_id} failed its last refresh; sync it before flushing"
+            ));
+        }
         let pending = unflushed_changes(&proj.doc, &proj.change_to_commit)?;
         if pending.is_empty() {
             return Ok(());
@@ -377,6 +648,7 @@ impl Shared {
             proj.change_to_commit.insert(change_hash, commit_hash);
             proj.applied.insert(commit_hash);
         }
+        proj.unhealthy = false;
         Ok(outcome)
     }
 }
@@ -420,6 +692,10 @@ async fn expect_tagged(recv: &mut RecvStream, want: u8) -> Result<Vec<u8>> {
 // delegation history legitimately outgrows it.
 const MAX_KEYHIVE_FRAME: usize = 1024 * 1024;
 
+/// Cap on the first (project-id) frame of a session, read before any
+/// identity verification; project ids are short strings.
+const MAX_PROJECT_ID_FRAME: usize = 512;
+
 async fn expect_keyhive(recv: &mut RecvStream) -> Result<Vec<u8>> {
     let body = expect_tagged(recv, TAG_KEYHIVE).await?;
     if body.len() > MAX_KEYHIVE_FRAME {
@@ -431,30 +707,56 @@ async fn expect_keyhive(recv: &mut RecvStream) -> Result<Vec<u8>> {
     Ok(body)
 }
 
-/// Both sides swap contact cards, then swap + ingest each other's keyhive
-/// static events, so CGKA ops arrive before any beelay traffic. `initiate`
-/// picks send-first vs receive-first (like `run_sync`): a symmetric
-/// write-then-read on both ends deadlocks once the event payloads outgrow the
-/// QUIC stream flow-control window, since each side's write waits for a read
-/// the other side never starts.
+/// Decodes and checks a preamble hello: the binding's signatures must
+/// verify, its endpoint must be the TLS-authenticated `remote`, and the
+/// contact card must belong to the bound keyhive member.
+async fn verify_peer_hello(
+    auth: &ProjectAuth,
+    remote: EndpointId,
+    frame: &[u8],
+) -> Result<MemberId> {
+    let (binding, card): (DeviceBinding, Vec<u8>) =
+        postcard::from_bytes(frame).map_err(|e| anyerr!("malformed preamble hello: {e}"))?;
+    binding.verify()?;
+    let bound = binding.endpoint_id()?;
+    if bound != remote {
+        return Err(anyerr!(
+            "device binding endpoint {bound} does not match connection remote {remote}"
+        ));
+    }
+    let peer = auth.receive_contact_card(&card).await?;
+    if peer != binding.member_id() {
+        return Err(anyerr!("contact card member does not match device binding"));
+    }
+    Ok(peer)
+}
+
+/// Both sides swap hellos (device binding + contact card), then swap +
+/// ingest each other's keyhive static events, so CGKA ops arrive before any
+/// beelay traffic. `initiate` picks send-first vs receive-first (like
+/// `run_sync`): a symmetric write-then-read on both ends deadlocks once the
+/// event payloads outgrow the QUIC stream flow-control window, since each
+/// side's write waits for a read the other side never starts.
 async fn keyhive_preamble(
     auth: &ProjectAuth,
+    binding: &DeviceBinding,
+    remote: EndpointId,
     send: &mut SendStream,
     recv: &mut RecvStream,
     initiate: bool,
 ) -> Result<MemberId> {
+    let hello = postcard::to_stdvec(&(binding, auth.contact_card().await?))
+        .map_err(|e| anyerr!("encoding preamble hello: {e}"))?;
     let peer;
     let events;
     if initiate {
-        send_tagged(send, TAG_KEYHIVE, &auth.contact_card().await?).await?;
-        let card = expect_keyhive(recv).await?;
-        peer = auth.receive_contact_card(&card).await?;
+        send_tagged(send, TAG_KEYHIVE, &hello).await?;
+        peer = verify_peer_hello(auth, remote, &expect_keyhive(recv).await?).await?;
         send_tagged(send, TAG_KEYHIVE, &auth.export_events_for(peer).await?).await?;
         events = expect_keyhive(recv).await?;
     } else {
-        let card = expect_keyhive(recv).await?;
-        peer = auth.receive_contact_card(&card).await?;
-        send_tagged(send, TAG_KEYHIVE, &auth.contact_card().await?).await?;
+        peer = verify_peer_hello(auth, remote, &expect_keyhive(recv).await?).await?;
+        send_tagged(send, TAG_KEYHIVE, &hello).await?;
         events = expect_keyhive(recv).await?;
         send_tagged(send, TAG_KEYHIVE, &auth.export_events_for(peer).await?).await?;
     }
@@ -553,10 +855,9 @@ async fn send_envelopes(
 pub struct BeelayNode {
     router: Router,
     shared: Arc<Shared>,
-    // ponytail: in-memory blob store — blobs vanish on restart, the owner
-    // re-stores from its PDF files on disk. Swap for FsStore when caching
-    // fetched blobs across runs matters.
-    blobs: MemStore,
+    // vendor-edit: FsStore under data_dir/blobs when a data dir is given,
+    // in-memory otherwise (tests, throwaway nodes).
+    blobs: Store,
 }
 
 impl fmt::Debug for BeelayNode {
@@ -567,19 +868,33 @@ impl fmt::Debug for BeelayNode {
 
 impl BeelayNode {
     /// Binds with n0 discovery + relays: dialable by bare [`EndpointId`].
-    pub async fn bind(identity: &DeviceIdentity, auth: ProjectAuth) -> Result<Self> {
-        Self::bind_with(identity, auth, presets::N0).await
+    /// `data_dir` = where beelay commits, the project registry, and blobs
+    /// persist; `None` keeps everything in memory (lost on drop).
+    pub async fn bind(
+        identity: &DeviceIdentity,
+        auth_identity: &AuthIdentity,
+        auth: ProjectAuth,
+        data_dir: Option<&Path>,
+    ) -> Result<Self> {
+        Self::bind_with(identity, auth_identity, auth, data_dir, presets::N0).await
     }
 
     /// Binds without discovery or relays: peers must dial the full
     /// [`EndpointAddr`] carried in invites. Offline/LAN use and tests.
-    pub async fn bind_local(identity: &DeviceIdentity, auth: ProjectAuth) -> Result<Self> {
-        Self::bind_with(identity, auth, presets::Minimal).await
+    pub async fn bind_local(
+        identity: &DeviceIdentity,
+        auth_identity: &AuthIdentity,
+        auth: ProjectAuth,
+        data_dir: Option<&Path>,
+    ) -> Result<Self> {
+        Self::bind_with(identity, auth_identity, auth, data_dir, presets::Minimal).await
     }
 
     async fn bind_with(
         identity: &DeviceIdentity,
+        auth_identity: &AuthIdentity,
         auth: ProjectAuth,
+        data_dir: Option<&Path>,
         preset: impl presets::Preset,
     ) -> Result<Self> {
         let endpoint = Endpoint::builder(preset)
@@ -587,16 +902,8 @@ impl BeelayNode {
             .bind()
             .await
             .context("binding iroh endpoint")?;
-        let peer_id = PeerId::from(endpoint.id().to_string());
-        let shared = Arc::new(Shared {
-            auth,
-            peer_id: peer_id.clone(),
-            state: Mutex::new(State {
-                core: Core::new(peer_id),
-                projects: HashMap::new(),
-            }),
-        });
-        let blobs = MemStore::new();
+        let binding = DeviceBinding::create(identity, auth_identity);
+        let (shared, blobs) = Self::prepare(endpoint.id(), auth, binding, data_dir).await?;
         let router = Router::builder(endpoint)
             .accept(
                 BEELAY_ALPN,
@@ -604,13 +911,118 @@ impl BeelayNode {
                     shared: shared.clone(),
                 },
             )
-            .accept(iroh_blobs::ALPN, BlobsProtocol::new(&blobs, None))
+            .accept(
+                iroh_blobs::ALPN,
+                GatedBlobs {
+                    inner: BlobsProtocol::new(&blobs, None),
+                    shared: shared.clone(),
+                },
+            )
             .spawn();
-        Ok(Self {
+        Self::finish(router, shared, blobs).await
+    }
+
+    // vendor-edit: bind split into prepare (state + stores from disk) and
+    // finish (post-router doc refresh) so bind_stack can mount the beelay and
+    // blobs protocols on a router shared with plain sync.
+    async fn prepare(
+        endpoint_id: EndpointId,
+        auth: ProjectAuth,
+        binding: DeviceBinding,
+        data_dir: Option<&Path>,
+    ) -> Result<(Arc<Shared>, Store)> {
+        let peer_id = PeerId::from(endpoint_id.to_string());
+        if let Some(dir) = data_dir {
+            std::fs::create_dir_all(dir).map_err(|e| anyerr!("creating {dir:?}: {e}"))?;
+        }
+        let core = Core::new(peer_id.clone(), data_dir.map(|d| d.join("kv.bin")))?;
+        // ponytail: docs rebuilt from encrypted commits below — plaintext
+        // edits not yet flushed (encrypted at invite/sync time) do not
+        // survive a restart; flush on shutdown if that ever bites.
+        let mut projects = HashMap::new();
+        let mut peers = HashMap::new();
+        let registry_path = data_dir.map(|d| d.join("registry.bin"));
+        if let Some(path) = &registry_path
+            && path.exists()
+        {
+            let bytes =
+                std::fs::read(path).map_err(|e| anyerr!("reading project registry: {e}"))?;
+            match postcard::from_bytes::<RegistryFile>(&bytes) {
+                Ok((entries, peer_entries)) => {
+                    for (id, doc, host) in entries {
+                        // a bad ticket drops the host address; a
+                        // re-accepted invite repairs it.
+                        let host = match host {
+                            Some(t) => match EndpointTicket::decode_string(&t) {
+                                Ok(ticket) => Some(ticket.endpoint_addr().clone()),
+                                Err(e) => {
+                                    eprintln!("beelay: bad host ticket in registry for {id}: {e}");
+                                    None
+                                }
+                            },
+                            None => None,
+                        };
+                        projects.insert(
+                            id,
+                            ProjectState {
+                                doc: Automerge::new(),
+                                beelay_doc: DocumentId::from(doc),
+                                host,
+                                change_to_commit: HashMap::new(),
+                                applied: HashSet::new(),
+                                unhealthy: false,
+                            },
+                        );
+                    }
+                    for (endpoint, member) in peer_entries {
+                        match EndpointId::from_bytes(&endpoint) {
+                            Ok(id) => {
+                                peers.insert(id, MemberId(member));
+                            }
+                            Err(e) => eprintln!("beelay: skipping registry peer entry: {e}"),
+                        }
+                    }
+                }
+                Err(e) => eprintln!("beelay: malformed project registry, starting empty: {e}"),
+            }
+        }
+        let shared = Arc::new(Shared {
+            auth,
+            peer_id,
+            binding,
+            registry_path,
+            registry_write: Mutex::new(()),
+            peers: std::sync::Mutex::new(peers),
+            state: Mutex::new(State { core, projects }),
+        });
+        let blobs: Store = match data_dir {
+            Some(dir) => FsStore::load(dir.join("blobs"))
+                .await
+                .map_err(|e| anyerr!("loading blob store: {e}"))?
+                .into(),
+            None => MemStore::new().into(),
+        };
+        Ok((shared, blobs))
+    }
+
+    async fn finish(router: Router, shared: Arc<Shared>, blobs: Store) -> Result<Self> {
+        let node = Self {
             router,
             shared,
             blobs,
-        })
+        };
+        // decrypt persisted commits back into the plaintext docs; commits
+        // from epochs this device can't read stay pending, like any refresh.
+        for id in node.shared.project_ids().await {
+            if let Err(e) = node.shared.refresh(&id).await {
+                eprintln!("beelay: startup refresh of project {id} failed: {e}");
+                let mut state = node.shared.state.lock().await;
+                if let Some(proj) = state.projects.get_mut(&id) {
+                    proj.unhealthy = true;
+                }
+            }
+        }
+        Ok(node)
     }
 
     /// This node's share identity.
@@ -651,8 +1063,10 @@ impl BeelayNode {
                 host: None,
                 change_to_commit: HashMap::new(),
                 applied: HashSet::new(),
+                unhealthy: false,
             },
         );
+        self.shared.persist_registry(state).await?;
         Ok(())
     }
 
@@ -667,6 +1081,11 @@ impl BeelayNode {
             .auth
             .doc_id(project_id)
             .ok_or_else(|| anyerr!("unknown project {project_id}"))?;
+        let group = self
+            .shared
+            .auth
+            .group_id(project_id)
+            .ok_or_else(|| anyerr!("no membership group known for {project_id}"))?;
         let beelay_doc = {
             let state = self.shared.state.lock().await;
             let proj = state
@@ -680,6 +1099,7 @@ impl BeelayNode {
             project_id: project_id.to_owned(),
             beelay_doc,
             keyhive_doc,
+            group,
             events,
         };
         Ok(invite.encode_string())
@@ -688,33 +1108,63 @@ impl BeelayNode {
     /// Ingests an invite: learns the delegations, adopts the keyhive doc,
     /// and registers an empty local doc wired to the host's address. Returns
     /// the project id; call [`Self::sync_project`] to fetch the content.
+    /// Re-accepting a known project (retry, rejoin after leave) re-ingests
+    /// the events and refreshes the host address without touching its doc.
     pub async fn accept_invite(&self, invite: &str) -> Result<String> {
         let invite: ProjectInvite = invite
             .parse()
             .map_err(|e| anyerr!("malformed invite: {e}"))?;
-        // hold the lock across check + ingest + adopt + insert so concurrent
-        // accepts of the same invite can't both pass the existence check
+        // the lock is held across check + ingest + adopt + insert
         // (ingest/adopt are local keyhive compute — no network awaits).
         let mut state = self.shared.state.lock().await;
-        if state.projects.contains_key(&invite.project_id) {
-            // never clobber local edits with a fresh empty doc
-            return Err(anyerr!("project {} already exists", invite.project_id));
-        }
         self.shared.auth.ingest_events(&invite.events).await?;
-        self.shared
-            .auth
-            .adopt_project(&invite.project_id, invite.keyhive_doc)
-            .await?;
-        state.projects.insert(
-            invite.project_id.clone(),
-            ProjectState {
-                doc: Automerge::new(),
-                beelay_doc: DocumentId::from(invite.beelay_doc),
-                host: Some(invite.endpoint.endpoint_addr().clone()),
-                change_to_commit: HashMap::new(),
-                applied: HashSet::new(),
-            },
-        );
+        if let Some(proj) = state.projects.get_mut(&invite.project_id) {
+            if proj.host.is_none() {
+                return Err(anyerr!(
+                    "this node hosts project {}; refusing an invite for it",
+                    invite.project_id
+                ));
+            }
+            if DocumentId::from(invite.beelay_doc) != proj.beelay_doc {
+                return Err(anyerr!(
+                    "invite beelay doc does not match known project {}",
+                    invite.project_id
+                ));
+            }
+            match self.shared.auth.doc_id(&invite.project_id) {
+                Some(doc) if doc != invite.keyhive_doc => {
+                    return Err(anyerr!(
+                        "invite keyhive doc does not match known project {}",
+                        invite.project_id
+                    ));
+                }
+                Some(_) => {}
+                None => {
+                    self.shared
+                        .auth
+                        .adopt_project(&invite.project_id, invite.keyhive_doc, Some(invite.group))
+                        .await?;
+                }
+            }
+            proj.host = Some(invite.endpoint.endpoint_addr().clone());
+        } else {
+            self.shared
+                .auth
+                .adopt_project(&invite.project_id, invite.keyhive_doc, Some(invite.group))
+                .await?;
+            state.projects.insert(
+                invite.project_id.clone(),
+                ProjectState {
+                    doc: Automerge::new(),
+                    beelay_doc: DocumentId::from(invite.beelay_doc),
+                    host: Some(invite.endpoint.endpoint_addr().clone()),
+                    change_to_commit: HashMap::new(),
+                    applied: HashSet::new(),
+                    unhealthy: false,
+                },
+            );
+        }
+        self.shared.persist_registry(state).await?;
         Ok(invite.project_id)
     }
 
@@ -738,9 +1188,14 @@ impl BeelayNode {
     /// beelay handshake, bidirectional sedimentree sync (local commits
     /// upload, remote commits download), then decrypt-and-apply. Local edits
     /// are flushed (encrypted) before dialing so the preamble carries any
-    /// CGKA ops the encryption produced.
-    pub async fn sync_project(&self, project_id: &str) -> Result<SyncOutcome> {
-        let (beelay_doc, host) = {
+    /// CGKA ops the encryption produced. A host that closes the connection
+    /// with the refusal code (this peer holds no role on the requested
+    /// project, e.g. revoked) surfaces as [`JoinError::Refused`].
+    pub async fn sync_project(
+        &self,
+        project_id: &str,
+    ) -> std::result::Result<SyncOutcome, JoinError> {
+        let (beelay_doc, host, unhealthy) = {
             let state = self.shared.state.lock().await;
             let proj = state
                 .projects
@@ -749,9 +1204,12 @@ impl BeelayNode {
             let host = proj.host.clone().ok_or_else(|| {
                 anyerr!("project {project_id} has no host address; accept an invite first")
             })?;
-            (proj.beelay_doc, host)
+            (proj.beelay_doc, host, proj.unhealthy)
         };
-        self.shared.flush(project_id).await?;
+        // an unhealthy doc is download-only; the refresh below can clear it.
+        if !unhealthy {
+            self.shared.flush(project_id).await?;
+        }
 
         let conn = self
             .router
@@ -759,55 +1217,99 @@ impl BeelayNode {
             .connect(host, BEELAY_ALPN)
             .await
             .context("dialing beelay host")?;
-        let (mut send, mut recv) = conn.open_bi().await.std_context("opening beelay stream")?;
-        keyhive_preamble(&self.shared.auth, &mut send, &mut recv, true).await?;
-        let connected = handshake_connect(
-            self.shared.peer_id.clone(),
-            conn.remote_id(),
-            &mut send,
-            &mut recv,
-        )
-        .await?;
+        let session = async {
+            let (mut send, mut recv) = conn.open_bi().await.std_context("opening beelay stream")?;
+            send_frame(&mut send, project_id.as_bytes()).await?;
+            let peer = keyhive_preamble(
+                &self.shared.auth,
+                &self.shared.binding,
+                conn.remote_id(),
+                &mut send,
+                &mut recv,
+                true,
+            )
+            .await?;
+            // remember the host's member id so its blob fetches pass the gate.
+            self.shared
+                .peers
+                .lock()
+                .unwrap()
+                .insert(conn.remote_id(), peer);
+            if let Err(e) = self
+                .shared
+                .persist_registry(self.shared.state.lock().await)
+                .await
+            {
+                eprintln!("beelay: persisting peer map: {e}");
+            }
+            let connected = handshake_connect(
+                self.shared.peer_id.clone(),
+                conn.remote_id(),
+                &mut send,
+                &mut recv,
+            )
+            .await?;
 
-        // pump the sync story to completion; the lock is taken per event and
-        // never held across a network await. The round cap bounds a host that
-        // keeps answering without ever letting the story converge.
-        let (story, event) = Event::sync_doc(beelay_doc, connected.their_peer_id().clone());
-        let mut msgs = self.shared.state.lock().await.core.drive(event)?;
-        let mut rounds = 0usize;
-        loop {
-            send_envelopes(&connected, msgs, &mut send).await?;
-            if let Some(result) = self.shared.state.lock().await.core.stories.remove(&story) {
-                let StoryResult::SyncDoc(_) = result else {
-                    return Err(anyerr!("unexpected story result for sync_doc"));
-                };
-                break;
-            }
-            rounds += 1;
-            if rounds > MAX_SYNC_ROUNDS {
-                return Err(anyerr!(
-                    "beelay sync did not converge within {MAX_SYNC_ROUNDS} rounds"
-                ));
-            }
-            let frame = expect_tagged(&mut recv, TAG_BEELAY).await?;
-            let msg = Message::decode(&frame).std_context("decoding beelay message")?;
-            let env = connected
-                .receive(msg)
-                .std_context("routing beelay message")?;
-            msgs = self
+            // pump the sync story to completion; the lock is taken per event.
+            // The round cap bounds a host that keeps answering without ever
+            // letting the story converge.
+            let (story, event) = Event::sync_doc(beelay_doc, connected.their_peer_id().clone());
+            let mut msgs = self
                 .shared
                 .state
                 .lock()
                 .await
                 .core
-                .drive(Event::receive(env))?;
-        }
+                .drive_scoped(event, Some(beelay_doc))?;
+            let mut rounds = 0usize;
+            loop {
+                send_envelopes(&connected, msgs, &mut send).await?;
+                if let Some(result) = self.shared.state.lock().await.core.stories.remove(&story) {
+                    let StoryResult::SyncDoc(_) = result else {
+                        return Err(anyerr!("unexpected story result for sync_doc"));
+                    };
+                    break;
+                }
+                rounds += 1;
+                if rounds > MAX_SYNC_ROUNDS {
+                    return Err(anyerr!(
+                        "beelay sync did not converge within {MAX_SYNC_ROUNDS} rounds"
+                    ));
+                }
+                let frame = expect_tagged(&mut recv, TAG_BEELAY).await?;
+                let msg = Message::decode(&frame).std_context("decoding beelay message")?;
+                let env = connected
+                    .receive(msg)
+                    .std_context("routing beelay message")?;
+                msgs = self
+                    .shared
+                    .state
+                    .lock()
+                    .await
+                    .core
+                    .drive_scoped(Event::receive(env), Some(beelay_doc))?;
+            }
 
-        // end-of-session: send bye, await the host's ack (sent after it has
-        // applied our uploads — makes post-sync assertions deterministic).
-        send_frame(&mut send, &[]).await?;
-        if recv_tagged(&mut recv).await?.is_some() {
-            return Err(anyerr!("expected end-of-session ack"));
+            // end-of-session: send bye, await the host's ack (sent after it
+            // has applied our uploads — makes post-sync assertions
+            // deterministic).
+            send_frame(&mut send, &[]).await?;
+            if recv_tagged(&mut recv).await?.is_some() {
+                return Err(anyerr!("expected end-of-session ack"));
+            }
+            Ok::<_, AnyError>(())
+        };
+        // vendor-edit: a REFUSED_CODE close from the host means this peer is
+        // denied; surface it typed, mirroring plain join().
+        if let Err(e) = session.await {
+            return match conn.close_reason() {
+                Some(ConnectionError::ApplicationClosed(c))
+                    if c.error_code == REFUSED_CODE.into() =>
+                {
+                    Err(JoinError::Refused)
+                }
+                _ => Err(JoinError::Other(e)),
+            };
         }
         let outcome = self.shared.refresh(project_id).await?;
         conn.close(0u32.into(), b"done");
@@ -830,9 +1332,12 @@ impl BeelayNode {
     }
 
     /// Downloads the (still-encrypted) blob behind `ticket` into the local
-    /// store, verified against its hash. Transfer only — decrypt by calling
-    /// [`Self::read_blob`], so fetching can happen before/without access.
-    pub async fn fetch_blob(&self, ticket: &str) -> Result<()> {
+    /// store, verified against its hash; the transfer is aborted once more
+    /// than `max_bytes` of payload has arrived. Transfer only — decrypt by
+    /// calling [`Self::read_blob`], so fetching can happen before/without
+    /// access.
+    pub async fn fetch_blob(&self, ticket: &str, max_bytes: u64) -> Result<()> {
+        use futures::StreamExt as _;
         let ticket: BlobTicket = ticket
             .parse()
             .map_err(|e| anyerr!("bad blob ticket: {e}"))?;
@@ -842,17 +1347,40 @@ impl BeelayNode {
             .connect(ticket.addr().clone(), iroh_blobs::ALPN)
             .await
             .context("dialing blob provider")?;
-        self.blobs
-            .remote()
-            .fetch(conn, ticket.hash())
-            .await
-            .map_err(|e| anyerr!("fetching blob: {e}"))?;
-        Ok(())
+        let mut progress = std::pin::pin!(self.blobs.remote().fetch(conn, ticket.hash()).stream());
+        while let Some(item) = progress.next().await {
+            match item {
+                // dropping the stream cancels the in-flight transfer.
+                GetProgressItem::Progress(n) if n > max_bytes => {
+                    return Err(AnyError::from_std(BlobError::TooLarge));
+                }
+                GetProgressItem::Progress(_) => {}
+                GetProgressItem::Done(_) => return Ok(()),
+                GetProgressItem::Error(e) => return Err(anyerr!("fetching blob: {e}")),
+            }
+        }
+        Err(anyerr!("blob fetch ended without completing"))
+    }
+
+    /// Whether `ticket`'s blob is already in the local store, without
+    /// attempting to decrypt it — lets a caller tell "not fetched yet" apart
+    /// from a decrypt failure.
+    pub async fn has_blob(&self, ticket: &str) -> bool {
+        let Ok(ticket) = ticket.parse::<BlobTicket>() else {
+            return false;
+        };
+        self.blobs.has(ticket.hash()).await.unwrap_or(false)
     }
 
     /// Decrypts a locally-stored blob ([`Self::store_blob`]d here or
-    /// [`Self::fetch_blob`]ed) back to the original bytes.
-    pub async fn read_blob(&self, project_id: &str, ticket: &str) -> Result<Vec<u8>> {
+    /// [`Self::fetch_blob`]ed) back to the original bytes; errors if the
+    /// stored ciphertext exceeds `max_bytes`.
+    pub async fn read_blob(
+        &self,
+        project_id: &str,
+        ticket: &str,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>> {
         let ticket: BlobTicket = ticket
             .parse()
             .map_err(|e| anyerr!("bad blob ticket: {e}"))?;
@@ -861,17 +1389,91 @@ impl BeelayNode {
             .get_bytes(ticket.hash())
             .await
             .map_err(|e| anyerr!("blob not in local store (fetch it first?): {e}"))?;
+        if sealed.len() as u64 > max_bytes {
+            return Err(AnyError::from_std(BlobError::TooLarge));
+        }
         self.shared
             .auth
             .decrypt(project_id, &sealed)
             .await
-            .map_err(|e| anyerr!("decrypting blob: {e}"))
+            .map_err(|e| AnyError::from_std(BlobError::Decrypt(e)))
     }
 
-    /// Graceful shutdown: stops accepting and closes the endpoint.
+    /// Graceful shutdown: stops accepting and closes the endpoint, then
+    /// waits for the kv writer's final flush. The router also shuts the
+    /// blob store down (its `BlobsProtocol` handler).
     pub async fn shutdown(&self) -> Result<()> {
-        self.router.shutdown().await.std_context("router shutdown")
+        let result = self.router.shutdown().await.std_context("router shutdown");
+        let kv = self.shared.state.lock().await.core.kv.take();
+        if let Some(kv) = kv {
+            drop(kv.tx);
+            let _ = kv.task.await;
+        }
+        result
     }
+}
+
+// --- single-endpoint stack ----------------------------------------------------------
+
+/// Binds the whole share stack on ONE iroh endpoint and router — plain sync
+/// ([`crate::ALPN`]), beelay ([`BEELAY_ALPN`]), and blobs — so the device
+/// identity announces a single address instead of two endpoints flapping.
+/// Router shutdown is shared between [`ShareNode::shutdown`] and
+/// [`BeelayNode::shutdown`].
+pub async fn bind_stack(
+    identity: &DeviceIdentity,
+    auth_identity: &AuthIdentity,
+    auth: ProjectAuth,
+    data_dir: Option<&Path>,
+) -> Result<(ShareNode, BeelayNode)> {
+    bind_stack_with(identity, auth_identity, auth, data_dir, presets::N0).await
+}
+
+/// [`bind_stack`] without discovery or relays: peers must dial full addresses.
+/// Offline/LAN use and tests.
+pub async fn bind_stack_local(
+    identity: &DeviceIdentity,
+    auth_identity: &AuthIdentity,
+    auth: ProjectAuth,
+    data_dir: Option<&Path>,
+) -> Result<(ShareNode, BeelayNode)> {
+    bind_stack_with(identity, auth_identity, auth, data_dir, presets::Minimal).await
+}
+
+async fn bind_stack_with(
+    identity: &DeviceIdentity,
+    auth_identity: &AuthIdentity,
+    auth: ProjectAuth,
+    data_dir: Option<&Path>,
+    preset: impl presets::Preset,
+) -> Result<(ShareNode, BeelayNode)> {
+    let endpoint = Endpoint::builder(preset)
+        .secret_key(identity.secret().clone())
+        .bind()
+        .await
+        .context("binding iroh endpoint")?;
+    let binding = DeviceBinding::create(identity, auth_identity);
+    let (shared, blobs) = BeelayNode::prepare(endpoint.id(), auth, binding, data_dir).await?;
+    let (sync_proto, projects, access_check) = ShareNode::parts();
+    let router = Router::builder(endpoint)
+        .accept(crate::sync::ALPN, sync_proto)
+        .accept(
+            BEELAY_ALPN,
+            BeelayProtocol {
+                shared: shared.clone(),
+            },
+        )
+        .accept(
+            iroh_blobs::ALPN,
+            GatedBlobs {
+                inner: BlobsProtocol::new(&blobs, None),
+                shared: shared.clone(),
+            },
+        )
+        .spawn();
+    let share = ShareNode::from_parts(router.clone(), projects, access_check);
+    let beelay = BeelayNode::finish(router, shared, blobs).await?;
+    Ok((share, beelay))
 }
 
 // --- protocol handler --------------------------------------------------------------
@@ -887,18 +1489,106 @@ impl fmt::Debug for BeelayProtocol {
     }
 }
 
+/// Blobs handler that serves only dialers whose session-learned member id
+/// holds a role on at least one registered project.
+struct GatedBlobs {
+    inner: BlobsProtocol,
+    shared: Arc<Shared>,
+}
+
+impl fmt::Debug for GatedBlobs {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "GatedBlobs")
+    }
+}
+
+impl GatedBlobs {
+    // ponytail: any-project membership gate — scope per project once a
+    // blob-hash -> project mapping exists.
+    async fn allows(&self, remote: EndpointId) -> bool {
+        let member = self.shared.peers.lock().unwrap().get(&remote).copied();
+        let Some(member) = member else {
+            return false;
+        };
+        for id in self.shared.project_ids().await {
+            if matches!(
+                self.shared.auth.query_access(&id, member).await,
+                Ok(Some(_))
+            ) {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+impl ProtocolHandler for GatedBlobs {
+    async fn accept(&self, conn: Connection) -> std::result::Result<(), AcceptError> {
+        if !self.allows(conn.remote_id()).await {
+            conn.close(REFUSED_CODE.into(), b"refused");
+            return Ok(());
+        }
+        self.inner.accept(conn).await
+    }
+
+    async fn shutdown(&self) {
+        self.inner.shutdown().await;
+    }
+}
+
 impl ProtocolHandler for BeelayProtocol {
     async fn accept(&self, conn: Connection) -> std::result::Result<(), AcceptError> {
         let remote = conn.remote_id();
         let (mut send, mut recv) = conn.accept_bi().await?;
+        let project_id = recv_frame_max(&mut recv, MAX_PROJECT_ID_FRAME as u64)
+            .await?
+            .ok_or_else(|| anyerr!("initiator sent empty project id"))?;
+        let project_id = String::from_utf8(project_id).map_err(AcceptError::from_err)?;
+        let (scope, unhealthy) = {
+            let state = self.shared.state.lock().await;
+            match state.projects.get(&project_id) {
+                Some(p) => (Some(p.beelay_doc), p.unhealthy),
+                None => (None, false),
+            }
+        };
+        let Some(scope) = scope else {
+            conn.close(REFUSED_CODE.into(), b"refused");
+            return Ok(());
+        };
         // Encrypt pending local edits BEFORE the preamble so the events we
-        // export include any CGKA ops the encryption produced.
-        // ponytail: flushes every registered project — which doc the peer
-        // wants is only known inside beelay; go per-doc when scale demands.
-        for id in self.shared.project_ids().await {
-            self.shared.flush(&id).await?;
+        // export include any CGKA ops the encryption produced. An unhealthy
+        // doc is not flushed; the refresh at session end can clear it.
+        if !unhealthy {
+            self.shared.flush(&project_id).await?;
         }
-        keyhive_preamble(&self.shared.auth, &mut send, &mut recv, false).await?;
+        let peer = keyhive_preamble(
+            &self.shared.auth,
+            &self.shared.binding,
+            remote,
+            &mut send,
+            &mut recv,
+            false,
+        )
+        .await?;
+        // vendor-edit: membership gate scoped to the requested project only.
+        if self
+            .shared
+            .auth
+            .query_access(&project_id, peer)
+            .await?
+            .is_none()
+        {
+            conn.close(REFUSED_CODE.into(), b"refused");
+            return Ok(());
+        }
+        self.shared.peers.lock().unwrap().insert(remote, peer);
+        if let Err(e) = self
+            .shared
+            .persist_registry(self.shared.state.lock().await)
+            .await
+        {
+            eprintln!("beelay: persisting peer map: {e}");
+        }
         let connected =
             handshake_accept(self.shared.peer_id.clone(), remote, &mut send, &mut recv).await?;
 
@@ -915,13 +1605,14 @@ impl ProtocolHandler for BeelayProtocol {
                 Some((TAG_BEELAY, frame)) => {
                     let msg = Message::decode(&frame).map_err(AcceptError::from_err)?;
                     let env = connected.receive(msg).map_err(AcceptError::from_err)?;
+                    // scoped: this session may only touch the announced doc.
                     let msgs = self
                         .shared
                         .state
                         .lock()
                         .await
                         .core
-                        .drive(Event::receive(env))?;
+                        .drive_scoped(Event::receive(env), Some(scope))?;
                     send_envelopes(&connected, msgs, &mut send).await?;
                 }
                 Some((tag, _)) => {
@@ -937,9 +1628,7 @@ impl ProtocolHandler for BeelayProtocol {
             )));
         }
         // apply whatever the initiator uploaded, then ack its bye.
-        for id in self.shared.project_ids().await {
-            self.shared.refresh(&id).await?;
-        }
+        self.shared.refresh(&project_id).await?;
         send_frame(&mut send, &[]).await?;
         // wait for the initiator to close so tail data isn't dropped.
         conn.closed().await;

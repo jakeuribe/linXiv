@@ -26,7 +26,7 @@ pub const ALPN: &[u8] = b"linxiv/sync/0";
 
 // vendor-edit: connection close code the host sends for an unknown/denied
 // project, so join() can tell a refusal from a transport failure.
-const REFUSED_CODE: u32 = 1;
+pub(crate) const REFUSED_CODE: u32 = 1;
 
 /// Largest accepted sync frame.
 // ponytail: 64 MiB cap on untrusted frame lengths; raise if project docs outgrow it.
@@ -116,7 +116,7 @@ pub(crate) fn write_key(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 pub type AccessCheckFn = Arc<dyn Fn(EndpointId, &str) -> bool + Send + Sync>;
 
 #[derive(Clone, Default)]
-struct AccessCheck(Arc<Mutex<Option<AccessCheckFn>>>);
+pub(crate) struct AccessCheck(Arc<Mutex<Option<AccessCheckFn>>>);
 
 impl AccessCheck {
     fn allows(&self, peer: EndpointId, project_id: &str) -> bool {
@@ -206,7 +206,7 @@ impl FromStr for ShareTicket {
 
 // --- share node ------------------------------------------------------------
 
-type Projects = Arc<Mutex<HashMap<String, Automerge>>>;
+pub(crate) type Projects = Arc<Mutex<HashMap<String, Automerge>>>;
 
 /// A bound p2p node holding the registry of shared project documents.
 #[derive(Debug)]
@@ -236,22 +236,33 @@ impl ShareNode {
             .bind()
             .await
             .context("binding iroh endpoint")?;
+        let (proto, projects, access_check) = Self::parts();
+        let router = Router::builder(endpoint).accept(ALPN, proto).spawn();
+        Ok(Self::from_parts(router, projects, access_check))
+    }
+
+    // vendor-edit: handler/state halves so bind_stack can mount plain sync on
+    // a router shared with the beelay + blobs protocols.
+    pub(crate) fn parts() -> (SyncProtocol, Projects, AccessCheck) {
         let projects = Projects::default();
         let access_check = AccessCheck::default();
-        let router = Router::builder(endpoint)
-            .accept(
-                ALPN,
-                SyncProtocol {
-                    projects: projects.clone(),
-                    access_check: access_check.clone(),
-                },
-            )
-            .spawn();
-        Ok(Self {
+        let proto = SyncProtocol {
+            projects: projects.clone(),
+            access_check: access_check.clone(),
+        };
+        (proto, projects, access_check)
+    }
+
+    pub(crate) fn from_parts(
+        router: Router,
+        projects: Projects,
+        access_check: AccessCheck,
+    ) -> Self {
+        Self {
             router,
             projects,
             access_check,
-        })
+        }
     }
 
     /// This node's share identity.
@@ -377,7 +388,7 @@ impl From<AnyError> for JoinError {
 // --- protocol handler ------------------------------------------------------
 
 #[derive(Debug, Clone)]
-struct SyncProtocol {
+pub(crate) struct SyncProtocol {
     projects: Projects,
     access_check: AccessCheck,
 }
@@ -505,6 +516,12 @@ pub(crate) async fn send_frame(send: &mut SendStream, bytes: &[u8]) -> Result<()
 /// must arrive within [`RECV_TIMEOUT`] — every protocol read in this crate
 /// routes through here, so this is the single deadline for all of them.
 pub(crate) async fn recv_frame(recv: &mut RecvStream) -> Result<Option<Vec<u8>>> {
+    recv_frame_max(recv, MAX_FRAME).await
+}
+
+/// Like [`recv_frame`], but rejects a declared length above `max_len`
+/// before allocating the buffer.
+pub(crate) async fn recv_frame_max(recv: &mut RecvStream, max_len: u64) -> Result<Option<Vec<u8>>> {
     tokio::time::timeout(RECV_TIMEOUT, async {
         let mut len = [0u8; 8];
         recv.read_exact(&mut len)
@@ -514,7 +531,7 @@ pub(crate) async fn recv_frame(recv: &mut RecvStream) -> Result<Option<Vec<u8>>>
         if len == 0 {
             return Ok(None);
         }
-        if len > MAX_FRAME {
+        if len > max_len {
             return Err(anyerr!("peer sent oversized frame ({len} bytes)"));
         }
         let mut buf = vec![0u8; len as usize];

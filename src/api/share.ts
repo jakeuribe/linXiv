@@ -34,6 +34,24 @@ export interface SharedSummary {
   /** Linked local project id; null when no live local project carries this
    * SHARE_ID (received shares before first import, or linked project deleted/trashed). */
   project_fk?: number | null;
+  /** True on end-to-end encrypted shares; absent on plain ones. */
+  e2ee?: boolean;
+  /** Members-sidecar length; only on hoster-owned e2ee shares. */
+  member_count?: number;
+}
+
+export type MemberRole = "hoster" | "editor" | "viewer";
+
+export interface ShareMember {
+  /** Hex member id — the only handle for revoke. May be "" for the hoster
+   * entry if keyhive was unavailable at publish. */
+  member_id: string;
+  name: string | null;
+  role: MemberRole;
+  invited_at: string;
+  revoked: boolean;
+  /** Per-member truth check against keyhive (the sidecar is names-only). */
+  verified: boolean;
 }
 
 export type ShareDirection = "two_way" | "shared_to_local" | "local_to_shared";
@@ -44,7 +62,8 @@ export type SyncReason =
   | "project gone"
   | "no ticket"
   | "bad ticket"
-  | "p2p offline";
+  | "p2p offline"
+  | "revoked or awaiting key";
 
 export type ShareRole = "hoster" | "reader";
 
@@ -100,7 +119,14 @@ export async function importReceived(
 /** One-shot sync of a single share, honoring its paused/direction settings. */
 export async function syncShare(
   shareId: string
-): Promise<{ synced: boolean; reason?: SyncReason; role?: ShareRole }> {
+): Promise<{
+  synced: boolean;
+  reason?: SyncReason;
+  role?: ShareRole;
+  /** Notes/annotations skipped because their key is revoked or not yet received. */
+  undecryptable?: number;
+  e2ee?: boolean;
+}> {
   return shareApi("POST", `/api/share/${shareId}/sync`);
 }
 
@@ -116,6 +142,83 @@ export async function unpublishShare(
   shareId: string
 ): Promise<{ unpublished: boolean; share_id: string }> {
   return shareApi("POST", `/api/share/${shareId}/unpublish`);
+}
+
+/** This device's pasteable membership code — sent to a host to be invited
+ *  to an encrypted share. */
+export async function memberCode(): Promise<string> {
+  const res = await shareApi<{ code: string }>("GET", "/api/share/member_code");
+  return res.code;
+}
+
+/** Publish the project as an end-to-end encrypted share. No ticket — access
+ *  is granted per-device via {@link inviteMember}. */
+export async function publishSecure(
+  projectId: number
+): Promise<{ share_id: string }> {
+  return shareApi("POST", `/api/share/project/${projectId}/publish_secure`);
+}
+
+/** Grant a device access to a hosted e2ee share and mint its pasteable
+ *  invite string. */
+export async function inviteMember(
+  shareId: string,
+  opts: { memberCode: string; role: Exclude<MemberRole, "hoster">; name?: string }
+): Promise<string> {
+  const res = await shareApi<{ invite: string }>(
+    "POST",
+    `/api/share/${shareId}/invite`,
+    { member_code: opts.memberCode, role: opts.role, name: opts.name }
+  );
+  return res.invite;
+}
+
+/** Members of a hoster-owned e2ee share (the hoster entry is this device). */
+export async function listMembers(shareId: string): Promise<ShareMember[]> {
+  const res = await shareApi<{ members: ShareMember[] }>(
+    "GET",
+    `/api/share/${shareId}/members`
+  );
+  return res.members;
+}
+
+/** Revoke a member: stops receiving future updates; content already synced
+ *  stays on their device. */
+export async function revokeMember(
+  shareId: string,
+  memberId: string
+): Promise<{ revoked: boolean }> {
+  return shareApi("POST", `/api/share/${shareId}/revoke`, {
+    member_id: memberId,
+  });
+}
+
+/** Fields the share page consumes for one paper in a received mirror. */
+export interface ReceivedPaper {
+  source_id: string;
+  title: string;
+  has_pdf: boolean;
+}
+
+/** Papers of one received mirror. */
+export async function listReceivedPapers(
+  shareId: string
+): Promise<ReceivedPaper[]> {
+  const res = await shareApi<{ papers: ReceivedPaper[] }>(
+    "GET",
+    `/api/share/received/${shareId}`
+  );
+  return res.papers;
+}
+
+/** Fetch + decrypt one shared PDF blob and save it to the managed PDF dir. */
+export async function downloadSharedPdf(
+  shareId: string,
+  sourceId: string
+): Promise<{ source_id: string; version: number; path: string }> {
+  return shareApi("POST", `/api/share/${shareId}/pdf`, {
+    source_id: sourceId,
+  });
 }
 
 export async function getShareSettings(

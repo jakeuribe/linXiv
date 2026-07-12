@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
@@ -18,10 +19,13 @@ use tokio::sync::Mutex;
 /// 504 and releases the node lock so shutdown is not blocked.
 pub(crate) const SHARE_NET_TIMEOUT: Duration = Duration::from_secs(30);
 
+use linxiv_core::config;
+use linxiv_core::service::paper::{self as paper_svc, pdf_on_disk_name};
+use linxiv_core::service::paper_import;
 use linxiv_core::service::project as project_svc;
 use linxiv_share::{
-    build_shared_project, doc_path, received_dir, save, valid_share_id, ShareError, ShareNode,
-    ShareStore, ShareTicket,
+    build_shared_project, doc_path, e2ee_dir, e2ee_received_dir, received_dir, save,
+    valid_share_id, MemberId, ProjectInvite, Role, ShareError, ShareNode, ShareStore, ShareTicket,
 };
 
 use crate::route::{parse_query, path_i64, split_segments, ApiError, ApiRequest, ReqCtx};
@@ -99,6 +103,7 @@ impl From<ShareError> for ApiError {
             ShareError::NotFound(_) => 404,
             ShareError::Core(c) => c.http_status(),
             ShareError::Transport(_) => 502,
+            ShareError::TooLarge(_) => 413,
             ShareError::Io(_) | ShareError::Crdt(_) => 500,
         };
         ApiError::new(status, e.to_string())
@@ -151,6 +156,20 @@ pub async fn share_api(
         }
         ("PUT" | "POST", ["api", "share", id, "settings"]) => {
             return put_settings(share.inner(), id, ctx.body).await
+        }
+        ("GET", ["api", "share", "member_code"]) => return member_code(share.inner()).await,
+        ("POST", ["api", "share", "project", id, "publish_secure"]) => {
+            return publish_secure(state.inner(), share.inner(), id).await
+        }
+        ("POST", ["api", "share", id, "invite"]) => {
+            return invite(state.inner(), share.inner(), id, ctx.body).await
+        }
+        ("GET", ["api", "share", id, "members"]) => return members(share.inner(), id).await,
+        ("POST", ["api", "share", id, "revoke"]) => {
+            return revoke_member(share.inner(), id, ctx.body).await
+        }
+        ("POST", ["api", "share", id, "pdf"]) => {
+            return shared_pdf(state.inner(), share.inner(), id, ctx.body).await
         }
         _ => {}
     }
@@ -205,6 +224,17 @@ fn list_shared(state: &AppState, share: &ShareState) -> Result<Value, ApiError> 
         v["project_fk"] = json!(fk);
         out.push(v);
     }
+    for s in ShareNode::list_e2ee(dir)? {
+        let mut v = summary_json(&s, &doc_path(&e2ee_dir(dir), &s.share_id), dir);
+        let fk = state.with_conn(|c| project_svc::find_by_share_id(c, &s.share_id))?;
+        v["project_fk"] = json!(fk);
+        v["e2ee"] = json!(true);
+        v["member_count"] = json!(load_members(dir, &s.share_id)
+            .iter()
+            .filter(|m| !m.revoked && m.role != "hoster")
+            .count());
+        out.push(v);
+    }
     Ok(json!({ "shared_projects": out }))
 }
 
@@ -220,7 +250,22 @@ fn list_received(state: &AppState, share: &ShareState) -> Result<Value, ApiError
         v["project_fk"] = json!(fk);
         out.push(v);
     }
+    for s in ShareNode::list_e2ee_received(dir)? {
+        let mut v = summary_json(&s, &doc_path(&e2ee_received_dir(dir), &s.share_id), dir);
+        let fk = state.with_conn(|c| project_svc::find_by_share_id(c, &s.share_id))?;
+        v["project_fk"] = json!(fk);
+        v["e2ee"] = json!(true);
+        out.push(v);
+    }
     Ok(json!({ "received": out }))
+}
+
+/// A doc file for `id` in any role (plain/e2ee, hosted/received).
+fn any_doc_exists(dir: &Path, id: &str) -> bool {
+    doc_path(dir, id).is_file()
+        || doc_path(&received_dir(dir), id).is_file()
+        || doc_path(&e2ee_dir(dir), id).is_file()
+        || doc_path(&e2ee_received_dir(dir), id).is_file()
 }
 
 /// `GET /api/share/{id}/settings` — the per-share sidecar (defaults if unset).
@@ -229,7 +274,7 @@ fn get_settings(share: &ShareState, id: &str) -> Result<Value, ApiError> {
         return Err(ApiError::new(404, format!("share {id:?} not found")));
     }
     let dir = share.share_dir();
-    if !doc_path(dir, id).is_file() && !doc_path(&received_dir(dir), id).is_file() {
+    if !any_doc_exists(dir, id) {
         return Err(ApiError::new(404, format!("share {id:?} not found")));
     }
     Ok(serde_json::to_value(share_sync::load_settings(dir, id)).unwrap())
@@ -245,7 +290,7 @@ async fn put_settings(
         return Err(ApiError::new(404, format!("share {id:?} not found")));
     }
     let dir = share.share_dir();
-    if !doc_path(dir, id).is_file() && !doc_path(&received_dir(dir), id).is_file() {
+    if !any_doc_exists(dir, id) {
         return Err(ApiError::new(404, format!("share {id:?} not found")));
     }
     let _lock = share.lock_writes(id).await;
@@ -269,6 +314,68 @@ async fn put_settings(
     Ok(serde_json::to_value(s).unwrap())
 }
 
+// ── e2ee members sidecar (`share_dir/members/<id>.json`) ────────────────────
+
+/// One invited device on a hoster-owned e2ee share. The sidecar IS the members
+/// list — the wrapper has no listing API; `query_role` is the live truth-check.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct MemberEntry {
+    pub member_id_hex: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    /// "hoster" | "editor" | "viewer"
+    pub role: String,
+    pub invited_at: String,
+    #[serde(default)]
+    pub revoked: bool,
+}
+
+fn members_path(share_dir: &Path, share_id: &str) -> PathBuf {
+    share_dir.join("members").join(format!("{share_id}.json"))
+}
+
+/// Missing or corrupt sidecar → empty list.
+pub(crate) fn load_members(share_dir: &Path, share_id: &str) -> Vec<MemberEntry> {
+    std::fs::read(members_path(share_dir, share_id))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+fn save_members(share_dir: &Path, share_id: &str, list: &[MemberEntry]) -> std::io::Result<()> {
+    let path = members_path(share_dir, share_id);
+    std::fs::create_dir_all(path.parent().expect("members path has a parent"))?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec(list).expect("members serialize"))?;
+    std::fs::rename(&tmp, &path)
+}
+
+fn member_id_hex(m: &MemberId) -> String {
+    m.0.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn member_id_from_hex(s: &str) -> Option<MemberId> {
+    if s.len() != 64 || !s.is_ascii() {
+        return None;
+    }
+    let bytes: Vec<u8> = (0..64)
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect::<Option<_>>()?;
+    Some(MemberId(bytes.try_into().ok()?))
+}
+
+/// 404 unless `share_id` is a hoster-owned e2ee doc.
+fn ensure_e2ee_hosted(share_dir: &Path, share_id: &str) -> Result<(), ApiError> {
+    if !valid_share_id(share_id) || !doc_path(&e2ee_dir(share_dir), share_id).is_file() {
+        return Err(ApiError::new(
+            404,
+            format!("e2ee share {share_id:?} not found"),
+        ));
+    }
+    Ok(())
+}
+
 /// `<doc>.unpublished` — where `unpublish` parks a doc's CRDT history.
 fn unpublished_path(doc: &Path) -> PathBuf {
     let mut p = doc.as_os_str().to_owned();
@@ -288,21 +395,66 @@ fn restore_unpublished(dir: &Path, share_id: &str) {
 }
 
 /// `POST /api/share/{id}/unpublish` — park the published doc as
-/// `<id>.automerge.unpublished` and delete its settings sidecar.
+/// `<id>.automerge.unpublished` and delete its settings sidecar. An e2ee doc
+/// additionally revokes every active member first, which stops the beelay node
+/// serving it.
 async fn unpublish(share: &ShareState, id: &str) -> Result<Value, ApiError> {
     if !valid_share_id(id) {
         return Err(ApiError::new(404, format!("share {id:?} not found")));
     }
     let dir = share.share_dir();
-    let doc = doc_path(dir, id);
     let _lock = share.lock_writes(id).await;
-    if !doc.is_file() {
+    let doc = doc_path(dir, id);
+    if doc.is_file() {
+        std::fs::rename(&doc, unpublished_path(&doc))
+            .map_err(|e| ApiError::new(500, format!("could not unpublish: {e}")))?;
+        let _ = std::fs::remove_file(share_sync::settings_path(dir, id));
+        return Ok(json!({ "unpublished": true, "share_id": id }));
+    }
+    let e2ee_doc = doc_path(&e2ee_dir(dir), id);
+    if !e2ee_doc.is_file() {
         return Err(ApiError::new(404, format!("share {id:?} not found")));
     }
-    std::fs::rename(&doc, unpublished_path(&doc))
+    // Revocation runs against the live node (content lives in beelay state).
+    let node = live_node(share).await?;
+    let mut list = load_members(dir, id);
+    let mut failed = Vec::new();
+    for m in list.iter_mut().filter(|m| !m.revoked && m.role != "hoster") {
+        let Some(mid) = member_id_from_hex(&m.member_id_hex) else {
+            eprintln!(
+                "share {id}: marking malformed member id {} revoked",
+                m.member_id_hex
+            );
+            m.revoked = true;
+            continue;
+        };
+        // query_role == None: keyhive already dropped them; just mark the sidecar.
+        if matches!(
+            e2ee_timeout(node.query_role(id, mid), "member query").await,
+            Ok(None)
+        ) {
+            m.revoked = true;
+            continue;
+        }
+        match e2ee_timeout(node.revoke(id, mid), "revoke").await {
+            Ok(_) => m.revoked = true,
+            Err(e) => failed.push(format!("{}: {}", m.member_id_hex, e.detail)),
+        }
+    }
+    if let Err(e) = save_members(dir, id, &list) {
+        eprintln!("share {id}: could not persist members sidecar: {e}");
+    }
+    if !failed.is_empty() {
+        return Err(ApiError::new(
+            502,
+            format!("unpublish aborted, could not revoke: {}", failed.join("; ")),
+        ));
+    }
+    std::fs::rename(&e2ee_doc, unpublished_path(&e2ee_doc))
         .map_err(|e| ApiError::new(500, format!("could not unpublish: {e}")))?;
     let _ = std::fs::remove_file(share_sync::settings_path(dir, id));
-    Ok(json!({ "unpublished": true, "share_id": id }))
+    let _ = std::fs::remove_file(members_path(dir, id));
+    Ok(json!({ "unpublished": true, "share_id": id, "e2ee": true }))
 }
 
 /// `POST /api/share/received/{id}/leave` — delete the mirror + ticket + settings.
@@ -311,24 +463,33 @@ async fn leave(share: &ShareState, id: &str) -> Result<Value, ApiError> {
         return Err(ApiError::new(404, format!("share {id:?} not found")));
     }
     let dir = share.share_dir();
-    let mirror = doc_path(&received_dir(dir), id);
     let _lock = share.lock_writes(id).await;
-    if !mirror.is_file() {
+    let mirror = doc_path(&received_dir(dir), id);
+    // ponytail: an e2ee leave keeps its stale beelay registry entry until the
+    // host revokes us; interval sync skips it once the mirror file is gone.
+    let e2ee_mirror = doc_path(&e2ee_received_dir(dir), id);
+    let target = [&mirror, &e2ee_mirror].into_iter().find(|p| p.is_file());
+    let Some(target) = target else {
         return Err(ApiError::new(
             404,
             format!("received share {id:?} not found"),
         ));
-    }
-    std::fs::remove_file(&mirror)
+    };
+    std::fs::remove_file(target)
         .map_err(|e| ApiError::new(500, format!("could not leave share: {e}")))?;
     let _ = std::fs::remove_file(share_sync::ticket_path(dir, id));
     let _ = std::fs::remove_file(share_sync::settings_path(dir, id));
     Ok(json!({ "left": true }))
 }
 
-/// `GET /api/share/received/{id}` — the full subgraph of one received mirror.
+/// `GET /api/share/received/{id}` — the full subgraph of one received mirror
+/// (plain, falling back to the e2ee mirror of the same id).
 fn get_received(share: &ShareState, id: &str) -> Result<Value, ApiError> {
-    let sp = linxiv_share::ShareNode::received(share.store.share_dir(), id)?;
+    let dir = share.store.share_dir();
+    let sp = match linxiv_share::ShareNode::received(dir, id) {
+        Err(ShareError::NotFound(_)) => linxiv_share::ShareNode::e2ee_received(dir, id)?,
+        other => other?,
+    };
     Ok(json!({
         "share_id": sp.share_id,
         "name": sp.name,
@@ -342,6 +503,7 @@ fn get_received(share: &ShareState, id: &str) -> Result<Value, ApiError> {
             "summary": p.summary,
             "authors": p.authors,
             "tags": p.tags,
+            "has_pdf": p.pdf_blob.is_some(),
         })).collect::<Vec<_>>(),
         "notes": sp.notes.iter().map(|n| json!({
             "id": n.uuid,
@@ -363,6 +525,14 @@ async fn publish(state: &AppState, share: &ShareState, id: &str) -> Result<Value
         return Err(ApiError::new(
             409,
             "project is linked to a received share; leave the share before publishing",
+        ));
+    }
+    if doc_path(&e2ee_dir(dir), &sp.share_id).is_file()
+        || doc_path(&e2ee_received_dir(dir), &sp.share_id).is_file()
+    {
+        return Err(ApiError::new(
+            409,
+            "project is published as an encrypted share; unpublish it before publishing plain",
         ));
     }
     let _lock = share.lock_writes(&sp.share_id).await;
@@ -399,6 +569,14 @@ async fn ticket(state: &AppState, share: &ShareState, id: &str) -> Result<Value,
             "project is linked to a received share; leave the share before publishing",
         ));
     }
+    if doc_path(&e2ee_dir(dir), &sp.share_id).is_file()
+        || doc_path(&e2ee_received_dir(dir), &sp.share_id).is_file()
+    {
+        return Err(ApiError::new(
+            409,
+            "project is published as an encrypted share; unpublish it before publishing plain",
+        ));
+    }
     let _lock = share.lock_writes(&sp.share_id).await;
     restore_unpublished(dir, &sp.share_id);
     save(dir, &sp)?;
@@ -418,12 +596,11 @@ async fn join(share: &ShareState, body: Option<&Value>) -> Result<Value, ApiErro
         .and_then(|b| b.get("ticket"))
         .and_then(Value::as_str)
         .ok_or_else(|| ApiError::new(422, "missing `ticket` in body"))?;
-    let ticket: ShareTicket = raw.parse().map_err(|e| {
-        ApiError::new(
-            400,
-            format!("invalid ticket (tickets from older linXiv versions are no longer valid): {e}"),
-        )
-    })?;
+    let ticket: ShareTicket = match raw.parse() {
+        Ok(t) => t,
+        // Not a plain ticket — maybe an e2ee invite.
+        Err(ticket_err) => return join_invite(share, raw, ticket_err).await,
+    };
 
     let node = live_node(share).await?;
     // Held across the fetch, covering the mirror write for this share id.
@@ -451,6 +628,49 @@ async fn join(share: &ShareState, body: Option<&Value>) -> Result<Value, ApiErro
     }))
 }
 
+/// `join` fall-through for e2ee invites: accept the invite (adopts + one sync +
+/// mirror under `e2ee/received/`) and return the same joined-summary shape. No
+/// ticket sidecar — the host address lives in beelay state.
+async fn join_invite(
+    share: &ShareState,
+    raw: &str,
+    ticket_err: impl std::fmt::Display,
+) -> Result<Value, ApiError> {
+    let invite: ProjectInvite = raw.parse().map_err(|invite_err| {
+        ApiError::new(
+            400,
+            format!("not a share ticket or invite: {ticket_err}; {invite_err}"),
+        )
+    })?;
+    if !valid_share_id(invite.project_id()) {
+        return Err(ApiError::new(400, "invite has a malformed project id"));
+    }
+    let node = live_node(share).await?;
+    let _lock = share.lock_writes(invite.project_id()).await;
+    let dir = share.share_dir();
+    let iid = invite.project_id();
+    if doc_path(dir, iid).is_file()
+        || doc_path(&e2ee_dir(dir), iid).is_file()
+        || doc_path(&received_dir(dir), iid).is_file()
+        || doc_path(&e2ee_received_dir(dir), iid).is_file()
+    {
+        return Err(ApiError::new(
+            409,
+            "share id is already published or mirrored here; unpublish or leave it first",
+        ));
+    }
+    let share_id = e2ee_timeout(node.accept_invite(raw), "share join").await?;
+    let sp = ShareNode::e2ee_received(share.share_dir(), &share_id)?;
+    Ok(json!({
+        "share_id": sp.share_id,
+        "name": sp.name,
+        "paper_count": sp.papers.len(),
+        "note_count": sp.notes.len(),
+        "tag_count": sp.tags.len(),
+        "e2ee": true,
+    }))
+}
+
 /// Map a `fetch` failure to a status: a refused/unknown capability is a 404 (the
 /// peer answered, the doc just isn't served to us); any other failure during the
 /// live dial is an upstream/transport fault, surfaced as 502 — never a blanket 500.
@@ -459,6 +679,329 @@ fn fetch_error(e: ShareError) -> ApiError {
         ShareError::NotFound(_) => ApiError::new(404, e.to_string()),
         _ => ApiError::new(502, e.to_string()),
     }
+}
+
+// ── W4: e2ee arms ────────────────────────────────────────────────────────────
+
+/// Keyhive/BeeKEM ops run slower than plain sync; e2ee arms double the budget.
+async fn e2ee_timeout<T>(
+    fut: impl std::future::Future<Output = Result<T, ShareError>>,
+    what: &str,
+) -> Result<T, ApiError> {
+    tokio::time::timeout(SHARE_NET_TIMEOUT * 2, fut)
+        .await
+        .map_err(|_| ApiError::new(504, format!("{what} timed out")))?
+        .map_err(fetch_error)
+}
+
+/// `GET /api/share/member_code` — this device's pasteable membership code.
+async fn member_code(share: &ShareState) -> Result<Value, ApiError> {
+    let node = live_node(share).await?;
+    let code = e2ee_timeout(node.member_code(), "member code").await?;
+    Ok(json!({ "code": code }))
+}
+
+/// `POST /api/share/project/{id}/publish_secure` — snapshot a canonical project
+/// into an e2ee share (doc under `share_dir/e2ee`, beelay-registered), sharing
+/// PDF blobs for papers with a local file, and seed the members sidecar with
+/// this device as hoster.
+async fn publish_secure(state: &AppState, share: &ShareState, id: &str) -> Result<Value, ApiError> {
+    let project_id = path_i64(id)?;
+    let mut sp = state.with_conn(|conn| build_shared_project(conn, project_id))?;
+    let dir = share.share_dir().to_path_buf();
+    if doc_path(&received_dir(&dir), &sp.share_id).is_file()
+        || doc_path(&e2ee_received_dir(&dir), &sp.share_id).is_file()
+    {
+        return Err(ApiError::new(
+            409,
+            "project is linked to a received share; leave the share before publishing",
+        ));
+    }
+    if doc_path(&dir, &sp.share_id).is_file() {
+        return Err(ApiError::new(
+            409,
+            "project is published as a plain share; unpublish it before publishing encrypted",
+        ));
+    }
+    let node = live_node(share).await?;
+    let _lock = share.lock_writes(&sp.share_id).await;
+    restore_unpublished(&e2ee_dir(&dir), &sp.share_id);
+    if doc_path(&e2ee_dir(&dir), &sp.share_id).is_file() {
+        // Republish: doc still on disk, so populate reads its tickets before publish overwrites it.
+        share_sync::populate_pdf_blobs(state, &node, &dir, &mut sp, false).await?;
+        e2ee_timeout(node.publish_secure(&sp), "secure publish").await?;
+    } else {
+        // Brand-new share: the beelay project must exist before blob storage
+        // can succeed. A populate failure after this point still errors the
+        // request; the share exists and a retry recovers via the republish arm.
+        e2ee_timeout(node.publish_secure(&sp), "secure publish").await?;
+        share_sync::populate_pdf_blobs(state, &node, &dir, &mut sp, false).await?;
+        if sp.papers.iter().any(|p| p.pdf_blob.is_some()) {
+            e2ee_timeout(node.publish_secure(&sp), "secure publish").await?;
+        }
+    }
+    let mut list = load_members(&dir, &sp.share_id);
+    if !list.iter().any(|m| m.role == "hoster") {
+        list.push(MemberEntry {
+            member_id_hex: node
+                .self_member_id()
+                .map(|m| member_id_hex(&m))
+                .unwrap_or_default(),
+            name: None,
+            role: "hoster".into(),
+            invited_at: chrono::Utc::now().to_rfc3339(),
+            revoked: false,
+        });
+        if let Err(e) = save_members(&dir, &sp.share_id, &list) {
+            eprintln!(
+                "share {}: could not persist members sidecar: {e}",
+                sp.share_id
+            );
+        }
+    }
+    Ok(json!({ "share_id": sp.share_id, "e2ee": true }))
+}
+
+/// `POST /api/share/{id}/invite {member_code, role: "editor"|"viewer", name?}`
+/// — grant a device access to a hoster-owned e2ee share and mint its invite.
+async fn invite(
+    state: &AppState,
+    share: &ShareState,
+    id: &str,
+    body: Option<&Value>,
+) -> Result<Value, ApiError> {
+    let dir = share.share_dir().to_path_buf();
+    ensure_e2ee_hosted(&dir, id)?;
+    let code = body
+        .and_then(|b| b.get("member_code"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::new(422, "missing `member_code` in body"))?;
+    if code.is_empty()
+        || code.len() % 2 != 0
+        || !code.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err(ApiError::new(422, "`member_code` must be lowercase hex"));
+    }
+    let role_s = body
+        .and_then(|b| b.get("role"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::new(422, "missing `role` in body"))?;
+    let role = match role_s {
+        "editor" => Role::Edit,
+        "viewer" => Role::Read,
+        _ => return Err(ApiError::new(422, "role must be \"editor\" or \"viewer\"")),
+    };
+    let name = body
+        .and_then(|b| b.get("name"))
+        .and_then(Value::as_str)
+        .map(String::from);
+    let node = live_node(share).await?;
+    let _lock = share.lock_writes(id).await;
+    // A concurrent unpublish may have parked the doc between the entry check and the lock.
+    ensure_e2ee_hosted(&dir, id)?;
+    let (member, invite) = match e2ee_timeout(node.invite_member(id, code, role), "invite").await {
+        Err(e) if e.detail.contains("different role") => {
+            return Err(ApiError::new(
+                409,
+                "member already holds a different role; revoke them first, then re-invite",
+            ))
+        }
+        other => other?,
+    };
+    // Keyhive accepted the grant, so a sidecar entry disagreeing on role is
+    // stale — overwritten below, never a post-grant 409.
+    let hex = member_id_hex(&member);
+    let mut list = load_members(&dir, id);
+    let was_active = list.iter().any(|m| m.member_id_hex == hex && !m.revoked);
+    // Blobs stored before this grant are keyed to a pre-grant epoch: re-store
+    // them under the post-grant epoch and republish. The grant already
+    // happened, so a re-key failure must not abort the invite — the interval
+    // hoster leg re-runs population on its next pass.
+    let mut sp = linxiv_share::load(&e2ee_dir(&dir), id).map_err(fetch_error)?;
+    if sp.papers.iter().any(|p| p.pdf_blob.is_some()) {
+        match share_sync::populate_pdf_blobs(state, &node, &dir, &mut sp, true).await {
+            Ok(()) => e2ee_timeout(node.publish_secure(&sp), "secure publish").await?,
+            Err(e) => eprintln!("share {id}: blob re-key after invite: {e}"),
+        }
+    }
+    if let Some(m) = list.iter_mut().find(|m| m.member_id_hex == hex) {
+        m.role = role_s.into();
+        m.name = name;
+        m.revoked = false;
+    } else {
+        list.push(MemberEntry {
+            member_id_hex: hex,
+            name,
+            role: role_s.into(),
+            invited_at: chrono::Utc::now().to_rfc3339(),
+            revoked: false,
+        });
+    }
+    if let Err(e) = save_members(&dir, id, &list) {
+        if !was_active {
+            // Undo the fresh grant the sidecar failed to record.
+            let _ = e2ee_timeout(node.revoke(id, member), "revoke").await;
+        }
+        return Err(ApiError::new(
+            500,
+            format!("could not persist members sidecar: {e}"),
+        ));
+    }
+    Ok(json!({ "invite": invite }))
+}
+
+/// `GET /api/share/{id}/members` — the sidecar list, with a live `query_role`
+/// truth-check per invited entry (no role after having been invited = revoked).
+async fn members(share: &ShareState, id: &str) -> Result<Value, ApiError> {
+    let dir = share.share_dir().to_path_buf();
+    ensure_e2ee_hosted(&dir, id)?;
+    let node = share.node().await;
+    let mut out = Vec::new();
+    for m in load_members(&dir, id) {
+        let mut revoked = m.revoked;
+        let mut verified = m.role == "hoster";
+        if !revoked && m.role != "hoster" {
+            if let (Some(node), Some(mid)) = (&node, member_id_from_hex(&m.member_id_hex)) {
+                if let Ok(role) = e2ee_timeout(node.query_role(id, mid), "member query").await {
+                    revoked = role.is_none();
+                    verified = true;
+                }
+            }
+        }
+        out.push(json!({
+            "member_id": m.member_id_hex,
+            "name": m.name,
+            "role": m.role,
+            "invited_at": m.invited_at,
+            "revoked": revoked,
+            "verified": verified,
+        }));
+    }
+    Ok(json!({ "members": out }))
+}
+
+/// `POST /api/share/{id}/revoke {member_id}` — revoke a member (the project key
+/// rotates) and mark the sidecar entry.
+async fn revoke_member(
+    share: &ShareState,
+    id: &str,
+    body: Option<&Value>,
+) -> Result<Value, ApiError> {
+    let dir = share.share_dir().to_path_buf();
+    ensure_e2ee_hosted(&dir, id)?;
+    let hex = body
+        .and_then(|b| b.get("member_id"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::new(422, "missing `member_id` in body"))?;
+    let mid = member_id_from_hex(hex).ok_or_else(|| ApiError::new(422, "malformed `member_id`"))?;
+    let node = live_node(share).await?;
+    if node.self_member_id().map(|s| s == mid).unwrap_or(false) {
+        return Err(ApiError::new(409, "cannot revoke yourself as host"));
+    }
+    let canon_hex = member_id_hex(&mid);
+    if load_members(&dir, id)
+        .iter()
+        .any(|m| m.member_id_hex == canon_hex && m.role == "hoster")
+    {
+        return Err(ApiError::new(409, "cannot revoke the host"));
+    }
+    let _lock = share.lock_writes(id).await;
+    e2ee_timeout(node.revoke(id, mid), "revoke").await?;
+    let mut list = load_members(&dir, id);
+    for m in list.iter_mut().filter(|m| m.member_id_hex == canon_hex) {
+        m.revoked = true;
+    }
+    if let Err(e) = save_members(&dir, id, &list) {
+        eprintln!("share {id}: could not persist members sidecar: {e}");
+    }
+    Ok(json!({ "revoked": true }))
+}
+
+/// `POST /api/share/{id}/pdf {source_id}` — fetch + decrypt a received e2ee
+/// share's PDF blob and save it to the managed PDF dir, under the same
+/// `pdf_save_limit_mb` total-storage cap the downloader/import paths enforce.
+async fn shared_pdf(
+    state: &AppState,
+    share: &ShareState,
+    id: &str,
+    body: Option<&Value>,
+) -> Result<Value, ApiError> {
+    let source_id = body
+        .and_then(|b| b.get("source_id"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::new(422, "missing `source_id` in body"))?
+        .to_string();
+    let sp = ShareNode::e2ee_received(share.share_dir(), id)?;
+    let paper = sp
+        .papers
+        .iter()
+        .find(|p| p.source_id == source_id)
+        .ok_or_else(|| ApiError::new(404, format!("paper {source_id:?} not in share")))?;
+    let ticket = paper
+        .pdf_blob
+        .clone()
+        .ok_or_else(|| ApiError::new(404, "no PDF shared for this paper"))?;
+    let version = paper.version;
+    let pdf_dir = state.pdf_dir.clone();
+    let dest = pdf_dir.join(pdf_on_disk_name(&source_id, version));
+    // The paper row only exists once the share has been imported; the
+    // crash-recovery re-register below needs it too.
+    let row_exists = state
+        .with_conn(|c| {
+            paper_svc::get(
+                c,
+                &paper_svc::Paper {
+                    source_id: Some(source_id.clone()),
+                    version: Some(version),
+                    ..Default::default()
+                },
+            )
+        })?
+        .is_some();
+    if !row_exists {
+        return Err(ApiError::new(
+            409,
+            "import the share before downloading PDFs",
+        ));
+    }
+    if dest.is_file() {
+        let path = dest.to_string_lossy().into_owned();
+        // Re-registers a file left by a crash between rename and mark.
+        state.with_conn(|c| paper_svc::mark_pdf_saved(c, &source_id, &path, version))?;
+        return Ok(json!({ "source_id": source_id, "version": version, "path": path }));
+    }
+    let node = live_node(share).await?;
+    // Remaining pdf quota caps the transport fetch (413 past it).
+    let max = config::UserSettings::load()?.pdf_save_limit_bytes();
+    let remaining = max.saturating_sub(linxiv_core::service::files::pdf_storage_bytes(&pdf_dir));
+    let bytes = tokio::time::timeout(
+        SHARE_NET_TIMEOUT * 2,
+        node.read_pdf_blob(id, &ticket, remaining),
+    )
+    .await
+    .map_err(|_| ApiError::new(504, "shared PDF fetch timed out"))??;
+    let _lock = share.lock_writes(id).await;
+    let mut wrote = false;
+    if !dest.is_file() {
+        paper_import::check_pdf_storage_quota(&pdf_dir, bytes.len(), max)?;
+        let write = || -> std::io::Result<()> {
+            std::fs::create_dir_all(&pdf_dir)?;
+            let tmp = dest.with_extension(format!("pdf.{id}.tmp"));
+            std::fs::write(&tmp, &bytes)?;
+            std::fs::rename(&tmp, &dest)
+        };
+        write().map_err(|e| ApiError::new(500, format!("could not save shared PDF: {e}")))?;
+        wrote = true;
+    }
+    let path = dest.to_string_lossy().into_owned();
+    if let Err(e) = state.with_conn(|c| paper_svc::mark_pdf_saved(c, &source_id, &path, version)) {
+        // Only clean up a file this request wrote, not one a concurrent request saved.
+        if wrote {
+            std::fs::remove_file(&dest).ok();
+        }
+        return Err(ApiError::new(500, e.to_string()));
+    }
+    Ok(json!({ "source_id": source_id, "version": version, "path": path }))
 }
 
 #[cfg(test)]
@@ -648,6 +1191,7 @@ mod tests {
                 summary: "s".into(),
                 authors: vec!["Zed".into()],
                 tags: vec!["remote-tag".into()],
+                pdf_blob: None,
             }],
             notes: vec![linxiv_share::SharedNote {
                 uuid: "11111111-1111-4111-8111-111111111111".into(),
@@ -846,5 +1390,173 @@ mod tests {
 
         b.shutdown().await.unwrap();
         share.shutdown().await.unwrap();
+    }
+
+    // ── W4: e2ee arms ────────────────────────────────────────────────────────
+
+    // Keyhive/BeeKEM ops are slow in debug builds; generous per-op budget.
+    async fn slow<T>(fut: impl std::future::Future<Output = T>) -> T {
+        tokio::time::timeout(Duration::from_secs(60), fut)
+            .await
+            .expect("e2ee op should not hang on loopback")
+    }
+
+    #[test]
+    fn members_sidecar_corruption_is_empty_list() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(load_members(dir.path(), "s-1").is_empty());
+        std::fs::create_dir_all(dir.path().join("members")).unwrap();
+        std::fs::write(members_path(dir.path(), "s-1"), b"{ not json").unwrap();
+        assert!(load_members(dir.path(), "s-1").is_empty());
+    }
+
+    #[tokio::test]
+    async fn join_garbage_is_400_with_both_parse_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let share = ShareState::new(dir.path());
+        let err = join(&share, Some(&json!({ "ticket": "garbage" })))
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, 400);
+        assert!(
+            err.detail.contains("not a share ticket or invite"),
+            "{}",
+            err.detail
+        );
+    }
+
+    #[tokio::test]
+    async fn shared_pdf_without_blob_is_404() {
+        let state = empty_state();
+        let dir = tempfile::tempdir().unwrap();
+        let share = ShareState::new(dir.path());
+        save(&e2ee_received_dir(dir.path()), &remote_shared(SID, "b")).unwrap();
+
+        let body = json!({ "source_id": "arxiv:9" });
+        let err = shared_pdf(&state, &share, SID, Some(&body))
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, 404);
+        assert!(err.detail.contains("no PDF"), "{}", err.detail);
+
+        let body = json!({ "source_id": "nope" });
+        let err = shared_pdf(&state, &share, SID, Some(&body))
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, 404);
+    }
+
+    // Full e2ee arm flow over loopback: publish_secure (storing the PDF blob),
+    // invite, join-by-invite through the shared join arm, members truth-check,
+    // shared_pdf save on the reader, revoke.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn e2ee_arms_roundtrip_over_loopback() {
+        let a_dir = tempfile::tempdir().unwrap();
+        let b_dir = tempfile::tempdir().unwrap();
+        let a_pdf = tempfile::tempdir().unwrap();
+        let b_pdf = tempfile::tempdir().unwrap();
+
+        // A's canonical project: one paper whose managed PDF is on disk.
+        let mut conn = storage::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        let pid = linxiv_share::import_shared_project(&mut conn, &remote_shared(SID, "b")).unwrap();
+        let state_a = AppState::from_parts(conn, a_pdf.path().to_path_buf(), std::env::temp_dir());
+        let pdf_bytes = b"%PDF-1.7 shared".to_vec();
+        std::fs::write(
+            a_pdf.path().join(pdf_on_disk_name("arxiv:9", 1)),
+            &pdf_bytes,
+        )
+        .unwrap();
+        let mut conn_b = storage::open_in_memory().unwrap();
+        storage::init_db(&conn_b).unwrap();
+        // B's row for the shared paper, as `join` + import would leave it, so the
+        // download gate in `shared_pdf` finds it.
+        linxiv_share::import_shared_project(&mut conn_b, &remote_shared(SID, "b")).unwrap();
+        let state_b =
+            AppState::from_parts(conn_b, b_pdf.path().to_path_buf(), std::env::temp_dir());
+
+        let node_a = ShareNode::bind_offline(a_dir.path(), &a_dir.path().join("p2p"))
+            .await
+            .unwrap();
+        let node_b = ShareNode::bind_offline(b_dir.path(), &b_dir.path().join("p2p"))
+            .await
+            .unwrap();
+        let share_a = ShareState::with_node(a_dir.path(), node_a);
+        let share_b = ShareState::with_node(b_dir.path(), node_b);
+
+        // publish_secure: e2ee doc with the blob ticket + hoster sidecar entry.
+        let resp = slow(publish_secure(&state_a, &share_a, &pid.to_string()))
+            .await
+            .unwrap();
+        assert_eq!(resp["share_id"], json!(SID));
+        assert_eq!(resp["e2ee"], json!(true));
+        let doc = linxiv_share::load(&linxiv_share::e2ee_dir(a_dir.path()), SID).unwrap();
+        assert!(doc.papers[0].pdf_blob.is_some(), "pdf blob ticket stored");
+        let sidecar = load_members(a_dir.path(), SID);
+        assert_eq!(sidecar.len(), 1);
+        assert_eq!(sidecar[0].role, "hoster");
+
+        // Summary carries the e2ee flag + member_count (invited members only,
+        // hoster excluded).
+        let listed = list_shared(&state_a, &share_a).unwrap();
+        let entry = &listed["shared_projects"][0];
+        assert_eq!(entry["e2ee"], json!(true));
+        assert_eq!(entry["member_count"], json!(0));
+
+        // Invite B as viewer using B's member code.
+        let code = member_code(&share_b).await.unwrap()["code"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let body = json!({ "member_code": code, "role": "viewer", "name": "Bee" });
+        let inv = slow(invite(&state_a, &share_a, SID, Some(&body)))
+            .await
+            .unwrap()["invite"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // B pastes the invite into the SAME join arm the plain flow uses.
+        let joined = slow(join(&share_b, Some(&json!({ "ticket": inv }))))
+            .await
+            .unwrap();
+        assert_eq!(joined["share_id"], json!(SID));
+        assert_eq!(joined["e2ee"], json!(true));
+
+        // members: hoster + live-checked viewer.
+        let m = slow(members(&share_a, SID)).await.unwrap();
+        let list = m["members"].as_array().unwrap().clone();
+        assert_eq!(list.len(), 2);
+        let viewer = list.iter().find(|m| m["role"] == json!("viewer")).unwrap();
+        assert_eq!(viewer["name"], json!("Bee"));
+        assert_eq!(viewer["revoked"], json!(false));
+        let member_id = viewer["member_id"].as_str().unwrap().to_string();
+
+        // B saves the shared PDF through the cap-checked path.
+        let body = json!({ "source_id": "arxiv:9" });
+        let saved = slow(shared_pdf(&state_b, &share_b, SID, Some(&body)))
+            .await
+            .unwrap();
+        let path = saved["path"].as_str().unwrap();
+        assert_eq!(std::fs::read(path).unwrap(), pdf_bytes);
+        assert!(path.starts_with(b_pdf.path().to_str().unwrap()));
+
+        // Revoke the viewer; the members list reports it.
+        let body = json!({ "member_id": member_id });
+        slow(revoke_member(&share_a, SID, Some(&body)))
+            .await
+            .unwrap();
+        let m = slow(members(&share_a, SID)).await.unwrap();
+        let viewer = m["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["role"] == json!("viewer"))
+            .unwrap()
+            .clone();
+        assert_eq!(viewer["revoked"], json!(true));
+
+        share_a.shutdown().await.unwrap();
+        share_b.shutdown().await.unwrap();
     }
 }

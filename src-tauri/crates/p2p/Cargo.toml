@@ -35,7 +35,10 @@ beekem = { version = "0.3.0", optional = true }
 # sync-beelay: EXACT pin — a bare "beelay-core" resolves to a 0.0.1 placeholder.
 beelay-core = { version = "=0.1.0-alpha.1", optional = true }
 blake3 = { version = "1", optional = true }
-iroh-blobs = { version = "0.103.0", optional = true, default-features = false }
+# vendor-edit: fs-store for disk-backed blobs (BeelayNode data_dir).
+iroh-blobs = { version = "0.103.0", optional = true, default-features = false, features = [
+    "fs-store",
+] }
 ed25519-dalek = { version = "2", optional = true }
 future_form = { version = "0.3.1", optional = true }
 futures = { version = "0.3", optional = true }

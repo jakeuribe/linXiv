@@ -1,6 +1,6 @@
 //! linxiv-share — Phase-0 quarantined CRDT store for "shared projects".
 //!
-//! A shared project is a read-only snapshot of one canonical project's subgraph
+//! A plain shared project is a read-only snapshot of one canonical project's subgraph
 //! (project row + its papers/authors/tags + project notes + project tags), held
 //! as an automerge document so a later phase can sync it peer-to-peer.
 //! Publishing goes through core service APIs; its one canonical write is
@@ -12,7 +12,9 @@
 //! it as `config::data_dir()/share`. Phase 1 adds a one-way iroh transport (see
 //! `transport`) that serves every locally-published top-level doc to any peer
 //! that knows its id, quarantining `received/` mirrors via an existence-based
-//! access check. There is no per-share secret or capability in this phase.
+//! access check. Plain shares carry no per-share secret or capability.
+//! With the `sync-beelay` feature, e2ee shares live under `share/e2ee/` and
+//! sync over beelay with capability-based membership via keyhive.
 //!
 //! ## Import (reader leg)
 //! `import_shared_project` is a second, additive-only write path that merges a
@@ -39,6 +41,8 @@ use linxiv_core::service::{
 };
 
 pub use model::{SharedAnnotation, SharedNote, SharedPaper, SharedProject, SharedSummary};
+#[cfg(feature = "sync-beelay")]
+pub use transport::{e2ee_dir, e2ee_received_dir, E2eeSyncOutcome, MemberId, ProjectInvite, Role};
 pub use transport::{received_dir, valid_share_id, ShareNode, ShareTicket, ALPN};
 
 const SHARE_EXT: &str = "automerge";
@@ -85,6 +89,9 @@ pub enum ShareError {
     /// automerge / autosurgeon (de)serialization failures, flattened to a message.
     #[error("crdt error: {0}")]
     Crdt(String),
+    /// blob exceeds the byte cap.
+    #[error("too large: {0}")]
+    TooLarge(String),
 }
 
 pub type Result<T> = std::result::Result<T, ShareError>;
@@ -125,6 +132,7 @@ pub fn build_shared_project(conn: &Connection, project_id: i64) -> Result<Shared
             summary: p.summary.unwrap_or_default(),
             authors: p.authors,
             tags: p.tags,
+            pdf_blob: None,
         })
         .collect()
     };
@@ -554,6 +562,12 @@ pub fn list_shared(share_dir: &Path) -> Result<Vec<SharedSummary>> {
                 continue;
             }
         };
+        // Skip a doc whose hydrated id doesn't match its filename stem (e.g. a
+        // fresh pre-first-sync e2ee mirror hydrates to an empty share_id).
+        if sp.share_id != share_id {
+            tracing::warn!("share list: skipping mismatched doc {share_id}");
+            continue;
+        }
         out.push(SharedSummary {
             share_id: sp.share_id,
             name: sp.name,

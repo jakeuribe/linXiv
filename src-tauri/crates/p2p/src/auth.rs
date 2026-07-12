@@ -11,7 +11,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex as StdMutex},
 };
 
@@ -22,6 +22,7 @@ use futures::lock::Mutex as AsyncMutex;
 use iroh::EndpointId;
 use keyhive_core::{
     access::Access,
+    archive::Archive,
     contact_card::ContactCard,
     event::static_event::StaticEvent,
     keyhive::Keyhive,
@@ -258,9 +259,61 @@ type Kh = Keyhive<
 
 type DocHandle = Arc<AsyncMutex<Document<Sendable, MemorySigner, [u8; 32], NoListener>>>;
 
+// vendor-edit: like sync::write_key but overwrites any stale tmp left by a
+// crashed persist. Archives carry secret key material.
+// Returns the open handle so the caller can fsync before rename.
+#[cfg(unix)]
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<std::fs::File> {
+    use std::{io::Write as _, os::unix::fs::OpenOptionsExt as _};
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    f.write_all(bytes)?;
+    Ok(f)
+}
+
+#[cfg(not(unix))]
+fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<std::fs::File> {
+    use std::io::Write as _;
+    let mut f = std::fs::File::create(path)?;
+    f.write_all(bytes)?;
+    Ok(f)
+}
+
+#[cfg(unix)]
+fn fsync_dir(dir: &Path) -> std::io::Result<()> {
+    std::fs::File::open(dir)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn fsync_dir(_dir: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// Blocking tmp+rename+fsync of `bytes` to `dir/state.bin`; run off the async executor.
+fn write_state_file(dir: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = dir.join("state.bin.tmp");
+    write_private(&tmp, bytes).and_then(|f| f.sync_all())?;
+    std::fs::rename(&tmp, dir.join("state.bin"))?;
+    fsync_dir(dir)
+}
+
+/// First byte of state.bin; the postcard payload follows.
+const STATE_FORMAT_VERSION: u8 = 1;
+
+/// Combined archive + project registry, persisted as one file.
+#[derive(Serialize, Deserialize)]
+struct PersistedState {
+    archive: Archive<[u8; 32]>,
+    projects: Vec<(String, Option<[u8; 32]>, [u8; 32])>,
+}
+
 #[derive(Clone, Copy)]
 struct ProjectIds {
-    /// Membership group; `None` on adopters, who can't manage membership.
+    /// Membership group; `None` when the project was adopted without one.
     group: Option<GroupId>,
     doc: DocumentId,
 }
@@ -273,6 +326,10 @@ struct ProjectIds {
 pub struct ProjectAuth {
     keyhive: Kh,
     projects: StdMutex<HashMap<String, ProjectIds>>,
+    /// Set by [`Self::load_or_new`]; mutating ops write state back here.
+    persist_dir: Option<PathBuf>,
+    /// Serializes [`Self::persist`]'s snapshot+write.
+    persist_lock: AsyncMutex<()>,
 }
 
 impl std::fmt::Debug for ProjectAuth {
@@ -282,11 +339,9 @@ impl std::fmt::Debug for ProjectAuth {
 }
 
 impl ProjectAuth {
-    /// A fresh keyhive instance over the device's persistent auth identity.
+    /// A fresh in-memory keyhive instance over the device's persistent auth
+    /// identity; nothing survives drop. Use [`Self::load_or_new`] on devices.
     pub async fn new(identity: &AuthIdentity) -> Result<Self> {
-        // ponytail: in-memory state only — every restart replays membership via
-        // event exchange. Persist with into_archive/try_from_archive when
-        // offline-first startup matters.
         let keyhive = Kh::generate(
             identity.signer.clone(),
             MemoryCiphertextStore::new(),
@@ -298,7 +353,103 @@ impl ProjectAuth {
         Ok(Self {
             keyhive,
             projects: StdMutex::new(HashMap::new()),
+            persist_dir: None,
+            persist_lock: AsyncMutex::new(()),
         })
+    }
+
+    // vendor-edit: keyhive state persistence (archive + project registry).
+
+    /// Restores state persisted under `dir` (starting fresh if the state
+    /// file is absent) and auto-persists there after every mutating op.
+    /// An undecodable state file is an error.
+    pub async fn load_or_new(identity: &AuthIdentity, dir: &Path) -> Result<Self> {
+        let state_path = dir.join("state.bin");
+        if !state_path.exists() {
+            std::fs::create_dir_all(dir).map_err(|e| anyerr!("creating {dir:?}: {e}"))?;
+            let mut auth = Self::new(identity).await?;
+            auth.persist_dir = Some(dir.to_owned());
+            return Ok(auth);
+        }
+        let bytes =
+            std::fs::read(&state_path).map_err(|e| anyerr!("reading keyhive state: {e}"))?;
+        let payload = match bytes.split_first() {
+            Some((&STATE_FORMAT_VERSION, rest)) => rest,
+            _ => return Err(anyerr!("unknown state.bin format version")),
+        };
+        let state: PersistedState =
+            postcard::from_bytes(payload).map_err(|e| anyerr!("malformed keyhive state: {e}"))?;
+        // The ciphertext store is not archived; a fresh one is passed here.
+        let keyhive = Kh::try_from_archive(
+            &state.archive,
+            identity.signer.clone(),
+            MemoryCiphertextStore::new(),
+            NoListener,
+            Arc::new(AsyncMutex::new(OsRng)),
+        )
+        .await
+        .map_err(|e| anyerr!("restoring keyhive archive: {e}"))?;
+        let mut projects = HashMap::new();
+        for (id, group, doc) in state.projects {
+            projects.insert(
+                id,
+                ProjectIds {
+                    group: match group {
+                        Some(g) => Some(GroupId::new(MemberId(g).identifier()?)),
+                        None => None,
+                    },
+                    doc: DocumentId::from(MemberId(doc).identifier()?),
+                },
+            );
+        }
+        Ok(Self {
+            keyhive,
+            projects: StdMutex::new(projects),
+            persist_dir: Some(dir.to_owned()),
+            persist_lock: AsyncMutex::new(()),
+        })
+    }
+
+    /// Writes state.bin under the [`Self::load_or_new`] dir via tmp+rename,
+    /// fsyncing the tmp file before rename and the parent dir after;
+    /// no-op for in-memory instances.
+    async fn persist(&self) -> Result<()> {
+        let Some(dir) = &self.persist_dir else {
+            return Ok(());
+        };
+        let _guard = self.persist_lock.lock().await;
+        // ponytail: whole-state rewrite per mutation; incremental event log
+        // if archive size ever matters.
+        let state = PersistedState {
+            archive: self.keyhive.into_archive().await,
+            projects: self
+                .projects
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(id, p)| (id.clone(), p.group.map(|g| g.to_bytes()), p.doc.to_bytes()))
+                .collect(),
+        };
+        let mut bytes = vec![STATE_FORMAT_VERSION];
+        bytes.extend(
+            postcard::to_stdvec(&state).map_err(|e| anyerr!("encoding keyhive state: {e}"))?,
+        );
+        // Bounded retries: a transient write failure here would otherwise leave
+        // in-memory state (e.g. post-revoke key rotation) mutated but unpersisted.
+        let mut last_err = None;
+        for attempt in 1..=3u32 {
+            let dir = dir.clone();
+            let bytes = bytes.clone();
+            match tokio::task::spawn_blocking(move || write_state_file(&dir, &bytes)).await {
+                Ok(Ok(())) => return Ok(()),
+                Ok(Err(e)) => last_err = Some(anyerr!("writing state.bin: {e}")),
+                Err(e) => last_err = Some(anyerr!("persist task panicked: {e}")),
+            }
+            if attempt < 3 {
+                tokio::time::sleep(std::time::Duration::from_millis(50 * attempt as u64)).await;
+            }
+        }
+        Err(last_err.expect("loop always sets last_err before exiting"))
     }
 
     /// This device's keyhive member id.
@@ -308,11 +459,7 @@ impl ProjectAuth {
 
     /// Serializable card other devices ingest to learn this identity.
     pub async fn contact_card(&self) -> Result<Vec<u8>> {
-        let card = self
-            .keyhive
-            .contact_card()
-            .await
-            .map_err(|e| anyerr!("creating contact card: {e}"))?;
+        let card = self.keyhive.get_existing_contact_card().await;
         postcard::to_stdvec(&card).map_err(|e| anyerr!("encoding contact card: {e}"))
     }
 
@@ -325,34 +472,65 @@ impl ProjectAuth {
             .receive_contact_card(&card)
             .await
             .map_err(|e| anyerr!("ingesting contact card: {e}"))?;
+        self.persist().await?;
         Ok(MemberId(card.id().to_bytes()))
     }
 
     /// Creates the capability group + encrypted doc for a new project this
     /// device hosts. This device becomes the group's admin.
+    /// Requires a multi-thread tokio runtime (uses `block_in_place`).
     pub async fn create_project(&self, project_id: &str) -> Result<()> {
         if self.projects.lock().unwrap().contains_key(project_id) {
             return Err(anyerr!("project {project_id} already exists"));
         }
-        let group = self
-            .keyhive
-            .generate_group(vec![])
-            .await
-            .map_err(|e| anyerr!("creating project group: {e}"))?;
-        let group_id = { group.lock().await.group_id() };
-        let doc = self
-            .keyhive
-            .generate_doc(vec![Peer::Group(group_id, group)], nonempty![[0u8; 32]])
-            .await
-            .map_err(|e| anyerr!("creating project doc: {e}"))?;
-        let doc_id = { doc.lock().await.doc_id() };
-        self.projects.lock().unwrap().insert(
-            project_id.to_owned(),
-            ProjectIds {
-                group: Some(group_id),
-                doc: doc_id,
-            },
-        );
+        // Keyhive's group/doc generation signs with an ephemeral
+        // `Box<dyn SyncSignerBasic>` (no `Send` bound upstream), so its future
+        // is `!Send` despite the `Sendable` form. Run it to completion on a
+        // scoped thread so this method's future stays `Send`.
+        let (group_id, doc_id) = tokio::task::block_in_place(|| {
+            std::thread::scope(|s| {
+                s.spawn(|| {
+                    futures::executor::block_on(async {
+                        let group = self
+                            .keyhive
+                            .generate_group(vec![])
+                            .await
+                            .map_err(|e| anyerr!("creating project group: {e}"))?;
+                        let group_id = { group.lock().await.group_id() };
+                        let doc = self
+                            .keyhive
+                            .generate_doc(vec![Peer::Group(group_id, group)], nonempty![[0u8; 32]])
+                            .await
+                            .map_err(|e| anyerr!("creating project doc: {e}"))?;
+                        let doc_id = { doc.lock().await.doc_id() };
+                        Ok::<_, n0_error::AnyError>((group_id, doc_id))
+                    })
+                })
+                .join()
+                .expect("keyhive generate thread panicked")
+            })
+        })?;
+        {
+            // Lock was dropped during keyhive generation; re-check before insert.
+            let mut projects = self.projects.lock().unwrap();
+            if projects.contains_key(project_id) {
+                return Err(anyerr!("project {project_id} already exists"));
+            }
+            projects.insert(
+                project_id.to_owned(),
+                ProjectIds {
+                    group: Some(group_id),
+                    doc: doc_id,
+                },
+            );
+        }
+        if let Err(e) = self.persist().await {
+            self.projects.lock().unwrap().remove(project_id);
+            eprintln!(
+                "create_project: {project_id} group/doc now orphaned in the keyhive archive (no delete API): {e}"
+            );
+            return Err(e);
+        }
         Ok(())
     }
 
@@ -366,29 +544,61 @@ impl ProjectAuth {
             .map(|p| p.doc.to_bytes())
     }
 
+    /// The project's membership group id, for invites — `None` for unknown
+    /// projects or ones adopted without a group.
+    pub fn group_id(&self, project_id: &str) -> Option<[u8; 32]> {
+        self.projects
+            .lock()
+            .unwrap()
+            .get(project_id)
+            .and_then(|p| p.group.map(|g| g.to_bytes()))
+    }
+
+    /// All project ids this device knows (has created or adopted).
+    pub fn known_project_ids(&self) -> Vec<String> {
+        self.projects.lock().unwrap().keys().cloned().collect()
+    }
+
     /// Maps `project_id` onto a doc learned via [`Self::ingest_events`]
     /// (from an invite). Fails if the doc's events haven't been ingested yet.
-    pub async fn adopt_project(&self, project_id: &str, doc_id: [u8; 32]) -> Result<()> {
-        let vk = VerifyingKey::from_bytes(&doc_id)
-            .map_err(|e| anyerr!("doc id is not a valid identifier: {e}"))?;
-        let doc_id = DocumentId::from(Identifier::from(vk));
+    /// With the host's [`Self::group_id`], membership management works here
+    /// too (subject to keyhive's own delegation rules).
+    pub async fn adopt_project(
+        &self,
+        project_id: &str,
+        doc_id: [u8; 32],
+        group_id: Option<[u8; 32]>,
+    ) -> Result<()> {
+        let doc_id = DocumentId::from(MemberId(doc_id).identifier()?);
         if self.keyhive.get_document(doc_id).await.is_none() {
             return Err(anyerr!(
                 "unknown doc for project {project_id}; ingest the invite events first"
             ));
         }
-        // atomic check-and-insert: never silently remap an existing project.
-        let mut projects = self.projects.lock().unwrap();
-        if projects.contains_key(project_id) {
-            return Err(anyerr!("project {project_id} already exists"));
+        let group = match group_id {
+            Some(g) => {
+                let group_id = GroupId::new(MemberId(g).identifier()?);
+                if self.keyhive.get_group(group_id).await.is_none() {
+                    return Err(anyerr!(
+                        "unknown group for project {project_id}; ingest the invite events first"
+                    ));
+                }
+                Some(group_id)
+            }
+            None => None,
+        };
+        {
+            // atomic check-and-insert.
+            let mut projects = self.projects.lock().unwrap();
+            if projects.contains_key(project_id) {
+                return Err(anyerr!("project {project_id} already exists"));
+            }
+            projects.insert(project_id.to_owned(), ProjectIds { group, doc: doc_id });
         }
-        projects.insert(
-            project_id.to_owned(),
-            ProjectIds {
-                group: None,
-                doc: doc_id,
-            },
-        );
+        if let Err(e) = self.persist().await {
+            self.projects.lock().unwrap().remove(project_id);
+            return Err(e);
+        }
         Ok(())
     }
 
@@ -438,6 +648,7 @@ impl ProjectAuth {
             .add_member(agent, &group, role.into(), &[])
             .await
             .map_err(|e| anyerr!("adding member: {e}"))?;
+        self.persist().await?;
         Ok(())
     }
 
@@ -455,6 +666,12 @@ impl ProjectAuth {
             .force_pcs_update(doc)
             .await
             .map_err(|e| anyerr!("rotating project key: {e}"))?;
+        if let Err(e) = self.persist().await {
+            eprintln!(
+                "revoke_member: key rotation for {project_id} is live in-memory but not yet durable: {e}"
+            );
+            return Err(e);
+        }
         Ok(())
     }
 
@@ -481,6 +698,9 @@ impl ProjectAuth {
             .try_encrypt_content(doc, &content_ref, &vec![], content)
             .await
             .map_err(|e| anyerr!("encrypting content: {e}"))?;
+        // encryption can mint CGKA ops; without them archived, this ciphertext
+        // is undecryptable after a restart.
+        self.persist().await?;
         postcard::to_stdvec(sealed.encrypted_content())
             .map_err(|e| anyerr!("encoding sealed content: {e}"))
     }
@@ -542,6 +762,7 @@ impl ProjectAuth {
                 stuck.len()
             ));
         }
+        self.persist().await?;
         Ok(())
     }
 

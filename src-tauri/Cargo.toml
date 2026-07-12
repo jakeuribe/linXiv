@@ -26,10 +26,6 @@ path = "src/main.rs"
 name = "linxiv-dev-server"
 path = "src/bin/dev_server.rs"
 
-[features]
-auth-keyhive = ["linxiv-share/auth-keyhive"]
-sync-beelay = ["linxiv-share/sync-beelay"]
-
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -52,7 +48,7 @@ axum = "0.8"
 linxiv-core = { path = "crates/core" }
 # Phase-0 quarantined CRDT "shared projects" store, reached via the `share_api`
 # command. Reads canonical via linxiv-core; its own docs live under the share dir.
-linxiv-share = { path = "crates/share" }
+linxiv-share = { path = "crates/share", features = ["auth-keyhive", "sync-beelay"] }
 rusqlite = "0.40"
 anyhow = "1"
 # Date parse/format parity with core's NaiveDate fields in router arms.

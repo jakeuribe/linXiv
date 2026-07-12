@@ -13,6 +13,8 @@ use automerge::Automerge;
 use linxiv_p2p::sync::JoinError;
 use linxiv_p2p::DeviceIdentity;
 
+#[cfg(feature = "sync-beelay")]
+pub use linxiv_p2p::{MemberId, ProjectInvite, Role};
 pub use linxiv_p2p::{ShareTicket, ALPN};
 
 use crate::{load, save, ShareError, SharedProject};
@@ -20,6 +22,8 @@ pub use linxiv_core::service::export_import::valid_share_id;
 
 const RECEIVED_SUBDIR: &str = "received";
 const DEVICE_KEY_FILE: &str = "device.key";
+#[cfg(feature = "sync-beelay")]
+const E2EE_SUBDIR: &str = "e2ee";
 
 type Result<T> = std::result::Result<T, ShareError>;
 
@@ -32,11 +36,77 @@ pub fn received_dir(share_dir: &Path) -> PathBuf {
     share_dir.join(RECEIVED_SUBDIR)
 }
 
+/// Hoster-published e2ee docs: `share_dir/e2ee/<id>.automerge`.
+#[cfg(feature = "sync-beelay")]
+pub fn e2ee_dir(share_dir: &Path) -> PathBuf {
+    share_dir.join(E2EE_SUBDIR)
+}
+
+/// Reader mirrors of e2ee shares: `share_dir/e2ee/received/<id>.automerge`.
+#[cfg(feature = "sync-beelay")]
+pub fn e2ee_received_dir(share_dir: &Path) -> PathBuf {
+    e2ee_dir(share_dir).join(RECEIVED_SUBDIR)
+}
+
+/// What one [`ShareNode::sync_e2ee`] changed locally.
+#[cfg(feature = "sync-beelay")]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct E2eeSyncOutcome {
+    /// Decrypted changes newly applied to the local doc.
+    pub applied: usize,
+    /// Commits with no key for their epoch: revoked, or not yet keyed.
+    pub no_key: usize,
+    /// Commits that failed to decrypt for any other reason.
+    pub failed: usize,
+}
+
+#[cfg(feature = "sync-beelay")]
+impl From<linxiv_p2p::SyncOutcome> for E2eeSyncOutcome {
+    fn from(o: linxiv_p2p::SyncOutcome) -> Self {
+        use linxiv_p2p::DecryptError;
+        let no_key = o
+            .undecryptable
+            .iter()
+            .filter(|e| matches!(e, DecryptError::KeyNotFound))
+            .count();
+        Self {
+            applied: o.applied,
+            no_key,
+            failed: o.undecryptable.len() - no_key,
+        }
+    }
+}
+
+/// Raw doc bytes to `dir/<share_id>.automerge` via tmp+rename (mirror writes
+/// preserve remote CRDT history byte-for-byte, unlike `save`'s reconcile).
+#[cfg(feature = "sync-beelay")]
+fn write_doc_bytes(dir: &Path, share_id: &str, bytes: Vec<u8>) -> Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let tmp = dir.join(format!("{share_id}.automerge.tmp"));
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, super::doc_path(dir, share_id))?;
+    Ok(())
+}
+
+#[cfg(feature = "sync-beelay")]
+fn decode_hex(s: &str) -> Option<Vec<u8>> {
+    if !s.is_ascii() || !s.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect()
+}
+
 /// Owns the p2p node for the share ALPN. One node both serves its own published
 /// docs (via [`ShareNode::ticket`]) and fetches others' (via [`ShareNode::fetch`]).
 pub struct ShareNode {
     inner: linxiv_p2p::ShareNode,
     share_dir: PathBuf,
+    // None when the keyhive auth state failed to load.
+    #[cfg(feature = "sync-beelay")]
+    beelay: Option<linxiv_p2p::BeelayNode>,
 }
 
 impl ShareNode {
@@ -55,13 +125,16 @@ impl ShareNode {
     async fn bind_inner(share_dir: PathBuf, p2p_dir: &Path, offline: bool) -> Result<Self> {
         std::fs::create_dir_all(p2p_dir)?;
         let identity = DeviceIdentity::load_or_generate(p2p_dir.join(DEVICE_KEY_FILE))?;
-        let inner = if offline {
-            linxiv_p2p::ShareNode::bind_local(&identity).await
-        } else {
-            linxiv_p2p::ShareNode::bind(&identity).await
-        }
-        .map_err(net)?;
-        let node = Self { inner, share_dir };
+        #[cfg(feature = "sync-beelay")]
+        let (inner, beelay) = Self::bind_stack(&identity, p2p_dir, offline).await?;
+        #[cfg(not(feature = "sync-beelay"))]
+        let inner = Self::bind_plain(&identity, offline).await?;
+        let node = Self {
+            inner,
+            share_dir,
+            #[cfg(feature = "sync-beelay")]
+            beelay,
+        };
         // Serve only what is published at the top level of share_dir; received/
         // mirrors land in the p2p registry after a join.
         let allowed_dir = node.share_dir.clone();
@@ -70,6 +143,49 @@ impl ShareNode {
         }));
         node.register_published().await?;
         Ok(node)
+    }
+
+    async fn bind_plain(identity: &DeviceIdentity, offline: bool) -> Result<linxiv_p2p::ShareNode> {
+        if offline {
+            linxiv_p2p::ShareNode::bind_local(identity).await
+        } else {
+            linxiv_p2p::ShareNode::bind(identity).await
+        }
+        .map_err(net)
+    }
+
+    /// Plain sync + beelay + blobs on ONE endpoint. On a corrupt keyhive
+    /// state, falls back to a plain bind with no beelay node.
+    #[cfg(feature = "sync-beelay")]
+    async fn bind_stack(
+        identity: &DeviceIdentity,
+        p2p_dir: &Path,
+        offline: bool,
+    ) -> Result<(linxiv_p2p::ShareNode, Option<linxiv_p2p::BeelayNode>)> {
+        let auth_identity = linxiv_p2p::AuthIdentity::load_or_generate(p2p_dir.join("auth.key"))?;
+        let auth =
+            match linxiv_p2p::ProjectAuth::load_or_new(&auth_identity, &p2p_dir.join("keyhive"))
+                .await
+            {
+                Ok(auth) => auth,
+                Err(e) => {
+                    tracing::warn!("keyhive auth state failed to load, e2ee sharing disabled: {e}");
+                    return Ok((Self::bind_plain(identity, offline).await?, None));
+                }
+            };
+        let beelay_dir = p2p_dir.join("beelay");
+        let stack = if offline {
+            linxiv_p2p::bind_stack_local(identity, &auth_identity, auth, Some(&beelay_dir)).await
+        } else {
+            linxiv_p2p::bind_stack(identity, &auth_identity, auth, Some(&beelay_dir)).await
+        };
+        match stack {
+            Ok((inner, beelay)) => Ok((inner, Some(beelay))),
+            Err(e) => {
+                tracing::warn!("beelay/blob stack failed to bind, e2ee sharing disabled: {e}");
+                Ok((Self::bind_plain(identity, offline).await?, None))
+            }
+        }
     }
 
     /// Register every published doc (top-level `*.automerge` only). A corrupt
@@ -177,7 +293,291 @@ impl ShareNode {
     }
 
     pub async fn shutdown(&self) -> Result<()> {
-        self.inner.shutdown().await.map_err(net)
+        // Shared router under bind_stack.
+        #[cfg(feature = "sync-beelay")]
+        let beelay_res = match &self.beelay {
+            Some(beelay) => beelay.shutdown().await.map_err(net),
+            None => Ok(()),
+        };
+        let inner_res = self.inner.shutdown().await.map_err(net);
+        #[cfg(feature = "sync-beelay")]
+        beelay_res?;
+        inner_res
+    }
+}
+
+/// E2EE sharing over the beelay + keyhive stack. Docs live under
+/// `share_dir/e2ee` (hoster) and `share_dir/e2ee/received` (reader mirrors).
+#[cfg(feature = "sync-beelay")]
+impl ShareNode {
+    fn beelay(&self) -> Result<&linxiv_p2p::BeelayNode> {
+        self.beelay.as_ref().ok_or_else(|| {
+            ShareError::Transport(
+                "e2ee sharing unavailable: keyhive auth state failed to load".to_string(),
+            )
+        })
+    }
+
+    /// Publish (or republish) a project as an e2ee share: evolve the doc file
+    /// under `share_dir/e2ee`, then register it with (or merge it into) the
+    /// beelay engine. Content is encrypted lazily at invite/sync time.
+    pub async fn publish_secure(&self, sp: &SharedProject) -> Result<()> {
+        let beelay = self.beelay()?;
+        if !valid_share_id(&sp.share_id) {
+            return Err(ShareError::NotFound(sp.share_id.clone()));
+        }
+        let dir = e2ee_dir(&self.share_dir);
+        let sp_owned = sp.clone();
+        let mut doc = tokio::task::spawn_blocking(move || -> Result<Automerge> {
+            save(&dir, &sp_owned)?;
+            let bytes = std::fs::read(super::doc_path(&dir, &sp_owned.share_id))?;
+            Automerge::load(&bytes).map_err(super::crdt)
+        })
+        .await
+        .map_err(net)??;
+        if beelay.auth().doc_id(&sp.share_id).is_some() {
+            beelay
+                .with_doc(&sp.share_id, |d| d.merge(&mut doc).map(|_| ()))
+                .await
+                .ok_or_else(|| net("e2ee project missing from beelay registry"))?
+                .map_err(super::crdt)?;
+        } else {
+            beelay
+                .create_shared_project(&sp.share_id, doc)
+                .await
+                .map_err(net)?;
+        }
+        Ok(())
+    }
+
+    /// This device's own keyhive member id — how the hoster itself appears in
+    /// a members listing.
+    pub fn self_member_id(&self) -> Result<MemberId> {
+        Ok(self.beelay()?.auth().member_id())
+    }
+
+    /// This device's pasteable membership code (its keyhive contact card,
+    /// hex). Give it to a hoster so they can [`ShareNode::invite_member`] you.
+    pub async fn member_code(&self) -> Result<String> {
+        let card = self.beelay()?.auth().contact_card().await.map_err(net)?;
+        Ok(card.iter().map(|b| format!("{b:02x}")).collect())
+    }
+
+    /// Grant the device behind `member_code` `role` on an e2ee share, then
+    /// mint its pasteable invite. Returns the member id (keep it: it is the
+    /// handle for [`ShareNode::revoke`] / [`ShareNode::query_role`]) and the
+    /// invite string.
+    pub async fn invite_member(
+        &self,
+        share_id: &str,
+        member_code: &str,
+        role: Role,
+    ) -> Result<(MemberId, String)> {
+        if !valid_share_id(share_id) {
+            return Err(ShareError::NotFound(share_id.to_string()));
+        }
+        let beelay = self.beelay()?;
+        let card = decode_hex(member_code).ok_or_else(|| net("malformed member code"))?;
+        let member = beelay
+            .auth()
+            .receive_contact_card(&card)
+            .await
+            .map_err(net)?;
+        match beelay
+            .auth()
+            .query_access(share_id, member)
+            .await
+            .map_err(net)?
+        {
+            // Same role already granted: just re-mint the invite string.
+            Some(existing) if existing == role => {
+                return beelay
+                    .invite(share_id, member)
+                    .await
+                    .map(|invite| (member, invite))
+                    .map_err(net);
+            }
+            Some(_) => {
+                return Err(net("role conflict: member already holds a different role"));
+            }
+            None => {}
+        }
+        beelay
+            .auth()
+            .add_member(share_id, member, role)
+            .await
+            .map_err(net)?;
+        match beelay.invite(share_id, member).await {
+            Ok(invite) => Ok((member, invite)),
+            Err(e) => {
+                if let Err(re) = beelay.auth().revoke_member(share_id, member).await {
+                    let hex: String = member.0.iter().map(|b| format!("{b:02x}")).collect();
+                    tracing::warn!(
+                        "compensating revoke after failed invite also failed for member {hex}: {re}"
+                    );
+                    return Err(net(format!(
+                        "invite failed: {e}; compensating revoke of member {hex} also failed: {re}; revoke it manually"
+                    )));
+                }
+                Err(net(e))
+            }
+        }
+    }
+
+    /// The member's effective role on an e2ee share; `None` = no access.
+    pub async fn query_role(&self, share_id: &str, member: MemberId) -> Result<Option<Role>> {
+        if !valid_share_id(share_id) {
+            return Err(ShareError::NotFound(share_id.to_string()));
+        }
+        self.beelay()?
+            .auth()
+            .query_access(share_id, member)
+            .await
+            .map_err(net)
+    }
+
+    /// Revoke a member; the project key rotates (PCS).
+    pub async fn revoke(&self, share_id: &str, member: MemberId) -> Result<()> {
+        if !valid_share_id(share_id) {
+            return Err(ShareError::NotFound(share_id.to_string()));
+        }
+        self.beelay()?
+            .auth()
+            .revoke_member(share_id, member)
+            .await
+            .map_err(net)
+    }
+
+    /// Encrypt `bytes` under the share key and serve them as a blob; returns
+    /// a pasteable ticket. Storage caps are the caller's job — the blobs API
+    /// exposes no size before fetch, so enforce limits before persisting a
+    /// [`ShareNode::read_pdf_blob`] result.
+    pub async fn store_pdf_blob(&self, share_id: &str, bytes: &[u8]) -> Result<String> {
+        self.beelay()?
+            .store_blob(share_id, bytes)
+            .await
+            .map_err(net)
+    }
+
+    /// Read + decrypt a blob, fetching it from its host first when not local.
+    /// `max_bytes` bounds the transferred/decrypted size (caller's quota).
+    pub async fn read_pdf_blob(
+        &self,
+        share_id: &str,
+        ticket: &str,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>> {
+        use linxiv_p2p::beelay::BlobError;
+        let beelay = self.beelay()?;
+        let classify = |e: linxiv_p2p::AnyError| match e.downcast_ref::<BlobError>() {
+            Some(BlobError::Decrypt { .. }) => {
+                ShareError::NotFound("access revoked or removed".to_string())
+            }
+            Some(be @ BlobError::TooLarge) => ShareError::TooLarge(be.to_string()),
+            _ => net(e),
+        };
+        if beelay.has_blob(ticket).await {
+            return beelay
+                .read_blob(share_id, ticket, max_bytes)
+                .await
+                .map_err(classify);
+        }
+        beelay
+            .fetch_blob(ticket, max_bytes)
+            .await
+            .map_err(classify)?;
+        beelay
+            .read_blob(share_id, ticket, max_bytes)
+            .await
+            .map_err(classify)
+    }
+
+    /// Accept an e2ee invite: adopt the share, sync once, and mirror it under
+    /// `share_dir/e2ee/received`. Returns the share id.
+    pub async fn accept_invite(&self, invite: &str) -> Result<String> {
+        let beelay = self.beelay()?;
+        // The invite's project id feeds file paths below; reject unsafe ids
+        // before adopting anything.
+        let parsed: linxiv_p2p::ProjectInvite = invite.parse().map_err(net)?;
+        if !valid_share_id(parsed.project_id()) {
+            return Err(net(format!(
+                "invite share_id is unsafe: {:?}",
+                parsed.project_id()
+            )));
+        }
+        let share_id = beelay.accept_invite(invite).await.map_err(net)?;
+        // Persist the mirror before the first sync so the interval loop
+        // retries this share when that sync fails.
+        if let Some(doc) = beelay.doc(&share_id).await {
+            let dir = e2ee_received_dir(&self.share_dir);
+            let id = share_id.clone();
+            let bytes = doc.save();
+            tokio::task::spawn_blocking(move || write_doc_bytes(&dir, &id, bytes))
+                .await
+                .map_err(net)??;
+        }
+        self.sync_e2ee(&share_id).await?;
+        Ok(share_id)
+    }
+
+    /// Sync a received e2ee mirror and persist the refreshed doc under
+    /// `e2ee/received/`. A hosted share_id errors — hosted docs are updated
+    /// via [`ShareNode::publish_secure`] only. A host refusal (this device
+    /// was revoked or removed) surfaces as `NotFound`.
+    pub async fn sync_e2ee(&self, share_id: &str) -> Result<E2eeSyncOutcome> {
+        let beelay = self.beelay()?;
+        if !valid_share_id(share_id) {
+            return Err(ShareError::NotFound(share_id.to_string()));
+        }
+        if super::doc_path(&e2ee_dir(&self.share_dir), share_id).is_file() {
+            return Err(net(format!(
+                "sync_e2ee on hosted share {share_id}: hosted docs update via publish_secure"
+            )));
+        }
+        let outcome: E2eeSyncOutcome = beelay
+            .sync_project(share_id)
+            .await
+            .map_err(|e| match e {
+                JoinError::Refused => ShareError::NotFound("access revoked or removed".to_string()),
+                JoinError::Other(e) => net(e),
+            })?
+            .into();
+        let doc = beelay
+            .doc(share_id)
+            .await
+            .ok_or_else(|| net("synced doc missing from beelay registry"))?;
+        let sp: SharedProject = autosurgeon::hydrate(&doc).map_err(super::crdt)?;
+        // The doc-internal share_id is host-controlled; same check as fetch().
+        if sp.share_id != share_id {
+            return Err(net(format!(
+                "remote share_id {:?} does not match invite id {share_id:?}",
+                sp.share_id
+            )));
+        }
+        let dir = e2ee_received_dir(&self.share_dir);
+        let id = share_id.to_string();
+        tokio::task::spawn_blocking(move || write_doc_bytes(&dir, &id, doc.save()))
+            .await
+            .map_err(net)??;
+        Ok(outcome)
+    }
+
+    /// Summaries of locally-published e2ee shares (`share_dir/e2ee`).
+    pub fn list_e2ee(share_dir: &Path) -> Result<Vec<crate::SharedSummary>> {
+        crate::list_shared(&e2ee_dir(share_dir))
+    }
+
+    /// Summaries of received e2ee mirrors (`share_dir/e2ee/received`).
+    pub fn list_e2ee_received(share_dir: &Path) -> Result<Vec<crate::SharedSummary>> {
+        crate::list_shared(&e2ee_received_dir(share_dir))
+    }
+
+    /// Hydrate a received e2ee mirror by id.
+    pub fn e2ee_received(share_dir: &Path, share_id: &str) -> Result<SharedProject> {
+        if !valid_share_id(share_id) {
+            return Err(ShareError::NotFound(share_id.to_string()));
+        }
+        load(&e2ee_received_dir(share_dir), share_id)
     }
 }
 
@@ -201,6 +601,7 @@ mod tests {
                 authors: vec!["Alice".into()],
                 tags: vec!["ml".into()],
                 published: None,
+                pdf_blob: None,
             }],
             notes: vec![crate::SharedNote {
                 uuid: "11111111-1111-4111-8111-111111111111".into(),
@@ -364,5 +765,114 @@ mod tests {
 
         a.shutdown().await.unwrap();
         b.shutdown().await.unwrap();
+    }
+
+    #[cfg(feature = "sync-beelay")]
+    mod e2ee {
+        use super::*;
+
+        // keyhive/BeeKEM ops are slow in debug builds; give e2ee flows more
+        // room than the 10s plain-loopback budget.
+        async fn slow<T>(fut: impl std::future::Future<Output = T>) -> T {
+            tokio::time::timeout(Duration::from_secs(60), fut)
+                .await
+                .expect("e2ee op should not hang on loopback")
+        }
+
+        // publish_secure -> member_code -> invite_member -> accept_invite on
+        // a second node, returning the reader's member id on the hoster.
+        async fn share_to(a: &ShareNode, b: &ShareNode, sp: &SharedProject) -> MemberId {
+            a.publish_secure(sp).await.unwrap();
+            let code = b.member_code().await.unwrap();
+            let (member, invite) = a
+                .invite_member(&sp.share_id, &code, Role::Read)
+                .await
+                .unwrap();
+            assert_eq!(slow(b.accept_invite(&invite)).await.unwrap(), sp.share_id);
+            member
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn publish_invite_accept_materializes_reader_mirror() {
+            let a_dir = tempfile::tempdir().unwrap();
+            let b_dir = tempfile::tempdir().unwrap();
+            let a = node(a_dir.path()).await;
+            let b = node(b_dir.path()).await;
+
+            let sp = sample("7", "Secret Project");
+            let member = share_to(&a, &b, &sp).await;
+
+            // reader mirror lives under e2ee/received and matches the content
+            assert!(b_dir.path().join("e2ee/received/7.automerge").is_file());
+            assert_eq!(ShareNode::e2ee_received(b_dir.path(), "7").unwrap(), sp);
+            let listed = ShareNode::list_e2ee_received(b_dir.path()).unwrap();
+            assert_eq!(listed.len(), 1);
+            assert_eq!(listed[0].share_id, "7");
+            assert_eq!(ShareNode::list_e2ee(a_dir.path()).unwrap().len(), 1);
+            assert_eq!(a.query_role("7", member).await.unwrap(), Some(Role::Read));
+
+            // plain top-level dirs untouched on both sides
+            assert!(!a_dir.path().join("7.automerge").exists());
+            assert!(!b_dir.path().join("7.automerge").exists());
+            assert!(!b_dir.path().join("received").exists());
+
+            a.shutdown().await.unwrap();
+            b.shutdown().await.unwrap();
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn revoked_reader_sync_errors_and_mirror_is_intact() {
+            let a_dir = tempfile::tempdir().unwrap();
+            let b_dir = tempfile::tempdir().unwrap();
+            let a = node(a_dir.path()).await;
+            let b = node(b_dir.path()).await;
+
+            let sp = sample("7", "Secret Project");
+            let member = share_to(&a, &b, &sp).await;
+
+            a.revoke("7", member).await.unwrap();
+            assert_eq!(a.query_role("7", member).await.unwrap(), None);
+            // hoster evolves the share after the revoke
+            let mut evolved = sp.clone();
+            evolved.tags.push("post-revoke".into());
+            a.publish_secure(&evolved).await.unwrap();
+
+            let result = slow(b.sync_e2ee("7")).await;
+            assert!(
+                matches!(&result, Err(ShareError::NotFound(m)) if m.contains("revoked")),
+                "revoked sync must surface as a revocation, got {result:?}"
+            );
+            // old mirror content intact, no post-revoke content gained
+            assert_eq!(ShareNode::e2ee_received(b_dir.path(), "7").unwrap(), sp);
+
+            a.shutdown().await.unwrap();
+            b.shutdown().await.unwrap();
+        }
+
+        // Quarantine: an e2ee doc is invisible to the plain sync path — a
+        // plain ticket forged for its id gets refused and writes nothing.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn e2ee_doc_is_never_served_by_plain_path() {
+            let a_dir = tempfile::tempdir().unwrap();
+            let b_dir = tempfile::tempdir().unwrap();
+            let a = node(a_dir.path()).await;
+            let b = node(b_dir.path()).await;
+
+            a.publish_secure(&sample("7", "Secret")).await.unwrap();
+            // publish a plain "8" only to learn a's dialable address
+            save(a_dir.path(), &sample("8", "Public")).unwrap();
+            let ticket = with_timeout(a.ticket("8")).await.unwrap();
+            let evil = ShareTicket::new(ticket.endpoint_addr().clone(), "7");
+
+            let result = with_timeout(b.fetch(&evil, b_dir.path())).await;
+            assert!(
+                matches!(result, Err(ShareError::NotFound(_))),
+                "an e2ee doc must not be plain-fetchable, got {result:?}"
+            );
+            assert!(!b_dir.path().join("received").join("7.automerge").exists());
+
+            a.shutdown().await.unwrap();
+            b.shutdown().await.unwrap();
+        }
     }
 }

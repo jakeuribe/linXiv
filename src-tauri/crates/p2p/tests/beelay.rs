@@ -4,7 +4,8 @@ use anyhow::Result;
 use automerge::{Automerge, ROOT, ReadDoc, transaction::Transactable};
 use linxiv_p2p::{
     BeelayNode, DeviceIdentity,
-    auth::{AuthIdentity, DecryptError, ProjectAuth, Role},
+    auth::{AuthIdentity, DecryptError, DeviceBinding, ProjectAuth, Role},
+    bind_stack_local,
 };
 
 fn identities(dir: &std::path::Path, name: &str) -> (DeviceIdentity, AuthIdentity) {
@@ -26,8 +27,8 @@ fn put(doc: &mut Automerge, key: &str, value: &str) {
 }
 
 /// THE PLAN GATE: two offline nodes; alice shares an encrypted project with
-/// bob, both edit and converge, then alice revokes bob and rotates — bob can
-/// still read his epoch's content but nothing new.
+/// bob, both edit and converge, then alice revokes bob and rotates — bob
+/// keeps his epoch's content but is refused further sync.
 #[tokio::test(flavor = "multi_thread")]
 async fn e2e_toy_project() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -45,10 +46,10 @@ async fn e2e_toy_project() -> Result<()> {
         .receive_contact_card(&bob_auth.contact_card().await.map_err(anyhow::Error::msg)?)
         .await
         .map_err(anyhow::Error::msg)?;
-    let alice = BeelayNode::bind_local(&alice_device, alice_auth)
+    let alice = BeelayNode::bind_local(&alice_device, &alice_auth_id, alice_auth, None)
         .await
         .map_err(anyhow::Error::msg)?;
-    let bob = BeelayNode::bind_local(&bob_device, bob_auth)
+    let bob = BeelayNode::bind_local(&bob_device, &bob_auth_id, bob_auth, None)
         .await
         .map_err(anyhow::Error::msg)?;
 
@@ -136,12 +137,11 @@ async fn e2e_toy_project() -> Result<()> {
         .with_doc("proj", |d| put(d, "post_revocation", "secret v2"))
         .await;
 
-    // bob syncs again: fetches ciphertext but CANNOT decrypt the new epoch
-    let outcome = bob.sync_project("proj").await.map_err(anyhow::Error::msg)?;
+    // bob syncs again: refused at the door by the accept-side membership gate
+    let res = bob.sync_project("proj").await;
     assert!(
-        outcome.undecryptable.contains(&DecryptError::KeyNotFound),
-        "expected KeyNotFound, got {:?}",
-        outcome.undecryptable
+        matches!(res, Err(linxiv_p2p::sync::JoinError::Refused)),
+        "{res:?}"
     );
     let bob_doc = bob.doc("proj").await.unwrap();
     assert_eq!(
@@ -212,7 +212,7 @@ async fn keyhive_136_repro_and_workaround() -> Result<()> {
     )
     .await
     .map_err(anyhow::Error::msg)?;
-    bob.adopt_project("proj", alice.doc_id("proj").unwrap())
+    bob.adopt_project("proj", alice.doc_id("proj").unwrap(), None)
         .await
         .map_err(anyhow::Error::msg)?;
 
@@ -261,10 +261,10 @@ async fn blob_pair(sizes: &[usize]) -> Result<(BeelayNode, BeelayNode, Vec<(Vec<
         .receive_contact_card(&bob_auth.contact_card().await.map_err(anyhow::Error::msg)?)
         .await
         .map_err(anyhow::Error::msg)?;
-    let alice = BeelayNode::bind_local(&alice_device, alice_auth)
+    let alice = BeelayNode::bind_local(&alice_device, &alice_auth_id, alice_auth, None)
         .await
         .map_err(anyhow::Error::msg)?;
-    let bob = BeelayNode::bind_local(&bob_device, bob_auth)
+    let bob = BeelayNode::bind_local(&bob_device, &bob_auth_id, bob_auth, None)
         .await
         .map_err(anyhow::Error::msg)?;
     alice
@@ -296,6 +296,9 @@ async fn blob_pair(sizes: &[usize]) -> Result<(BeelayNode, BeelayNode, Vec<(Vec<
     bob.accept_invite(&invite)
         .await
         .map_err(anyhow::Error::msg)?;
+    // one sync so alice's preamble learns bob's device binding — the blobs
+    // ALPN gate only serves endpoints it can map to a member
+    bob.sync_project("proj").await.map_err(anyhow::Error::msg)?;
     Ok((alice, bob, blobs))
 }
 
@@ -314,11 +317,13 @@ async fn blob_round_trip(sizes: &[usize]) -> Result<()> {
     let (alice, bob, blobs) = blob_pair(sizes).await?;
     for (bytes, ticket) in &blobs {
         let start = std::time::Instant::now();
-        bob.fetch_blob(ticket).await.map_err(anyhow::Error::msg)?;
+        bob.fetch_blob(ticket, u64::MAX)
+            .await
+            .map_err(anyhow::Error::msg)?;
         print_rate("transfer", bytes.len(), start.elapsed());
         let start = std::time::Instant::now();
         let plain = bob
-            .read_blob("proj", ticket)
+            .read_blob("proj", ticket, u64::MAX)
             .await
             .map_err(anyhow::Error::msg)?;
         print_rate("decrypt+read", bytes.len(), start.elapsed());
@@ -334,6 +339,28 @@ async fn blob_round_trip(sizes: &[usize]) -> Result<()> {
 #[tokio::test(flavor = "multi_thread")]
 async fn blob_round_trip_small() -> Result<()> {
     blob_round_trip(&[64 * 1024]).await
+}
+
+/// A cap below the blob size makes fetch_blob and read_blob error; a
+/// generous cap succeeds and round-trips the original bytes.
+#[tokio::test(flavor = "multi_thread")]
+async fn blob_caps_enforced() -> Result<()> {
+    let (alice, bob, blobs) = blob_pair(&[64 * 1024]).await?;
+    let (bytes, ticket) = &blobs[0];
+    assert!(bob.fetch_blob(ticket, 1024).await.is_err());
+    bob.fetch_blob(ticket, u64::MAX)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    assert!(bob.read_blob("proj", ticket, 1024).await.is_err());
+    let plain = bob
+        .read_blob("proj", ticket, u64::MAX)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    assert_eq!(&plain, bytes);
+    for node in [alice, bob] {
+        node.shutdown().await.map_err(anyhow::Error::msg)?;
+    }
+    Ok(())
 }
 
 /// PLAN gate: real linXiv project sizes. Run with
@@ -352,19 +379,46 @@ async fn peer_id_spoof_rejected() -> Result<()> {
 
     let dir = tempfile::tempdir()?;
     let (host_device, host_auth_id) = identities(dir.path(), "host");
-    let (_, imposter_auth_id) = identities(dir.path(), "imposter");
+    let (imposter_device, imposter_auth_id) = identities(dir.path(), "imposter");
     let host_auth = ProjectAuth::new(&host_auth_id)
         .await
         .map_err(anyhow::Error::msg)?;
     let imposter_auth = ProjectAuth::new(&imposter_auth_id)
         .await
         .map_err(anyhow::Error::msg)?;
-    let host = BeelayNode::bind_local(&host_device, host_auth)
+    let host = BeelayNode::bind_local(&host_device, &host_auth_id, host_auth, None)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    // grant the imposter membership on "proj" so the accept-side gate passes
+    let imposter_member = host
+        .auth()
+        .receive_contact_card(
+            &imposter_auth
+                .contact_card()
+                .await
+                .map_err(anyhow::Error::msg)?,
+        )
+        .await
+        .map_err(anyhow::Error::msg)?;
+    host.create_shared_project("proj", Automerge::new())
+        .await
+        .map_err(anyhow::Error::msg)?;
+    host.auth()
+        .add_member("proj", imposter_member, Role::Read)
         .await
         .map_err(anyhow::Error::msg)?;
 
-    // raw wire-level client so we control the hello bytes
-    let endpoint = iroh::Endpoint::builder(presets::Minimal).bind().await?;
+    // raw wire-level client so we control the hello bytes; reuses the
+    // imposter's persisted device key so its DeviceBinding matches the
+    // connection's TLS endpoint (the preamble verifies exactly that)
+    let key_bytes: [u8; 32] = std::fs::read(dir.path().join("imposter.iroh.key"))?
+        .as_slice()
+        .try_into()
+        .expect("device key file is 32 bytes");
+    let endpoint = iroh::Endpoint::builder(presets::Minimal)
+        .secret_key(iroh::SecretKey::from_bytes(&key_bytes))
+        .bind()
+        .await?;
     let conn = endpoint
         .connect(host.addr(), linxiv_p2p::BEELAY_ALPN)
         .await?;
@@ -392,18 +446,25 @@ async fn peer_id_spoof_rejected() -> Result<()> {
         Ok((buf[0], buf.split_off(1)))
     }
 
-    // legitimate keyhive preamble (tag 1 both ways, cards then events)
-    write_frame(
-        &mut send,
-        1,
-        &imposter_auth
+    // project-id frame first (plain, untagged), matching sync_project's opener
+    send.write_all(&(b"proj".len() as u64).to_le_bytes())
+        .await?;
+    send.write_all(b"proj").await?;
+
+    // legitimate keyhive preamble (tag 1 both ways, binding+card hellos then
+    // events)
+    let binding = DeviceBinding::create(&imposter_device, &imposter_auth_id);
+    let hello = postcard::to_stdvec(&(
+        &binding,
+        imposter_auth
             .contact_card()
             .await
             .map_err(anyhow::Error::msg)?,
-    )
-    .await?;
-    let (tag, card) = read_frame(&mut recv).await?;
+    ))?;
+    write_frame(&mut send, 1, &hello).await?;
+    let (tag, host_hello) = read_frame(&mut recv).await?;
     assert_eq!(tag, 1);
+    let (_host_binding, card): (DeviceBinding, Vec<u8>) = postcard::from_bytes(&host_hello)?;
     let host_member = imposter_auth
         .receive_contact_card(&card)
         .await
@@ -436,5 +497,353 @@ async fn peer_id_spoof_rejected() -> Result<()> {
 
     host.shutdown().await.map_err(anyhow::Error::msg)?;
     endpoint.close().await;
+    Ok(())
+}
+
+/// Synced doc content survives a restart from data_dir: bob syncs, restarts
+/// with the same dir + reloaded auth, and the doc is present WITHOUT any
+/// sync_project call (decrypted straight from the persisted beelay KV).
+#[tokio::test(flavor = "multi_thread")]
+async fn kv_restart_keeps_doc() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (alice_device, alice_auth_id) = identities(dir.path(), "alice");
+    let (bob_device, bob_auth_id) = identities(dir.path(), "bob");
+    let alice_auth = ProjectAuth::new(&alice_auth_id)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let bob_auth_dir = dir.path().join("bob-auth");
+    let bob_data_dir = dir.path().join("bob-data");
+    let bob_auth = ProjectAuth::load_or_new(&bob_auth_id, &bob_auth_dir)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let bob_member = alice_auth
+        .receive_contact_card(&bob_auth.contact_card().await.map_err(anyhow::Error::msg)?)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let alice = BeelayNode::bind_local(&alice_device, &alice_auth_id, alice_auth, None)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let bob = BeelayNode::bind_local(&bob_device, &bob_auth_id, bob_auth, Some(&bob_data_dir))
+        .await
+        .map_err(anyhow::Error::msg)?;
+
+    let mut doc = Automerge::new();
+    put(&mut doc, "title", "Persist Me");
+    alice
+        .create_shared_project("proj", doc)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    alice
+        .auth()
+        .add_member("proj", bob_member, Role::Edit)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let invite = alice
+        .invite("proj", bob_member)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    bob.accept_invite(&invite)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    bob.sync_project("proj").await.map_err(anyhow::Error::msg)?;
+    let bob_doc = bob.doc("proj").await.expect("bob has the project");
+    assert_eq!(get_str(&bob_doc, "title").as_deref(), Some("Persist Me"));
+    bob.shutdown().await.map_err(anyhow::Error::msg)?;
+    drop(bob);
+
+    // restart: fresh node over the same data_dir + persisted auth
+    let bob_auth = ProjectAuth::load_or_new(&bob_auth_id, &bob_auth_dir)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let bob = BeelayNode::bind_local(&bob_device, &bob_auth_id, bob_auth, Some(&bob_data_dir))
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let bob_doc = bob
+        .doc("proj")
+        .await
+        .expect("project registry restored from disk");
+    assert_eq!(get_str(&bob_doc, "title").as_deref(), Some("Persist Me"));
+
+    for node in [alice, bob] {
+        node.shutdown().await.map_err(anyhow::Error::msg)?;
+    }
+    Ok(())
+}
+
+/// The accept side refuses peers with no role on the requested project: a
+/// leaked invite lets a stranger adopt locally, but the host closes the sync
+/// before serving; the invited member is unaffected.
+#[tokio::test(flavor = "multi_thread")]
+async fn stranger_sync_refused() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (alice_device, alice_auth_id) = identities(dir.path(), "alice");
+    let (bob_device, bob_auth_id) = identities(dir.path(), "bob");
+    let (mallory_device, mallory_auth_id) = identities(dir.path(), "mallory");
+    let alice_auth = ProjectAuth::new(&alice_auth_id)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let bob_auth = ProjectAuth::new(&bob_auth_id)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let mallory_auth = ProjectAuth::new(&mallory_auth_id)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let bob_card = bob_auth.contact_card().await.map_err(anyhow::Error::msg)?;
+    let bob_member = alice_auth
+        .receive_contact_card(&bob_card)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    // mallory knows bob's (public) card too — the invite's events reference it
+    mallory_auth
+        .receive_contact_card(&bob_card)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let alice = BeelayNode::bind_local(&alice_device, &alice_auth_id, alice_auth, None)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let bob = BeelayNode::bind_local(&bob_device, &bob_auth_id, bob_auth, None)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let mallory = BeelayNode::bind_local(&mallory_device, &mallory_auth_id, mallory_auth, None)
+        .await
+        .map_err(anyhow::Error::msg)?;
+
+    let mut doc = Automerge::new();
+    put(&mut doc, "title", "Members Only");
+    alice
+        .create_shared_project("proj", doc)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    alice
+        .auth()
+        .add_member("proj", bob_member, Role::Read)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let invite = alice
+        .invite("proj", bob_member)
+        .await
+        .map_err(anyhow::Error::msg)?;
+
+    // mallory got the invite string but was never granted: adopting locally
+    // works, the host refuses to serve.
+    mallory
+        .accept_invite(&invite)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let res = mallory.sync_project("proj").await;
+    assert!(
+        matches!(res, Err(linxiv_p2p::sync::JoinError::Refused)),
+        "{res:?}"
+    );
+    let mallory_doc = mallory.doc("proj").await.unwrap();
+    assert_eq!(get_str(&mallory_doc, "title"), None);
+
+    // the invited member still syncs
+    bob.accept_invite(&invite)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    bob.sync_project("proj").await.map_err(anyhow::Error::msg)?;
+    let bob_doc = bob.doc("proj").await.unwrap();
+    assert_eq!(get_str(&bob_doc, "title").as_deref(), Some("Members Only"));
+
+    for node in [alice, bob, mallory] {
+        node.shutdown().await.map_err(anyhow::Error::msg)?;
+    }
+    Ok(())
+}
+
+/// One endpoint serves plain sync, beelay, and blobs: both handles of a
+/// stack report the same endpoint id, both protocols work between the same
+/// two stacks, and shutdown is exercised from either handle in either order.
+#[tokio::test(flavor = "multi_thread")]
+async fn bind_stack_single_endpoint() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (alice_device, alice_auth_id) = identities(dir.path(), "alice");
+    let (bob_device, bob_auth_id) = identities(dir.path(), "bob");
+    let alice_auth = ProjectAuth::new(&alice_auth_id)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let bob_auth = ProjectAuth::new(&bob_auth_id)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let bob_member = alice_auth
+        .receive_contact_card(&bob_auth.contact_card().await.map_err(anyhow::Error::msg)?)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let (alice_share, alice_beelay) =
+        bind_stack_local(&alice_device, &alice_auth_id, alice_auth, None)
+            .await
+            .map_err(anyhow::Error::msg)?;
+    let (bob_share, bob_beelay) = bind_stack_local(&bob_device, &bob_auth_id, bob_auth, None)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    assert_eq!(alice_share.endpoint_id(), alice_beelay.endpoint_id());
+    assert_eq!(bob_share.endpoint_id(), bob_beelay.endpoint_id());
+
+    // beelay path
+    let mut doc = Automerge::new();
+    put(&mut doc, "title", "Stacked");
+    alice_beelay
+        .create_shared_project("proj", doc)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    alice_beelay
+        .auth()
+        .add_member("proj", bob_member, Role::Edit)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let invite = alice_beelay
+        .invite("proj", bob_member)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    bob_beelay
+        .accept_invite(&invite)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    bob_beelay
+        .sync_project("proj")
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let bob_doc = bob_beelay.doc("proj").await.unwrap();
+    assert_eq!(get_str(&bob_doc, "title").as_deref(), Some("Stacked"));
+
+    // plain sync path over the SAME endpoints
+    let mut plain = Automerge::new();
+    put(&mut plain, "title", "Plain");
+    alice_share.register("plain", plain);
+    let ticket = alice_share.ticket("plain").map_err(anyhow::Error::msg)?;
+    bob_share
+        .join(&ticket)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let plain_doc = bob_share.doc("plain").unwrap();
+    assert_eq!(get_str(&plain_doc, "title").as_deref(), Some("Plain"));
+
+    // shutdown both ways: share-then-beelay and beelay-then-share
+    alice_share.shutdown().await.map_err(anyhow::Error::msg)?;
+    alice_beelay.shutdown().await.map_err(anyhow::Error::msg)?;
+    bob_beelay.shutdown().await.map_err(anyhow::Error::msg)?;
+    bob_share.shutdown().await.map_err(anyhow::Error::msg)?;
+    Ok(())
+}
+
+/// A stored blob survives a restart from data_dir: store, restart with the
+/// same dir + reloaded auth, read_blob still returns the plaintext.
+#[tokio::test(flavor = "multi_thread")]
+async fn blob_restart_keeps_blob() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (device, auth_id) = identities(dir.path(), "host");
+    let auth_dir = dir.path().join("auth");
+    let data_dir = dir.path().join("data");
+    let auth = ProjectAuth::load_or_new(&auth_id, &auth_dir)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let node = BeelayNode::bind_local(&device, &auth_id, auth, Some(&data_dir))
+        .await
+        .map_err(anyhow::Error::msg)?;
+    node.create_shared_project("proj", Automerge::new())
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let bytes: Vec<u8> = (0..64 * 1024).map(|i| (i % 251) as u8).collect();
+    let ticket = node
+        .store_blob("proj", &bytes)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    node.shutdown().await.map_err(anyhow::Error::msg)?;
+    drop(node);
+
+    let auth = ProjectAuth::load_or_new(&auth_id, &auth_dir)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let node = BeelayNode::bind_local(&device, &auth_id, auth, Some(&data_dir))
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let plain = node
+        .read_blob("proj", &ticket, u64::MAX)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    assert_eq!(plain, bytes);
+    node.shutdown().await.map_err(anyhow::Error::msg)?;
+    Ok(())
+}
+
+/// Revocation is scoped per project: bob loses "a" but keeps his membership
+/// on "b", so "a" refuses his sync while "b" still serves him.
+#[tokio::test(flavor = "multi_thread")]
+async fn revocation_is_per_project() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (alice_device, alice_auth_id) = identities(dir.path(), "alice");
+    let (bob_device, bob_auth_id) = identities(dir.path(), "bob");
+    let alice_auth = ProjectAuth::new(&alice_auth_id)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let bob_auth = ProjectAuth::new(&bob_auth_id)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let bob_member = alice_auth
+        .receive_contact_card(&bob_auth.contact_card().await.map_err(anyhow::Error::msg)?)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let alice = BeelayNode::bind_local(&alice_device, &alice_auth_id, alice_auth, None)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let bob = BeelayNode::bind_local(&bob_device, &bob_auth_id, bob_auth, None)
+        .await
+        .map_err(anyhow::Error::msg)?;
+
+    alice
+        .create_shared_project("a", Automerge::new())
+        .await
+        .map_err(anyhow::Error::msg)?;
+    alice
+        .create_shared_project("b", Automerge::new())
+        .await
+        .map_err(anyhow::Error::msg)?;
+    alice
+        .auth()
+        .add_member("a", bob_member, Role::Edit)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    alice
+        .auth()
+        .add_member("b", bob_member, Role::Edit)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let invite_a = alice
+        .invite("a", bob_member)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let invite_b = alice
+        .invite("b", bob_member)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    bob.accept_invite(&invite_a)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    bob.accept_invite(&invite_b)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    bob.sync_project("a").await.map_err(anyhow::Error::msg)?;
+    bob.sync_project("b").await.map_err(anyhow::Error::msg)?;
+
+    alice
+        .auth()
+        .revoke_member("a", bob_member)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    alice.with_doc("b", |d| put(d, "still_shared", "yes")).await;
+
+    let res = bob.sync_project("a").await;
+    assert!(
+        matches!(res, Err(linxiv_p2p::sync::JoinError::Refused)),
+        "{res:?}"
+    );
+    bob.sync_project("b").await.map_err(anyhow::Error::msg)?;
+    let bob_doc_b = bob.doc("b").await.unwrap();
+    assert_eq!(get_str(&bob_doc_b, "still_shared").as_deref(), Some("yes"));
+
+    for node in [alice, bob] {
+        node.shutdown().await.map_err(anyhow::Error::msg)?;
+    }
     Ok(())
 }

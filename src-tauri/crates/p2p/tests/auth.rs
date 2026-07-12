@@ -50,7 +50,8 @@ fn dual_key_binding() {
 }
 
 /// Alice creates a project, grants bob Edit via contact card, encrypts, and
-/// ships an "invite" (endpoint id + doc id + delegation events); bob ingests,
+/// ships an "invite" (endpoint id + project/doc/group ids + delegation
+/// events); bob ingests,
 /// adopts, and decrypts. Returns the live state for the revocation test.
 async fn grant_flow() -> Result<(ProjectAuth, ProjectAuth, Vec<u8>)> {
     let dir = tempfile::tempdir()?;
@@ -70,18 +71,25 @@ async fn grant_flow() -> Result<(ProjectAuth, ProjectAuth, Vec<u8>)> {
 
     let sealed = alice.encrypt("proj", b"secret plan").await?;
 
-    // an invite = hoster endpoint + project/doc ids + delegation events.
+    // an invite = hoster endpoint + project/doc/group ids + delegation events.
     let invite = postcard::to_stdvec(&(
         *alice_device.endpoint_id().as_bytes(),
         "proj",
         alice.doc_id("proj").unwrap(),
+        alice.group_id("proj").unwrap(),
         alice.export_events_for(bob_id).await?,
     ))?;
 
-    let (_host, project_id, doc_id, events): ([u8; 32], String, [u8; 32], Vec<u8>) =
-        postcard::from_bytes(&invite)?;
+    let (_host, project_id, doc_id, group_id, events): (
+        [u8; 32],
+        String,
+        [u8; 32],
+        [u8; 32],
+        Vec<u8>,
+    ) = postcard::from_bytes(&invite)?;
     bob.ingest_events(&events).await?; // Err if any events are stuck
-    bob.adopt_project(&project_id, doc_id).await?;
+    bob.adopt_project(&project_id, doc_id, Some(group_id))
+        .await?;
 
     let plain = bob.decrypt(&project_id, &sealed).await?;
     assert_eq!(plain, b"secret plan");
@@ -124,6 +132,211 @@ async fn revoke_blocks_new_content() -> Result<()> {
         alice.decrypt("proj", &new_sealed).await.unwrap(),
         b"post-revocation secret"
     );
+    Ok(())
+}
+
+/// State written by load_or_new survives a drop: member id, membership, and
+/// decryption of pre-restart ciphertext (keys ride the archived CGKA tree).
+#[tokio::test(flavor = "multi_thread")]
+async fn persistence_roundtrip() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (_, alice_auth) = identities(dir.path(), "alice");
+    let (_, bob_auth) = identities(dir.path(), "bob");
+    let state_dir = dir.path().join("alice-state");
+    let bob_state_dir = dir.path().join("bob-state");
+
+    let (member_id, bob_id, sealed) = {
+        let alice = ProjectAuth::load_or_new(&alice_auth, &state_dir).await?;
+        let bob = ProjectAuth::load_or_new(&bob_auth, &bob_state_dir).await?;
+        alice.create_project("proj").await?;
+        let bob_id = alice
+            .receive_contact_card(&bob.contact_card().await?)
+            .await?;
+        alice.add_member("proj", bob_id, Role::Edit).await?;
+        let sealed = alice.encrypt("proj", b"durable secret").await?;
+        bob.ingest_events(&alice.export_events_for(bob_id).await?)
+            .await?;
+        bob.adopt_project(
+            "proj",
+            alice.doc_id("proj").unwrap(),
+            Some(alice.group_id("proj").unwrap()),
+        )
+        .await?;
+        assert_eq!(
+            bob.decrypt("proj", &sealed).await.unwrap(),
+            b"durable secret"
+        );
+        (alice.member_id(), bob_id, sealed)
+    };
+
+    // invitee side: the adopted project's group id survives a restart.
+    {
+        let bob = ProjectAuth::load_or_new(&bob_auth, &bob_state_dir).await?;
+        assert!(bob.group_id("proj").is_some());
+    }
+
+    let alice = ProjectAuth::load_or_new(&alice_auth, &state_dir).await?;
+    assert_eq!(alice.member_id(), member_id);
+    assert_eq!(alice.query_access("proj", bob_id).await?, Some(Role::Edit));
+    assert_eq!(
+        alice.decrypt("proj", &sealed).await.unwrap(),
+        b"durable secret"
+    );
+
+    // revocation and the PCS key rotation survive a restart.
+    alice.revoke_member("proj", bob_id).await?;
+    drop(alice);
+    let alice = ProjectAuth::load_or_new(&alice_auth, &state_dir).await?;
+    assert_eq!(alice.query_access("proj", bob_id).await?, None);
+    let new_sealed = alice.encrypt("proj", b"post-restart secret").await?;
+    let bob = ProjectAuth::load_or_new(&bob_auth, &bob_state_dir).await?;
+    let _ = bob
+        .ingest_events(&alice.export_events_for(bob_id).await?)
+        .await; // post-revocation exports may be partial
+    assert_eq!(
+        bob.decrypt("proj", &new_sealed).await,
+        Err(DecryptError::KeyNotFound)
+    );
+
+    std::fs::write(state_dir.join("state.bin"), b"garbage")?;
+    assert!(
+        ProjectAuth::load_or_new(&alice_auth, &state_dir)
+            .await
+            .is_err()
+    );
+    Ok(())
+}
+
+/// An invitee who adopted with `bob_role` grants carol Read on its own, and
+/// the host learns the new member by ingesting the invitee's events.
+async fn invitee_delegates(bob_role: Role) -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (_, alice_auth) = identities(dir.path(), "alice");
+    let (_, bob_auth) = identities(dir.path(), "bob");
+    let (_, carol_auth) = identities(dir.path(), "carol");
+    let alice = ProjectAuth::new(&alice_auth).await?;
+    let bob = ProjectAuth::new(&bob_auth).await?;
+    let carol = ProjectAuth::new(&carol_auth).await?;
+
+    alice.create_project("proj").await?;
+    let bob_id = alice
+        .receive_contact_card(&bob.contact_card().await?)
+        .await?;
+    alice.add_member("proj", bob_id, bob_role).await?;
+    bob.ingest_events(&alice.export_events_for(bob_id).await?)
+        .await?;
+    bob.adopt_project(
+        "proj",
+        alice.doc_id("proj").unwrap(),
+        Some(alice.group_id("proj").unwrap()),
+    )
+    .await?;
+
+    // bob grants carol without alice in the loop.
+    let carol_id = bob
+        .receive_contact_card(&carol.contact_card().await?)
+        .await?;
+    bob.add_member("proj", carol_id, Role::Read).await?;
+    assert_eq!(bob.query_access("proj", carol_id).await?, Some(Role::Read));
+
+    // alice sees carol after learning carol's identity (contact cards travel
+    // in the sync preamble) and ingesting bob's events.
+    alice
+        .receive_contact_card(&carol.contact_card().await?)
+        .await?;
+    let alice_id = bob
+        .receive_contact_card(&alice.contact_card().await?)
+        .await?;
+    alice
+        .ingest_events(&bob.export_events_for(alice_id).await?)
+        .await?;
+    assert_eq!(
+        alice.query_access("proj", carol_id).await?,
+        Some(Role::Read)
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn invitee_manages_membership() -> Result<()> {
+    invitee_delegates(Role::Admin).await
+}
+
+/// keyhive lets a non-admin (Edit) invitee delegate an attenuated role: the
+/// grant signs locally and other members accept it after ingesting.
+#[tokio::test(flavor = "multi_thread")]
+async fn edit_invitee_add_member() -> Result<()> {
+    invitee_delegates(Role::Edit).await
+}
+
+/// An Edit invitee delegating a higher role than its own errors (keyhive
+/// AccessEscalation).
+#[tokio::test(flavor = "multi_thread")]
+async fn edit_invitee_cannot_escalate() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (_, alice_auth) = identities(dir.path(), "alice");
+    let (_, bob_auth) = identities(dir.path(), "bob");
+    let (_, carol_auth) = identities(dir.path(), "carol");
+    let alice = ProjectAuth::new(&alice_auth).await?;
+    let bob = ProjectAuth::new(&bob_auth).await?;
+    let carol = ProjectAuth::new(&carol_auth).await?;
+
+    alice.create_project("proj").await?;
+    let bob_id = alice
+        .receive_contact_card(&bob.contact_card().await?)
+        .await?;
+    alice.add_member("proj", bob_id, Role::Edit).await?;
+    bob.ingest_events(&alice.export_events_for(bob_id).await?)
+        .await?;
+    bob.adopt_project(
+        "proj",
+        alice.doc_id("proj").unwrap(),
+        Some(alice.group_id("proj").unwrap()),
+    )
+    .await?;
+
+    let carol_id = bob
+        .receive_contact_card(&carol.contact_card().await?)
+        .await?;
+    assert!(
+        bob.add_member("proj", carol_id, Role::Admin).await.is_err(),
+        "Edit invitee must not delegate Admin"
+    );
+    assert_eq!(bob.query_access("proj", carol_id).await?, None);
+    Ok(())
+}
+
+/// Adopting without the group id: the device can decrypt but does not manage
+/// membership, so add_member errors.
+#[tokio::test(flavor = "multi_thread")]
+async fn adopt_without_group_cannot_manage_membership() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (_, alice_auth) = identities(dir.path(), "alice");
+    let (_, bob_auth) = identities(dir.path(), "bob");
+    let (_, carol_auth) = identities(dir.path(), "carol");
+    let alice = ProjectAuth::new(&alice_auth).await?;
+    let bob = ProjectAuth::new(&bob_auth).await?;
+    let carol = ProjectAuth::new(&carol_auth).await?;
+
+    alice.create_project("proj").await?;
+    let bob_id = alice
+        .receive_contact_card(&bob.contact_card().await?)
+        .await?;
+    alice.add_member("proj", bob_id, Role::Edit).await?;
+    let sealed = alice.encrypt("proj", b"secret plan").await?;
+    bob.ingest_events(&alice.export_events_for(bob_id).await?)
+        .await?;
+    bob.adopt_project("proj", alice.doc_id("proj").unwrap(), None)
+        .await?;
+
+    let carol_id = bob
+        .receive_contact_card(&carol.contact_card().await?)
+        .await?;
+    assert!(
+        bob.add_member("proj", carol_id, Role::Read).await.is_err(),
+        "no group id -> membership not managed"
+    );
+    assert_eq!(bob.decrypt("proj", &sealed).await.unwrap(), b"secret plan");
     Ok(())
 }
 

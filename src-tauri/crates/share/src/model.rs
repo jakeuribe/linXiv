@@ -33,6 +33,10 @@ pub struct SharedPaper {
     pub summary: String,
     pub authors: Vec<String>,
     pub tags: Vec<String>,
+    /// Blob ticket for the paper's PDF, minted by an e2ee hoster
+    /// (`ShareNode::store_pdf_blob`).
+    #[autosurgeon(missing = "Default::default")]
+    pub pdf_blob: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Reconcile, Hydrate)]
@@ -41,8 +45,8 @@ pub struct SharedNote {
     /// list edits by note, not by position.
     #[key]
     pub uuid: String,
-    /// Paper the note hangs off.
-    /// Option because older docs may not carry it yet.
+    /// Paper the note hangs off; absent in pre-upgrade docs.
+    #[autosurgeon(missing = "Default::default")]
     pub paper_source_id: Option<String>,
     pub title: String,
     pub body: String,
@@ -73,4 +77,66 @@ pub struct SharedSummary {
     pub note_count: usize,
     pub annotation_count: usize,
     pub tag_count: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pre-upgrade docs lack `pdf_blob` / `paper_source_id` keys; hydrate must
+    /// default them to `None` instead of erroring.
+    #[test]
+    fn hydrates_doc_missing_optional_keys() {
+        // Old-schema shapes: same fields minus the later additions.
+        #[derive(Reconcile)]
+        struct OldPaper {
+            source_id: String,
+            version: i64,
+            published: Option<String>,
+            title: String,
+            summary: String,
+            authors: Vec<String>,
+            tags: Vec<String>,
+        }
+        #[derive(Reconcile)]
+        struct OldNote {
+            uuid: String,
+            title: String,
+            body: String,
+            created_at: Option<String>,
+            updated_at: Option<String>,
+        }
+
+        let mut doc = automerge::AutoCommit::new();
+        autosurgeon::reconcile(
+            &mut doc,
+            OldPaper {
+                source_id: "2401.00001".into(),
+                version: 1,
+                published: None,
+                title: "t".into(),
+                summary: "s".into(),
+                authors: vec![],
+                tags: vec![],
+            },
+        )
+        .unwrap();
+        let paper: SharedPaper = autosurgeon::hydrate(&doc).unwrap();
+        assert_eq!(paper.pdf_blob, None);
+
+        let mut doc = automerge::AutoCommit::new();
+        autosurgeon::reconcile(
+            &mut doc,
+            OldNote {
+                uuid: "u".into(),
+                title: "t".into(),
+                body: "b".into(),
+                created_at: None,
+                updated_at: None,
+            },
+        )
+        .unwrap();
+        let note: SharedNote = autosurgeon::hydrate(&doc).unwrap();
+        assert_eq!(note.paper_source_id, None);
+    }
 }

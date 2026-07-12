@@ -72,7 +72,7 @@ fn main() {
                 }
                 Err(e) => {
                     eprintln!(
-                        "warning: share node bind failed, sharing and background sync disabled: {e}"
+                        "warning: share node bind failed, sharing (plain and e2ee) and background sync disabled: {e}"
                     );
                     ShareState::new(share_dir)
                 }

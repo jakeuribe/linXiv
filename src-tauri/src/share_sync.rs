@@ -9,10 +9,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::Manager;
 
+use linxiv_core::service::paper as paper_svc;
 use linxiv_core::service::project as project_svc;
 use linxiv_share::{
-    build_shared_project, doc_path, import_shared_project, received_dir, save, valid_share_id,
-    ShareNode, ShareTicket,
+    build_shared_project, doc_path, e2ee_dir, e2ee_received_dir, import_shared_project, load,
+    received_dir, save, valid_share_id, ShareNode, ShareTicket, SharedProject,
 };
 
 use crate::route::share::ShareState;
@@ -85,8 +86,130 @@ pub fn import_received(
     if !valid_share_id(share_id) {
         return Err(ApiError::new(404, format!("share {share_id:?} not found")));
     }
-    let sp = ShareNode::received(share_dir, share_id)?;
+    let sp = match ShareNode::received(share_dir, share_id) {
+        Err(linxiv_share::ShareError::NotFound(_)) => {
+            ShareNode::e2ee_received(share_dir, share_id)?
+        }
+        other => other?,
+    };
     Ok(state.with_conn(|conn| import_shared_project(conn, &sp))?)
+}
+
+/// Fill `pdf_blob` tickets before an e2ee publish: tickets already in the
+/// published doc carry forward by source_id; a paper with a local PDF but no
+/// ticket gets one stored. `rekey` skips the carry-forward and re-encrypts
+/// every blob under the new epoch. Blob failures are logged and skipped.
+pub(crate) async fn populate_pdf_blobs(
+    state: &AppState,
+    node: &ShareNode,
+    share_dir: &Path,
+    sp: &mut SharedProject,
+    rekey: bool,
+) -> Result<(), linxiv_share::ShareError> {
+    // Prior doc loads even on rekey: its tickets are the re-encrypt source for
+    // papers with no local PDF.
+    let prior = match load(&e2ee_dir(share_dir), &sp.share_id) {
+        Ok(d) => Some(d),
+        // NotFound = no prior doc (first publish); other load errors abort the pass.
+        Err(linxiv_share::ShareError::NotFound(_)) => None,
+        Err(e) => return Err(e),
+    };
+    let prior_blobs: std::collections::HashMap<(&str, i64), &str> = prior
+        .as_ref()
+        .map(|d| {
+            d.papers
+                .iter()
+                .filter_map(|q| Some(((q.source_id.as_str(), q.version), q.pdf_blob.as_deref()?)))
+                .collect()
+        })
+        .unwrap_or_default();
+    for p in &mut sp.papers {
+        let prior_ticket = prior_blobs
+            .get(&(p.source_id.as_str(), p.version))
+            .map(|s| s.to_string());
+        if !rekey {
+            p.pdf_blob = prior_ticket.clone();
+            if p.pdf_blob.is_some() {
+                continue;
+            }
+        }
+        let custom = match state.with_conn(|c| {
+            paper_svc::get(
+                c,
+                &paper_svc::Paper {
+                    source_id: Some(p.source_id.clone()),
+                    version: Some(p.version),
+                    ..Default::default()
+                },
+            )
+        }) {
+            Ok(row) => row.and_then(|row| row.pdf_path),
+            Err(e) => {
+                eprintln!(
+                    "share {}: paper lookup for {}: {e}",
+                    sp.share_id, p.source_id
+                );
+                None
+            }
+        };
+        let Some(path) = crate::route::pdfs::resolve_local_pdf(
+            &state.pdf_dir,
+            custom.as_deref(),
+            &p.source_id,
+            p.version,
+        ) else {
+            // Rekey with no local PDF: re-encrypt from the prior blob under the
+            // new epoch; on failure keep the old ticket.
+            if rekey {
+                if let Some(old) = prior_ticket {
+                    // Read falls back to a network fetch when the blob store lost
+                    // the blob; cap the round trip with the e2ee net budget.
+                    let reencrypted = match tokio::time::timeout(
+                        crate::route::share::SHARE_NET_TIMEOUT * 2,
+                        async {
+                            let bytes = node.read_pdf_blob(&sp.share_id, &old, u64::MAX).await?;
+                            node.store_pdf_blob(&sp.share_id, &bytes).await
+                        },
+                    )
+                    .await
+                    {
+                        Ok(r) => r,
+                        Err(_) => Err(linxiv_share::ShareError::Transport(
+                            "rekey blob read timed out".into(),
+                        )),
+                    };
+                    match reencrypted {
+                        Ok(ticket) => p.pdf_blob = Some(ticket),
+                        Err(e) => {
+                            eprintln!(
+                                "share {}: rekey blob for {}: {e}; keeping old-epoch ticket",
+                                sp.share_id, p.source_id
+                            );
+                            p.pdf_blob = Some(old);
+                        }
+                    }
+                }
+            }
+            continue;
+        };
+        let read_path = path.clone();
+        let bytes = match tokio::task::spawn_blocking(move || std::fs::read(&read_path)).await {
+            Ok(Ok(b)) => b,
+            Ok(Err(e)) => {
+                eprintln!("share {}: PDF read {path}: {e}", sp.share_id);
+                continue;
+            }
+            Err(e) => {
+                eprintln!("share {}: PDF read task {path}: {e}", sp.share_id);
+                continue;
+            }
+        };
+        match node.store_pdf_blob(&sp.share_id, &bytes).await {
+            Ok(ticket) => p.pdf_blob = Some(ticket),
+            Err(e) => eprintln!("share {}: pdf blob for {}: {e}", sp.share_id, p.source_id),
+        }
+    }
+    Ok(())
 }
 
 /// Bump mtime — the UI reads the doc file's mtime as synced_at.
@@ -116,10 +239,13 @@ pub async fn sync_share(
 
     let hoster_doc = doc_path(&dir, share_id);
     let reader_doc = doc_path(&received_dir(&dir), share_id);
-    if hoster_doc.is_file() && reader_doc.is_file() {
+    let e2ee_hoster_doc = doc_path(&e2ee_dir(&dir), share_id);
+    let e2ee_reader_doc = doc_path(&e2ee_received_dir(&dir), share_id);
+    let roles = [&hoster_doc, &reader_doc, &e2ee_hoster_doc, &e2ee_reader_doc];
+    if roles.iter().filter(|p| p.is_file()).count() > 1 {
         return Err(ApiError::new(
             500,
-            format!("share {share_id} has both a published and a received doc"),
+            format!("share {share_id} has doc files in more than one role"),
         ));
     }
 
@@ -176,6 +302,70 @@ pub async fn sync_share(
         return Ok(json!({ "synced": true, "role": "reader" }));
     }
 
+    if e2ee_hoster_doc.is_file() {
+        // E2ee hoster leg: each cycle rebuilds from canonical SQLite and the
+        // on-disk e2ee doc, then evolves the encrypted state (never dials).
+        // Editor merges in the beelay doc are not hydrated back into SQLite;
+        // TwoWay behaves as local_to_shared.
+        if settings.direction == SyncDirection::SharedToLocal {
+            return Ok(json!({ "synced": false, "reason": "direction", "role": "hoster" }));
+        }
+        let Some(fk) = state.with_conn(|c| project_svc::find_by_share_id(c, share_id))? else {
+            // Doc + settings stay on disk; only explicit unpublish deletes them.
+            return Ok(json!({ "synced": false, "reason": "project gone" }));
+        };
+        let mut sp = state.with_conn(|c| build_shared_project(c, fk))?;
+        let Some(node) = share.node().await else {
+            eprintln!("share sync {share_id}: p2p offline");
+            return Ok(json!({ "synced": false, "reason": "p2p offline" }));
+        };
+        // ponytail: a failed publish below orphans just-stored blobs (random
+        // nonce, no dedup) and nothing GCs them; upgrade: sweep unreferenced tickets.
+        populate_pdf_blobs(state, &node, &dir, &mut sp, false).await?;
+        tokio::time::timeout(
+            crate::route::share::SHARE_NET_TIMEOUT * 2,
+            node.publish_secure(&sp),
+        )
+        .await
+        .map_err(|_| ApiError::new(504, "share sync publish timed out"))??;
+        touch(&e2ee_hoster_doc);
+        return Ok(json!({ "synced": true, "role": "hoster", "e2ee": true }));
+    }
+
+    if e2ee_reader_doc.is_file() {
+        // E2ee reader leg: dial the host, refresh the mirror, then import into
+        // the linked project. A revoked device surfaces as sync_e2ee's NotFound.
+        if settings.direction == SyncDirection::LocalToShared {
+            return Ok(json!({ "synced": false, "reason": "direction", "role": "reader" }));
+        }
+        let Some(node) = share.node().await else {
+            eprintln!("share sync {share_id}: p2p offline");
+            return Ok(json!({ "synced": false, "reason": "p2p offline" }));
+        };
+        // Keyhive/BeeKEM ops run slower than plain sync; double the net budget.
+        let outcome = tokio::time::timeout(
+            crate::route::share::SHARE_NET_TIMEOUT * 2,
+            node.sync_e2ee(share_id),
+        )
+        .await
+        .map_err(|_| ApiError::new(504, "share sync timed out"))??;
+        if state
+            .with_conn(|c| project_svc::find_by_share_id(c, share_id))?
+            .is_some()
+        {
+            let sp = ShareNode::e2ee_received(&dir, share_id)?;
+            state.with_conn(|c| import_shared_project(c, &sp))?;
+        }
+        touch(&e2ee_reader_doc);
+        let mut v = json!({ "synced": true, "role": "reader", "e2ee": true });
+        let undecryptable = outcome.no_key + outcome.failed;
+        if undecryptable > 0 {
+            v["undecryptable"] = json!(undecryptable);
+            v["reason"] = json!("revoked or awaiting key");
+        }
+        return Ok(v);
+    }
+
     Err(ApiError::new(404, format!("share {share_id:?} not found")))
 }
 
@@ -211,6 +401,8 @@ pub fn spawn_interval_sync(app: tauri::AppHandle) {
             // Dedupe ids; sync_share errors on a same-id doc in both dirs.
             let mut ids: std::collections::BTreeSet<String> = doc_ids(&dir).into_iter().collect();
             ids.extend(doc_ids(&received_dir(&dir)));
+            ids.extend(doc_ids(&e2ee_dir(&dir)));
+            ids.extend(doc_ids(&e2ee_received_dir(&dir)));
             for id in ids {
                 if let Err(e) = sync_share(&state, &share, &id).await {
                     eprintln!("share interval sync {id}: {} {}", e.status, e.detail);
@@ -305,5 +497,187 @@ mod tests {
         let settings = load_settings(tmp.path(), "nonexistent");
         assert!(!settings.paused);
         assert_eq!(settings.direction, SyncDirection::TwoWay);
+    }
+
+    // ── W4: e2ee legs ────────────────────────────────────────────────────────
+
+    const E2EE_SID: &str = "44444444-4444-4444-8444-444444444444";
+
+    fn e2ee_sample() -> linxiv_share::SharedProject {
+        linxiv_share::SharedProject {
+            share_id: E2EE_SID.into(),
+            name: "E2ee P".into(),
+            description: "d".into(),
+            color: None,
+            tags: vec!["v1".into()],
+            papers: vec![],
+            notes: vec![],
+            annotations: vec![],
+        }
+    }
+
+    // Keyhive/BeeKEM ops are slow in debug builds; generous per-op budget.
+    async fn slow<T>(fut: impl std::future::Future<Output = T>) -> T {
+        tokio::time::timeout(Duration::from_secs(60), fut)
+            .await
+            .expect("e2ee op should not hang on loopback")
+    }
+
+    #[tokio::test]
+    async fn paused_e2ee_share_reports_paused() {
+        let tmp = TempDir::new().unwrap();
+        let state = mem_state();
+        let share = ShareState::new(tmp.path());
+        let doc = doc_path(&e2ee_received_dir(tmp.path()), E2EE_SID);
+        fs::create_dir_all(doc.parent().unwrap()).unwrap();
+        fs::write(&doc, "dummy").unwrap();
+        let settings = ShareSettings {
+            paused: true,
+            ..Default::default()
+        };
+        save_settings(tmp.path(), E2EE_SID, &settings).unwrap();
+
+        let v = sync_share(&state, &share, E2EE_SID).await.unwrap();
+        assert_eq!(v, json!({ "synced": false, "reason": "paused" }));
+    }
+
+    #[tokio::test]
+    async fn e2ee_project_gone_keeps_doc_and_settings_files() {
+        let tmp = TempDir::new().unwrap();
+        let state = mem_state();
+        let share = ShareState::new(tmp.path());
+        let doc = doc_path(&e2ee_dir(tmp.path()), E2EE_SID);
+        fs::create_dir_all(doc.parent().unwrap()).unwrap();
+        fs::write(&doc, "dummy").unwrap();
+        save_settings(tmp.path(), E2EE_SID, &ShareSettings::default()).unwrap();
+
+        let v = sync_share(&state, &share, E2EE_SID).await.unwrap();
+        assert_eq!(v, json!({ "synced": false, "reason": "project gone" }));
+        assert!(doc.exists());
+        assert!(settings_path(tmp.path(), E2EE_SID).exists());
+    }
+
+    // Real bind pair over loopback: A's hoster leg rebuilds + republishes from
+    // canonical, B's reader leg dials, refreshes the mirror, and imports into
+    // the linked project.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn e2ee_hoster_and_reader_legs_sync_over_loopback() {
+        let a_dir = TempDir::new().unwrap();
+        let b_dir = TempDir::new().unwrap();
+        let node_a = ShareNode::bind_offline(a_dir.path(), &a_dir.path().join("p2p"))
+            .await
+            .unwrap();
+        let node_b = ShareNode::bind_offline(b_dir.path(), &b_dir.path().join("p2p"))
+            .await
+            .unwrap();
+        let share_a = ShareState::with_node(a_dir.path(), node_a);
+        let share_b = ShareState::with_node(b_dir.path(), node_b);
+        let state_a = mem_state();
+        let state_b = mem_state();
+
+        // A: canonical project linked to the share id + first secure publish.
+        let sp = e2ee_sample();
+        state_a
+            .with_conn(|c| import_shared_project(c, &sp))
+            .unwrap();
+        let node_a = share_a.node().await.unwrap();
+        slow(node_a.publish_secure(&sp)).await.unwrap();
+
+        let v = slow(sync_share(&state_a, &share_a, E2EE_SID))
+            .await
+            .unwrap();
+        assert_eq!(v, json!({ "synced": true, "role": "hoster", "e2ee": true }));
+
+        // Invite B and link its mirror to a local project.
+        let node_b = share_b.node().await.unwrap();
+        let code = node_b.member_code().await.unwrap();
+        let (_member, invite) = node_a
+            .invite_member(E2EE_SID, &code, linxiv_share::Role::Read)
+            .await
+            .unwrap();
+        assert_eq!(slow(node_b.accept_invite(&invite)).await.unwrap(), E2EE_SID);
+        let mirror = ShareNode::e2ee_received(b_dir.path(), E2EE_SID).unwrap();
+        state_b
+            .with_conn(|c| import_shared_project(c, &mirror))
+            .unwrap();
+
+        // A evolves the share; B's reader leg pulls and imports the change.
+        let mut evolved = sp.clone();
+        evolved.tags.push("post-invite".into());
+        slow(node_a.publish_secure(&evolved)).await.unwrap();
+
+        let v = slow(sync_share(&state_b, &share_b, E2EE_SID))
+            .await
+            .unwrap();
+        assert_eq!(v["synced"], json!(true));
+        assert_eq!(v["role"], json!("reader"));
+        assert_eq!(v["e2ee"], json!(true));
+        let fk = state_b
+            .with_conn(|c| project_svc::find_by_share_id(c, E2EE_SID))
+            .unwrap()
+            .expect("mirror linked to a project");
+        let p = state_b
+            .with_conn(|c| {
+                project_svc::get(
+                    c,
+                    &project_svc::Project {
+                        project_fk: Some(fk),
+                    },
+                )
+            })
+            .unwrap()
+            .unwrap();
+        assert!(p.project_tags.contains(&"post-invite".to_string()));
+
+        share_a.shutdown().await.unwrap();
+        share_b.shutdown().await.unwrap();
+    }
+
+    // The hoster leg stores a blob ticket for a paper whose PDF is on disk, and
+    // a later pass carries the ticket forward instead of wiping it on rebuild.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn e2ee_hoster_leg_populates_pdf_blob_and_carries_it_forward() {
+        let tmp = TempDir::new().unwrap();
+        let pdf_dir = TempDir::new().unwrap();
+        let mut conn = storage::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        let mut sp = e2ee_sample();
+        sp.papers.push(linxiv_share::SharedPaper {
+            source_id: "arxiv:9".into(),
+            version: 1,
+            published: None,
+            title: "P".into(),
+            summary: "s".into(),
+            authors: vec![],
+            tags: vec![],
+            pdf_blob: None,
+        });
+        import_shared_project(&mut conn, &sp).unwrap();
+        let state = AppState::from_parts(conn, pdf_dir.path().to_path_buf(), std::env::temp_dir());
+        std::fs::write(
+            pdf_dir
+                .path()
+                .join(linxiv_core::service::paper::pdf_on_disk_name("arxiv:9", 1)),
+            b"%PDF-1.7 x",
+        )
+        .unwrap();
+
+        let node = ShareNode::bind_offline(tmp.path(), &tmp.path().join("p2p"))
+            .await
+            .unwrap();
+        let share = ShareState::with_node(tmp.path(), node);
+        let node = share.node().await.unwrap();
+        slow(node.publish_secure(&sp)).await.unwrap();
+
+        let v = slow(sync_share(&state, &share, E2EE_SID)).await.unwrap();
+        assert_eq!(v["synced"], json!(true));
+        let doc = load(&e2ee_dir(tmp.path()), E2EE_SID).unwrap();
+        let ticket = doc.papers[0].pdf_blob.clone().expect("blob ticket stored");
+
+        slow(sync_share(&state, &share, E2EE_SID)).await.unwrap();
+        let doc = load(&e2ee_dir(tmp.path()), E2EE_SID).unwrap();
+        assert_eq!(doc.papers[0].pdf_blob, Some(ticket));
+
+        share.shutdown().await.unwrap();
     }
 }

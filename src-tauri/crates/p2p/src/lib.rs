@@ -10,10 +10,16 @@ pub use sync::{ALPN, AccessCheckFn, DeviceIdentity, ShareNode, ShareTicket};
 pub mod auth;
 
 #[cfg(feature = "auth-keyhive")]
-pub use auth::{AuthIdentity, DeviceBinding, MemberId, ProjectAuth, Role};
+pub use auth::{AuthIdentity, DecryptError, DeviceBinding, MemberId, ProjectAuth, Role};
 
 #[cfg(feature = "sync-beelay")]
 pub mod beelay;
 
 #[cfg(feature = "sync-beelay")]
-pub use beelay::{BEELAY_ALPN, BeelayNode, ProjectInvite, SyncOutcome};
+pub use beelay::{
+    BEELAY_ALPN, BeelayNode, ProjectInvite, SyncOutcome, bind_stack, bind_stack_local,
+};
+
+// vendor-edit: the crate's fallible surface returns `n0_error::AnyError`;
+// re-exported so callers can name it (e.g. to downcast `beelay::BlobError`).
+pub use n0_error::AnyError;
