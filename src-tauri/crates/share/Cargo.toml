@@ -7,8 +7,14 @@ edition = "2021"
 name = "linxiv_share"
 path = "src/lib.rs"
 
+[features]
+auth-keyhive = ["linxiv-p2p/auth-keyhive"]
+sync-beelay = ["linxiv-p2p/sync-beelay"]
+
 [dependencies]
 linxiv-core = { path = "../core" }
+# Vendored p2p transport: iroh endpoint + automerge lockstep sync + tickets.
+linxiv-p2p = { path = "../p2p" }
 # Pinned to core's version so the `Connection` type unifies to one crate instance.
 rusqlite = "0.40"
 # CRDT engine: autosurgeon 0.12 derives Reconcile/Hydrate and requires automerge ^0.10.
@@ -16,20 +22,9 @@ automerge = "0.10.0"
 autosurgeon = "0.12.0"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
-# Phase-1 one-way share transport: iroh core only (Endpoint/Router + custom ALPN);
-# no iroh-blobs/gossip/docs. iroh's default `tls-ring` keeps the build hermetic
-# (ring backend, no aws-lc-rs / CMake).
-iroh = "1.0"
-# Unguessable per-share capability tokens (>=16 random bytes).
-rand = "0.8"
-# Pasteable ticket: serde struct -> postcard bytes -> base32 (filename/url safe).
-data-encoding = "2"
-postcard = { version = "1", features = ["use-std"] }
-# Per-connection deadline (tokio::time) + non-blocking inbound file I/O (tokio::fs).
-tokio = { version = "1", features = ["time", "fs"] }
+# Async runtime: transport.rs's refresh() calls spawn_blocking in production code.
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"] }
 
 [dev-dependencies]
 tempfile = "3"
 chrono = "0.4"
-# Async runtime for the loopback transport tests (iroh needs a tokio reactor).
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

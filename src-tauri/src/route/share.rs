@@ -100,24 +100,22 @@ pub async fn share_api(
             return ticket(state.inner(), share.inner(), id).await
         }
         ("POST", ["api", "share", "join"]) => return join(share.inner(), ctx.body).await,
+        ("POST", ["api", "share", "project", id, "publish"]) => {
+            return publish(state.inner(), share.inner(), id).await
+        }
         _ => {}
     }
-    handle(state.inner(), share.inner(), &ctx).unwrap_or_else(|| Err(ApiError::not_routed()))
+    handle(share.inner(), &ctx).unwrap_or_else(|| Err(ApiError::not_routed()))
 }
 
 /// Match a synchronous (store-only) `/api/share/*` request. Returns `None` (no
 /// arm) so the command can surface the same not-routed sentinel `route()` uses.
 /// The async network arms (ticket/join) are matched in `share_api` instead.
-pub(crate) fn handle(
-    state: &AppState,
-    share: &ShareState,
-    ctx: &ReqCtx<'_>,
-) -> Option<Result<Value, ApiError>> {
+pub(crate) fn handle(share: &ShareState, ctx: &ReqCtx<'_>) -> Option<Result<Value, ApiError>> {
     match (ctx.method, ctx.segs) {
         ("GET", ["api", "share", "projects"]) => Some(list_shared(share)),
         ("GET", ["api", "share", "received"]) => Some(list_received(share)),
         ("GET", ["api", "share", "received", id]) => Some(get_received(share, id)),
-        ("POST", ["api", "share", "project", id, "publish"]) => Some(publish(state, share, id)),
         _ => None,
     }
 }
@@ -181,11 +179,16 @@ fn get_received(share: &ShareState, id: &str) -> Result<Value, ApiError> {
 
 /// `POST /api/share/project/{id}/publish` — snapshot a canonical project into the
 /// CRDT store (read-only over the canonical connection) and return its share_id.
-fn publish(state: &AppState, share: &ShareState, id: &str) -> Result<Value, ApiError> {
+async fn publish(state: &AppState, share: &ShareState, id: &str) -> Result<Value, ApiError> {
     let project_id = path_i64(id)?;
     // Build the snapshot under the DB lock; write the CRDT doc to disk outside it.
     let sp = state.with_conn(|conn| build_shared_project(conn, project_id))?;
     save(share.store.share_dir(), &sp)?;
+    // Keep the serving registry in step with the doc file, or already-minted
+    // tickets sync the pre-republish snapshot. No node = file is the publish.
+    if let Some(node) = share.node.lock().await.clone() {
+        node.refresh(&sp.share_id).await?;
+    }
     Ok(json!({ "share_id": sp.share_id }))
 }
 
@@ -202,7 +205,8 @@ async fn live_node(share: &ShareState) -> Result<Arc<ShareNode>, ApiError> {
 
 /// `POST /api/share/project/{id}/ticket` — ensure the project is published
 /// (Phase-0 publish, read-only over the canonical connection), then mint a
-/// pasteable ticket carrying the sender's address + an unguessable capability.
+/// pasteable ticket carrying the sender's address + share id; access is gated
+/// by whether that id is currently published, not a per-recipient secret.
 async fn ticket(state: &AppState, share: &ShareState, id: &str) -> Result<Value, ApiError> {
     let project_id = path_i64(id)?;
     let sp = state.with_conn(|conn| build_shared_project(conn, project_id))?;
@@ -223,10 +227,12 @@ async fn join(share: &ShareState, body: Option<&Value>) -> Result<Value, ApiErro
         .and_then(|b| b.get("ticket"))
         .and_then(Value::as_str)
         .ok_or_else(|| ApiError::new(422, "missing `ticket` in body"))?;
-    // A malformed/unparseable ticket is the caller's bad input, not a server fault.
-    let ticket: ShareTicket = raw
-        .parse()
-        .map_err(|e: ShareError| ApiError::new(400, e.to_string()))?;
+    let ticket: ShareTicket = raw.parse().map_err(|e| {
+        ApiError::new(
+            400,
+            format!("invalid ticket (tickets from older linXiv versions are no longer valid): {e}"),
+        )
+    })?;
 
     let node = live_node(share).await?;
     let sp = tokio::time::timeout(
@@ -315,12 +321,7 @@ mod tests {
         (state, project_id)
     }
 
-    fn dispatch(
-        state: &AppState,
-        share: &ShareState,
-        method: &str,
-        path: &str,
-    ) -> Result<Value, ApiError> {
+    fn dispatch(share: &ShareState, method: &str, path: &str) -> Result<Value, ApiError> {
         let segs = split_segments(path);
         let query: HashMap<String, String> = HashMap::new();
         let s: Vec<&str> = segs.iter().map(String::as_str).collect();
@@ -330,35 +331,30 @@ mod tests {
             query: &query,
             body: None,
         };
-        handle(state, share, &ctx).expect("share arm matched")
+        handle(share, &ctx).expect("share arm matched")
     }
 
-    #[test]
-    fn list_publish_list_envelopes() {
+    #[tokio::test]
+    async fn list_publish_list_envelopes() {
         let (state, pid) = seeded_state();
         let dir = tempfile::tempdir().unwrap();
         let share = ShareState::new(dir.path());
 
         // Empty before any publish.
         assert_eq!(
-            dispatch(&state, &share, "GET", "/api/share/projects").unwrap(),
+            dispatch(&share, "GET", "/api/share/projects").unwrap(),
             json!({ "shared_projects": [] })
         );
 
-        // Publish returns the project id as the share_id.
+        // Publish (async arm; nodeless state skips the registry refresh) returns
+        // the project id as the share_id.
         assert_eq!(
-            dispatch(
-                &state,
-                &share,
-                "POST",
-                &format!("/api/share/project/{pid}/publish")
-            )
-            .unwrap(),
+            publish(&state, &share, &pid.to_string()).await.unwrap(),
             json!({ "share_id": pid.to_string() })
         );
 
         // The summary now lists the published project.
-        let listed = dispatch(&state, &share, "GET", "/api/share/projects").unwrap();
+        let listed = dispatch(&share, "GET", "/api/share/projects").unwrap();
         assert_eq!(
             listed,
             json!({
@@ -373,13 +369,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn publish_missing_project_is_404() {
+    #[tokio::test]
+    async fn publish_missing_project_is_404() {
         let (state, _pid) = seeded_state();
         let dir = tempfile::tempdir().unwrap();
         let share = ShareState::new(dir.path());
 
-        let err = dispatch(&state, &share, "POST", "/api/share/project/9999/publish").unwrap_err();
+        let err = publish(&state, &share, "9999").await.unwrap_err();
         assert_eq!(err.status, 404);
     }
 
@@ -390,7 +386,9 @@ mod tests {
     async fn ticket_route_mints_parseable_ticket() {
         let (state, pid) = seeded_state();
         let dir = tempfile::tempdir().unwrap();
-        let node = ShareNode::bind_offline(dir.path()).await.unwrap();
+        let node = ShareNode::bind_offline(dir.path(), &dir.path().join("p2p"))
+            .await
+            .unwrap();
         let share = ShareState::with_node(dir.path(), node);
 
         let resp = ticket(&state, &share, &pid.to_string()).await.unwrap();

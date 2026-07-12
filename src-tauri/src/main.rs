@@ -59,9 +59,19 @@ fn main() {
             // during setup so the network arms have a live node from first request.
             let share_dir = config::data_dir().join("share");
             std::fs::create_dir_all(&share_dir).map_err(|e| e.to_string())?;
-            let node = tauri::async_runtime::block_on(ShareNode::bind(share_dir.clone()))
-                .map_err(|e| e.to_string())?;
-            app.manage(ShareState::with_node(share_dir, node));
+            // Persisted device key lives beside (not inside) the served share dir.
+            let p2p_dir = config::data_dir().join("p2p");
+            let share_state = match tauri::async_runtime::block_on(ShareNode::bind(
+                share_dir.clone(),
+                &p2p_dir,
+            )) {
+                Ok(node) => ShareState::with_node(share_dir, node),
+                Err(e) => {
+                    eprintln!("warning: share node bind failed, sharing disabled: {e}");
+                    ShareState::new(share_dir)
+                }
+            };
+            app.manage(share_state);
             // Point the pdfium loader at the libpdfium bundled under the app
             // resources (tauri.conf.json `bundle.resources` maps it into pdfium/).
             if std::env::var_os("LINXIV_PDFIUM_LIB").is_none() {

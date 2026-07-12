@@ -26,6 +26,10 @@ path = "src/main.rs"
 name = "linxiv-dev-server"
 path = "src/bin/dev_server.rs"
 
+[features]
+auth-keyhive = ["linxiv-share/auth-keyhive"]
+sync-beelay = ["linxiv-share/sync-beelay"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

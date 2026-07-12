@@ -24,6 +24,10 @@ use n0_error::{AnyError, Result, StackResultExt, StdResultExt, anyerr};
 /// ALPN for linXiv project-sync sessions.
 pub const ALPN: &[u8] = b"linxiv/sync/0";
 
+// vendor-edit: connection close code the host sends for an unknown/denied
+// project, so join() can tell a refusal from a transport failure.
+const REFUSED_CODE: u32 = 1;
+
 /// Largest accepted sync frame.
 // ponytail: 64 MiB cap on untrusted frame lengths; raise if project docs outgrow it.
 const MAX_FRAME: u64 = 64 * 1024 * 1024;
@@ -160,6 +164,13 @@ impl ShareTicket {
     pub fn endpoint_id(&self) -> EndpointId {
         self.endpoint.endpoint_addr().id
     }
+
+    // vendor-edit: expose the full dialable address (endpoint_id() drops the
+    // direct addrs, which relay-less/bind_local dialing needs).
+    /// The hosting device's dialable address.
+    pub fn endpoint_addr(&self) -> &EndpointAddr {
+        self.endpoint.endpoint_addr()
+    }
 }
 
 impl Ticket for ShareTicket {
@@ -202,7 +213,8 @@ type Projects = Arc<Mutex<HashMap<String, Automerge>>>;
 pub struct ShareNode {
     router: Router,
     projects: Projects,
-    #[cfg(feature = "auth-keyhive")]
+    // vendor-edit: access_check ungated — the linXiv share layer installs a
+    // keyhive-free filesystem check.
     access_check: AccessCheck,
 }
 
@@ -238,7 +250,6 @@ impl ShareNode {
         Ok(Self {
             router,
             projects,
-            #[cfg(feature = "auth-keyhive")]
             access_check,
         })
     }
@@ -252,7 +263,6 @@ impl ShareNode {
     /// project sync; a denied peer's stream is rejected. Belt-and-braces with
     /// app-level checks — build one from the capability layer with
     /// [`crate::auth::ProjectAuth::access_callback`].
-    #[cfg(feature = "auth-keyhive")]
     pub fn set_access_check(&self, check: AccessCheckFn) {
         *self.access_check.0.lock().unwrap() = Some(check);
     }
@@ -288,7 +298,7 @@ impl ShareNode {
     /// Joins (or re-syncs) a shared project: dials the host in the ticket and
     /// runs one sync session. If this node doesn't have the project yet, it
     /// starts from an empty document.
-    pub async fn join(&self, ticket: &ShareTicket) -> Result<()> {
+    pub async fn join(&self, ticket: &ShareTicket) -> Result<(), JoinError> {
         self.projects
             .lock()
             .unwrap()
@@ -300,25 +310,67 @@ impl ShareNode {
             .connect(ticket.endpoint.endpoint_addr().clone(), ALPN)
             .await
             .context("dialing share host")?;
-        let (mut send, mut recv) = conn.open_bi().await.std_context("opening sync stream")?;
-        send_frame(&mut send, ticket.project_id.as_bytes()).await?;
-        run_sync(
-            &self.projects,
-            &ticket.project_id,
-            &mut send,
-            &mut recv,
-            true,
-        )
-        .await?;
-        // we received the last sync message, so we close; the responder awaits it.
-        conn.close(0u32.into(), b"done");
-        Ok(())
+        let session = async {
+            let (mut send, mut recv) = conn.open_bi().await.std_context("opening sync stream")?;
+            send_frame(&mut send, ticket.project_id.as_bytes()).await?;
+            run_sync(
+                &self.projects,
+                &ticket.project_id,
+                &mut send,
+                &mut recv,
+                true,
+            )
+            .await
+        };
+        match session.await {
+            Ok(()) => {
+                // we received the last sync message, so we close; the responder awaits it.
+                conn.close(0u32.into(), b"done");
+                Ok(())
+            }
+            // vendor-edit: a REFUSED_CODE close from the host means the project is
+            // unknown/denied there; surface it typed instead of as a stream error.
+            Err(e) => match conn.close_reason() {
+                Some(iroh::endpoint::ConnectionError::ApplicationClosed(c))
+                    if c.error_code == REFUSED_CODE.into() =>
+                {
+                    Err(JoinError::Refused)
+                }
+                _ => Err(JoinError::Other(e)),
+            },
+        }
     }
 
     /// Graceful shutdown: stops accepting and closes the endpoint (flushing
     /// in-flight data).
     pub async fn shutdown(&self) -> Result<()> {
         self.router.shutdown().await.std_context("router shutdown")
+    }
+}
+
+// vendor-edit: typed join failure so callers can map a host refusal
+// (unknown/denied project) to "not found" instead of a transport fault.
+#[derive(Debug)]
+pub enum JoinError {
+    /// The host answered but refuses to serve this project.
+    Refused,
+    Other(AnyError),
+}
+
+impl fmt::Display for JoinError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            JoinError::Refused => write!(f, "host refused: share unknown or access denied"),
+            JoinError::Other(e) => e.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for JoinError {}
+
+impl From<AnyError> for JoinError {
+    fn from(e: AnyError) -> Self {
+        JoinError::Other(e)
     }
 }
 
@@ -338,13 +390,13 @@ impl ProtocolHandler for SyncProtocol {
             .await?
             .ok_or_else(|| anyerr!("initiator sent empty project id"))?;
         let project_id = String::from_utf8(project_id).map_err(AcceptError::from_err)?;
-        if !self.access_check.allows(conn.remote_id(), &project_id) {
-            return Err(AcceptError::from(anyerr!(
-                "peer is not authorized for project {project_id}"
-            )));
-        }
-        if !self.projects.lock().unwrap().contains_key(&project_id) {
-            return Err(AcceptError::from(anyerr!("unknown project {project_id}")));
+        // vendor-edit: unknown/denied projects close with REFUSED_CODE so the
+        // joining side sees a detectable refusal, not a generic handler error.
+        if !self.access_check.allows(conn.remote_id(), &project_id)
+            || !self.projects.lock().unwrap().contains_key(&project_id)
+        {
+            conn.close(REFUSED_CODE.into(), b"refused");
+            return Ok(());
         }
         run_sync(&self.projects, &project_id, &mut send, &mut recv, false).await?;
         // we sent the last sync message: wait for the initiator to close so the

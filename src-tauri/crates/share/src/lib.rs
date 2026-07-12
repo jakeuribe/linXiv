@@ -9,7 +9,9 @@
 //!
 //! The share directory is injected (`ShareStore::new(path)`); production resolves
 //! it as `config::data_dir()/share`. Phase 1 adds a one-way iroh transport (see
-//! `transport`) that serves these docs over a capability-gated ALPN.
+//! `transport`) that serves every locally-published top-level doc to any peer
+//! that knows its id, quarantining `received/` mirrors via an existence-based
+//! access check. There is no per-share secret or capability in this phase.
 
 mod model;
 mod transport;
@@ -25,7 +27,7 @@ use linxiv_core::service::{
 };
 
 pub use model::{SharedAnnotation, SharedNote, SharedPaper, SharedProject, SharedSummary};
-pub use transport::{mint_capability, resolve_capability, CapToken, ShareNode, ShareTicket, ALPN};
+pub use transport::{ShareNode, ShareTicket, ALPN};
 
 const SHARE_EXT: &str = "automerge";
 
