@@ -11,7 +11,7 @@ use rusqlite::Connection;
 
 use crate::error::Result;
 
-/// Run all twelve idempotent post-schema migrations in order. Call between
+/// Run all idempotent post-schema migrations in order. Call between
 /// `apply_tables` and `apply_views` (views reference columns these add) — see
 /// `super::init_db`, which also runs `dedup_project_to_paper` BEFORE apply_tables.
 pub fn run_migrations(conn: &Connection) -> Result<()> {
@@ -27,6 +27,9 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     notes_fts_backfill(conn)?;
     project_reading_list_flag(conn)?;
     paper_to_reading_cascade_fk(conn)?;
+    project_share_id(conn)?;
+    note_uuid(conn)?;
+    annotation_uuid(conn)?;
     Ok(())
 }
 
@@ -299,6 +302,64 @@ fn paper_to_reading_cascade_fk(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+// ── 13. PROJECT.SHARE_ID (persisted share identity, uuid v4) ─────────────────
+
+/// Set lazily on first publish (`project::ensure_share_id`),
+/// never at project creation.
+fn project_share_id(conn: &Connection) -> Result<()> {
+    if !has_column(conn, "PROJECT", "SHARE_ID")? {
+        conn.execute_batch("ALTER TABLE PROJECT ADD COLUMN SHARE_ID TEXT")?;
+    }
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_project_share_id_unique ON PROJECT (SHARE_ID) WHERE STATUS != 'deleted'",
+    )?;
+    Ok(())
+}
+
+/// Backfill every NULL `col` with a fresh uuid v4, then enforce uniqueness.
+/// Runs on every startup.
+fn backfill_uuid_column(conn: &Connection, table: &str, col: &str, index: &str) -> Result<()> {
+    let ids: Vec<i64> = conn
+        .prepare(&format!("SELECT rowid FROM {table} WHERE {col} IS NULL"))?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut stmt = conn.prepare(&format!("UPDATE {table} SET {col} = ?1 WHERE rowid = ?2"))?;
+    let tx = conn.unchecked_transaction()?;
+    for id in ids {
+        stmt.execute(rusqlite::params![uuid::Uuid::new_v4().to_string(), id])?;
+    }
+    tx.commit()?;
+    conn.execute_batch(&format!(
+        "CREATE UNIQUE INDEX IF NOT EXISTS {index} ON {table} ({col})"
+    ))?;
+    Ok(())
+}
+
+// ── 14. NOTE.NOTE_UUID (stable note identity) ────────────────────────────────
+
+fn note_uuid(conn: &Connection) -> Result<()> {
+    if !has_column(conn, "NOTE", "NOTE_UUID")? {
+        conn.execute_batch("ALTER TABLE NOTE ADD COLUMN NOTE_UUID TEXT")?;
+    }
+    backfill_uuid_column(conn, "NOTE", "NOTE_UUID", "idx_note_uuid_unique")
+}
+
+// ── 15. ANNOTATION.ANNOTATION_UUID (stable annotation identity) ──────────────
+
+/// ANNOTATION itself is created by `annotation_table` (runs earlier);
+/// the guard adds the column to DBs created before it existed.
+fn annotation_uuid(conn: &Connection) -> Result<()> {
+    if !has_column(conn, "ANNOTATION", "ANNOTATION_UUID")? {
+        conn.execute_batch("ALTER TABLE ANNOTATION ADD COLUMN ANNOTATION_UUID TEXT")?;
+    }
+    backfill_uuid_column(
+        conn,
+        "ANNOTATION",
+        "ANNOTATION_UUID",
+        "idx_annotation_uuid_unique",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,6 +374,12 @@ mod tests {
         run_migrations(&conn).unwrap();
         run_migrations(&conn).unwrap();
         assert!(has_column(&conn, "PROJECT", "IS_READING_LIST").unwrap());
+        assert!(has_column(&conn, "PROJECT", "SHARE_ID").unwrap());
+        assert!(has_column(&conn, "NOTE", "NOTE_UUID").unwrap());
+        assert!(has_column(&conn, "ANNOTATION", "ANNOTATION_UUID").unwrap());
+        assert!(index_exists(&conn, "idx_note_uuid_unique").unwrap());
+        assert!(index_exists(&conn, "idx_annotation_uuid_unique").unwrap());
+        assert!(index_exists(&conn, "idx_project_share_id_unique").unwrap());
         assert!(paper_to_reading_has_cascade_fk(&conn).unwrap());
         assert!(index_exists(&conn, "idx_tag_label_unique").unwrap());
         assert!(index_exists(&conn, "idx_project_to_paper_unique").unwrap());
@@ -445,6 +512,85 @@ mod tests {
         );
     }
 
+    /// A DB predating SHARE_ID / NOTE_UUID / ANNOTATION_UUID gains the columns
+    /// and unique indexes on startup, and every pre-existing NOTE/ANNOTATION row
+    /// is backfilled with a distinct uuid.
+    #[test]
+    fn legacy_db_without_share_and_uuid_columns_upgrades() {
+        let conn = crate::storage::db::open_in_memory().unwrap();
+        // Legacy shapes without the three columns (FK clauses omitted — their
+        // referents don't exist yet, as in the dedup test above).
+        conn.execute_batch(
+            "CREATE TABLE PROJECT(
+                 PROJECT_FK      INTEGER NOT NULL,
+                 NAME            TEXT    NOT NULL,
+                 DESCRIPTION     TEXT    DEFAULT '',
+                 COLOR           INTEGER,
+                 STATUS          TEXT    NOT NULL DEFAULT 'active',
+                 IS_READING_LIST INTEGER NOT NULL DEFAULT 0,
+                 CREATED_AT      TIMESTAMP NOT NULL DEFAULT (datetime('now')),
+                 UPDATED_AT      TIMESTAMP NOT NULL DEFAULT (datetime('now')),
+                 ARCHIVED_AT     TIMESTAMP,
+                 PRIMARY KEY (PROJECT_FK)
+             );
+             CREATE TABLE NOTE(
+                 NOTE_SK     INTEGER NOT NULL,
+                 SOURCE_FK   INTEGER NOT NULL,
+                 PAPER_ID_FK INTEGER,
+                 PROJECT_FK  INTEGER,
+                 TITLE       TEXT,
+                 NOTE        BLOB,
+                 CREATED_AT  TIMESTAMP NOT NULL DEFAULT (datetime('now')),
+                 UPDATED_AT  TIMESTAMP NOT NULL DEFAULT (datetime('now')),
+                 PRIMARY KEY (NOTE_SK)
+             );
+             CREATE TABLE ANNOTATION(
+                 ANNOTATION_SK INTEGER NOT NULL,
+                 SOURCE_FK     INTEGER NOT NULL,
+                 PROJECT_FK    INTEGER,
+                 ANCHOR        TEXT NOT NULL,
+                 COMMENT       TEXT NOT NULL DEFAULT '',
+                 CREATED_AT    TIMESTAMP NOT NULL DEFAULT (datetime('now')),
+                 UPDATED_AT    TIMESTAMP NOT NULL DEFAULT (datetime('now')),
+                 PRIMARY KEY (ANNOTATION_SK)
+             );
+             INSERT INTO PROJECT (PROJECT_FK, NAME) VALUES (1, 'p');
+             INSERT INTO NOTE (NOTE_SK, SOURCE_FK, TITLE, NOTE)
+                 VALUES (1, 1, 't1', 'c1'), (2, 1, 't2', 'c2');
+             INSERT INTO ANNOTATION (ANNOTATION_SK, SOURCE_FK, ANCHOR)
+                 VALUES (1, 1, '{}'), (2, 1, '{}');",
+        )
+        .unwrap();
+
+        crate::storage::init_db(&conn).unwrap();
+
+        assert!(has_column(&conn, "PROJECT", "SHARE_ID").unwrap());
+        assert!(has_column(&conn, "NOTE", "NOTE_UUID").unwrap());
+        assert!(has_column(&conn, "ANNOTATION", "ANNOTATION_UUID").unwrap());
+        assert!(index_exists(&conn, "idx_project_share_id_unique").unwrap());
+        assert!(index_exists(&conn, "idx_note_uuid_unique").unwrap());
+        assert!(index_exists(&conn, "idx_annotation_uuid_unique").unwrap());
+
+        for (table, col) in [("NOTE", "NOTE_UUID"), ("ANNOTATION", "ANNOTATION_UUID")] {
+            let uuids: Vec<Option<String>> = conn
+                .prepare(&format!("SELECT {col} FROM {table}"))
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            let uuids: Vec<String> = uuids
+                .into_iter()
+                .map(|u| u.unwrap_or_else(|| panic!("{table}.{col} left NULL")))
+                .collect();
+            assert_eq!(uuids.len(), 2);
+            assert_ne!(
+                uuids[0], uuids[1],
+                "{table}.{col} backfill must be distinct"
+            );
+        }
+    }
+
     /// A pre-migration-6 DB can hold duplicate (PROJECT_FK, SOURCE_FK) membership
     /// rows. Startup (init_db) must dedup them and then create the unique index —
     /// never fail with `UNIQUE constraint failed` and brick the app (which is what
@@ -481,6 +627,34 @@ mod tests {
             .collect::<rusqlite::Result<_>>()
             .unwrap();
         assert_eq!(rows, vec![1, 3]);
+    }
+
+    #[test]
+    fn uuid_backfill_fills_pre_existing_rows() {
+        let conn = crate::storage::db::open_in_memory().unwrap();
+        schema::apply_tables(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO PAPER_ROOTS (SOURCE_FK, SOURCE_ID) VALUES (1, 'arxiv:1');
+             INSERT INTO NOTE (NOTE_SK, SOURCE_FK, TITLE, NOTE) VALUES (1, 1, 't', 'c');",
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let u: Option<String> = conn
+            .query_row("SELECT NOTE_UUID FROM NOTE WHERE NOTE_SK = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let u = u.expect("backfilled");
+        assert_eq!(u.len(), 36, "uuid v4 string form");
+        run_migrations(&conn).unwrap();
+        let again: Option<String> = conn
+            .query_row("SELECT NOTE_UUID FROM NOTE WHERE NOTE_SK = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(again.as_deref(), Some(u.as_str()));
     }
 
     #[test]

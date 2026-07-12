@@ -23,8 +23,12 @@ pub struct SharedProject {
 
 #[derive(Debug, Clone, PartialEq, Reconcile, Hydrate)]
 pub struct SharedPaper {
+    /// Stable identity within a project; `#[key]` so autosurgeon merges
+    /// list edits by paper, not by position.
+    #[key]
     pub source_id: String,
     pub version: i64,
+    pub published: Option<String>,
     pub title: String,
     pub summary: String,
     pub authors: Vec<String>,
@@ -33,7 +37,13 @@ pub struct SharedPaper {
 
 #[derive(Debug, Clone, PartialEq, Reconcile, Hydrate)]
 pub struct SharedNote {
-    pub id: i64,
+    /// Stable canonical identity (NOTE.NOTE_UUID); `#[key]` so autosurgeon merges
+    /// list edits by note, not by position.
+    #[key]
+    pub uuid: String,
+    /// Paper the note hangs off.
+    /// Option because older docs may not carry it yet.
+    pub paper_source_id: Option<String>,
     pub title: String,
     pub body: String,
     pub created_at: Option<String>,
@@ -44,7 +54,9 @@ pub struct SharedNote {
 /// highlight-geometry JSON; `comment` is the written comment ("" = highlight-only).
 #[derive(Debug, Clone, PartialEq, Reconcile, Hydrate)]
 pub struct SharedAnnotation {
-    pub id: i64,
+    /// Stable canonical identity (ANNOTATION.ANNOTATION_UUID); CRDT list key.
+    #[key]
+    pub uuid: String,
     pub paper_source_id: String,
     pub anchor: String,
     pub comment: String,

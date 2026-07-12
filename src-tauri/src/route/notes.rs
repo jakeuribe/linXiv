@@ -98,6 +98,7 @@ fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
                 paper_id: b.paper_id,
                 title: b.title,
                 content: b.content,
+                uuid: None,
             },
         )?;
         Ok(json!({ "id": note_id }))

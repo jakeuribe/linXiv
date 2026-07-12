@@ -80,6 +80,7 @@ impl Server {
                     anchor: p.anchor.clone(),
                     comment: p.comment.clone(),
                     project_fk: p.project_id,
+                    uuid: None,
                 },
             )
             .map_err(|e| match e {

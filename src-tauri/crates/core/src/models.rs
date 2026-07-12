@@ -275,6 +275,9 @@ pub struct ProjectDetails {
     pub updated_at: Option<NaiveDateTime>,
     #[serde(default)]
     pub archived_at: Option<NaiveDateTime>,
+    /// Persisted share identity (uuid v4); NULL until first publish.
+    #[serde(default)]
+    pub share_id: Option<String>,
 }
 
 impl ProjectDetails {
@@ -285,13 +288,13 @@ impl ProjectDetails {
     }
 }
 
-// Manual Serialize so the JSON matches Python's to_dict: 11 keys in the same
-// order, with the derived `paper_count` between `source_fks` and `status`.
+// Manual Serialize matching Python's to_dict key order, with the derived
+// `paper_count` between `source_fks` and `status`, plus the trailing `share_id`.
 // A `#[derive(Serialize)]` would silently drop paper_count (it is a method).
 impl Serialize for ProjectDetails {
     fn serialize<S: serde::Serializer>(&self, ser: S) -> std::result::Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut st = ser.serialize_struct("ProjectDetails", 11)?;
+        let mut st = ser.serialize_struct("ProjectDetails", 12)?;
         st.serialize_field("id", &self.id)?;
         st.serialize_field("name", &self.name)?;
         st.serialize_field("description", &self.description)?;
@@ -303,6 +306,7 @@ impl Serialize for ProjectDetails {
         st.serialize_field("created_at", &self.created_at)?;
         st.serialize_field("updated_at", &self.updated_at)?;
         st.serialize_field("archived_at", &self.archived_at)?;
+        st.serialize_field("share_id", &self.share_id)?;
         st.end()
     }
 }
@@ -315,6 +319,9 @@ impl Serialize for ProjectDetails {
 pub struct NoteDetails {
     #[serde(rename = "id")]
     pub note_id: Option<i64>,
+    /// Stable identity (uuid v4) surviving export/import + share.
+    #[serde(default)]
+    pub uuid: String,
     pub source_fk: i64,
     #[serde(default)]
     pub paper_id_fk: Option<i64>,
@@ -338,6 +345,9 @@ pub struct NoteDetails {
 pub struct AnnotationDetails {
     #[serde(rename = "id")]
     pub annotation_id: i64,
+    /// Stable identity (uuid v4) surviving export/import + share.
+    #[serde(default)]
+    pub uuid: String,
     pub source_fk: i64,
     #[serde(default)]
     pub project_id: Option<i64>,
@@ -361,6 +371,24 @@ pub fn validate_anchor(anchor: &str) -> std::result::Result<(), &'static str> {
     Ok(())
 }
 
+/// Resolve a UUID string to `Some(canonical_uuid)` only if it parses and the
+/// normalized form is not taken; `taken` is checked against the canonical string.
+pub(crate) fn resolve_uuid(
+    u: &str,
+    taken: impl FnOnce(&str) -> crate::error::Result<bool>,
+) -> crate::error::Result<Option<String>> {
+    let Ok(parsed) = uuid::Uuid::parse_str(u) else {
+        tracing::warn!("invalid uuid format: {}", u);
+        return Ok(None);
+    };
+    let normalized = parsed.to_string();
+    if taken(&normalized)? {
+        tracing::debug!("uuid collision: {}", normalized);
+        return Ok(None);
+    }
+    Ok(Some(normalized))
+}
+
 /// Insert DTO. `comment` defaults to "" (highlight with no written comment).
 #[derive(Debug, Clone, Deserialize)]
 pub struct AnnotationIn {
@@ -370,6 +398,9 @@ pub struct AnnotationIn {
     pub comment: String,
     #[serde(default)]
     pub project_fk: Option<i64>,
+    /// None = generate a fresh uuid at insert; Some = preserve (import path).
+    #[serde(default)]
+    pub uuid: Option<String>,
 }
 
 /// PATCH DTO. Only the written comment is mutable — the anchor (geometry/quote)
@@ -436,6 +467,9 @@ pub struct NoteIn {
     pub paper_id: Option<i64>,
     #[serde(default)]
     pub project_fk: Option<i64>,
+    /// None = generate a fresh uuid at insert; Some = preserve (import path).
+    #[serde(default)]
+    pub uuid: Option<String>,
 }
 
 /// `service/note.py::NoteUpdateIn`. title/content are non-nullable columns:
@@ -577,6 +611,7 @@ mod tests {
     fn note_id_field_serializes_as_id() {
         let n = NoteDetails {
             note_id: Some(7),
+            uuid: "u-7".into(),
             source_fk: 1,
             paper_id_fk: None,
             project_id: None,
@@ -603,6 +638,7 @@ mod tests {
             created_at: None,
             updated_at: None,
             archived_at: None,
+            share_id: None,
         };
         let s = serde_json::to_string(&p).unwrap();
         // derived field present and correct (a derive(Serialize) would drop it)

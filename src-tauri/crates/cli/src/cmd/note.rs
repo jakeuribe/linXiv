@@ -106,6 +106,7 @@ pub async fn run(cmd: NoteCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                     content,
                     paper_id: None,
                     project_fk: project_id,
+                    uuid: None,
                 },
             )?;
             output(&CreatedNote {

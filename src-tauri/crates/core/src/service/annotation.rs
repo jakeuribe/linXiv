@@ -60,13 +60,23 @@ pub fn create(conn: &Connection, ann: &AnnotationIn) -> Result<i64> {
             return Err(CoreError::ProjectNotFound);
         }
     }
+    let uuid: Option<String> = match &ann.uuid {
+        Some(u) => crate::models::resolve_uuid(u, |n| q::uuid_taken(conn, n).map_err(Into::into))?,
+        None => None,
+    };
     Ok(q::create_annotation(
         conn,
         ann.source_fk,
         ann.project_fk,
         &ann.anchor,
         &ann.comment,
+        uuid.as_deref(),
     )?)
+}
+
+/// Whether an annotation with this uuid already exists.
+pub fn uuid_taken(conn: &Connection, uuid: &str) -> Result<bool> {
+    Ok(q::uuid_taken(conn, uuid)?)
 }
 
 /// Delete an annotation by id. `false` if absent.
@@ -113,6 +123,7 @@ mod tests {
                 anchor: ANCHOR.into(),
                 comment: String::new(),
                 project_fk: Some(10),
+                uuid: None,
             },
         )
         .unwrap();
@@ -154,5 +165,42 @@ mod tests {
             get_many(&conn, &Annotations::default()).unwrap_err(),
             CoreError::Validation(_)
         ));
+    }
+
+    #[test]
+    fn uuid_preserved_on_first_create_and_fallback_on_duplicate() {
+        let conn = setup();
+        let fixed_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+        let id1 = create(
+            &conn,
+            &AnnotationIn {
+                source_fk: 1,
+                anchor: ANCHOR.into(),
+                comment: "first".into(),
+                project_fk: Some(10),
+                uuid: Some(fixed_uuid.into()),
+            },
+        )
+        .unwrap();
+
+        let got1 = get(&conn, id1).unwrap().unwrap();
+        assert_eq!(got1.uuid, fixed_uuid);
+
+        let id2 = create(
+            &conn,
+            &AnnotationIn {
+                source_fk: 1,
+                anchor: ANCHOR.into(),
+                comment: "second".into(),
+                project_fk: Some(10),
+                uuid: Some(fixed_uuid.into()),
+            },
+        )
+        .unwrap();
+
+        let got2 = get(&conn, id2).unwrap().unwrap();
+        assert_ne!(got2.uuid, fixed_uuid);
+        assert!(!got2.uuid.is_empty());
     }
 }

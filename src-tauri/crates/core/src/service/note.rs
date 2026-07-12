@@ -79,6 +79,10 @@ pub fn get_many(conn: &Connection, notes: &Notes) -> Result<Vec<NoteDetails>> {
 
 /// Insert a new note. Returns NOTE_SK.
 pub fn create(conn: &Connection, note: &NoteIn) -> Result<i64> {
+    let uuid: Option<String> = match &note.uuid {
+        Some(u) => crate::models::resolve_uuid(u, |n| q::uuid_taken(conn, n).map_err(Into::into))?,
+        None => None,
+    };
     Ok(q::create_note(
         conn,
         note.source_fk,
@@ -86,7 +90,13 @@ pub fn create(conn: &Connection, note: &NoteIn) -> Result<i64> {
         note.project_fk,
         &note.title,
         &note.content,
+        uuid.as_deref(),
     )?)
+}
+
+/// Whether a note with this uuid already exists.
+pub fn uuid_taken(conn: &Connection, uuid: &str) -> Result<bool> {
+    Ok(q::uuid_taken(conn, uuid)?)
 }
 
 /// Delete a note by note_id. `false` if absent or note_id unset.
@@ -147,6 +157,7 @@ mod tests {
                 content: "body1".into(),
                 paper_id: None,
                 project_fk: Some(10),
+                uuid: None,
             },
         )
         .unwrap();
@@ -216,6 +227,7 @@ mod tests {
                 content: "x".into(),
                 paper_id: None,
                 project_fk: None,
+                uuid: None,
             },
         )
         .unwrap();
@@ -227,6 +239,7 @@ mod tests {
                 content: "y".into(),
                 paper_id: None,
                 project_fk: Some(10),
+                uuid: None,
             },
         )
         .unwrap();
@@ -238,6 +251,7 @@ mod tests {
                 content: "z".into(),
                 paper_id: Some(100),
                 project_fk: None,
+                uuid: None,
             },
         )
         .unwrap();
@@ -345,6 +359,7 @@ mod tests {
                 content: "x".into(),
                 paper_id: None,
                 project_fk: Some(10),
+                uuid: None,
             },
         )
         .unwrap();
@@ -356,6 +371,7 @@ mod tests {
                 content: "y".into(),
                 paper_id: None,
                 project_fk: None,
+                uuid: None,
             },
         )
         .unwrap();
@@ -367,10 +383,69 @@ mod tests {
                 content: "z".into(),
                 paper_id: None,
                 project_fk: Some(10),
+                uuid: None,
             },
         )
         .unwrap();
 
         assert_eq!(list_all(&conn).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn uuid_preserved_on_first_create_and_fallback_on_duplicate() {
+        let conn = setup();
+        let fixed_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+        let id1 = create(
+            &conn,
+            &NoteIn {
+                source_fk: 1,
+                title: "first".into(),
+                content: "x".into(),
+                paper_id: None,
+                project_fk: Some(10),
+                uuid: Some(fixed_uuid.into()),
+            },
+        )
+        .unwrap();
+
+        let got1 = get(&conn, &Note { note_id: Some(id1) }).unwrap().unwrap();
+        assert_eq!(got1.uuid, fixed_uuid);
+
+        let id2 = create(
+            &conn,
+            &NoteIn {
+                source_fk: 1,
+                title: "second".into(),
+                content: "y".into(),
+                paper_id: None,
+                project_fk: Some(10),
+                uuid: Some(fixed_uuid.into()),
+            },
+        )
+        .unwrap();
+
+        let got2 = get(&conn, &Note { note_id: Some(id2) }).unwrap().unwrap();
+        assert_ne!(got2.uuid, fixed_uuid);
+        assert!(!got2.uuid.is_empty());
+
+        // uppercase spelling of the stored uuid: collision detected on the
+        // normalized form, fresh-uuid fallback fires.
+        let id3 = create(
+            &conn,
+            &NoteIn {
+                source_fk: 1,
+                title: "third".into(),
+                content: "z".into(),
+                paper_id: None,
+                project_fk: Some(10),
+                uuid: Some(fixed_uuid.to_uppercase()),
+            },
+        )
+        .unwrap();
+
+        let got3 = get(&conn, &Note { note_id: Some(id3) }).unwrap().unwrap();
+        assert_ne!(got3.uuid.to_lowercase(), fixed_uuid);
+        assert!(!got3.uuid.is_empty());
     }
 }

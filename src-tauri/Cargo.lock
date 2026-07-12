@@ -3867,6 +3867,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tracing",
+ "uuid",
  "wiremock",
  "zip 2.4.2",
 ]
@@ -3936,6 +3937,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

@@ -61,17 +61,27 @@ fn main() {
             std::fs::create_dir_all(&share_dir).map_err(|e| e.to_string())?;
             // Persisted device key lives beside (not inside) the served share dir.
             let p2p_dir = config::data_dir().join("p2p");
+            let mut node_bound = false;
             let share_state = match tauri::async_runtime::block_on(ShareNode::bind(
                 share_dir.clone(),
                 &p2p_dir,
             )) {
-                Ok(node) => ShareState::with_node(share_dir, node),
+                Ok(node) => {
+                    node_bound = true;
+                    ShareState::with_node(share_dir, node)
+                }
                 Err(e) => {
-                    eprintln!("warning: share node bind failed, sharing disabled: {e}");
+                    eprintln!(
+                        "warning: share node bind failed, sharing and background sync disabled: {e}"
+                    );
                     ShareState::new(share_dir)
                 }
             };
             app.manage(share_state);
+            if node_bound {
+                // Background share sync: one pass now, then every 5 min.
+                linxiv_app::share_sync::spawn_interval_sync(app.handle().clone());
+            }
             // Point the pdfium loader at the libpdfium bundled under the app
             // resources (tauri.conf.json `bundle.resources` maps it into pdfium/).
             if std::env::var_os("LINXIV_PDFIUM_LIB").is_none() {

@@ -16,6 +16,7 @@ use linxiv_p2p::DeviceIdentity;
 pub use linxiv_p2p::{ShareTicket, ALPN};
 
 use crate::{load, save, ShareError, SharedProject};
+pub use linxiv_core::service::export_import::valid_share_id;
 
 const RECEIVED_SUBDIR: &str = "received";
 const DEVICE_KEY_FILE: &str = "device.key";
@@ -26,13 +27,9 @@ fn net<E: std::fmt::Display>(e: E) -> ShareError {
     ShareError::Transport(format!("share transport: {e}"))
 }
 
-// True unless `id` could escape share_dir when joined as a path segment.
-fn valid_share_id(id: &str) -> bool {
-    !id.is_empty()
-        && !id.starts_with('.')
-        && !id.contains(['/', '\\'])
-        && !id.contains("..")
-        && !Path::new(id).is_absolute()
+/// The directory received mirrors are materialized under.
+pub fn received_dir(share_dir: &Path) -> PathBuf {
+    share_dir.join(RECEIVED_SUBDIR)
 }
 
 /// Owns the p2p node for the share ALPN. One node both serves its own published
@@ -162,18 +159,21 @@ impl ShareNode {
             )));
         }
         // Namespaced mirror dir.
-        save(&dest_share_dir.join(RECEIVED_SUBDIR), &sp)?;
+        save(&received_dir(dest_share_dir), &sp)?;
         Ok(sp)
     }
 
     /// Hydrate a received mirror by id from `dest_share_dir/received`.
     pub fn received(dest_share_dir: &Path, share_id: &str) -> Result<SharedProject> {
-        load(&dest_share_dir.join(RECEIVED_SUBDIR), share_id)
+        if !valid_share_id(share_id) {
+            return Err(ShareError::NotFound(share_id.to_string()));
+        }
+        load(&received_dir(dest_share_dir), share_id)
     }
 
     /// Summaries of every received mirror under `dest_share_dir/received`.
     pub fn list_received(dest_share_dir: &Path) -> Result<Vec<crate::SharedSummary>> {
-        crate::list_shared(&dest_share_dir.join(RECEIVED_SUBDIR))
+        crate::list_shared(&received_dir(dest_share_dir))
     }
 
     pub async fn shutdown(&self) -> Result<()> {
@@ -200,16 +200,18 @@ mod tests {
                 summary: "s".into(),
                 authors: vec!["Alice".into()],
                 tags: vec!["ml".into()],
+                published: None,
             }],
             notes: vec![crate::SharedNote {
-                id: 1,
+                uuid: "11111111-1111-4111-8111-111111111111".into(),
+                paper_source_id: Some("arxiv:1".into()),
                 title: "n".into(),
                 body: "b".into(),
                 created_at: None,
                 updated_at: None,
             }],
             annotations: vec![crate::SharedAnnotation {
-                id: 1,
+                uuid: "22222222-2222-4222-8222-222222222222".into(),
                 paper_source_id: "arxiv:1".into(),
                 anchor: "{}".into(),
                 comment: "c".into(),

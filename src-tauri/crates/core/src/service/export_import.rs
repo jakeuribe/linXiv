@@ -28,11 +28,23 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{CoreError, Result};
-use crate::models::{validate_anchor, NoteIn, PaperDetails, PaperMetadata, ProjectIn};
+use crate::models::{
+    validate_anchor, AnnotationIn, NoteIn, PaperDetails, PaperMetadata, ProjectIn,
+};
 use crate::service::{annotation, note, paper, project};
-use crate::storage::queries::{annotation as annotationq, paper as paperq};
+use crate::storage::queries::paper as paperq;
 
 const FORMAT_VERSION: i64 = 1;
+
+/// Path-safety validator for share IDs (re-exported by transport).
+pub fn valid_share_id(id: &str) -> bool {
+    // ':' — Windows drive-relative ids like "C:evil" escape share_dir via PathBuf::join.
+    !id.is_empty()
+        && !id.starts_with('.')
+        && !id.contains(['/', '\\', ':'])
+        && !id.contains("..")
+        && !std::path::Path::new(id).is_absolute()
+}
 
 /// Merge vs. overwrite behaviour for papers whose source_id already exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,6 +101,9 @@ pub struct ProjectEntry {
     pub color_hex: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Persisted share identity; restored on import when the target has none.
+    #[serde(default)]
+    pub share_id: Option<String>,
 }
 
 /// Archive paper record — mirrors `_serialize_paper`/`_deserialize_paper`.
@@ -182,6 +197,9 @@ pub struct NoteEntry {
     pub title: String,
     #[serde(default)]
     pub content: String,
+    /// Stable note identity; None on pre-uuid archives (a fresh one is generated).
+    #[serde(default)]
+    pub uuid: Option<String>,
 }
 
 /// Archive PDF-annotation record — keyed by source_id like notes. The version the
@@ -192,6 +210,9 @@ pub struct AnnotationEntry {
     pub anchor: String,
     #[serde(default)]
     pub comment: String,
+    /// Stable annotation identity; None on pre-uuid archives.
+    #[serde(default)]
+    pub uuid: Option<String>,
 }
 
 /// A decoded archive PDF entry. `archive_name` is the in-zip path, e.g.
@@ -279,6 +300,7 @@ pub fn build_manifest(
             paper_version: version,
             title: n.title.clone(),
             content: n.content.clone(),
+            uuid: Some(n.uuid.clone()),
         });
     }
 
@@ -291,6 +313,7 @@ pub fn build_manifest(
             paper_source_id: source_id,
             anchor: a.anchor.clone(),
             comment: a.comment.clone(),
+            uuid: Some(a.uuid.clone()),
         });
     }
 
@@ -323,6 +346,7 @@ pub fn build_manifest(
             description: details.description,
             color_hex,
             tags: details.project_tags,
+            share_id: details.share_id,
         },
         papers: paper_entries,
         notes: note_entries,
@@ -449,9 +473,18 @@ pub fn commit_from_manifest(
             source_fks: Vec::new(),
         },
     )?;
-
     match commit_body(conn, project_fk, manifest, pdfs, on_conflict, pdf_dir) {
-        Ok(()) => Ok(project_fk),
+        Ok(()) => {
+            // Restore the archived share identity after a successful import.
+            if let Some(share_id) = &manifest.project.share_id {
+                if let Ok(u) = uuid::Uuid::parse_str(share_id) {
+                    if let Err(e) = project::adopt_share_id(conn, project_fk, &u.to_string()) {
+                        tracing::warn!("share_id adoption failed for project {project_fk}: {e}");
+                    }
+                }
+            }
+            Ok(project_fk)
+        }
         Err(e) => {
             // Trash the partially-built project (Python `_project.delete`).
             tracing::warn!("import failed, trashing project {project_fk}: {e}");
@@ -617,6 +650,7 @@ fn import_notes(
                 content: nd.content.clone(),
                 paper_id,
                 project_fk: Some(project_fk),
+                uuid: nd.uuid.clone(),
             },
         )?;
     }
@@ -646,7 +680,16 @@ fn import_annotations(
             Some(r) => r.source_fk,
             None => continue,
         };
-        annotationq::create_annotation(conn, source_fk, Some(project_fk), &ad.anchor, &ad.comment)?;
+        annotation::create(
+            conn,
+            &AnnotationIn {
+                source_fk,
+                anchor: ad.anchor.clone(),
+                comment: ad.comment.clone(),
+                project_fk: Some(project_fk),
+                uuid: ad.uuid.clone(),
+            },
+        )?;
     }
     Ok(())
 }
@@ -747,6 +790,7 @@ mod tests {
                 description: "desc".into(),
                 color_hex: Some("#00ff00".into()),
                 tags: vec!["imported".into()],
+                share_id: None,
             },
             papers,
             notes,
@@ -782,6 +826,7 @@ mod tests {
                 anchor: ANCHOR.into(),
                 comment: "hi".into(),
                 project_fk: Some(pid),
+                uuid: None,
             },
         )
         .unwrap();
@@ -790,6 +835,8 @@ mod tests {
         assert_eq!(m.annotations.len(), 1);
         assert_eq!(m.annotations[0].paper_source_id, "arxiv:1");
         assert_eq!(m.annotations[0].comment, "hi");
+        let exported_uuid = m.annotations[0].uuid.clone().expect("annotation uuid");
+        assert_eq!(exported_uuid.len(), 36);
 
         // Commit into a fresh DB and confirm the annotation lands project-scoped.
         let mut conn2 = mem();
@@ -806,6 +853,7 @@ mod tests {
         assert_eq!(anns.len(), 1);
         assert_eq!(anns[0].anchor, ANCHOR);
         assert_eq!(anns[0].comment, "hi");
+        assert_eq!(anns[0].uuid, exported_uuid);
     }
 
     #[test]
@@ -855,6 +903,7 @@ mod tests {
                 content: "body".into(),
                 paper_id: Some(pid_v1),
                 project_fk: Some(pid),
+                uuid: None,
             },
         )
         .unwrap();
@@ -919,6 +968,7 @@ mod tests {
                 paper_version: Some(1),
                 title: "note".into(),
                 content: "c".into(),
+                uuid: None,
             }],
         );
         let pdfs = vec![ArchivePdf {
@@ -1183,6 +1233,7 @@ mod tests {
                 content: "body".into(),
                 paper_id: Some(pv1),
                 project_fk: Some(pid),
+                uuid: None,
             },
         )
         .unwrap();
@@ -1249,6 +1300,16 @@ mod tests {
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].title, "n");
         assert!(notes[0].paper_id_fk.is_some());
+        let orig = note::get_many(
+            &conn,
+            &note::Notes {
+                project_fk: Some(pid),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(notes[0].uuid, orig[0].uuid);
+        assert_eq!(notes[0].uuid.len(), 36);
     }
 
     #[test]
@@ -1289,5 +1350,104 @@ mod tests {
             )
             .unwrap();
         assert_eq!(relational, 2);
+    }
+
+    #[test]
+    fn commit_adopts_valid_share_id() {
+        let mut conn = mem();
+        let tmp = tempfile::tempdir().unwrap();
+
+        let share_id = "3f2b8c1a-9d4e-4f6a-8b2c-1d5e7f9a0b3c";
+        let mut manifest = base_manifest("P", vec![paper_entry("arxiv:1", 1, "T", &[])], vec![]);
+        manifest.project.share_id = Some(share_id.into());
+
+        let pid =
+            commit_from_manifest(&mut conn, &manifest, &[], OnConflict::Merge, tmp.path()).unwrap();
+
+        let proj = project::get(
+            &conn,
+            &project::Project {
+                project_fk: Some(pid),
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            proj.share_id,
+            Some(share_id.into()),
+            "share_id adopted from manifest"
+        );
+    }
+
+    #[test]
+    fn commit_rejects_invalid_share_id() {
+        let mut conn = mem();
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Traversal, absolute, and dotfile share_ids must NOT be adopted.
+        let invalid_ids = vec!["../evil", "/etc/passwd", ".hidden"];
+        for invalid_id in invalid_ids {
+            let mut manifest =
+                base_manifest("P", vec![paper_entry("arxiv:1", 1, "T", &[])], vec![]);
+            manifest.project.share_id = Some(invalid_id.into());
+
+            let pid =
+                commit_from_manifest(&mut conn, &manifest, &[], OnConflict::Merge, tmp.path())
+                    .unwrap();
+            let proj = project::get(
+                &conn,
+                &project::Project {
+                    project_fk: Some(pid),
+                },
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                proj.share_id, None,
+                "invalid share_id '{}' rejected",
+                invalid_id
+            );
+        }
+    }
+
+    #[test]
+    fn commit_rejects_duplicate_share_id() {
+        let mut conn = mem();
+        let tmp = tempfile::tempdir().unwrap();
+
+        let share_id = "7a1c4e2d-6b3f-4a8e-9c0d-2e5f7a9b1c4d";
+        let mut manifest = base_manifest("P1", vec![paper_entry("arxiv:1", 1, "T", &[])], vec![]);
+        manifest.project.share_id = Some(share_id.into());
+
+        // First import claims the share_id.
+        let pid1 =
+            commit_from_manifest(&mut conn, &manifest, &[], OnConflict::Merge, tmp.path()).unwrap();
+        let proj1 = project::get(
+            &conn,
+            &project::Project {
+                project_fk: Some(pid1),
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(proj1.share_id, Some(share_id.into()));
+
+        // Second import with the same manifest (same share_id): adopt fails on the
+        // live claimant, the import still succeeds, and the project has no share_id.
+        manifest.project.name = "P2".into();
+        let pid2 =
+            commit_from_manifest(&mut conn, &manifest, &[], OnConflict::Merge, tmp.path()).unwrap();
+        let proj2 = project::get(
+            &conn,
+            &project::Project {
+                project_fk: Some(pid2),
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            proj2.share_id, None,
+            "second project does not claim the duplicate share_id"
+        );
     }
 }

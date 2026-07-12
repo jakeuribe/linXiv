@@ -28,6 +28,29 @@ export interface SharedSummary {
   paper_count: number;
   note_count: number;
   tag_count: number;
+  /** Doc-file mtime (last local save/fetch) as ISO 8601; null if unreadable. */
+  synced_at: string | null;
+  paused: boolean;
+  /** Linked local project id; null when no live local project carries this
+   * SHARE_ID (received shares before first import, or linked project deleted/trashed). */
+  project_fk?: number | null;
+}
+
+export type ShareDirection = "two_way" | "shared_to_local" | "local_to_shared";
+
+export type SyncReason =
+  | "paused"
+  | "direction"
+  | "project gone"
+  | "no ticket"
+  | "bad ticket"
+  | "p2p offline";
+
+export type ShareRole = "hoster" | "reader";
+
+export interface ShareSettings {
+  paused: boolean;
+  direction: ShareDirection;
 }
 
 /** Summaries of every project published (shared out) from this library. */
@@ -50,9 +73,11 @@ export async function createShareTicket(projectId: number): Promise<string> {
 }
 
 /** Dial a ticket's sender, fetch the shared project, and store it as a
- *  read-only mirror. Returns the joined project's summary. */
-export async function joinShare(ticket: string): Promise<SharedSummary> {
-  return shareApi<SharedSummary>("POST", "/api/share/join", { ticket });
+ *  read-only mirror. Returns the joined project's summary (counts only). */
+export async function joinShare(
+  ticket: string
+): Promise<Omit<SharedSummary, "synced_at" | "paused">> {
+  return shareApi("POST", "/api/share/join", { ticket });
 }
 
 /** Summaries of every shared project received via {@link joinShare}. */
@@ -62,4 +87,46 @@ export async function listReceived(): Promise<SharedSummary[]> {
     "/api/share/received"
   );
   return res.received;
+}
+
+/** Merge a received mirror into the canonical library (additive + update).
+ *  Creates the linked local project on first import. */
+export async function importReceived(
+  shareId: string
+): Promise<{ project_fk: number }> {
+  return shareApi("POST", `/api/share/received/${shareId}/import`);
+}
+
+/** One-shot sync of a single share, honoring its paused/direction settings. */
+export async function syncShare(
+  shareId: string
+): Promise<{ synced: boolean; reason?: SyncReason; role?: ShareRole }> {
+  return shareApi("POST", `/api/share/${shareId}/sync`);
+}
+
+/** Drop a received mirror (+ ticket + settings). The linked local project,
+ *  if imported, stays untouched. */
+export async function leaveShare(shareId: string): Promise<{ left: boolean }> {
+  return shareApi("POST", `/api/share/received/${shareId}/leave`);
+}
+
+/** Stop serving a published project (deletes the shared doc; SHARE_ID stays
+ *  on the project so a republish reuses the same identity). */
+export async function unpublishShare(
+  shareId: string
+): Promise<{ unpublished: boolean; share_id: string }> {
+  return shareApi("POST", `/api/share/${shareId}/unpublish`);
+}
+
+export async function getShareSettings(
+  shareId: string
+): Promise<ShareSettings> {
+  return shareApi("GET", `/api/share/${shareId}/settings`);
+}
+
+export async function updateShareSettings(
+  shareId: string,
+  patch: Partial<ShareSettings>
+): Promise<ShareSettings> {
+  return shareApi("PUT", `/api/share/${shareId}/settings`, patch);
 }

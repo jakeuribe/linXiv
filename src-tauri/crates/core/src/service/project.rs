@@ -132,6 +132,37 @@ pub fn get_many(conn: &Connection, projects: &Projects) -> Result<Vec<ProjectDet
         .collect()
 }
 
+/// Persisted share identity: generate + store a uuid v4 on first call, return the
+/// existing one afterwards. Errors if the project is absent or trashed.
+pub fn ensure_share_id(conn: &Connection, project_fk: i64) -> Result<String> {
+    ensure_membership_writable(conn, project_fk)?;
+    let candidate = uuid::Uuid::new_v4().to_string();
+    pq::ensure_share_id(conn, project_fk, &candidate)?.ok_or(CoreError::ProjectNotFound)
+}
+
+/// Reverse share lookup: the project (if any) whose SHARE_ID equals `share_id`.
+pub fn find_by_share_id(conn: &Connection, share_id: &str) -> Result<Option<i64>> {
+    pq::find_by_share_id(conn, share_id)
+}
+
+/// Adopt share_id for this project; errors if another live project claims it.
+pub fn adopt_share_id(conn: &Connection, project_fk: i64, share_id: &str) -> Result<()> {
+    pq::release_share_id_from_deleted(conn, share_id)?;
+    if pq::share_id_claimed_by_other(conn, project_fk, share_id)? {
+        return Err(CoreError::ProjectImport(format!(
+            "share id {share_id} already claimed by another live project"
+        )));
+    }
+    let stored =
+        pq::ensure_share_id(conn, project_fk, share_id)?.ok_or(CoreError::ProjectNotFound)?;
+    if stored != share_id {
+        tracing::warn!(
+            "adopt_share_id: project {project_fk} already has SHARE_ID {stored}; archive share id {share_id} not adopted"
+        );
+    }
+    Ok(())
+}
+
 // ── Create (ATOMIC insert + membership) ─────────────────────────────────────────
 
 /// `service/project.py::create` — insert a new project and its membership in ONE
@@ -977,5 +1008,31 @@ mod tests {
         restore(&conn, &Project { project_fk: None }).unwrap();
         assert_eq!(color_to_hex(0x00ff00), "#00ff00");
         assert_eq!(color_from_hex("#00ff00").unwrap(), 0x00ff00);
+    }
+
+    #[test]
+    fn ensure_share_id_idempotent() {
+        let mut conn = setup();
+        let id = create(&mut conn, &pin("P", vec![], vec![])).unwrap();
+        let share_id_1 = ensure_share_id(&conn, id).unwrap();
+        let share_id_2 = ensure_share_id(&conn, id).unwrap();
+        assert_eq!(share_id_1, share_id_2);
+    }
+
+    #[test]
+    fn adopt_share_id_errors_when_claimed_by_live_project() {
+        let mut conn = setup();
+        let id1 = create(&mut conn, &pin("P1", vec![], vec![])).unwrap();
+        let id2 = create(&mut conn, &pin("P2", vec![], vec![])).unwrap();
+        let share_id = ensure_share_id(&conn, id1).unwrap();
+        adopt_share_id(&conn, id2, &share_id).unwrap_err();
+        let share_id_2: Option<String> = conn
+            .query_row(
+                "SELECT SHARE_ID FROM PROJECT WHERE PROJECT_FK = ?1",
+                [id2],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(share_id_2.is_none());
     }
 }

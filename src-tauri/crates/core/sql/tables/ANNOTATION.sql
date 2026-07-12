@@ -14,6 +14,9 @@ CREATE TABLE IF NOT EXISTS ANNOTATION(
     PROJECT_FK    INTEGER,
     ANCHOR        TEXT NOT NULL,
     COMMENT       TEXT NOT NULL DEFAULT '',
+    -- Stable identity across export/import + share (uuid v4). Backfilled + made
+    -- UNIQUE by the annotation_uuid migration; new rows get one at insert.
+    ANNOTATION_UUID TEXT,
     CREATED_AT    TIMESTAMP NOT NULL DEFAULT (datetime('now')),
     UPDATED_AT    TIMESTAMP NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (ANNOTATION_SK),

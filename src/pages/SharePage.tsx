@@ -1,12 +1,21 @@
 import { useEffect, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Settings2 } from "lucide-react";
 import {
   createShareTicket,
+  getShareSettings,
+  importReceived,
   joinShare,
+  leaveShare,
   listReceived,
   listShared,
   sharingAvailable,
+  syncShare,
+  unpublishShare,
+  updateShareSettings,
+  type ShareDirection,
   type SharedSummary,
+  type ShareSettings,
 } from "../api/share";
 import { listProjects } from "../api/projects";
 import { ApiError } from "../api/client";
@@ -55,8 +64,54 @@ function Stat({ value, label }: { value: number; label: string }) {
   );
 }
 
-function ShareCard({ share, role }: { share: SharedSummary; role: ShareRole }) {
+/** "Synced 5m ago" from the summary's ISO synced_at. */
+function syncedText(iso: string | null): string {
+  if (!iso) return "Never synced";
+  const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60_000);
+  if (!Number.isFinite(mins)) return "Synced";
+  if (mins < 1) return "Synced just now";
+  if (mins < 60) return `Synced ${mins}m ago`;
+  if (mins < 24 * 60) return `Synced ${Math.floor(mins / 60)}h ago`;
+  return `Synced ${Math.floor(mins / (24 * 60))}d ago`;
+}
+
+const SYNC_REASON_LABELS: Record<string, string | undefined> = {
+  "no ticket": "No valid ticket",
+  "p2p offline": "P2P offline",
+  "project gone": "Project deleted",
+  "bad ticket": "Bad ticket",
+  "paused": "Sync paused",
+  "direction": "Skipped by sync direction",
+};
+
+function humanizeReason(code: string | undefined): string {
+  if (!code) return "Sync failed";
+  return SYNC_REASON_LABELS[code] ?? code;
+}
+
+function ShareCard({
+  share,
+  role,
+  onSettings,
+}: {
+  share: SharedSummary;
+  role: ShareRole;
+  onSettings: () => void;
+}) {
   const hosted = role === "Hoster";
+  const queryClient = useQueryClient();
+  const sync = useMutation({
+    mutationFn: () => syncShare(share.share_id),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["share", "published"] });
+      queryClient.invalidateQueries({ queryKey: ["share", "received"] });
+    },
+  });
+  const resetRef = useRef(sync.reset);
+  resetRef.current = sync.reset;
+  useEffect(() => {
+    resetRef.current();
+  }, [share.synced_at, share.paused]);
   return (
     <div className="flex flex-col overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-panel)]">
       <div className="px-5 pb-3.5 pt-4">
@@ -75,21 +130,221 @@ function ShareCard({ share, role }: { share: SharedSummary; role: ShareRole }) {
       </div>
       <div className="mx-5 flex items-center gap-2 border-y border-[var(--color-border)] py-2.5">
         <span
-          className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full"
-          style={{ backgroundColor: "var(--color-success)" }}
+          className="h-1.5 w-1.5 shrink-0 rounded-full"
+          style={{
+            backgroundColor: share.paused ? "var(--color-ink-3)" : "var(--color-accent)",
+          }}
         />
         <span className="truncate text-xs" style={{ color: "var(--color-muted)" }}>
-          {hosted
-            ? "Published from your library — tickets grant a read-only copy."
-            : "Read-only mirror — fetched from a collaborator's ticket."}
+          {share.paused ? "Sync paused" : syncedText(share.synced_at)}
+          {" · "}
+          {hosted ? "published from your library" : "read-only mirror"}
         </span>
       </div>
       <div className="flex items-center gap-4 px-5 pb-4 pt-3">
         <Stat value={share.paper_count} label="paper" />
         <Stat value={share.note_count} label="note" />
         <Stat value={share.tag_count} label="tag" />
+        <div className="flex-1" />
+        <Button
+          variant="muted"
+          size="sm"
+          onClick={() => sync.mutate()}
+          disabled={sync.isPending || share.paused}
+        >
+          {sync.isPending ? <Spinner size={14} /> : "Sync now"}
+        </Button>
+        <Button variant="ghost" size="sm" aria-label="Share settings" onClick={onSettings}>
+          <Settings2 size={15} />
+        </Button>
       </div>
+      {(sync.isError || sync.data?.synced === false) && (
+        <p className="px-5 pb-3 text-xs" style={{ color: "var(--color-danger)" }}>
+          {sync.isError ? errText(sync.error) : humanizeReason(sync.data?.reason)}
+        </p>
+      )}
     </div>
+  );
+}
+
+const DIRECTION_OPTIONS: { value: ShareDirection; label: string }[] = [
+  { value: "two_way", label: "Two-way" },
+  { value: "shared_to_local", label: "Shared → local only" },
+  { value: "local_to_shared", label: "Local → shared only" },
+];
+
+function SettingsRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span className="text-[13px] text-text">{label}</span>
+      {children}
+    </div>
+  );
+}
+
+function ShareSettingsDialog({
+  share,
+  role,
+  onClose,
+}: {
+  share: SharedSummary;
+  role: ShareRole;
+  onClose: () => void;
+}) {
+  const hosted = role === "Hoster";
+  const queryClient = useQueryClient();
+  const [confirming, setConfirming] = useState(false);
+
+  const settings = useQuery({
+    queryKey: ["share", "settings", share.share_id],
+    queryFn: () => getShareSettings(share.share_id),
+  });
+  // Resolves the hoster's project and the reader's linked-project name
+  // by matching against both active and archived projects.
+  const projectsActiveQ = useQuery({
+    queryKey: ["projects", "active"],
+    queryFn: () => listProjects("active"),
+  });
+  const projectsArchivedQ = useQuery({
+    queryKey: ["projects", "archived"],
+    queryFn: () => listProjects("archived"),
+  });
+  const projects = [
+    ...(projectsActiveQ.data?.projects ?? []),
+    ...(projectsArchivedQ.data?.projects ?? []),
+  ];
+  const hosterProject = hosted
+    ? projects.find((p) => p.share_id === share.share_id)
+    : undefined;
+  const linkedProject =
+    !hosted && share.project_fk != null
+      ? projects.find((p) => p.id === share.project_fk)
+      : undefined;
+
+  function invalidateShares() {
+    queryClient.invalidateQueries({ queryKey: ["share", "published"] });
+    queryClient.invalidateQueries({ queryKey: ["share", "received"] });
+  }
+
+  const update = useMutation({
+    mutationFn: (patch: Partial<ShareSettings>) =>
+      updateShareSettings(share.share_id, patch),
+    onSuccess: (s) => {
+      queryClient.setQueryData(["share", "settings", share.share_id], s);
+      invalidateShares();
+    },
+  });
+  const importM = useMutation({
+    mutationFn: () => importReceived(share.share_id),
+    onSuccess: () => {
+      invalidateShares();
+      queryClient.invalidateQueries({ queryKey: ["projects"] });
+    },
+  });
+  const leaveM = useMutation({
+    mutationFn: () => leaveShare(share.share_id),
+    onSuccess: () => {
+      invalidateShares();
+      onClose();
+    },
+  });
+  const unpublishM = useMutation({
+    mutationFn: () => unpublishShare(share.share_id),
+    onSuccess: () => {
+      invalidateShares();
+      onClose();
+    },
+  });
+
+  const err =
+    update.error ?? importM.error ?? leaveM.error ?? unpublishM.error ?? settings.error;
+  const settingsUnusable = settings.isLoading || settings.isError;
+  const paused = settings.data?.paused ?? share.paused;
+  const dangerLabel = hosted ? "Unpublish" : "Leave share";
+  const dangerPending = leaveM.isPending || unpublishM.isPending;
+
+  return (
+    <Dialog open onClose={onClose} title={`Settings — ${share.name}`}>
+      <div className="flex flex-col gap-4">
+        <SettingsRow label="Sync direction">
+          <OptionSelect
+            aria-label="Sync direction"
+            size="sm"
+            value={settings.data?.direction ?? "two_way"}
+            onChange={(v) => update.mutate({ direction: v })}
+            disabled={settingsUnusable || update.isPending}
+            options={DIRECTION_OPTIONS}
+          />
+        </SettingsRow>
+        <SettingsRow label="Auto-sync">
+          <Button
+            variant="muted"
+            size="sm"
+            onClick={() => update.mutate({ paused: !paused })}
+            disabled={settingsUnusable || update.isPending}
+          >
+            {paused ? "Resume sync" : "Pause sync"}
+          </Button>
+        </SettingsRow>
+        <SettingsRow label="Local project">
+          {hosted ? (
+            <span className="truncate text-[13px]" style={{ color: "var(--color-muted)" }}>
+              {hosterProject?.name ?? "—"}
+            </span>
+          ) : share.project_fk == null ? (
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => importM.mutate()}
+              disabled={importM.isPending}
+            >
+              {importM.isPending ? <Spinner size={14} /> : "Import to library"}
+            </Button>
+          ) : (
+            <span className="truncate text-[13px]" style={{ color: "var(--color-muted)" }}>
+              {linkedProject?.name ?? `Project #${share.project_fk}`}
+            </span>
+          )}
+        </SettingsRow>
+        {err != null && (
+          <p className="text-xs" style={{ color: "var(--color-danger)" }}>
+            {errText(err)}
+          </p>
+        )}
+        <div className="flex items-center justify-between border-t border-[var(--color-border)] pt-4">
+          <span className="text-xs" style={{ color: "var(--color-muted)" }}>
+            {hosted
+              ? "Stops serving the share. Your project stays."
+              : "Removes the mirror. Imported data stays."}
+          </span>
+          <div className="flex items-center gap-2">
+            {confirming && (
+              <Button variant="muted" size="sm" onClick={() => setConfirming(false)}>
+                Cancel
+              </Button>
+            )}
+            <Button
+              variant="danger"
+              size="sm"
+              disabled={dangerPending}
+              onClick={() => {
+                if (!confirming) return setConfirming(true);
+                if (hosted) unpublishM.mutate();
+                else leaveM.mutate();
+              }}
+            >
+              {dangerPending ? (
+                <Spinner size={14} />
+              ) : confirming ? (
+                `Confirm ${dangerLabel.toLowerCase()}`
+              ) : (
+                dangerLabel
+              )}
+            </Button>
+          </div>
+        </div>
+      </div>
+    </Dialog>
   );
 }
 
@@ -222,6 +477,10 @@ function ShareProjectDialog({ open, onClose }: { open: boolean; onClose: () => v
 export default function SharePage() {
   const queryClient = useQueryClient();
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [settingsFor, setSettingsFor] = useState<{
+    shareId: string;
+    role: ShareRole;
+  } | null>(null);
   const [joinInput, setJoinInput] = useState("");
   const [joining, setJoining] = useState(false);
   const [joinErr, setJoinErr] = useState("");
@@ -237,14 +496,26 @@ export default function SharePage() {
     queryKey: ["share", "published"],
     queryFn: listShared,
     enabled: sharingAvailable,
+    refetchInterval: 60_000,
   });
   const { isError: publishedIsError, error: publishedError } = published;
   const received = useQuery({
     queryKey: ["share", "received"],
     queryFn: listReceived,
     enabled: sharingAvailable,
+    refetchInterval: 60_000,
   });
   const { isError: receivedIsError, error: receivedError } = received;
+  // Reading dataUpdatedAt makes it a tracked prop: each 60s poll re-renders
+  // the cards so their relative "Synced Xm ago" text stays current.
+  void published.dataUpdatedAt;
+  void received.dataUpdatedAt;
+
+  useEffect(() => {
+    if (!settingsFor || published.isLoading || received.isLoading) return;
+    const list = settingsFor.role === "Hoster" ? published.data : received.data;
+    if (!list?.some((s) => s.share_id === settingsFor.shareId)) setSettingsFor(null);
+  }, [settingsFor, published.isLoading, received.isLoading, published.data, received.data]);
 
   if (!sharingAvailable) {
     return (
@@ -372,12 +643,31 @@ export default function SharePage() {
       {!loading && cards.length > 0 && (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           {cards.map(({ share, role }) => (
-            <ShareCard key={`${role}:${share.share_id}`} share={share} role={role} />
+            <ShareCard
+              key={`${role}:${share.share_id}`}
+              share={share}
+              role={role}
+              onSettings={() => setSettingsFor({ shareId: share.share_id, role })}
+            />
           ))}
         </div>
       )}
 
       <ShareProjectDialog open={dialogOpen} onClose={() => setDialogOpen(false)} />
+      {settingsFor &&
+        (() => {
+          const card = cards.find(
+            c => c.share.share_id === settingsFor.shareId && c.role === settingsFor.role
+          );
+          if (!card) return null;
+          return (
+            <ShareSettingsDialog
+              share={card.share}
+              role={card.role}
+              onClose={() => setSettingsFor(null)}
+            />
+          );
+        })()}
     </div>
   );
 }

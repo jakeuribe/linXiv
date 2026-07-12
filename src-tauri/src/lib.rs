@@ -6,4 +6,5 @@
 pub mod integrations;
 pub mod protocol;
 pub mod route;
+pub mod share_sync;
 pub mod state;
