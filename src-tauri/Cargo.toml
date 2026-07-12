@@ -2,7 +2,7 @@
 # resolves sidecar binaries relative to current_exe(), so the cargo target/
 # directory must stay at src-tauri/target (ADR 0016 / drift report 2026-06-05).
 [workspace]
-members = [".", "crates/core", "crates/cli", "crates/mcp", "crates/migrate", "crates/share"]
+members = [".", "crates/core", "crates/cli", "crates/mcp", "crates/migrate", "crates/share", "crates/p2p"]
 
 [package]
 name = "linxiv-app"
