@@ -15,7 +15,7 @@ use std::{
     sync::{Arc, Mutex as StdMutex},
 };
 
-use beekem::encrypted::EncryptedContent;
+use beekem::{encrypted::EncryptedContent, error::CgkaError};
 use ed25519_dalek::{Signer as _, SigningKey, VerifyingKey};
 use future_form::Sendable;
 use futures::lock::Mutex as AsyncMutex;
@@ -29,7 +29,7 @@ use keyhive_core::{
     listener::no_listener::NoListener,
     principal::{
         document::{DecryptError as KhDecryptError, Document, id::DocumentId},
-        group::id::GroupId,
+        group::{RevokeMemberError, id::GroupId},
         identifier::Identifier,
         membered::Membered,
         peer::Peer,
@@ -37,7 +37,7 @@ use keyhive_core::{
     store::ciphertext::memory::MemoryCiphertextStore,
 };
 use keyhive_crypto::signer::memory::MemorySigner;
-use n0_error::{Result, anyerr};
+use n0_error::{AnyError, Result, anyerr};
 use nonempty::nonempty;
 use rand::{Rng as _, rngs::OsRng};
 use serde::{Deserialize, Serialize};
@@ -246,6 +246,28 @@ impl std::fmt::Display for DecryptError {
 }
 
 impl std::error::Error for DecryptError {}
+
+// vendor-edit: typed [`ProjectAuth::set_role`] failure, wrapped as the
+// direct [`AnyError`] payload so callers can `downcast_ref::<SetRoleError>()`
+// it (same pattern as beelay's `BlobError`).
+#[derive(Debug, PartialEq, Eq)]
+pub enum SetRoleError {
+    /// The revoke leg would remove the doc's last CGKA reader
+    /// (`CgkaError::RemoveLastMember`); a doc must keep at least one.
+    LastReader,
+}
+
+impl std::fmt::Display for SetRoleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SetRoleError::LastReader => {
+                write!(f, "role change would remove the project's last reader")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SetRoleError {}
 
 type Kh = Keyhive<
     Sendable,
@@ -673,6 +695,57 @@ impl ProjectAuth {
             return Err(e);
         }
         Ok(())
+    }
+
+    // vendor-edit: role transitions (write-enforcement spec §3). Co-admin
+    // note: granting Admin is keyhive-supported and a valid target here, but
+    // app-deferred — management ops that need PCS rotation (revoke,
+    // downgrade) must run where the doc is hosted (spec §1.1), so the app
+    // keeps membership management Hoster-only for now.
+
+    /// Moves `member` to `role`: a no-op when already at `role`, a plain
+    /// grant ([`Self::add_member`]) from no role, and otherwise revoke +
+    /// re-grant, keeping a SINGLE live delegation per member — keyhive's
+    /// doc-level access resolution picks between stacked delegations by
+    /// digest order, so layering a second grant would turn
+    /// [`Self::query_access`] into a coin flip.
+    ///
+    /// A downgrade eagerly rotates the doc key (PCS update) between revoke
+    /// and re-grant, so the dropped capability cannot act on future epochs;
+    /// an upgrade skips the eager rotation and the member keeps reading
+    /// everything they could before. Both legs re-grant AFTER the revoke
+    /// (revocation kills all of the member's delegations, a fresh grant
+    /// included), and the legs run back-to-back with no encrypt in between —
+    /// content encrypted after the rotation but before the re-grant would be
+    /// permanently unreadable to the member.
+    pub async fn set_role(&self, project_id: &str, member: MemberId, role: Role) -> Result<()> {
+        let current = match self.query_access(project_id, member).await? {
+            Some(current) if current == role => return Ok(()),
+            // no delegation yet: a plain grant, not a transition.
+            None => return self.add_member(project_id, member, role).await,
+            Some(current) => current,
+        };
+        let group = self.group_membered(project_id).await?;
+        self.keyhive
+            .revoke_member(member.identifier()?, true, &group)
+            .await
+            .map_err(|e| match e {
+                RevokeMemberError::CgkaError(CgkaError::RemoveLastMember) => {
+                    AnyError::from_std(SetRoleError::LastReader)
+                }
+                e => anyerr!("revoking member for role change: {e}"),
+            })?;
+        if role < current {
+            let doc = self.doc_handle(project_id).await?;
+            self.keyhive
+                .force_pcs_update(doc)
+                .await
+                .map_err(|e| anyerr!("rotating project key: {e}"))?;
+        }
+        // add_member persists, making the whole transition durable in one
+        // write; a failure here leaves the member revoked in-memory only —
+        // a restart reloads the pre-set_role state.
+        self.add_member(project_id, member, role).await
     }
 
     /// The member's effective access on the project (via group or direct),

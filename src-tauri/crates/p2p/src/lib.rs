@@ -10,7 +10,9 @@ pub use sync::{ALPN, AccessCheckFn, DeviceIdentity, ShareNode, ShareTicket};
 pub mod auth;
 
 #[cfg(feature = "auth-keyhive")]
-pub use auth::{AuthIdentity, DecryptError, DeviceBinding, MemberId, ProjectAuth, Role};
+pub use auth::{
+    AuthIdentity, DecryptError, DeviceBinding, MemberId, ProjectAuth, Role, SetRoleError,
+};
 
 #[cfg(feature = "sync-beelay")]
 pub mod beelay;

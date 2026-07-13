@@ -135,6 +135,103 @@ async fn revoke_blocks_new_content() -> Result<()> {
     Ok(())
 }
 
+/// set_role walks bob None -> Read -> Edit -> Read (spec §3.4).
+///
+/// Assertion strategy for the rotation claims, all via encrypt/decrypt
+/// round-trips (the crate's only epoch observable):
+/// - upgrade does NOT rotate: content encrypted BEFORE the upgrade still
+///   decrypts for bob afterwards — his key continuity survives the
+///   revoke + re-grant leg (no eager PCS update).
+/// - downgrade DOES rotate: dave, a second member kept current up to the
+///   moment before the downgrade, gets KeyNotFound on content encrypted
+///   after it — the key state demonstrably advanced past what he holds —
+///   while re-granted bob (and dave, once he ingests the rotation ops)
+///   decrypts that same content: the downgrade re-keyed bob into the fresh
+///   epoch as a reader.
+#[tokio::test(flavor = "multi_thread")]
+async fn upgrade_then_downgrade() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (_, alice_auth) = identities(dir.path(), "alice");
+    let (_, bob_auth) = identities(dir.path(), "bob");
+    let (_, dave_auth) = identities(dir.path(), "dave");
+    let alice = ProjectAuth::new(&alice_auth).await?;
+    let bob = ProjectAuth::new(&bob_auth).await?;
+    let dave = ProjectAuth::new(&dave_auth).await?;
+
+    alice.create_project("proj").await?;
+    let bob_id = alice
+        .receive_contact_card(&bob.contact_card().await?)
+        .await?;
+    let dave_id = alice
+        .receive_contact_card(&dave.contact_card().await?)
+        .await?;
+
+    // None -> Read: no delegation yet, so set_role is a plain grant.
+    assert_eq!(alice.query_access("proj", bob_id).await?, None);
+    alice.set_role("proj", bob_id, Role::Read).await?;
+    assert_eq!(alice.query_access("proj", bob_id).await?, Some(Role::Read));
+    // same role again: a no-op, not a stacked second delegation.
+    alice.set_role("proj", bob_id, Role::Read).await?;
+    assert_eq!(alice.query_access("proj", bob_id).await?, Some(Role::Read));
+
+    // dave is the epoch probe for the downgrade leg below.
+    alice.add_member("proj", dave_id, Role::Read).await?;
+
+    // encrypt AFTER the grants (#136) so both members can read c1.
+    let c1 = alice.encrypt("proj", b"epoch one").await?;
+    for (peer, id) in [(&bob, bob_id), (&dave, dave_id)] {
+        peer.ingest_events(&alice.export_events_for(id).await?)
+            .await?;
+        peer.adopt_project("proj", alice.doc_id("proj").unwrap(), None)
+            .await?;
+        assert_eq!(peer.decrypt("proj", &c1).await.unwrap(), b"epoch one");
+    }
+
+    // Read -> Edit (upgrade): no eager rotation — pre-upgrade content still
+    // decrypts for bob.
+    alice.set_role("proj", bob_id, Role::Edit).await?;
+    assert_eq!(alice.query_access("proj", bob_id).await?, Some(Role::Edit));
+    // post-transition exports may be partial (revocations in the history).
+    let _ = bob
+        .ingest_events(&alice.export_events_for(bob_id).await?)
+        .await;
+    assert_eq!(bob.decrypt("proj", &c1).await.unwrap(), b"epoch one");
+
+    // Settle the post-upgrade tree (this encrypt mints any CGKA update the
+    // upgrade's revoke + re-add deferred) and bring both members current, so
+    // the downgrade below is the ONLY key-state change dave hasn't seen.
+    let c2 = alice.encrypt("proj", b"epoch two").await?;
+    for (peer, id) in [(&bob, bob_id), (&dave, dave_id)] {
+        let _ = peer
+            .ingest_events(&alice.export_events_for(id).await?)
+            .await;
+        assert_eq!(peer.decrypt("proj", &c2).await.unwrap(), b"epoch two");
+    }
+
+    // Edit -> Read (downgrade): revoke + eager PCS rotation + re-grant.
+    alice.set_role("proj", bob_id, Role::Read).await?;
+    assert_eq!(alice.query_access("proj", bob_id).await?, Some(Role::Read));
+
+    let c3 = alice.encrypt("proj", b"epoch three").await?;
+    // key state advanced: dave, current as of just before the downgrade,
+    // cannot derive the post-rotation key from what he already holds...
+    assert_eq!(
+        dave.decrypt("proj", &c3).await,
+        Err(DecryptError::KeyNotFound)
+    );
+    // ...and it is the key that moved, not dave: c2 still decrypts.
+    assert_eq!(dave.decrypt("proj", &c2).await.unwrap(), b"epoch two");
+    // re-granted bob reads the fresh epoch once the rotation ops reach him;
+    // so does dave — the rotation included the remaining members.
+    for (peer, id) in [(&bob, bob_id), (&dave, dave_id)] {
+        let _ = peer
+            .ingest_events(&alice.export_events_for(id).await?)
+            .await;
+        assert_eq!(peer.decrypt("proj", &c3).await.unwrap(), b"epoch three");
+    }
+    Ok(())
+}
+
 /// State written by load_or_new survives a drop: member id, membership, and
 /// decryption of pre-restart ciphertext (keys ride the archived CGKA tree).
 #[tokio::test(flavor = "multi_thread")]

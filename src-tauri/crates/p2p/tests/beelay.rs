@@ -769,6 +769,156 @@ async fn viewer_cannot_write() -> Result<()> {
     Ok(())
 }
 
+/// Role transitions meet write enforcement (spec §3.4): bob's push lands
+/// while he is an Editor, then a set_role downgrade to Read flips his
+/// sessions to serve-only — his next push evaporates in the scratch core,
+/// a third Editor never sees it, and he still RECEIVES new host content.
+#[tokio::test(flavor = "multi_thread")]
+async fn downgraded_editor_cannot_write() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (hoster_device, hoster_auth_id) = identities(dir.path(), "hoster");
+    let (bob_device, bob_auth_id) = identities(dir.path(), "bob");
+    let (carol_device, carol_auth_id) = identities(dir.path(), "carol");
+    let hoster_auth = ProjectAuth::new(&hoster_auth_id)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let bob_auth = ProjectAuth::new(&bob_auth_id)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let carol_auth = ProjectAuth::new(&carol_auth_id)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let bob_member = hoster_auth
+        .receive_contact_card(&bob_auth.contact_card().await.map_err(anyhow::Error::msg)?)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let carol_member = hoster_auth
+        .receive_contact_card(&carol_auth.contact_card().await.map_err(anyhow::Error::msg)?)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let hoster = BeelayNode::bind_local(&hoster_device, &hoster_auth_id, hoster_auth, None)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let bob = BeelayNode::bind_local(&bob_device, &bob_auth_id, bob_auth, None)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let carol = BeelayNode::bind_local(&carol_device, &carol_auth_id, carol_auth, None)
+        .await
+        .map_err(anyhow::Error::msg)?;
+
+    let mut doc = Automerge::new();
+    put(&mut doc, "title", "Editors Wanted");
+    hoster
+        .create_shared_project("proj", doc)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    hoster
+        .auth()
+        .add_member("proj", bob_member, Role::Edit)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    hoster
+        .auth()
+        .add_member("proj", carol_member, Role::Edit)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let bob_invite = hoster
+        .invite("proj", bob_member)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let carol_invite = hoster
+        .invite("proj", carol_member)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    bob.accept_invite(&bob_invite)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    carol
+        .accept_invite(&carol_invite)
+        .await
+        .map_err(anyhow::Error::msg)?;
+
+    // bob (Edit) pushes a change: accepted into the canonical store and
+    // visible to a third Editor.
+    bob.sync_project("proj").await.map_err(anyhow::Error::msg)?;
+    bob.with_doc("proj", |d| put(d, "bob_edit_1", "while editor"))
+        .await;
+    bob.sync_project("proj").await.map_err(anyhow::Error::msg)?;
+    carol
+        .sync_project("proj")
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let carol_doc = carol.doc("proj").await.unwrap();
+    assert_eq!(
+        get_str(&carol_doc, "bob_edit_1").as_deref(),
+        Some("while editor"),
+        "editor push must reach other members"
+    );
+
+    // downgrade Edit -> Read (revoke + rotate + re-grant), then new host
+    // content at the fresh epoch.
+    hoster
+        .auth()
+        .set_role("proj", bob_member, Role::Read)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    assert_eq!(
+        hoster
+            .auth()
+            .query_access("proj", bob_member)
+            .await
+            .map_err(anyhow::Error::msg)?,
+        Some(Role::Read)
+    );
+    hoster
+        .with_doc("proj", |d| put(d, "post_downgrade", "fresh"))
+        .await;
+
+    // bob pushes again: the session completes (serve-only, not refused) and
+    // he receives the host's new content, but his upload evaporates.
+    bob.with_doc("proj", |d| put(d, "bob_edit_2", "as viewer"))
+        .await;
+    let outcome = bob.sync_project("proj").await.map_err(anyhow::Error::msg)?;
+    assert!(
+        outcome.undecryptable.is_empty(),
+        "{:?}",
+        outcome.undecryptable
+    );
+    let bob_doc = bob.doc("proj").await.unwrap();
+    assert_eq!(
+        get_str(&bob_doc, "post_downgrade").as_deref(),
+        Some("fresh"),
+        "downgraded member must still receive host content"
+    );
+
+    // the second push never reached the host or the third Editor.
+    carol
+        .sync_project("proj")
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let carol_doc = carol.doc("proj").await.unwrap();
+    assert_eq!(
+        get_str(&carol_doc, "post_downgrade").as_deref(),
+        Some("fresh")
+    );
+    assert_eq!(
+        get_str(&carol_doc, "bob_edit_2"),
+        None,
+        "downgraded member's write propagated to a member"
+    );
+    let hoster_doc = hoster.doc("proj").await.unwrap();
+    assert_eq!(
+        get_str(&hoster_doc, "bob_edit_2"),
+        None,
+        "downgraded member's write reached the host"
+    );
+
+    for node in [hoster, bob, carol] {
+        node.shutdown().await.map_err(anyhow::Error::msg)?;
+    }
+    Ok(())
+}
+
 /// One endpoint serves plain sync, beelay, and blobs: both handles of a
 /// stack report the same endpoint id, both protocols work between the same
 /// two stacks, and shutdown is exercised from either handle in either order.
