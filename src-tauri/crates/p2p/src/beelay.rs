@@ -49,7 +49,7 @@ use rand::rngs::OsRng;
 use tokio::sync::Mutex;
 
 use crate::{
-    auth::{AuthIdentity, DecryptError, DeviceBinding, MemberId, ProjectAuth},
+    auth::{AuthIdentity, DecryptError, DeviceBinding, MemberId, ProjectAuth, Role},
     sync::{
         DeviceIdentity, JoinError, MAX_SYNC_ROUNDS, REFUSED_CODE, ShareNode, recv_frame,
         recv_frame_max, send_frame,
@@ -365,6 +365,21 @@ impl Core {
             dirty: false,
             stories: HashMap::new(),
         })
+    }
+
+    /// A session-local, memory-only core over a snapshot of `storage`:
+    /// serves the snapshot's commits under the same doc ids (beelay has no
+    /// doc registry — storage keys ARE the doc), and everything a peer
+    /// uploads into it evaporates on drop (`kv: None`, nothing reaches
+    /// disk). Serve-only Read-role sessions.
+    fn scratch(peer_id: PeerId, storage: BTreeMap<StorageKey, Vec<u8>>) -> Self {
+        Self {
+            beelay: Beelay::new(peer_id, OsRng),
+            storage,
+            kv: None,
+            dirty: false,
+            stories: HashMap::new(),
+        }
     }
 
     // ponytail: whole-map snapshot per dirty drive, sent to the single kv
@@ -1491,6 +1506,12 @@ impl fmt::Debug for BeelayProtocol {
 
 /// Blobs handler that serves only dialers whose session-learned member id
 /// holds a role on at least one registered project.
+///
+/// Write side needs no gate here: `BlobsProtocol::new(store, None)` runs
+/// with iroh-blobs' default `EventMask`, whose `push: RequestMode::Disabled`
+/// rejects every remote `Request::Push` with a permission error before it
+/// touches the store — the handler is fetch-only, so no role (Read
+/// included) can store or replace blobs over this ALPN.
 struct GatedBlobs {
     inner: BlobsProtocol,
     shared: Arc<Shared>,
@@ -1570,17 +1591,30 @@ impl ProtocolHandler for BeelayProtocol {
             false,
         )
         .await?;
-        // vendor-edit: membership gate scoped to the requested project only.
-        if self
-            .shared
-            .auth
-            .query_access(&project_id, peer)
-            .await?
-            .is_none()
-        {
-            conn.close(REFUSED_CODE.into(), b"refused");
-            return Ok(());
-        }
+        // vendor-edit: membership gate scoped to the requested project only,
+        // branched on the peer's role (write-enforcement spec §2.3):
+        // Admin/Edit sync bidirectionally against the real core; Read is
+        // served from a session-local scratch core so anything it uploads
+        // evaporates (§2.4 mechanism B); Relay is reserved — no content key
+        // to serve under the dumb-transport model — and refused like a
+        // non-member until a ciphertext-forward path exists.
+        let mut scratch = match self.shared.auth.query_access(&project_id, peer).await? {
+            Some(Role::Admin | Role::Edit) => None,
+            Some(Role::Read) => {
+                // snapshot AFTER the flush above so the clone carries the
+                // newest commits. Whole-map clone: load_doc_commits unwraps
+                // blob loads, so sedimentree keys must bring their blobs.
+                let state = self.shared.state.lock().await;
+                Some(Core::scratch(
+                    self.shared.peer_id.clone(),
+                    state.core.storage.clone(),
+                ))
+            }
+            Some(Role::Relay) | None => {
+                conn.close(REFUSED_CODE.into(), b"refused");
+                return Ok(());
+            }
+        };
         self.shared.peers.lock().unwrap().insert(remote, peer);
         if let Err(e) = self
             .shared
@@ -1603,16 +1637,35 @@ impl ProtocolHandler for BeelayProtocol {
                     break;
                 }
                 Some((TAG_BEELAY, frame)) => {
+                    // vendor-edit: beelay-core =0.1.0-alpha.1 answers an
+                    // incoming Request::UploadBlob with todo!() — a panic
+                    // any dialer could trigger inside handle_event. The
+                    // encoding has no varints before the request-type byte,
+                    // so the offsets are fixed: frame[0]=2 (stream Data),
+                    // frame[1]=0 (Request), frame[2..18] RequestId,
+                    // frame[18]=3 (RequestType::UploadBlob). No client in
+                    // the crate ever sends it; reject for every role before
+                    // the frame reaches either core.
+                    if frame.len() > 18 && frame[0] == 2 && frame[1] == 0 && frame[18] == 3 {
+                        return Err(AcceptError::from(anyerr!(
+                            "peer sent an UploadBlob request (unsupported)"
+                        )));
+                    }
                     let msg = Message::decode(&frame).map_err(AcceptError::from_err)?;
                     let env = connected.receive(msg).map_err(AcceptError::from_err)?;
                     // scoped: this session may only touch the announced doc.
-                    let msgs = self
-                        .shared
-                        .state
-                        .lock()
-                        .await
-                        .core
-                        .drive_scoped(Event::receive(env), Some(scope))?;
+                    // Read sessions run against the session-owned scratch
+                    // core — no shared lock, uploads die with it.
+                    let msgs = match scratch.as_mut() {
+                        Some(core) => core.drive_scoped(Event::receive(env), Some(scope))?,
+                        None => self
+                            .shared
+                            .state
+                            .lock()
+                            .await
+                            .core
+                            .drive_scoped(Event::receive(env), Some(scope))?,
+                    };
                     send_envelopes(&connected, msgs, &mut send).await?;
                 }
                 Some((tag, _)) => {
@@ -1627,8 +1680,12 @@ impl ProtocolHandler for BeelayProtocol {
                 "beelay session exceeded {MAX_SYNC_ROUNDS} frames without ending"
             )));
         }
-        // apply whatever the initiator uploaded, then ack its bye.
-        self.shared.refresh(&project_id).await?;
+        // apply whatever the initiator uploaded, then ack its bye. A Read
+        // session wrote nothing to the real core — skip the refresh, but
+        // still ack so the initiator's protocol expectation holds.
+        if scratch.is_none() {
+            self.shared.refresh(&project_id).await?;
+        }
         send_frame(&mut send, &[]).await?;
         // wait for the initiator to close so tail data isn't dropped.
         conn.closed().await;

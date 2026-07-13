@@ -652,6 +652,123 @@ async fn stranger_sync_refused() -> Result<()> {
     Ok(())
 }
 
+/// Write enforcement (spec §2): a Read-role member syncs serve-only — the
+/// session completes and the viewer receives the host's content, but the
+/// viewer's uploads land in a throwaway core and never reach the host's
+/// canonical store or other members.
+#[tokio::test(flavor = "multi_thread")]
+async fn viewer_cannot_write() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (hoster_device, hoster_auth_id) = identities(dir.path(), "hoster");
+    let (bob_device, bob_auth_id) = identities(dir.path(), "bob");
+    let (carol_device, carol_auth_id) = identities(dir.path(), "carol");
+    let hoster_auth = ProjectAuth::new(&hoster_auth_id)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let bob_auth = ProjectAuth::new(&bob_auth_id)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let carol_auth = ProjectAuth::new(&carol_auth_id)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let bob_member = hoster_auth
+        .receive_contact_card(&bob_auth.contact_card().await.map_err(anyhow::Error::msg)?)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let carol_member = hoster_auth
+        .receive_contact_card(&carol_auth.contact_card().await.map_err(anyhow::Error::msg)?)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let hoster = BeelayNode::bind_local(&hoster_device, &hoster_auth_id, hoster_auth, None)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let bob = BeelayNode::bind_local(&bob_device, &bob_auth_id, bob_auth, None)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let carol = BeelayNode::bind_local(&carol_device, &carol_auth_id, carol_auth, None)
+        .await
+        .map_err(anyhow::Error::msg)?;
+
+    let mut doc = Automerge::new();
+    put(&mut doc, "title", "Look Don't Touch");
+    hoster
+        .create_shared_project("proj", doc)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    hoster
+        .auth()
+        .add_member("proj", bob_member, Role::Read)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    hoster
+        .auth()
+        .add_member("proj", carol_member, Role::Edit)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let bob_invite = hoster
+        .invite("proj", bob_member)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let carol_invite = hoster
+        .invite("proj", carol_member)
+        .await
+        .map_err(anyhow::Error::msg)?;
+
+    // bob (Read) pulls the content, edits his mirror, and syncs again: the
+    // whole flow must complete — serve-only is not refused — but his upload
+    // evaporates with the host's scratch core.
+    bob.accept_invite(&bob_invite)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    bob.sync_project("proj").await.map_err(anyhow::Error::msg)?;
+    bob.with_doc("proj", |d| put(d, "bob_edit", "sneaky write"))
+        .await;
+    let outcome = bob.sync_project("proj").await.map_err(anyhow::Error::msg)?;
+    assert!(
+        outcome.undecryptable.is_empty(),
+        "{:?}",
+        outcome.undecryptable
+    );
+    // serve-only ≠ refused: bob did receive the hoster's content
+    let bob_doc = bob.doc("proj").await.unwrap();
+    assert_eq!(
+        get_str(&bob_doc, "title").as_deref(),
+        Some("Look Don't Touch")
+    );
+
+    // carol (Edit) syncs; her session ends with a host refresh, so if bob's
+    // commit had reached the canonical store it would surface in BOTH docs.
+    carol
+        .accept_invite(&carol_invite)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    carol
+        .sync_project("proj")
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let carol_doc = carol.doc("proj").await.unwrap();
+    assert_eq!(
+        get_str(&carol_doc, "title").as_deref(),
+        Some("Look Don't Touch")
+    );
+    assert_eq!(
+        get_str(&carol_doc, "bob_edit"),
+        None,
+        "viewer write propagated to a member"
+    );
+    let hoster_doc = hoster.doc("proj").await.unwrap();
+    assert_eq!(
+        get_str(&hoster_doc, "bob_edit"),
+        None,
+        "viewer write reached the host"
+    );
+
+    for node in [hoster, bob, carol] {
+        node.shutdown().await.map_err(anyhow::Error::msg)?;
+    }
+    Ok(())
+}
+
 /// One endpoint serves plain sync, beelay, and blobs: both handles of a
 /// stack report the same endpoint id, both protocols work between the same
 /// two stacks, and shutdown is exercised from either handle in either order.
