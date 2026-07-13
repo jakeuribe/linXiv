@@ -3,7 +3,7 @@
 use anyhow::Result;
 use automerge::{Automerge, ROOT, transaction::Transactable};
 use linxiv_p2p::{
-    DeviceIdentity, ShareNode,
+    DeviceIdentity, KeyStoreError, ShareNode,
     auth::{AuthIdentity, DecryptError, DeviceBinding, ProjectAuth, Role},
 };
 
@@ -503,4 +503,149 @@ async fn unauthorized_rejected() -> Result<()> {
         node.shutdown().await.map_err(|e| anyhow::anyhow!("{e}"))?;
     }
     Ok(())
+}
+
+// --- encrypted key store at rest (write-enforcement spec §8) -----------------
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
+/// state.bin persisted with a DEK leaks neither the member key nor a doc id,
+/// round-trips with the right DEK, and fails typed with a wrong/missing one.
+#[tokio::test(flavor = "multi_thread")]
+async fn encrypted_roundtrip() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (_, alice_auth) = identities(dir.path(), "alice");
+    let state_dir = dir.path().join("alice-state");
+    let dek = [7u8; 32];
+
+    let (member_id, doc_id, sealed) = {
+        let alice = ProjectAuth::load_or_new_with_dek(&alice_auth, &state_dir, Some(&dek)).await?;
+        alice.create_project("proj").await?;
+        let sealed = alice.encrypt("proj", b"at-rest secret").await?;
+        (alice.member_id(), alice.doc_id("proj").unwrap(), sealed)
+    };
+
+    let raw = std::fs::read(state_dir.join("state.bin"))?;
+    assert_eq!(raw[0], 2, "state persisted with a DEK must be format v2");
+    // neither the member signing key (seed or verifying half) nor a known
+    // project doc id appears in the clear.
+    let seed = std::fs::read(dir.path().join("alice.keyhive.key"))?;
+    assert!(!contains(&raw, &seed), "signing seed in the clear");
+    assert!(!contains(&raw, &member_id.0), "member key in the clear");
+    assert!(!contains(&raw, &doc_id), "doc id in the clear");
+
+    // the same DEK recovers identity, registry, and key material.
+    let alice = ProjectAuth::load_or_new_with_dek(&alice_auth, &state_dir, Some(&dek)).await?;
+    assert_eq!(alice.member_id(), member_id);
+    assert_eq!(alice.doc_id("proj"), Some(doc_id));
+    assert_eq!(
+        alice.decrypt("proj", &sealed).await.unwrap(),
+        b"at-rest secret"
+    );
+
+    // wrong DEK: typed error, not a panic or decode error.
+    let err = ProjectAuth::load_or_new_with_dek(&alice_auth, &state_dir, Some(&[8u8; 32]))
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.downcast_ref::<KeyStoreError>(),
+        Some(&KeyStoreError::WrongDek)
+    );
+
+    // no DEK at all: locked store.
+    let err = ProjectAuth::load_or_new(&alice_auth, &state_dir)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        err.downcast_ref::<KeyStoreError>(),
+        Some(&KeyStoreError::Locked)
+    );
+    Ok(())
+}
+
+/// v1 plaintext state loaded with a DEK is re-persisted encrypted (v2, no
+/// plaintext left behind) with the identity and registry unchanged.
+#[tokio::test(flavor = "multi_thread")]
+async fn state_migrates_v1_to_encrypted() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (_, alice_auth) = identities(dir.path(), "alice");
+    let state_dir = dir.path().join("alice-state");
+
+    let (member_id, doc_id) = {
+        let alice = ProjectAuth::load_or_new(&alice_auth, &state_dir).await?;
+        alice.create_project("proj").await?;
+        (alice.member_id(), alice.doc_id("proj").unwrap())
+    };
+    let raw = std::fs::read(state_dir.join("state.bin"))?;
+    assert_eq!(raw[0], 1);
+    assert!(
+        contains(&raw, &doc_id),
+        "v1 plaintext registry carries the doc id"
+    );
+
+    let dek = [9u8; 32];
+    let alice = ProjectAuth::load_or_new_with_dek(&alice_auth, &state_dir, Some(&dek)).await?;
+    assert_eq!(alice.member_id(), member_id);
+    assert_eq!(alice.doc_id("proj"), Some(doc_id));
+    drop(alice);
+
+    let raw = std::fs::read(state_dir.join("state.bin"))?;
+    assert_eq!(raw[0], 2, "v1 must be re-persisted encrypted on load");
+    assert!(!contains(&raw, &doc_id), "plaintext gone after migration");
+
+    let alice = ProjectAuth::load_or_new_with_dek(&alice_auth, &state_dir, Some(&dek)).await?;
+    assert_eq!(alice.member_id(), member_id);
+    assert_eq!(alice.doc_id("proj"), Some(doc_id));
+    Ok(())
+}
+
+fn io_key_store_err(err: &std::io::Error) -> Option<&KeyStoreError> {
+    err.get_ref().and_then(|e| e.downcast_ref::<KeyStoreError>())
+}
+
+/// device.key generated with a DEK is not the bare seed, round-trips with the
+/// right DEK, and fails typed with a wrong/missing one.
+#[test]
+fn device_key_encrypted_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("device.key");
+    let dek = [7u8; 32];
+
+    let first = DeviceIdentity::load_or_generate_with_dek(&path, Some(&dek)).unwrap();
+    let raw = std::fs::read(&path).unwrap();
+    assert_ne!(raw.len(), 32, "file must not be the bare 32-byte seed");
+
+    let second = DeviceIdentity::load_or_generate_with_dek(&path, Some(&dek)).unwrap();
+    assert_eq!(first.endpoint_id(), second.endpoint_id());
+
+    let err = DeviceIdentity::load_or_generate_with_dek(&path, Some(&[8u8; 32])).unwrap_err();
+    assert_eq!(io_key_store_err(&err), Some(&KeyStoreError::WrongDek));
+
+    // the DEK-less legacy loader sees a locked store, not garbage.
+    let err = DeviceIdentity::load_or_generate(&path).unwrap_err();
+    assert_eq!(io_key_store_err(&err), Some(&KeyStoreError::Locked));
+}
+
+/// A legacy plaintext device.key is rewritten encrypted once a DEK shows up:
+/// seed bytes gone from disk, identity unchanged.
+#[test]
+fn device_key_migrates_to_encrypted() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("device.key");
+
+    let first = DeviceIdentity::load_or_generate(&path).unwrap();
+    let seed = std::fs::read(&path).unwrap();
+    assert_eq!(seed.len(), 32);
+
+    let dek = [7u8; 32];
+    let migrated = DeviceIdentity::load_or_generate_with_dek(&path, Some(&dek)).unwrap();
+    assert_eq!(migrated.endpoint_id(), first.endpoint_id());
+
+    let raw = std::fs::read(&path).unwrap();
+    assert!(!contains(&raw, &seed), "seed must not remain in the clear");
+
+    let again = DeviceIdentity::load_or_generate_with_dek(&path, Some(&dek)).unwrap();
+    assert_eq!(again.endpoint_id(), first.endpoint_id());
 }

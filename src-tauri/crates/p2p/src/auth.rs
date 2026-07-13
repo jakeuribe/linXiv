@@ -42,7 +42,7 @@ use nonempty::nonempty;
 use rand::{Rng as _, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 
-use crate::sync::{AccessCheckFn, DeviceIdentity};
+use crate::sync::{AccessCheckFn, DeviceIdentity, KeyStoreError, seal, unseal, write_private};
 
 // --- keyhive device identity -------------------------------------------------
 
@@ -281,29 +281,8 @@ type Kh = Keyhive<
 
 type DocHandle = Arc<AsyncMutex<Document<Sendable, MemorySigner, [u8; 32], NoListener>>>;
 
-// vendor-edit: like sync::write_key but overwrites any stale tmp left by a
-// crashed persist. Archives carry secret key material.
-// Returns the open handle so the caller can fsync before rename.
-#[cfg(unix)]
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<std::fs::File> {
-    use std::{io::Write as _, os::unix::fs::OpenOptionsExt as _};
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)?;
-    f.write_all(bytes)?;
-    Ok(f)
-}
-
-#[cfg(not(unix))]
-fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<std::fs::File> {
-    use std::io::Write as _;
-    let mut f = std::fs::File::create(path)?;
-    f.write_all(bytes)?;
-    Ok(f)
-}
+// write_private (tmp writer for secret-carrying files) moved to crate::sync
+// so the encrypted device-key migration shares it.
 
 #[cfg(unix)]
 fn fsync_dir(dir: &Path) -> std::io::Result<()> {
@@ -325,6 +304,11 @@ fn write_state_file(dir: &Path, bytes: &[u8]) -> std::io::Result<()> {
 
 /// First byte of state.bin; the postcard payload follows.
 const STATE_FORMAT_VERSION: u8 = 1;
+
+// vendor-edit: encrypted state at rest (write-enforcement spec §8).
+/// state.bin v2 = DEK-encrypted: version byte, then [`seal`] output
+/// (24-byte nonce + XChaCha20-Poly1305 ciphertext of the postcard payload).
+const STATE_FORMAT_VERSION_ENCRYPTED: u8 = 2;
 
 /// Combined archive + project registry, persisted as one file.
 #[derive(Serialize, Deserialize)]
@@ -350,6 +334,9 @@ pub struct ProjectAuth {
     projects: StdMutex<HashMap<String, ProjectIds>>,
     /// Set by [`Self::load_or_new`]; mutating ops write state back here.
     persist_dir: Option<PathBuf>,
+    /// Set by [`Self::load_or_new_with_dek`]; [`Self::persist`] seals
+    /// state.bin with it (`None` = plaintext v1).
+    dek: Option<[u8; 32]>,
     /// Serializes [`Self::persist`]'s snapshot+write.
     persist_lock: AsyncMutex<()>,
 }
@@ -376,6 +363,7 @@ impl ProjectAuth {
             keyhive,
             projects: StdMutex::new(HashMap::new()),
             persist_dir: None,
+            dek: None,
             persist_lock: AsyncMutex::new(()),
         })
     }
@@ -386,21 +374,44 @@ impl ProjectAuth {
     /// file is absent) and auto-persists there after every mutating op.
     /// An undecodable state file is an error.
     pub async fn load_or_new(identity: &AuthIdentity, dir: &Path) -> Result<Self> {
+        Self::load_or_new_with_dek(identity, dir, None).await
+    }
+
+    // vendor-edit: encrypted state at rest (write-enforcement spec §8).
+    /// Like [`Self::load_or_new`], but with `Some(dek)` state.bin is sealed
+    /// (XChaCha20-Poly1305) under the DEK; v1 plaintext state is re-persisted
+    /// encrypted on load. Encrypted state loaded without the right DEK fails
+    /// with a downcastable [`KeyStoreError`].
+    pub async fn load_or_new_with_dek(
+        identity: &AuthIdentity,
+        dir: &Path,
+        dek: Option<&[u8; 32]>,
+    ) -> Result<Self> {
         let state_path = dir.join("state.bin");
         if !state_path.exists() {
             std::fs::create_dir_all(dir).map_err(|e| anyerr!("creating {dir:?}: {e}"))?;
             let mut auth = Self::new(identity).await?;
             auth.persist_dir = Some(dir.to_owned());
+            auth.dek = dek.copied();
             return Ok(auth);
         }
         let bytes =
             std::fs::read(&state_path).map_err(|e| anyerr!("reading keyhive state: {e}"))?;
-        let payload = match bytes.split_first() {
-            Some((&STATE_FORMAT_VERSION, rest)) => rest,
+        let (version, rest) = bytes
+            .split_first()
+            .ok_or_else(|| anyerr!("unknown state.bin format version"))?;
+        let payload = match (*version, dek) {
+            (STATE_FORMAT_VERSION, _) => rest.to_vec(),
+            (STATE_FORMAT_VERSION_ENCRYPTED, Some(dek)) => {
+                unseal(dek, rest).map_err(AnyError::from_std)?
+            }
+            (STATE_FORMAT_VERSION_ENCRYPTED, None) => {
+                return Err(AnyError::from_std(KeyStoreError::Locked));
+            }
             _ => return Err(anyerr!("unknown state.bin format version")),
         };
         let state: PersistedState =
-            postcard::from_bytes(payload).map_err(|e| anyerr!("malformed keyhive state: {e}"))?;
+            postcard::from_bytes(&payload).map_err(|e| anyerr!("malformed keyhive state: {e}"))?;
         // The ciphertext store is not archived; a fresh one is passed here.
         let keyhive = Kh::try_from_archive(
             &state.archive,
@@ -424,12 +435,18 @@ impl ProjectAuth {
                 },
             );
         }
-        Ok(Self {
+        let auth = Self {
             keyhive,
             projects: StdMutex::new(projects),
             persist_dir: Some(dir.to_owned()),
+            dek: dek.copied(),
             persist_lock: AsyncMutex::new(()),
-        })
+        };
+        // v1 plaintext loaded with a DEK: re-persist encrypted (one-time migration).
+        if *version == STATE_FORMAT_VERSION && auth.dek.is_some() {
+            auth.persist().await?;
+        }
+        Ok(auth)
     }
 
     /// Writes state.bin under the [`Self::load_or_new`] dir via tmp+rename,
@@ -452,10 +469,20 @@ impl ProjectAuth {
                 .map(|(id, p)| (id.clone(), p.group.map(|g| g.to_bytes()), p.doc.to_bytes()))
                 .collect(),
         };
-        let mut bytes = vec![STATE_FORMAT_VERSION];
-        bytes.extend(
-            postcard::to_stdvec(&state).map_err(|e| anyerr!("encoding keyhive state: {e}"))?,
-        );
+        let plain =
+            postcard::to_stdvec(&state).map_err(|e| anyerr!("encoding keyhive state: {e}"))?;
+        let bytes = match &self.dek {
+            Some(dek) => {
+                let mut bytes = vec![STATE_FORMAT_VERSION_ENCRYPTED];
+                bytes.extend(seal(dek, &plain));
+                bytes
+            }
+            None => {
+                let mut bytes = vec![STATE_FORMAT_VERSION];
+                bytes.extend(plain);
+                bytes
+            }
+        };
         // Bounded retries: a transient write failure here would otherwise leave
         // in-memory state (e.g. post-revoke key rotation) mutated but unpersisted.
         let mut last_err = None;

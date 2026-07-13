@@ -6,6 +6,10 @@ pub mod sync;
 
 pub use sync::{ALPN, AccessCheckFn, DeviceIdentity, ShareNode, ShareTicket};
 
+// vendor-edit: encrypted key store at rest (write-enforcement spec §8).
+#[cfg(feature = "encrypted-store")]
+pub use sync::KeyStoreError;
+
 #[cfg(feature = "auth-keyhive")]
 pub mod auth;
 

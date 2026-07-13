@@ -55,16 +55,61 @@ impl DeviceIdentity {
     /// Loads the key at `path`, generating and persisting a new one if the file
     /// doesn't exist yet. Same path always yields the same [`EndpointId`].
     pub fn load_or_generate(path: impl AsRef<Path>) -> std::io::Result<Self> {
-        let path = path.as_ref();
+        Self::load_or_generate_at(path.as_ref(), None)
+    }
+
+    // vendor-edit: DEK-wrapped device key at rest (write-enforcement spec §8).
+    /// Like [`Self::load_or_generate`], but with `Some(dek)` the key file is
+    /// AEAD-wrapped (XChaCha20-Poly1305) under the DEK; a legacy plaintext
+    /// file is rewritten encrypted once. An encrypted file loaded without
+    /// the right DEK fails with an `io::Error` whose source downcasts to
+    /// [`KeyStoreError`].
+    #[cfg(feature = "encrypted-store")]
+    pub fn load_or_generate_with_dek(
+        path: impl AsRef<Path>,
+        dek: Option<&[u8; 32]>,
+    ) -> std::io::Result<Self> {
+        Self::load_or_generate_at(path.as_ref(), dek)
+    }
+
+    // `_dek` is only read under `encrypted-store`; the underscore keeps the
+    // plaintext-only build warning-free.
+    fn load_or_generate_at(path: &Path, _dek: Option<&[u8; 32]>) -> std::io::Result<Self> {
         let secret = if path.exists() {
             let bytes = std::fs::read(path)?;
+            #[cfg(feature = "encrypted-store")]
+            if let Some(sealed) = bytes.strip_prefix(DEVICE_KEY_MAGIC) {
+                let dek = _dek.ok_or(KeyStoreError::Locked)?;
+                let seed: [u8; 32] = unseal(dek, sealed)?.as_slice().try_into().map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("decrypted device key {} is not 32 bytes", path.display()),
+                    )
+                })?;
+                return Ok(Self {
+                    secret: SecretKey::from_bytes(&seed),
+                });
+            }
             let bytes: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     format!("device key file {} is not 32 bytes", path.display()),
                 )
             })?;
-            SecretKey::from_bytes(&bytes)
+            let key = SecretKey::from_bytes(&bytes);
+            // legacy plaintext + DEK: rewrite encrypted once, tmp+rename so a
+            // crash cannot lose the identity. No dir fsync — a lost rename
+            // just leaves the plaintext file to re-migrate next run.
+            #[cfg(feature = "encrypted-store")]
+            if let Some(dek) = _dek {
+                let mut tmp = path.as_os_str().to_owned();
+                tmp.push(".tmp");
+                let tmp = std::path::PathBuf::from(tmp);
+                write_private(&tmp, &seal_device_key(dek, &key.to_bytes()))
+                    .and_then(|f| f.sync_all())?;
+                std::fs::rename(&tmp, path)?;
+            }
+            key
         } else {
             let key = SecretKey::generate();
             if let Some(parent) = path.parent()
@@ -72,7 +117,14 @@ impl DeviceIdentity {
             {
                 std::fs::create_dir_all(parent)?;
             }
-            write_key(path, &key.to_bytes())?;
+            #[cfg(feature = "encrypted-store")]
+            let file_bytes = match _dek {
+                Some(dek) => seal_device_key(dek, &key.to_bytes()),
+                None => key.to_bytes().to_vec(),
+            };
+            #[cfg(not(feature = "encrypted-store"))]
+            let file_bytes = key.to_bytes();
+            write_key(path, &file_bytes)?;
             key
         };
         Ok(Self { secret })
@@ -106,6 +158,116 @@ pub(crate) fn write_key(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 #[cfg(not(unix))]
 pub(crate) fn write_key(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::write(path, bytes)
+}
+
+// --- encrypted key store (write-enforcement spec §8) -------------------------
+
+// vendor-edit: DEK-wrapped secrets at rest. The 32-byte DEK comes from the
+// app (OS keychain); this layer only seals/unseals bytes with it.
+
+/// Magic prefix of an encrypted `device.key`; absence = legacy plaintext
+/// (a bare 32-byte seed).
+#[cfg(feature = "encrypted-store")]
+const DEVICE_KEY_MAGIC: &[u8] = b"linxiv/enc-key/v1";
+
+/// Typed encrypted-store failure, surfaced as the `io::Error` source
+/// (device key) or the direct [`AnyError`] payload (keyhive state) so
+/// callers can `downcast_ref::<KeyStoreError>()` it.
+#[cfg(feature = "encrypted-store")]
+#[derive(Debug, PartialEq, Eq)]
+pub enum KeyStoreError {
+    /// The file on disk is encrypted but no DEK was supplied.
+    Locked,
+    /// The supplied DEK does not decrypt the file (or the file is corrupt).
+    WrongDek,
+}
+
+#[cfg(feature = "encrypted-store")]
+impl fmt::Display for KeyStoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            KeyStoreError::Locked => f.write_str("key store is encrypted; a DEK is required"),
+            KeyStoreError::WrongDek => {
+                f.write_str("key store did not decrypt: wrong DEK or corrupted file")
+            }
+        }
+    }
+}
+
+#[cfg(feature = "encrypted-store")]
+impl std::error::Error for KeyStoreError {}
+
+#[cfg(feature = "encrypted-store")]
+impl From<KeyStoreError> for std::io::Error {
+    fn from(e: KeyStoreError) -> Self {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, e)
+    }
+}
+
+/// AEAD-wraps `plaintext` under `dek`: XChaCha20-Poly1305 with a random
+/// 24-byte nonce prepended, so there is no nonce-reuse bookkeeping.
+#[cfg(feature = "encrypted-store")]
+pub(crate) fn seal(dek: &[u8; 32], plaintext: &[u8]) -> Vec<u8> {
+    use chacha20poly1305::{
+        XChaCha20Poly1305,
+        aead::{Aead as _, AeadCore as _, KeyInit as _, OsRng},
+    };
+    let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+    let mut out = nonce.to_vec();
+    out.extend(
+        XChaCha20Poly1305::new(dek.into())
+            .encrypt(&nonce, plaintext)
+            .expect("XChaCha20-Poly1305 encryption cannot fail"),
+    );
+    out
+}
+
+/// Inverse of [`seal`]. Any failure (truncated input, tampered ciphertext,
+/// wrong key) is [`KeyStoreError::WrongDek`].
+#[cfg(feature = "encrypted-store")]
+pub(crate) fn unseal(dek: &[u8; 32], sealed: &[u8]) -> Result<Vec<u8>, KeyStoreError> {
+    use chacha20poly1305::{
+        XChaCha20Poly1305, XNonce,
+        aead::{Aead as _, KeyInit as _},
+    };
+    let (nonce, ciphertext) = sealed.split_at_checked(24).ok_or(KeyStoreError::WrongDek)?;
+    XChaCha20Poly1305::new(dek.into())
+        .decrypt(XNonce::from_slice(nonce), ciphertext)
+        .map_err(|_| KeyStoreError::WrongDek)
+}
+
+/// The encrypted `device.key` file image: magic prefix + [`seal`] output.
+#[cfg(feature = "encrypted-store")]
+fn seal_device_key(dek: &[u8; 32], seed: &[u8; 32]) -> Vec<u8> {
+    let mut out = DEVICE_KEY_MAGIC.to_vec();
+    out.extend(seal(dek, seed));
+    out
+}
+
+// vendor-edit: like write_key but overwrites (any stale tmp left by a
+// crashed persist included). For files carrying secret key material.
+// Returns the open handle so the caller can fsync before rename. Lives here
+// (not auth.rs) so the device-key migration can use it too; auth-keyhive
+// implies encrypted-store, so it is always available to the auth module.
+#[cfg(all(unix, feature = "encrypted-store"))]
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<std::fs::File> {
+    use std::{io::Write as _, os::unix::fs::OpenOptionsExt as _};
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    f.write_all(bytes)?;
+    Ok(f)
+}
+
+#[cfg(all(not(unix), feature = "encrypted-store"))]
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<std::fs::File> {
+    use std::io::Write as _;
+    let mut f = std::fs::File::create(path)?;
+    f.write_all(bytes)?;
+    Ok(f)
 }
 
 // --- access check ------------------------------------------------------------

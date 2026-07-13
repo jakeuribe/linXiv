@@ -5,8 +5,14 @@ edition = "2024"
 
 [features]
 default = []
+# Encrypted key store at rest (spec §8): AEAD-wrap device.key / state.bin
+# under an app-supplied DEK. Its own feature so default (plain-sync) builds
+# don't pull the AEAD dep; auth-keyhive implies it, so state.bin encryption
+# always ships with the capability layer.
+encrypted-store = ["dep:chacha20poly1305"]
 # Phase 2: real keyhive_core/beekem capability layer
 auth-keyhive = [
+    "encrypted-store",
     "dep:beekem",
     "dep:keyhive_core",
     "dep:keyhive_crypto",
@@ -35,6 +41,9 @@ beekem = { version = "0.3.0", optional = true }
 # sync-beelay: EXACT pin — a bare "beelay-core" resolves to a 0.0.1 placeholder.
 beelay-core = { version = "=0.1.0-alpha.1", optional = true }
 blake3 = { version = "1", optional = true }
+# encrypted-store: same version the keyhive stack (beekem/keyhive_crypto)
+# already pulls transitively, so no duplicate lands in the tree.
+chacha20poly1305 = { version = "0.10.1", optional = true }
 # vendor-edit: fs-store for disk-backed blobs (BeelayNode data_dir).
 iroh-blobs = { version = "0.103.0", optional = true, default-features = false, features = [
     "fs-store",
