@@ -339,6 +339,11 @@ pub struct ProjectAuth {
     dek: Option<[u8; 32]>,
     /// Serializes [`Self::persist`]'s snapshot+write.
     persist_lock: AsyncMutex<()>,
+    /// Serializes membership transitions ([`Self::set_role`],
+    /// [`Self::revoke_member`]) against [`Self::encrypt`], so a
+    /// flush-triggered encrypt can never land between a transition's legs
+    /// and seal content in an epoch the member is keyed out of.
+    transition_lock: AsyncMutex<()>,
 }
 
 impl std::fmt::Debug for ProjectAuth {
@@ -365,6 +370,7 @@ impl ProjectAuth {
             persist_dir: None,
             dek: None,
             persist_lock: AsyncMutex::new(()),
+            transition_lock: AsyncMutex::new(()),
         })
     }
 
@@ -441,6 +447,7 @@ impl ProjectAuth {
             persist_dir: Some(dir.to_owned()),
             dek: dek.copied(),
             persist_lock: AsyncMutex::new(()),
+            transition_lock: AsyncMutex::new(()),
         };
         // v1 plaintext loaded with a DEK: re-persist encrypted (one-time migration).
         if *version == STATE_FORMAT_VERSION && auth.dek.is_some() {
@@ -705,6 +712,10 @@ impl ProjectAuth {
     /// encrypted from now on is undecryptable to them. Content from epochs
     /// they belonged to stays readable to them forever — by design.
     pub async fn revoke_member(&self, project_id: &str, member: MemberId) -> Result<()> {
+        // No encrypt between revoke and rotation: content sealed in that
+        // window would land in the pre-rotation epoch the revokee still
+        // holds, weakening the "undecryptable from now on" promise.
+        let _transition = self.transition_lock.lock().await;
         let group = self.group_membered(project_id).await?;
         self.keyhive
             .revoke_member(member.identifier()?, true, &group)
@@ -737,14 +748,17 @@ impl ProjectAuth {
     /// digest order, so layering a second grant would turn
     /// [`Self::query_access`] into a coin flip.
     ///
-    /// A downgrade eagerly rotates the doc key (PCS update) between revoke
-    /// and re-grant, so the dropped capability cannot act on future epochs;
-    /// an upgrade skips the eager rotation and the member keeps reading
-    /// everything they could before. Both legs re-grant AFTER the revoke
-    /// (revocation kills all of the member's delegations, a fresh grant
-    /// included), and the legs run back-to-back with no encrypt in between —
-    /// content encrypted after the rotation but before the re-grant would be
-    /// permanently unreadable to the member.
+    /// A downgrade eagerly rotates the doc key (PCS update), an upgrade
+    /// skips it and the member keeps reading everything they could before.
+    /// Ordering is load-bearing twice over: the re-grant runs right AFTER
+    /// the revoke (revocation kills all of the member's delegations, a
+    /// fresh grant included) and BEFORE any rotation — content encrypted
+    /// while the member is keyed out of the tree would be permanently
+    /// unreadable to them, so no such window may exist. Belt and braces,
+    /// the whole transition also holds `transition_lock`, which
+    /// [`Self::encrypt`] takes too, so a concurrent flush-triggered encrypt
+    /// (e.g. [`crate::beelay`]'s inbound-dial flush) cannot interleave with
+    /// the legs at all.
     pub async fn set_role(&self, project_id: &str, member: MemberId, role: Role) -> Result<()> {
         let current = match self.query_access(project_id, member).await? {
             Some(current) if current == role => return Ok(()),
@@ -752,6 +766,7 @@ impl ProjectAuth {
             None => return self.add_member(project_id, member, role).await,
             Some(current) => current,
         };
+        let _transition = self.transition_lock.lock().await;
         let group = self.group_membered(project_id).await?;
         self.keyhive
             .revoke_member(member.identifier()?, true, &group)
@@ -762,17 +777,23 @@ impl ProjectAuth {
                 }
                 e => anyerr!("revoking member for role change: {e}"),
             })?;
+        // add_member persists, making revoke + re-grant durable in one
+        // write. A failure (or cancellation) between the legs leaves the
+        // member revoked but the epoch UNrotated — nothing they need is
+        // sealed away, and re-running set_role recovers them in full.
+        self.add_member(project_id, member, role).await?;
         if role < current {
             let doc = self.doc_handle(project_id).await?;
             self.keyhive
                 .force_pcs_update(doc)
                 .await
                 .map_err(|e| anyerr!("rotating project key: {e}"))?;
+            // rotation mints CGKA ops; persist like revoke_member does. A
+            // failure here leaves the role change durable and only the
+            // best-effort eager rotation unpersisted.
+            self.persist().await?;
         }
-        // add_member persists, making the whole transition durable in one
-        // write; a failure here leaves the member revoked in-memory only —
-        // a restart reloads the pre-set_role state.
-        self.add_member(project_id, member, role).await
+        Ok(())
     }
 
     /// The member's effective access on the project (via group or direct),
@@ -789,6 +810,8 @@ impl ProjectAuth {
 
     /// Encrypts `content` under the project doc's current epoch key.
     pub async fn encrypt(&self, project_id: &str, content: &[u8]) -> Result<Vec<u8>> {
+        // serialized against set_role/revoke_member (see set_role's docs).
+        let _transition = self.transition_lock.lock().await;
         let doc = self.doc_handle(project_id).await?;
         // ponytail: random content ref, no causal predecessors — real automerge
         // change hashes take over as refs in Phase 3.

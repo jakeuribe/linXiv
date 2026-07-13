@@ -334,35 +334,83 @@ fn key_blob(key: &StorageKey) -> Option<String> {
 }
 
 /// Owns kv.bin: [`Core::persist_kv`] publishes whole-map snapshots into `tx`;
-/// one writer task writes them in order, newest snapshot wins.
+/// one writer task writes them in order, newest snapshot wins. `written`
+/// reports the last snapshot attempted and whether it hit disk, so callers
+/// that need durability-before-proceeding (see [`BeelayNode::store_blob`])
+/// can wait on it.
 struct KvWriter {
-    tx: tokio::sync::watch::Sender<Vec<u8>>,
+    tx: tokio::sync::watch::Sender<(u64, Vec<u8>)>,
+    written: tokio::sync::watch::Receiver<(u64, bool)>,
     task: tokio::task::JoinHandle<()>,
 }
 
 impl KvWriter {
     fn spawn(path: PathBuf) -> Self {
-        let (tx, mut rx) = tokio::sync::watch::channel(Vec::new());
+        let (tx, mut rx) = tokio::sync::watch::channel((0u64, Vec::new()));
+        let (written_tx, written) = tokio::sync::watch::channel((0u64, true));
         let task = tokio::spawn(async move {
             loop {
                 let open = rx.changed().await.is_ok();
-                let bytes = rx.borrow_and_update().clone();
+                let (seq, bytes) = rx.borrow_and_update().clone();
                 if !bytes.is_empty() {
                     let path = path.clone();
-                    match tokio::task::spawn_blocking(move || write_file(&path, &bytes)).await {
-                        Ok(Ok(())) => {}
-                        Ok(Err(e)) => eprintln!("beelay: persisting kv.bin failed: {e}"),
-                        Err(e) => eprintln!("beelay: kv write task failed: {e}"),
-                    }
+                    let ok = match tokio::task::spawn_blocking(move || write_file(&path, &bytes))
+                        .await
+                    {
+                        Ok(Ok(())) => true,
+                        Ok(Err(e)) => {
+                            eprintln!("beelay: persisting kv.bin failed: {e}");
+                            false
+                        }
+                        Err(e) => {
+                            eprintln!("beelay: kv write task failed: {e}");
+                            false
+                        }
+                    };
+                    written_tx.send_replace((seq, ok));
                 }
                 if !open {
                     return;
                 }
             }
         });
-        Self { tx, task }
+        Self { tx, written, task }
+    }
+
+    /// Publishes a snapshot; returns its sequence number for [`kv_flushed`].
+    fn publish(&self, bytes: Vec<u8>) -> u64 {
+        let mut seq = 0;
+        self.tx.send_modify(|(s, b)| {
+            *s += 1;
+            seq = *s;
+            *b = bytes;
+        });
+        seq
     }
 }
+
+/// Resolves once the writer has attempted snapshot `seq` or newer (whole-map
+/// snapshots: any newer write covers the older one's content). `Err` when
+/// that write failed or the writer stopped first.
+async fn kv_flushed(
+    mut written: tokio::sync::watch::Receiver<(u64, bool)>,
+    seq: u64,
+) -> Result<()> {
+    let state = written
+        .wait_for(|(s, _)| *s >= seq)
+        .await
+        .map_err(|_| anyerr!("kv writer stopped before the write landed"))?;
+    if state.1 {
+        Ok(())
+    } else {
+        Err(anyerr!("kv.bin write failed"))
+    }
+}
+
+/// kv.bin storage entries: key components -> value.
+type KvEntries = Vec<(Vec<String>, Vec<u8>)>;
+/// kv.bin blob-map entries: blob hash (lowercase hex) -> doc id bytes.
+type BlobEntries = Vec<(String, [u8; 16])>;
 
 /// The sans-IO beelay state machine plus its synchronously-answered storage.
 struct Core {
@@ -376,9 +424,10 @@ struct Core {
     // vendor-edit: blob hash (lowercase hex) -> owning beelay doc, one
     // keyspace for beelay commit blobs and iroh PDF blobs (spec §4). Scoped
     // drives and the blobs ALPN gate consult it so blob data scopes per
-    // project. Persisted as blob_docs.bin beside the registry.
+    // project. Persisted INSIDE kv.bin (one tmp+rename with the storage
+    // map): with unmapped = deny, a crash between two files could strand a
+    // stored blob unmapped — and permanently unservable — forever.
     blob_docs: HashMap<String, DocumentId>,
-    blob_kv: Option<KvWriter>,
     /// Set on blob_docs changes; persisted like `dirty`.
     blob_dirty: bool,
     stories: HashMap<StoryId, StoryResult>,
@@ -387,32 +436,51 @@ struct Core {
 impl Core {
     fn new(peer_id: PeerId, data_dir: Option<&Path>) -> Result<Self> {
         let kv_path = data_dir.map(|d| d.join("kv.bin"));
-        let blob_path = data_dir.map(|d| d.join("blob_docs.bin"));
         let mut storage = BTreeMap::new();
+        let mut blob_docs = HashMap::new();
+        // blob map read from kv.bin's combined payload; the legacy separate
+        // blob_docs.bin is only consulted for pre-combined kv.bin files.
+        let mut load_legacy_blob_file = true;
         if let Some(path) = &kv_path
             && path.exists()
         {
             let bytes = std::fs::read(path).map_err(|e| anyerr!("reading beelay kv: {e}"))?;
-            match postcard::from_bytes::<Vec<(Vec<String>, Vec<u8>)>>(&bytes) {
-                Ok(entries) => {
-                    for (parts, value) in entries {
-                        match key_from_components(&parts) {
-                            Ok(key) => {
-                                storage.insert(key, value);
-                            }
-                            Err(e) => eprintln!("beelay: skipping kv entry {parts:?}: {e}"),
-                        }
-                    }
+            // Combined format: (storage entries, blob map) in ONE file, so
+            // one tmp+rename keeps them consistent. A legacy entries-only
+            // kv.bin fails the tuple parse (EOF before the second vec) and
+            // loads via the fallback.
+            let entries = match postcard::from_bytes::<(KvEntries, BlobEntries)>(&bytes) {
+                Ok((entries, blobs)) => {
+                    load_legacy_blob_file = false;
+                    blob_docs = blobs
+                        .into_iter()
+                        .map(|(hash, doc)| (hash, DocumentId::from(doc)))
+                        .collect();
+                    entries
                 }
-                Err(e) => eprintln!("beelay: malformed kv.bin, starting empty: {e}"),
+                Err(_) => match postcard::from_bytes::<KvEntries>(&bytes) {
+                    Ok(entries) => entries,
+                    Err(e) => {
+                        eprintln!("beelay: malformed kv.bin, starting empty: {e}");
+                        Vec::new()
+                    }
+                },
+            };
+            for (parts, value) in entries {
+                match key_from_components(&parts) {
+                    Ok(key) => {
+                        storage.insert(key, value);
+                    }
+                    Err(e) => eprintln!("beelay: skipping kv entry {parts:?}: {e}"),
+                }
             }
         }
-        let mut blob_docs = HashMap::new();
-        if let Some(path) = &blob_path
+        if load_legacy_blob_file
+            && let Some(path) = data_dir.map(|d| d.join("blob_docs.bin"))
             && path.exists()
         {
-            let bytes = std::fs::read(path).map_err(|e| anyerr!("reading blob map: {e}"))?;
-            match postcard::from_bytes::<Vec<(String, [u8; 16])>>(&bytes) {
+            let bytes = std::fs::read(&path).map_err(|e| anyerr!("reading blob map: {e}"))?;
+            match postcard::from_bytes::<BlobEntries>(&bytes) {
                 Ok(entries) => {
                     blob_docs = entries
                         .into_iter()
@@ -428,7 +496,6 @@ impl Core {
             kv: kv_path.map(KvWriter::spawn),
             dirty: false,
             blob_docs,
-            blob_kv: blob_path.map(KvWriter::spawn),
             blob_dirty: false,
             stories: HashMap::new(),
         })
@@ -450,7 +517,6 @@ impl Core {
             kv: None,
             dirty: false,
             blob_docs,
-            blob_kv: None,
             blob_dirty: false,
             stories: HashMap::new(),
         }
@@ -458,34 +524,28 @@ impl Core {
 
     // ponytail: whole-map snapshot per dirty drive, sent to the single kv
     // writer task; per-key files when docs grow.
-    fn persist_kv(&self) -> Result<()> {
+    /// Storage and the blob -> doc map ride ONE snapshot/file so the
+    /// tmp+rename keeps them mutually consistent: a crash can never leave a
+    /// stored blob without its map entry (unmapped = denied, forever).
+    /// Returns the snapshot's sequence number for [`kv_flushed`] (`None`
+    /// for memory-only cores).
+    fn persist_kv(&self) -> Result<Option<u64>> {
         let Some(kv) = &self.kv else {
-            return Ok(());
+            return Ok(None);
         };
         let entries: Vec<(Vec<String>, &Vec<u8>)> = self
             .storage
             .iter()
             .map(|(k, v)| (k.components().map(str::to_owned).collect(), v))
             .collect();
-        let bytes =
-            postcard::to_stdvec(&entries).map_err(|e| anyerr!("encoding beelay kv: {e}"))?;
-        kv.tx.send_replace(bytes);
-        Ok(())
-    }
-
-    fn persist_blob_docs(&self) -> Result<()> {
-        let Some(kv) = &self.blob_kv else {
-            return Ok(());
-        };
-        let entries: Vec<(&String, [u8; 16])> = self
+        let blobs: Vec<(&String, [u8; 16])> = self
             .blob_docs
             .iter()
             .map(|(hash, doc)| (hash, *doc.as_bytes()))
             .collect();
-        let bytes =
-            postcard::to_stdvec(&entries).map_err(|e| anyerr!("encoding blob map: {e}"))?;
-        kv.tx.send_replace(bytes);
-        Ok(())
+        let bytes = postcard::to_stdvec(&(entries, blobs))
+            .map_err(|e| anyerr!("encoding beelay kv: {e}"))?;
+        Ok(Some(kv.publish(bytes)))
     }
 
     /// Feeds `event` through the state machine, answering every IoTask from
@@ -513,12 +573,9 @@ impl Core {
             // notifications only come from `listen` stories, which we never
             // start — sessions are one-shot pulls like Phase 1.
         }
-        if self.dirty {
+        if self.dirty || self.blob_dirty {
             self.persist_kv()?;
             self.dirty = false;
-        }
-        if self.blob_dirty {
-            self.persist_blob_docs()?;
             self.blob_dirty = false;
         }
         Ok(out)
@@ -1508,14 +1565,14 @@ impl BeelayNode {
     /// hand out invites after storing so their events cover this epoch.
     pub async fn store_blob(&self, project_id: &str, bytes: &[u8]) -> Result<String> {
         let sealed = self.shared.auth.encrypt(project_id, bytes).await?;
-        let tag = self
-            .blobs
-            .add_bytes(sealed)
-            .await
-            .map_err(|e| anyerr!("adding blob: {e}"))?;
         // vendor-edit: claim the blob for this project in the blob -> doc
         // map so the blobs ALPN gate scopes fetches per project (spec §4).
-        {
+        // The claim is persisted to disk BEFORE the bytes enter the blob
+        // store: a crash between the two leaves at worst a mapping without
+        // a blob (harmless — no ticket exists yet), never an unmapped blob
+        // that unmapped = deny would seal away from every member forever.
+        let hash = iroh_blobs::Hash::new(&sealed);
+        let flush = {
             let mut guard = self.shared.state.lock().await;
             let state = &mut *guard;
             let doc = state
@@ -1523,9 +1580,19 @@ impl BeelayNode {
                 .get(project_id)
                 .ok_or_else(|| anyerr!("unknown project {project_id}"))?
                 .beelay_doc;
-            state.core.blob_docs.insert(tag.hash.to_hex(), doc);
-            state.core.persist_blob_docs()?;
+            state.core.blob_docs.insert(hash.to_hex(), doc);
+            let seq = state.core.persist_kv()?;
+            seq.zip(state.core.kv.as_ref().map(|kv| kv.written.clone()))
+        };
+        if let Some((seq, written)) = flush {
+            kv_flushed(written, seq).await?;
         }
+        let tag = self
+            .blobs
+            .add_bytes(sealed)
+            .await
+            .map_err(|e| anyerr!("adding blob: {e}"))?;
+        debug_assert_eq!(tag.hash, hash);
         Ok(BlobTicket::new(self.addr(), tag.hash, BlobFormat::Raw).to_string())
     }
 
@@ -1640,11 +1707,11 @@ impl BeelayNode {
     /// blob store down (its `BlobsProtocol` handler).
     pub async fn shutdown(&self) -> Result<()> {
         let result = self.router.shutdown().await.std_context("router shutdown");
-        let (kv, blob_kv) = {
+        let kv = {
             let mut state = self.shared.state.lock().await;
-            (state.core.kv.take(), state.core.blob_kv.take())
+            state.core.kv.take()
         };
-        for kv in [kv, blob_kv].into_iter().flatten() {
+        if let Some(kv) = kv {
             drop(kv.tx);
             let _ = kv.task.await;
         }
@@ -2024,6 +2091,42 @@ impl ProtocolHandler for BeelayProtocol {
 mod tests {
     use super::*;
     use automerge::{ROOT, transaction::Transactable};
+
+    /// kv.bin holds storage + blob map in one combined payload (so one
+    /// tmp+rename keeps them consistent); the pre-combined layout (entries-only
+    /// kv.bin + separate blob_docs.bin) must still load.
+    #[tokio::test]
+    async fn kv_combined_format_roundtrip_and_legacy_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let hash = "00".repeat(32);
+        let key = vec!["blobs".to_owned(), hash.clone()];
+        let value = b"sealed".to_vec();
+        let doc_bytes = [7u8; 16];
+        // legacy two-file layout
+        std::fs::write(
+            dir.path().join("kv.bin"),
+            postcard::to_stdvec(&vec![(key.clone(), value.clone())]).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("blob_docs.bin"),
+            postcard::to_stdvec(&vec![(hash.clone(), doc_bytes)]).unwrap(),
+        )
+        .unwrap();
+        let mut core = Core::new(PeerId::from("test".to_owned()), Some(dir.path())).unwrap();
+        let storage_key = key_from_components(&key).unwrap();
+        assert_eq!(core.storage.get(&storage_key), Some(&value));
+        assert_eq!(core.blob_docs.get(&hash), Some(&DocumentId::from(doc_bytes)));
+
+        // persist rewrites the combined format; drain the writer, reload.
+        core.persist_kv().unwrap();
+        let kv = core.kv.take().unwrap();
+        drop(kv.tx);
+        kv.task.await.unwrap();
+        let reloaded = Core::new(PeerId::from("test".to_owned()), Some(dir.path())).unwrap();
+        assert_eq!(reloaded.storage, core.storage);
+        assert_eq!(reloaded.blob_docs, core.blob_docs);
+    }
 
     /// The flush-side map (change -> commit, parents = mapped deps) must be
     /// exactly rebuildable on the receive side from the commits alone, even
