@@ -237,6 +237,16 @@ pub fn save_paper_metadata(
     store::save_paper_metadata(conn, meta, tags)
 }
 
+/// UNION `tags` onto a paper's existing tags (dual JSON + relational storage).
+/// Import/share merge path. Returns the merged list.
+pub fn add_paper_tags(
+    conn: &mut Connection,
+    source_id: &str,
+    tags: &[String],
+) -> Result<Vec<String>> {
+    store::add_paper_tags(conn, source_id, tags)
+}
+
 /// Re-write a paper's metadata in-place (migrating SOURCE_ID if it changed).
 pub fn repair_paper(conn: &mut Connection, source_fk: i64, meta: &PaperMetadata) -> Result<()> {
     store::repair_paper(conn, source_fk, meta)

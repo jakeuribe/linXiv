@@ -9,7 +9,7 @@ use crate::storage::db::{timestamp_from_sql, timestamp_to_sql};
 /// (Python's `_fetch_*`/`get_notes` use `SELECT *`; we spell it out so the
 /// decltype converters line up with the model).
 const NOTE_COLS: &str =
-    "NOTE_SK, SOURCE_FK, PAPER_ID_FK, PROJECT_FK, TITLE, NOTE, CREATED_AT, UPDATED_AT";
+    "NOTE_SK, NOTE_UUID, SOURCE_FK, PAPER_ID_FK, PROJECT_FK, TITLE, NOTE, CREATED_AT, UPDATED_AT";
 
 /// `Note.from_row().to_details()` — TITLE nullable, NOTE is a BLOB holding text,
 /// both coalesce to "" (Python `or ""`); TIMESTAMP cols are NOT NULL.
@@ -18,6 +18,9 @@ fn note_from_row(row: &Row) -> rusqlite::Result<NoteDetails> {
     let updated: String = row.get("UPDATED_AT")?;
     Ok(NoteDetails {
         note_id: row.get::<_, Option<i64>>("NOTE_SK")?,
+        uuid: row
+            .get::<_, Option<String>>("NOTE_UUID")?
+            .unwrap_or_default(),
         source_fk: row.get("SOURCE_FK")?,
         paper_id_fk: row.get::<_, Option<i64>>("PAPER_ID_FK")?,
         project_id: row.get::<_, Option<i64>>("PROJECT_FK")?,
@@ -38,6 +41,7 @@ fn note_from_row(row: &Row) -> rusqlite::Result<NoteDetails> {
 ///   * `all_projects` true   → SOURCE_FK only (every note: library + all projects)
 ///   * `project_id` Some(id)  → `PROJECT_FK = id`
 ///   * `project_id` None      → `PROJECT_FK IS NULL` (library notes only)
+///
 /// `all_projects` is a DISTINCT branch, not the same as `project_id = None` — MCP
 /// `get_notes_for_paper` passes `all_projects = project_id.is_none()`, the opposite
 /// of the None branch. Ordered CREATED_AT ASC.
@@ -84,6 +88,7 @@ pub fn get_note(conn: &Connection, note_id: i64) -> Result<Option<NoteDetails>> 
 
 /// `storage/notes.py::create_note` — INSERT a note, returns the new NOTE_SK.
 /// CREATED_AT/UPDATED_AT both stamped now (Python `datetime.now(utc)`).
+/// `uuid` None generates a fresh v4; Some preserves an imported identity.
 pub fn create_note(
     conn: &Connection,
     source_fk: i64,
@@ -91,12 +96,16 @@ pub fn create_note(
     project_id: Option<i64>,
     title: &str,
     content: &str,
+    uuid: Option<&str>,
 ) -> Result<i64> {
     let now = timestamp_to_sql(Utc::now().naive_utc());
+    let uuid = uuid
+        .map(str::to_owned)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     conn.execute(
-        "INSERT INTO NOTE (SOURCE_FK, PAPER_ID_FK, PROJECT_FK, TITLE, NOTE, CREATED_AT, UPDATED_AT) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
-        params![source_fk, paper_id_fk, project_id, title, content, now],
+        "INSERT INTO NOTE (SOURCE_FK, PAPER_ID_FK, PROJECT_FK, TITLE, NOTE, NOTE_UUID, CREATED_AT, UPDATED_AT) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+        params![source_fk, paper_id_fk, project_id, title, content, uuid, now],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -142,6 +151,18 @@ pub fn count_project_notes(conn: &Connection, project_id: i64) -> Result<i64> {
         |r| r.get(0),
     )?;
     Ok(n)
+}
+
+/// Check if a NOTE_UUID is already taken (exists in the database).
+pub fn uuid_taken(conn: &Connection, uuid: &str) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM NOTE WHERE NOTE_UUID = ?1",
+            [uuid],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
 }
 
 /// Map a `SELECT {NOTE_COLS}` statement (with its params) to NoteDetails rows.
@@ -330,7 +351,7 @@ mod tests {
         init_db(&conn).unwrap();
         let (src, _, proj) = seed(&conn);
 
-        let id = create_note(&conn, src, None, Some(proj), "t1", "body1").unwrap();
+        let id = create_note(&conn, src, None, Some(proj), "t1", "body1", None).unwrap();
         let got = get_note(&conn, id).unwrap().unwrap();
         assert_eq!(got.title, "t1");
         assert_eq!(got.content, "body1");
@@ -369,9 +390,9 @@ mod tests {
         )
         .unwrap();
 
-        create_note(&conn, src, None, Some(proj), "a", "x").unwrap();
-        create_note(&conn, src, Some(100), None, "b", "y").unwrap();
-        create_note(&conn, src2, None, Some(proj), "c", "z").unwrap();
+        create_note(&conn, src, None, Some(proj), "a", "x", None).unwrap();
+        create_note(&conn, src, Some(100), None, "b", "y", None).unwrap();
+        create_note(&conn, src2, None, Some(proj), "c", "z", None).unwrap();
 
         // count_notes: by paper, and narrowed to a project.
         assert_eq!(count_notes(&conn, src, None).unwrap(), 2);
@@ -407,7 +428,7 @@ mod tests {
             [],
         )
         .unwrap();
-        create_note(&conn, src, None, Some(proj), "a", "x").unwrap();
+        create_note(&conn, src, None, Some(proj), "a", "x", None).unwrap();
 
         let counts = note_counts_by_paper_for_project(&conn, proj).unwrap();
         assert_eq!(counts, vec![(src, 1), (src2, 0)]); // src=1 has one, src2=2 has zero, trashed absent
@@ -424,9 +445,9 @@ mod tests {
         )
         .unwrap();
 
-        create_note(&conn, 1, None, None, "title 50%", "neural nets").unwrap();
-        create_note(&conn, 2, None, None, "other", "no match here").unwrap();
-        create_note(&conn, 3, None, None, "neural", "trashed paper note").unwrap(); // excluded: not active
+        create_note(&conn, 1, None, None, "title 50%", "neural nets", None).unwrap();
+        create_note(&conn, 2, None, None, "other", "no match here", None).unwrap();
+        create_note(&conn, 3, None, None, "neural", "trashed paper note", None).unwrap(); // excluded: not active
 
         // body match on active paper only.
         let hits = search_notes_source_fks(&conn, "neural", 50).unwrap();
@@ -439,5 +460,20 @@ mod tests {
         assert!(search_notes_source_fks(&conn, "zzz%zzz", 50)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn uuid_fixed_roundtrip_and_unique_constraint() {
+        let conn = open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        let (src, _, proj) = seed(&conn);
+
+        let id = create_note(&conn, src, None, Some(proj), "t", "body", Some("fixed")).unwrap();
+        let got = get_note(&conn, id).unwrap().unwrap();
+        assert_eq!(got.uuid, "fixed");
+
+        // Second create_note with the same uuid should fail (unique constraint).
+        let result = create_note(&conn, src, None, Some(proj), "t2", "body2", Some("fixed"));
+        assert!(result.is_err());
     }
 }

@@ -8,6 +8,9 @@ CREATE TABLE IF NOT EXISTS NOTE(
     PROJECT_FK  INTEGER,
     TITLE       TEXT,
     NOTE        BLOB,
+    -- Stable identity across export/import + share (uuid v4). Backfilled + made
+    -- UNIQUE by the note_uuid migration; new rows get one at insert.
+    NOTE_UUID   TEXT,
     CREATED_AT  TIMESTAMP NOT NULL DEFAULT (datetime('now')),
     UPDATED_AT  TIMESTAMP NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY (NOTE_SK),

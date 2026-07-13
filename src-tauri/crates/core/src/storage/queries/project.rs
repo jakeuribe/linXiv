@@ -8,7 +8,7 @@ use crate::storage::query::Q;
 
 // Columns in fixed order; both queries share `raw_from_row` / `to_model`.
 const SELECT_COLS: &str =
-    "PROJECT_FK, NAME, DESCRIPTION, COLOR, STATUS, CREATED_AT, UPDATED_AT, ARCHIVED_AT FROM PROJECT";
+    "PROJECT_FK, NAME, DESCRIPTION, COLOR, STATUS, CREATED_AT, UPDATED_AT, ARCHIVED_AT, SHARE_ID FROM PROJECT";
 
 /// Raw column values before decltype conversion (closure stays in rusqlite-error
 /// land; `to_model` does the CoreError-returning conversions).
@@ -21,6 +21,7 @@ struct RawProject {
     created_at: String,
     updated_at: String,
     archived_at: Option<String>,
+    share_id: Option<String>,
 }
 
 fn raw_from_row(r: &Row) -> rusqlite::Result<RawProject> {
@@ -33,6 +34,7 @@ fn raw_from_row(r: &Row) -> rusqlite::Result<RawProject> {
         created_at: r.get(5)?,
         updated_at: r.get(6)?,
         archived_at: r.get(7)?,
+        share_id: r.get(8)?,
     })
 }
 
@@ -74,7 +76,64 @@ fn to_model(raw: RawProject) -> Result<ProjectDetails> {
             .as_deref()
             .map(timestamp_from_sql)
             .transpose()?,
+        share_id: raw.share_id,
     })
+}
+
+/// Set SHARE_ID to `candidate` only if the row has none, then return the stored
+/// value (existing wins over the candidate). `None` if the project is absent.
+pub fn ensure_share_id(
+    conn: &Connection,
+    project_fk: i64,
+    candidate: &str,
+) -> Result<Option<String>> {
+    conn.execute(
+        "UPDATE PROJECT SET SHARE_ID = ?1 WHERE PROJECT_FK = ?2 AND SHARE_ID IS NULL",
+        params![candidate, project_fk],
+    )?;
+    Ok(conn
+        .query_row(
+            "SELECT SHARE_ID FROM PROJECT WHERE PROJECT_FK = ?1",
+            [project_fk],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
+/// PROJECT_FK of the project claiming this SHARE_ID (hoster- or reader-linked).
+pub fn find_by_share_id(conn: &Connection, share_id: &str) -> Result<Option<i64>> {
+    Ok(conn
+        .query_row(
+            "SELECT PROJECT_FK FROM PROJECT WHERE SHARE_ID = ?1 AND STATUS != 'deleted'",
+            [share_id],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
+/// Check if another non-trashed project (not project_fk) has claimed this SHARE_ID
+/// (mirrors idx_project_share_id_unique's WHERE STATUS != 'deleted' predicate).
+pub fn share_id_claimed_by_other(
+    conn: &Connection,
+    project_fk: i64,
+    share_id: &str,
+) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM PROJECT WHERE SHARE_ID = ?1 AND PROJECT_FK != ?2 AND STATUS != 'deleted'",
+            params![share_id, project_fk],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
+/// Clear SHARE_ID from any trashed (STATUS = 'deleted') holder of this share_id.
+pub fn release_share_id_from_deleted(conn: &Connection, share_id: &str) -> Result<usize> {
+    Ok(conn.execute(
+        "UPDATE PROJECT SET SHARE_ID = NULL WHERE SHARE_ID = ?1 AND STATUS = 'deleted'",
+        [share_id],
+    )?)
 }
 
 /// `storage/projects.py::_load_source_fks` — active-paper membership in
@@ -596,5 +655,25 @@ mod tests {
             get_reading_status(&conn, 1, 10).unwrap(),
             ReadingStatus::Unread
         );
+    }
+
+    #[test]
+    fn ensure_share_id_idempotent_first_candidate_wins() {
+        let conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+
+        let id = insert_project(&conn, "P", "d", None, Status::Active, None).unwrap();
+
+        // First call with "first_id" sets SHARE_ID.
+        let result1 = ensure_share_id(&conn, id, "first_id").unwrap();
+        assert_eq!(result1, Some("first_id".to_string()));
+
+        // Second call with "second_id" sees existing SHARE_ID and returns it unchanged.
+        let result2 = ensure_share_id(&conn, id, "second_id").unwrap();
+        assert_eq!(result2, Some("first_id".to_string()));
+
+        // Verify the project has the first candidate.
+        let p = get_project(&conn, id, false).unwrap().unwrap();
+        assert_eq!(p.share_id, Some("first_id".to_string()));
     }
 }

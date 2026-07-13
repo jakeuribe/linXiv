@@ -222,6 +222,7 @@ pub fn create_project(
             project_fk: project_id,
             title: name.clone(),
             content: build_content(&name, &main, ""),
+            uuid: None,
         },
     )?;
 

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createShareTicket,
   joinShare,
@@ -8,7 +9,6 @@ import {
 } from "../../api/share";
 import { listProjects } from "../../api/projects";
 import { ApiError } from "../../api/client";
-import type { Project } from "../../types/api";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/input";
 import { OptionSelect } from "../ui/select";
@@ -24,7 +24,7 @@ function summaryLine(s: SharedSummary): string {
 }
 
 export function SharingSection() {
-  const [projects, setProjects] = useState<Project[]>([]);
+  const queryClient = useQueryClient();
   const [selected, setSelected] = useState("");
   const [ticket, setTicket] = useState("");
   const [generating, setGenerating] = useState(false);
@@ -34,24 +34,28 @@ export function SharingSection() {
   const [joinInput, setJoinInput] = useState("");
   const [joining, setJoining] = useState(false);
   const [joinErr, setJoinErr] = useState("");
-  const [received, setReceived] = useState<SharedSummary[]>([]);
 
   const alive = useRef(true);
-
   useEffect(() => {
     alive.current = true;
-    if (sharingAvailable) {
-      listProjects("active")
-        .then((r) => alive.current && setProjects(r.projects))
-        .catch(() => {});
-      listReceived()
-        .then((r) => alive.current && setReceived(r))
-        .catch(() => {});
-    }
     return () => {
       alive.current = false;
     };
   }, []);
+
+  // Same query keys as SharePage, so a share/join done on either surface
+  // refreshes both through the one react-query cache.
+  const { data: projectsData } = useQuery({
+    queryKey: ["projects", "active"],
+    queryFn: () => listProjects("active"),
+    enabled: sharingAvailable,
+  });
+  const projects = projectsData?.projects ?? [];
+  const { data: received = [] } = useQuery({
+    queryKey: ["share", "received"],
+    queryFn: listReceived,
+    enabled: sharingAvailable,
+  });
 
   if (!sharingAvailable) {
     return (
@@ -76,6 +80,8 @@ export function SharingSection() {
     setCopied(false);
     try {
       const t = await createShareTicket(id);
+      // Minting a ticket also publishes the project — refresh the Hoster grid.
+      queryClient.invalidateQueries({ queryKey: ["share", "published"] });
       if (alive.current) setTicket(t);
     } catch (e) {
       if (alive.current) setShareErr(errText(e));
@@ -102,10 +108,9 @@ export function SharingSection() {
     setJoining(true);
     setJoinErr("");
     try {
-      const sp = await joinShare(t);
-      if (!alive.current) return;
-      setJoinInput("");
-      setReceived((prev) => [sp, ...prev.filter((p) => p.share_id !== sp.share_id)]);
+      await joinShare(t);
+      queryClient.invalidateQueries({ queryKey: ["share", "received"] });
+      if (alive.current) setJoinInput("");
     } catch (e) {
       if (alive.current) setJoinErr(errText(e));
     } finally {

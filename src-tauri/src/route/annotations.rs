@@ -74,6 +74,7 @@ fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
                 project_fk: b.project_id,
                 anchor: b.anchor,
                 comment: b.comment,
+                uuid: None,
             },
         )?;
         Ok(json!({ "id": id }))

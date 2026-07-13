@@ -38,6 +38,8 @@ export interface Project {
   source_ids: string[];
   status: string;
   paper_count?: number;
+  /** Persisted share identity (uuid v4); null until first publish. */
+  share_id?: string | null;
 }
 
 export interface Note {

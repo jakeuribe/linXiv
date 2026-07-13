@@ -163,6 +163,7 @@ impl Server {
                     content: p.content.clone(),
                     paper_id: None,
                     project_fk: p.project_id,
+                    uuid: None,
                 },
             )
             .map_err(core_err)?;

@@ -11,13 +11,17 @@ use crate::error::Result;
 use crate::models::AnnotationDetails;
 use crate::storage::db::{timestamp_from_sql, timestamp_to_sql};
 
-const COLS: &str = "ANNOTATION_SK, SOURCE_FK, PROJECT_FK, ANCHOR, COMMENT, CREATED_AT, UPDATED_AT";
+const COLS: &str =
+    "ANNOTATION_SK, ANNOTATION_UUID, SOURCE_FK, PROJECT_FK, ANCHOR, COMMENT, CREATED_AT, UPDATED_AT";
 
 fn annotation_from_row(row: &Row) -> rusqlite::Result<AnnotationDetails> {
     let created: String = row.get("CREATED_AT")?;
     let updated: String = row.get("UPDATED_AT")?;
     Ok(AnnotationDetails {
         annotation_id: row.get::<_, i64>("ANNOTATION_SK")?,
+        uuid: row
+            .get::<_, Option<String>>("ANNOTATION_UUID")?
+            .unwrap_or_default(),
         source_fk: row.get("SOURCE_FK")?,
         project_id: row.get::<_, Option<i64>>("PROJECT_FK")?,
         anchor: row.get::<_, String>("ANCHOR")?,
@@ -37,6 +41,7 @@ fn annotation_from_row(row: &Row) -> rusqlite::Result<AnnotationDetails> {
 ///   * `all_projects` true   → SOURCE_FK only (library + every project)
 ///   * `project_id` Some(id)  → `PROJECT_FK = id`
 ///   * `project_id` None      → `PROJECT_FK IS NULL` (library only)
+///
 /// Ordered CREATED_AT ASC.
 pub fn get_annotations(
     conn: &Connection,
@@ -72,18 +77,23 @@ pub fn get_annotation(conn: &Connection, annotation_id: i64) -> Result<Option<An
 }
 
 /// INSERT an annotation, returns the new ANNOTATION_SK. Both timestamps stamped now.
+/// `uuid` None generates a fresh v4; Some preserves an imported identity.
 pub fn create_annotation(
     conn: &Connection,
     source_fk: i64,
     project_id: Option<i64>,
     anchor: &str,
     comment: &str,
+    uuid: Option<&str>,
 ) -> Result<i64> {
     let now = timestamp_to_sql(Utc::now().naive_utc());
+    let uuid = uuid
+        .map(str::to_owned)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     conn.execute(
-        "INSERT INTO ANNOTATION (SOURCE_FK, PROJECT_FK, ANCHOR, COMMENT, CREATED_AT, UPDATED_AT) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
-        params![source_fk, project_id, anchor, comment, now],
+        "INSERT INTO ANNOTATION (SOURCE_FK, PROJECT_FK, ANCHOR, COMMENT, ANNOTATION_UUID, CREATED_AT, UPDATED_AT) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+        params![source_fk, project_id, anchor, comment, uuid, now],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -106,6 +116,12 @@ pub fn delete_annotation(conn: &Connection, annotation_id: i64) -> Result<bool> 
         [annotation_id],
     )?;
     Ok(n > 0)
+}
+
+/// Check if an annotation with the given UUID already exists.
+pub fn uuid_taken(conn: &Connection, uuid: &str) -> Result<bool> {
+    let mut stmt = conn.prepare("SELECT 1 FROM ANNOTATION WHERE ANNOTATION_UUID = ?1 LIMIT 1")?;
+    Ok(stmt.exists([uuid])?)
 }
 
 fn query_annotations(
@@ -172,7 +188,7 @@ mod tests {
         init_db(&conn).unwrap();
         let (src, proj) = seed(&conn);
 
-        let id = create_annotation(&conn, src, Some(proj), ANCHOR, "first").unwrap();
+        let id = create_annotation(&conn, src, Some(proj), ANCHOR, "first", None).unwrap();
         let got = get_annotation(&conn, id).unwrap().unwrap();
         assert_eq!(got.anchor, ANCHOR);
         assert_eq!(got.comment, "first");
@@ -201,9 +217,9 @@ mod tests {
         let (src, proj) = seed(&conn);
 
         // library (no project) + project-scoped, same paper.
-        create_annotation(&conn, src, None, ANCHOR, "lib").unwrap();
-        create_annotation(&conn, src, Some(proj), ANCHOR, "proj").unwrap();
-        create_annotation(&conn, 2, Some(proj), ANCHOR, "other").unwrap();
+        create_annotation(&conn, src, None, ANCHOR, "lib", None).unwrap();
+        create_annotation(&conn, src, Some(proj), ANCHOR, "proj", None).unwrap();
+        create_annotation(&conn, 2, Some(proj), ANCHOR, "other", None).unwrap();
 
         let lib = get_annotations(&conn, src, None, false).unwrap();
         assert_eq!(lib.len(), 1);
@@ -230,10 +246,29 @@ mod tests {
         let conn = open_in_memory().unwrap();
         init_db(&conn).unwrap();
         let (src, _) = seed(&conn);
-        create_annotation(&conn, src, None, ANCHOR, "c").unwrap();
+        create_annotation(&conn, src, None, ANCHOR, "c", None).unwrap();
         // Deleting the paper root cascades its annotations (FK ON DELETE CASCADE).
         conn.execute("DELETE FROM PAPER_ROOTS WHERE SOURCE_FK = ?1", [src])
             .unwrap();
         assert!(list_all_annotations(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn uuid_roundtrip_and_duplicate_check() {
+        let conn = open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        let (src, proj) = seed(&conn);
+
+        // Create with a fixed uuid and verify it round-trips.
+        let fixed_uuid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let id =
+            create_annotation(&conn, src, Some(proj), ANCHOR, "test", Some(fixed_uuid)).unwrap();
+        let got = get_annotation(&conn, id).unwrap().unwrap();
+        assert_eq!(got.uuid, fixed_uuid);
+
+        // Duplicate uuid insert fails at this layer.
+        assert!(
+            create_annotation(&conn, src, Some(proj), ANCHOR, "dup", Some(fixed_uuid)).is_err()
+        );
     }
 }

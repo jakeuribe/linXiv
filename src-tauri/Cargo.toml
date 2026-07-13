@@ -2,7 +2,7 @@
 # resolves sidecar binaries relative to current_exe(), so the cargo target/
 # directory must stay at src-tauri/target (ADR 0016 / drift report 2026-06-05).
 [workspace]
-members = [".", "crates/core", "crates/cli", "crates/mcp", "crates/migrate", "crates/share"]
+members = [".", "crates/core", "crates/cli", "crates/mcp", "crates/migrate", "crates/share", "crates/p2p"]
 
 [package]
 name = "linxiv-app"
@@ -48,7 +48,7 @@ axum = "0.8"
 linxiv-core = { path = "crates/core" }
 # Phase-0 quarantined CRDT "shared projects" store, reached via the `share_api`
 # command. Reads canonical via linxiv-core; its own docs live under the share dir.
-linxiv-share = { path = "crates/share" }
+linxiv-share = { path = "crates/share", features = ["auth-keyhive", "sync-beelay"] }
 rusqlite = "0.40"
 anyhow = "1"
 # Date parse/format parity with core's NaiveDate fields in router arms.
@@ -56,6 +56,19 @@ chrono = "0.4"
 # File-upload routes carry bytes as base64 in the JSON `api` body (the webview
 # can't put a multipart body through `invoke`).
 base64 = "0.22"
+# p2p key-store DEK (write-enforcement spec §8): OS keychain storage. The
+# secret-service backend is the pure-Rust zbus one so no C dbus lib is needed.
+keyring = { version = "3", features = [
+    "apple-native",
+    "windows-native",
+    "async-secret-service",
+    "crypto-rust",
+    "tokio",
+] }
+# Headless DEK derivation from LINXIV_P2P_PASSPHRASE (Argon2id).
+argon2 = "0.5"
+# Random DEK bytes on first run (same major as the lockfile's transitive copy).
+getrandom = "0.3"
 
 [dev-dependencies]
 # Share-dispatcher test injects a tempdir share dir (never the real data dir).

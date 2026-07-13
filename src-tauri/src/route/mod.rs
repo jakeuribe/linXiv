@@ -13,6 +13,7 @@
 //!   - matches `api/app.py`'s response envelope exactly (key names, key order — the
 //!     `preserve_order` feature keeps struct/`json!` order), and the HTTP status its
 //!     `HTTPException`s used (already encoded in `CoreError::http_status`).
+//!
 //! `source_id` segments arrive percent-encoded (the webview `encodeURIComponent`s
 //! them), so split first, then `pct_decode` — an old-style id like `math-ph/0309136`
 //! stays one segment.

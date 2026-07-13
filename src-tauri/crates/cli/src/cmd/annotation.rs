@@ -67,6 +67,7 @@ pub async fn run(cmd: AnnotationCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                     anchor,
                     comment,
                     project_fk: project_id,
+                    uuid: None,
                 },
             )?;
             output(&json!({ "id": id, "source_fk": source_fk, "project_id": project_id }));
