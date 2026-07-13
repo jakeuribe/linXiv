@@ -1114,3 +1114,153 @@ async fn revocation_is_per_project() -> Result<()> {
     }
     Ok(())
 }
+
+/// Blob membership scoping is per project (spec §4): bob is a member of
+/// both "p" and "q" on the same host. Announcing q while requesting p's
+/// hash is refused even while bob holds both grants (cross-project probe),
+/// and after revocation from "p" bob still fetches q's blobs but p's blob
+/// is refused on both dial shapes.
+#[tokio::test(flavor = "multi_thread")]
+async fn blob_scoping_per_project() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (alice_device, alice_auth_id) = identities(dir.path(), "alice");
+    let (bob_device, bob_auth_id) = identities(dir.path(), "bob");
+    let alice_auth = ProjectAuth::new(&alice_auth_id)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let bob_auth = ProjectAuth::new(&bob_auth_id)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let bob_member = alice_auth
+        .receive_contact_card(&bob_auth.contact_card().await.map_err(anyhow::Error::msg)?)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let alice = BeelayNode::bind_local(&alice_device, &alice_auth_id, alice_auth, None)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let bob = BeelayNode::bind_local(&bob_device, &bob_auth_id, bob_auth, None)
+        .await
+        .map_err(anyhow::Error::msg)?;
+
+    for id in ["p", "q"] {
+        alice
+            .create_shared_project(id, Automerge::new())
+            .await
+            .map_err(anyhow::Error::msg)?;
+        alice
+            .auth()
+            .add_member(id, bob_member, Role::Edit)
+            .await
+            .map_err(anyhow::Error::msg)?;
+    }
+    // blobs BEFORE the invites so bob's events cover their epoch
+    let p_bytes: Vec<u8> = (0..1024).map(|i| (i % 251) as u8).collect();
+    let q_bytes = vec![7u8; 512];
+    let q2_bytes = vec![9u8; 512];
+    let p_blob = alice
+        .store_blob("p", &p_bytes)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let q_blob = alice
+        .store_blob("q", &q_bytes)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let q2_blob = alice
+        .store_blob("q", &q2_bytes)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    for id in ["p", "q"] {
+        let invite = alice
+            .invite(id, bob_member)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        bob.accept_invite(&invite)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        // sync so alice's preamble learns bob's device binding (blobs gate)
+        bob.sync_project(id).await.map_err(anyhow::Error::msg)?;
+    }
+
+    // announced dial round-trips q's blob
+    bob.fetch_blob_scoped("q", &q_blob, u64::MAX)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let plain = bob
+        .read_blob("q", &q_blob, u64::MAX)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    assert_eq!(plain, q_bytes);
+    // cross-project probe while bob is STILL a member of both: announce q,
+    // request p's hash -> refused by the blob -> project map, not by role
+    assert!(
+        bob.fetch_blob_scoped("q", &p_blob, u64::MAX).await.is_err(),
+        "cross-project probe was served"
+    );
+
+    alice
+        .auth()
+        .revoke_member("p", bob_member)
+        .await
+        .map_err(anyhow::Error::msg)?;
+
+    // q still serves on an unscoped dial (gated per hash by bob's q role)
+    bob.fetch_blob(&q2_blob, u64::MAX)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    let plain = bob
+        .read_blob("q", &q2_blob, u64::MAX)
+        .await
+        .map_err(anyhow::Error::msg)?;
+    assert_eq!(plain, q2_bytes);
+    // p refuses revoked bob on both dial shapes
+    assert!(
+        bob.fetch_blob(&p_blob, u64::MAX).await.is_err(),
+        "revoked bob fetched p's blob (unscoped dial)"
+    );
+    assert!(
+        bob.fetch_blob_scoped("p", &p_blob, u64::MAX).await.is_err(),
+        "revoked bob fetched p's blob (announced dial)"
+    );
+
+    for node in [alice, bob] {
+        node.shutdown().await.map_err(anyhow::Error::msg)?;
+    }
+    Ok(())
+}
+
+/// A registry entry whose stored host ticket no longer parses must NOT
+/// present like hosting (spec §5): sync_project fails with the typed
+/// rejoin error instead of "accept an invite first" host behavior. The
+/// registry file is forged in the pre-3-state `Option<String>` layout,
+/// which doubles as the wire-compat check for the RegistryHost enum.
+#[tokio::test(flavor = "multi_thread")]
+async fn bad_host_ticket_errors_typed() -> Result<()> {
+    use linxiv_p2p::beelay::HostTicketError;
+
+    let dir = tempfile::tempdir()?;
+    let (device, auth_id) = identities(dir.path(), "node");
+    let data_dir = dir.path().join("data");
+    std::fs::create_dir_all(&data_dir)?;
+    let entries = vec![("proj".to_string(), [7u8; 16], Some("not a ticket".to_string()))];
+    let peers: Vec<([u8; 32], [u8; 32])> = Vec::new();
+    std::fs::write(
+        data_dir.join("registry.bin"),
+        postcard::to_stdvec(&(entries, peers))?,
+    )?;
+
+    let auth = ProjectAuth::new(&auth_id).await.map_err(anyhow::Error::msg)?;
+    let node = BeelayNode::bind_local(&device, &auth_id, auth, Some(&data_dir))
+        .await
+        .map_err(anyhow::Error::msg)?;
+    match node.sync_project("proj").await {
+        Err(linxiv_p2p::sync::JoinError::Other(e)) => {
+            assert!(
+                e.downcast_ref::<HostTicketError>().is_some(),
+                "expected HostTicketError, got: {e}"
+            );
+        }
+        other => panic!("expected the typed bad-ticket error, got {other:?}"),
+    }
+    node.shutdown().await.map_err(anyhow::Error::msg)?;
+    Ok(())
+}

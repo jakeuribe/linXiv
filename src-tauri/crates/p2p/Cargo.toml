@@ -52,5 +52,7 @@ serde = { version = "1", features = ["derive"], optional = true }
 anyhow = "1.0.103"
 # tests speak raw iroh in the wire-level spoof test; same version as the lib dep.
 iroh = "1.0.2"
+# tests forge a pre-3-state registry.bin in the bad-host-ticket test.
+postcard = { version = "1", features = ["use-std"] }
 tempfile = "3.27.0"
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros"] }

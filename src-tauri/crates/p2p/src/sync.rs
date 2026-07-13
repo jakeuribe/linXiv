@@ -35,7 +35,7 @@ const MAX_FRAME: u64 = 64 * 1024 * 1024;
 /// Deadline for one complete frame to arrive. Bounds both the silent peer and
 /// the slow-trickle peer — without it an attacker's declared-but-never-sent
 /// frame pins its buffer (up to [`MAX_FRAME`]) and the handler task forever.
-const RECV_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+pub(crate) const RECV_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Cap on lockstep rounds per sync session; convergence takes a handful, so a
 /// peer still exchanging traffic after this many rounds is never converging.

@@ -39,6 +39,10 @@ use iroh::{
 use iroh_blobs::{
     BlobFormat, BlobsProtocol,
     api::{Store, remote::GetProgressItem},
+    provider::{
+        events::{AbortReason, EventMask, EventSender, ObserveMode, ProviderMessage, RequestMode},
+        handle_connection,
+    },
     store::fs::FsStore,
     store::mem::MemStore,
     ticket::BlobTicket,
@@ -51,8 +55,8 @@ use tokio::sync::Mutex;
 use crate::{
     auth::{AuthIdentity, DecryptError, DeviceBinding, MemberId, ProjectAuth, Role},
     sync::{
-        DeviceIdentity, JoinError, MAX_SYNC_ROUNDS, REFUSED_CODE, ShareNode, recv_frame,
-        recv_frame_max, send_frame,
+        DeviceIdentity, JoinError, MAX_SYNC_ROUNDS, RECV_TIMEOUT, REFUSED_CODE, ShareNode,
+        recv_frame, recv_frame_max, send_frame,
     },
 };
 
@@ -157,6 +161,30 @@ impl std::error::Error for BlobError {
         }
     }
 }
+
+// vendor-edit: typed [`BeelayNode::sync_project`] failure for a registry
+// entry whose stored host ticket failed to parse at load, wrapped as the
+// direct [`AnyError`] payload so callers can
+// `downcast_ref::<HostTicketError>()` it (same pattern as `BlobError` /
+// `SetRoleError`).
+#[derive(Debug, PartialEq, Eq)]
+pub enum HostTicketError {
+    /// The registry's stored host ticket is unreadable; rejoin the share
+    /// (accept a fresh invite) to repair the address.
+    Unreadable,
+}
+
+impl fmt::Display for HostTicketError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HostTicketError::Unreadable => {
+                f.write_str("stored host ticket is unreadable; rejoin the share")
+            }
+        }
+    }
+}
+
+impl std::error::Error for HostTicketError {}
 
 // --- invite ------------------------------------------------------------------
 
@@ -294,6 +322,17 @@ fn key_doc(key: &StorageKey) -> Option<DocumentId> {
     }
 }
 
+/// The hash (lowercase hex) of a blob storage key; `None` for other keys.
+/// Both beelay's `BlobHash` and iroh-blobs' `Hash` render as the same
+/// 64-char lowercase hex, so one string keyspace covers both.
+fn key_blob(key: &StorageKey) -> Option<String> {
+    let mut parts = key.components();
+    match (parts.next(), parts.next()) {
+        (Some("blobs"), Some(hash)) => Some(hash.to_owned()),
+        _ => None,
+    }
+}
+
 /// Owns kv.bin: [`Core::persist_kv`] publishes whole-map snapshots into `tx`;
 /// one writer task writes them in order, newest snapshot wins.
 struct KvWriter {
@@ -334,11 +373,21 @@ struct Core {
     kv: Option<KvWriter>,
     /// Set by Put/Delete; [`Core::drive_scoped`] snapshots once per pump.
     dirty: bool,
+    // vendor-edit: blob hash (lowercase hex) -> owning beelay doc, one
+    // keyspace for beelay commit blobs and iroh PDF blobs (spec §4). Scoped
+    // drives and the blobs ALPN gate consult it so blob data scopes per
+    // project. Persisted as blob_docs.bin beside the registry.
+    blob_docs: HashMap<String, DocumentId>,
+    blob_kv: Option<KvWriter>,
+    /// Set on blob_docs changes; persisted like `dirty`.
+    blob_dirty: bool,
     stories: HashMap<StoryId, StoryResult>,
 }
 
 impl Core {
-    fn new(peer_id: PeerId, kv_path: Option<PathBuf>) -> Result<Self> {
+    fn new(peer_id: PeerId, data_dir: Option<&Path>) -> Result<Self> {
+        let kv_path = data_dir.map(|d| d.join("kv.bin"));
+        let blob_path = data_dir.map(|d| d.join("blob_docs.bin"));
         let mut storage = BTreeMap::new();
         if let Some(path) = &kv_path
             && path.exists()
@@ -358,26 +407,51 @@ impl Core {
                 Err(e) => eprintln!("beelay: malformed kv.bin, starting empty: {e}"),
             }
         }
+        let mut blob_docs = HashMap::new();
+        if let Some(path) = &blob_path
+            && path.exists()
+        {
+            let bytes = std::fs::read(path).map_err(|e| anyerr!("reading blob map: {e}"))?;
+            match postcard::from_bytes::<Vec<(String, [u8; 16])>>(&bytes) {
+                Ok(entries) => {
+                    blob_docs = entries
+                        .into_iter()
+                        .map(|(hash, doc)| (hash, DocumentId::from(doc)))
+                        .collect();
+                }
+                Err(e) => eprintln!("beelay: malformed blob_docs.bin, starting empty: {e}"),
+            }
+        }
         Ok(Self {
             beelay: Beelay::new(peer_id, OsRng),
             storage,
             kv: kv_path.map(KvWriter::spawn),
             dirty: false,
+            blob_docs,
+            blob_kv: blob_path.map(KvWriter::spawn),
+            blob_dirty: false,
             stories: HashMap::new(),
         })
     }
 
-    /// A session-local, memory-only core over a snapshot of `storage`:
-    /// serves the snapshot's commits under the same doc ids (beelay has no
-    /// doc registry — storage keys ARE the doc), and everything a peer
-    /// uploads into it evaporates on drop (`kv: None`, nothing reaches
-    /// disk). Serve-only Read-role sessions.
-    fn scratch(peer_id: PeerId, storage: BTreeMap<StorageKey, Vec<u8>>) -> Self {
+    /// A session-local, memory-only core over a snapshot of `storage` (and
+    /// the blob map that scopes it): serves the snapshot's commits under the
+    /// same doc ids (beelay has no doc registry — storage keys ARE the doc),
+    /// and everything a peer uploads into it evaporates on drop (`kv: None`,
+    /// nothing reaches disk). Serve-only Read-role sessions.
+    fn scratch(
+        peer_id: PeerId,
+        storage: BTreeMap<StorageKey, Vec<u8>>,
+        blob_docs: HashMap<String, DocumentId>,
+    ) -> Self {
         Self {
             beelay: Beelay::new(peer_id, OsRng),
             storage,
             kv: None,
             dirty: false,
+            blob_docs,
+            blob_kv: None,
+            blob_dirty: false,
             stories: HashMap::new(),
         }
     }
@@ -395,6 +469,21 @@ impl Core {
             .collect();
         let bytes =
             postcard::to_stdvec(&entries).map_err(|e| anyerr!("encoding beelay kv: {e}"))?;
+        kv.tx.send_replace(bytes);
+        Ok(())
+    }
+
+    fn persist_blob_docs(&self) -> Result<()> {
+        let Some(kv) = &self.blob_kv else {
+            return Ok(());
+        };
+        let entries: Vec<(&String, [u8; 16])> = self
+            .blob_docs
+            .iter()
+            .map(|(hash, doc)| (hash, *doc.as_bytes()))
+            .collect();
+        let bytes =
+            postcard::to_stdvec(&entries).map_err(|e| anyerr!("encoding blob map: {e}"))?;
         kv.tx.send_replace(bytes);
         Ok(())
     }
@@ -428,19 +517,39 @@ impl Core {
             self.persist_kv()?;
             self.dirty = false;
         }
+        if self.blob_dirty {
+            self.persist_blob_docs()?;
+            self.blob_dirty = false;
+        }
         Ok(out)
     }
 
     fn io(&mut self, task: IoTask, scope: Option<DocumentId>) -> Result<IoResult> {
-        // ponytail: blob keys carry no doc id, so scoping covers sedimentree
-        // keys only; scope blobs per doc once a blob -> doc mapping exists.
-        let in_scope =
-            |key: &StorageKey| scope.is_none() || key_doc(key).is_none_or(|d| Some(d) == scope);
+        // vendor-edit: blob keys scope through the blob -> doc map (spec §4):
+        // in a scoped drive a blob mapped to another doc — or not mapped at
+        // all — is invisible, so a peer syncing doc Q can't pull doc P's
+        // commit blobs by hash. Unmapped means stored before the map existed;
+        // the flagged layer has no real deployments, so denying needs no
+        // legacy-blob migration. Unscoped (local) drives stay unrestricted.
+        fn in_scope(
+            blob_docs: &HashMap<String, DocumentId>,
+            scope: Option<DocumentId>,
+            key: &StorageKey,
+        ) -> bool {
+            let Some(scope) = scope else { return true };
+            if let Some(doc) = key_doc(key) {
+                return doc == scope;
+            }
+            match key_blob(key) {
+                Some(hash) => blob_docs.get(&hash) == Some(&scope),
+                None => true,
+            }
+        }
         let id = task.id();
         Ok(match task.take_action() {
             IoAction::Load { key } => IoResult::load(
                 id,
-                in_scope(&key)
+                in_scope(&self.blob_docs, scope, &key)
                     .then(|| self.storage.get(&key).cloned())
                     .flatten(),
             ),
@@ -448,19 +557,33 @@ impl Core {
                 id,
                 self.storage
                     .iter()
-                    .filter(|(k, _)| prefix.is_prefix_of(k) && in_scope(k))
+                    .filter(|(k, _)| prefix.is_prefix_of(k) && in_scope(&self.blob_docs, scope, k))
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect(),
             ),
             IoAction::Put { key, data } => {
-                if in_scope(&key) {
+                // a scoped Put of a not-yet-mapped blob claims it for the
+                // scope doc (an already-claimed blob keeps its owner).
+                if let Some(doc) = scope
+                    && let Some(hash) = key_blob(&key)
+                    && !self.blob_docs.contains_key(&hash)
+                {
+                    self.blob_docs.insert(hash, doc);
+                    self.blob_dirty = true;
+                }
+                if in_scope(&self.blob_docs, scope, &key) {
                     self.storage.insert(key, data);
                     self.dirty = true;
                 }
                 IoResult::put(id)
             }
             IoAction::Delete { key } => {
-                if in_scope(&key) {
+                if in_scope(&self.blob_docs, scope, &key) {
+                    if let Some(hash) = key_blob(&key)
+                        && self.blob_docs.remove(&hash).is_some()
+                    {
+                        self.blob_dirty = true;
+                    }
                     self.storage.remove(&key);
                     self.dirty = true;
                 }
@@ -481,12 +604,26 @@ impl Core {
 
 // --- node state ------------------------------------------------------------------
 
+/// Where a project's canonical copy lives. Three-state (write-enforcement
+/// spec §5) so a member whose stored host ticket failed to parse never
+/// presents like a host.
+enum ProjectHost {
+    /// This node hosts the project; members dial us.
+    Hosted,
+    /// Member: the host address [`BeelayNode::sync_project`] dials; set by
+    /// `accept_invite`.
+    Member(EndpointAddr),
+    /// Member whose registry host ticket was unreadable at load;
+    /// [`BeelayNode::sync_project`] fails with [`HostTicketError`] until a
+    /// re-accepted invite repairs the address.
+    MemberBadTicket,
+}
+
 struct ProjectState {
     /// The local plaintext document.
     doc: Automerge,
     beelay_doc: DocumentId,
-    /// Where [`BeelayNode::sync_project`] dials; set by `accept_invite`.
-    host: Option<EndpointAddr>,
+    host: ProjectHost,
     /// automerge change hash -> beelay commit hash (commit = sealed change).
     change_to_commit: HashMap<ChangeHash, CommitHash>,
     /// Commits already applied to `doc` (or produced from it).
@@ -522,8 +659,23 @@ struct Shared {
     state: Mutex<State>,
 }
 
-/// registry.bin entry: (project id, beelay doc bytes, host endpoint ticket).
-type RegistryEntry = (String, [u8; 16], Option<String>);
+// vendor-edit: registry.bin host field. On-disk compat is deliberate (spec
+// §5 choice (a)): the variant order is load-bearing — postcard encodes
+// `Hosted` as varint discriminant 0 and `Member` as varint 1 + string,
+// byte-identical to the pre-3-state `Option<String>` layout (None = 0x00,
+// Some = 0x01 + payload; verified against postcard 1.1's
+// serialize_none/serialize_unit_variant/serialize_newtype_variant), so old
+// registry files load unchanged. `MemberBadTicket` (2) never appears in old
+// files.
+#[derive(serde::Serialize, serde::Deserialize)]
+enum RegistryHost {
+    Hosted,
+    Member(String),
+    MemberBadTicket,
+}
+
+/// registry.bin entry: (project id, beelay doc bytes, host).
+type RegistryEntry = (String, [u8; 16], RegistryHost);
 /// registry.bin payload: project entries plus the peer map
 /// (endpoint id bytes -> member id bytes).
 type RegistryFile = (Vec<RegistryEntry>, Vec<([u8; 32], [u8; 32])>);
@@ -543,13 +695,14 @@ impl Shared {
             .projects
             .iter()
             .map(|(id, p)| {
-                (
-                    id.clone(),
-                    *p.beelay_doc.as_bytes(),
-                    p.host
-                        .clone()
-                        .map(|addr| EndpointTicket::new(addr).encode_string()),
-                )
+                let host = match &p.host {
+                    ProjectHost::Hosted => RegistryHost::Hosted,
+                    ProjectHost::Member(addr) => {
+                        RegistryHost::Member(EndpointTicket::new(addr.clone()).encode_string())
+                    }
+                    ProjectHost::MemberBadTicket => RegistryHost::MemberBadTicket,
+                };
+                (id.clone(), *p.beelay_doc.as_bytes(), host)
             })
             .collect();
         let peers: Vec<([u8; 32], [u8; 32])> = self
@@ -599,7 +752,9 @@ impl Shared {
         }
         let beelay_doc = proj.beelay_doc;
         let (story, event) = Event::add_commits(beelay_doc, commits);
-        state.core.drive(event)?;
+        // scoped so the commits' blob puts are claimed for this doc in the
+        // blob -> doc map (spec §4); add_commits touches only this doc.
+        state.core.drive_scoped(event, Some(beelay_doc))?;
         // ponytail: AddCommits returns BundleSpecs when a hash lands on a
         // strata boundary; we never bundle — loose commits sync fine at
         // project scale. Build CommitBundles here if histories grow long.
@@ -950,7 +1105,7 @@ impl BeelayNode {
         if let Some(dir) = data_dir {
             std::fs::create_dir_all(dir).map_err(|e| anyerr!("creating {dir:?}: {e}"))?;
         }
-        let core = Core::new(peer_id.clone(), data_dir.map(|d| d.join("kv.bin")))?;
+        let core = Core::new(peer_id.clone(), data_dir)?;
         // ponytail: docs rebuilt from encrypted commits below — plaintext
         // edits not yet flushed (encrypted at invite/sync time) do not
         // survive a restart; flush on shutdown if that ever bites.
@@ -965,17 +1120,19 @@ impl BeelayNode {
             match postcard::from_bytes::<RegistryFile>(&bytes) {
                 Ok((entries, peer_entries)) => {
                     for (id, doc, host) in entries {
-                        // a bad ticket drops the host address; a
-                        // re-accepted invite repairs it.
+                        // a bad ticket becomes MemberBadTicket, NOT Hosted:
+                        // sync_project surfaces it typed, and a re-accepted
+                        // invite repairs the address.
                         let host = match host {
-                            Some(t) => match EndpointTicket::decode_string(&t) {
-                                Ok(ticket) => Some(ticket.endpoint_addr().clone()),
+                            RegistryHost::Hosted => ProjectHost::Hosted,
+                            RegistryHost::Member(t) => match EndpointTicket::decode_string(&t) {
+                                Ok(ticket) => ProjectHost::Member(ticket.endpoint_addr().clone()),
                                 Err(e) => {
                                     eprintln!("beelay: bad host ticket in registry for {id}: {e}");
-                                    None
+                                    ProjectHost::MemberBadTicket
                                 }
                             },
-                            None => None,
+                            RegistryHost::MemberBadTicket => ProjectHost::MemberBadTicket,
                         };
                         projects.insert(
                             id,
@@ -1075,7 +1232,7 @@ impl BeelayNode {
             ProjectState {
                 doc,
                 beelay_doc,
-                host: None,
+                host: ProjectHost::Hosted,
                 change_to_commit: HashMap::new(),
                 applied: HashSet::new(),
                 unhealthy: false,
@@ -1134,7 +1291,7 @@ impl BeelayNode {
         let mut state = self.shared.state.lock().await;
         self.shared.auth.ingest_events(&invite.events).await?;
         if let Some(proj) = state.projects.get_mut(&invite.project_id) {
-            if proj.host.is_none() {
+            if matches!(proj.host, ProjectHost::Hosted) {
                 return Err(anyerr!(
                     "this node hosts project {}; refusing an invite for it",
                     invite.project_id
@@ -1161,7 +1318,7 @@ impl BeelayNode {
                         .await?;
                 }
             }
-            proj.host = Some(invite.endpoint.endpoint_addr().clone());
+            proj.host = ProjectHost::Member(invite.endpoint.endpoint_addr().clone());
         } else {
             self.shared
                 .auth
@@ -1172,7 +1329,7 @@ impl BeelayNode {
                 ProjectState {
                     doc: Automerge::new(),
                     beelay_doc: DocumentId::from(invite.beelay_doc),
-                    host: Some(invite.endpoint.endpoint_addr().clone()),
+                    host: ProjectHost::Member(invite.endpoint.endpoint_addr().clone()),
                     change_to_commit: HashMap::new(),
                     applied: HashSet::new(),
                     unhealthy: false,
@@ -1216,9 +1373,22 @@ impl BeelayNode {
                 .projects
                 .get(project_id)
                 .ok_or_else(|| anyerr!("unknown project {project_id}"))?;
-            let host = proj.host.clone().ok_or_else(|| {
-                anyerr!("project {project_id} has no host address; accept an invite first")
-            })?;
+            let host = match &proj.host {
+                ProjectHost::Member(addr) => addr.clone(),
+                ProjectHost::Hosted => {
+                    return Err(anyerr!(
+                        "project {project_id} has no host address; accept an invite first"
+                    )
+                    .into());
+                }
+                // NOT host-mode: a corrupt stored ticket must surface as its
+                // own recoverable failure, not silent hosting behavior.
+                ProjectHost::MemberBadTicket => {
+                    return Err(JoinError::Other(AnyError::from_std(
+                        HostTicketError::Unreadable,
+                    )));
+                }
+            };
             (proj.beelay_doc, host, proj.unhealthy)
         };
         // an unhealthy doc is download-only; the refresh below can clear it.
@@ -1343,6 +1513,19 @@ impl BeelayNode {
             .add_bytes(sealed)
             .await
             .map_err(|e| anyerr!("adding blob: {e}"))?;
+        // vendor-edit: claim the blob for this project in the blob -> doc
+        // map so the blobs ALPN gate scopes fetches per project (spec §4).
+        {
+            let mut guard = self.shared.state.lock().await;
+            let state = &mut *guard;
+            let doc = state
+                .projects
+                .get(project_id)
+                .ok_or_else(|| anyerr!("unknown project {project_id}"))?
+                .beelay_doc;
+            state.core.blob_docs.insert(tag.hash.to_hex(), doc);
+            state.core.persist_blob_docs()?;
+        }
         Ok(BlobTicket::new(self.addr(), tag.hash, BlobFormat::Raw).to_string())
     }
 
@@ -1351,7 +1534,32 @@ impl BeelayNode {
     /// than `max_bytes` of payload has arrived. Transfer only — decrypt by
     /// calling [`Self::read_blob`], so fetching can happen before/without
     /// access.
+    ///
+    /// Announces no project (empty announce frame), so the provider gates
+    /// the requested hash against this member's role on the blob's own
+    /// project. Prefer [`Self::fetch_blob_scoped`] when the project is known.
     pub async fn fetch_blob(&self, ticket: &str, max_bytes: u64) -> Result<()> {
+        self.fetch_blob_inner(None, ticket, max_bytes).await
+    }
+
+    /// [`Self::fetch_blob`] with the dial announced for `project_id`
+    /// (spec §4): the provider serves the blob only if it belongs to that
+    /// project and this member holds Read or better on it.
+    pub async fn fetch_blob_scoped(
+        &self,
+        project_id: &str,
+        ticket: &str,
+        max_bytes: u64,
+    ) -> Result<()> {
+        self.fetch_blob_inner(Some(project_id), ticket, max_bytes).await
+    }
+
+    async fn fetch_blob_inner(
+        &self,
+        project_id: Option<&str>,
+        ticket: &str,
+        max_bytes: u64,
+    ) -> Result<()> {
         use futures::StreamExt as _;
         let ticket: BlobTicket = ticket
             .parse()
@@ -1362,6 +1570,19 @@ impl BeelayNode {
             .connect(ticket.addr().clone(), iroh_blobs::ALPN)
             .await
             .context("dialing blob provider")?;
+        // vendor-edit: first uni stream announces the project the dial is
+        // for, mirroring BeelayProtocol's project-id opener; an empty frame
+        // means unscoped (the provider then gates per requested hash).
+        let mut announce = conn
+            .open_uni()
+            .await
+            .std_context("opening blob announce stream")?;
+        send_frame(
+            &mut announce,
+            project_id.map(str::as_bytes).unwrap_or_default(),
+        )
+        .await?;
+        announce.finish().std_context("closing blob announce stream")?;
         let mut progress = std::pin::pin!(self.blobs.remote().fetch(conn, ticket.hash()).stream());
         while let Some(item) = progress.next().await {
             match item {
@@ -1419,8 +1640,11 @@ impl BeelayNode {
     /// blob store down (its `BlobsProtocol` handler).
     pub async fn shutdown(&self) -> Result<()> {
         let result = self.router.shutdown().await.std_context("router shutdown");
-        let kv = self.shared.state.lock().await.core.kv.take();
-        if let Some(kv) = kv {
+        let (kv, blob_kv) = {
+            let mut state = self.shared.state.lock().await;
+            (state.core.kv.take(), state.core.blob_kv.take())
+        };
+        for kv in [kv, blob_kv].into_iter().flatten() {
             drop(kv.tx);
             let _ = kv.task.await;
         }
@@ -1504,14 +1728,19 @@ impl fmt::Debug for BeelayProtocol {
     }
 }
 
-/// Blobs handler that serves only dialers whose session-learned member id
-/// holds a role on at least one registered project.
+/// Blobs handler scoped per project (write-enforcement spec §4): the dialer
+/// announces a project id on its first uni stream (empty frame = unscoped
+/// dial), and every requested hash must belong — per the blob -> doc map —
+/// to a project the session-learned member may read. An announced dial pins
+/// the whole connection to that one project; an unscoped dial is gated per
+/// request against the requested blob's own project. Fetch needs Read or
+/// better; Relay holds no content key and is refused.
 ///
-/// Write side needs no gate here: `BlobsProtocol::new(store, None)` runs
-/// with iroh-blobs' default `EventMask`, whose `push: RequestMode::Disabled`
-/// rejects every remote `Request::Push` with a permission error before it
-/// touches the store — the handler is fetch-only, so no role (Read
-/// included) can store or replace blobs over this ALPN.
+/// Write side needs no gate here: the provider runs with iroh-blobs'
+/// default `push: RequestMode::Disabled`, which rejects every remote
+/// `Request::Push` with a permission error before it touches the store —
+/// the handler is fetch-only, so no role (Read included) can store or
+/// replace blobs over this ALPN.
 struct GatedBlobs {
     inner: BlobsProtocol,
     shared: Arc<Shared>,
@@ -1523,33 +1752,128 @@ impl fmt::Debug for GatedBlobs {
     }
 }
 
-impl GatedBlobs {
-    // ponytail: any-project membership gate — scope per project once a
-    // blob-hash -> project mapping exists.
-    async fn allows(&self, remote: EndpointId) -> bool {
-        let member = self.shared.peers.lock().unwrap().get(&remote).copied();
-        let Some(member) = member else {
+/// Whether `member` may fetch blobs of `project_id`: any role but Relay.
+async fn blob_role_allows(shared: &Shared, project_id: &str, member: MemberId) -> bool {
+    matches!(
+        shared.auth.query_access(project_id, member).await,
+        Ok(Some(role)) if role != Role::Relay
+    )
+}
+
+/// Per-request gate: `hash` must be mapped, and to the announced doc when
+/// the dial announced one, else to a project `member` may read.
+async fn blob_allowed(
+    shared: &Shared,
+    member: MemberId,
+    announced: Option<DocumentId>,
+    hash: &iroh_blobs::Hash,
+) -> bool {
+    let (doc, project) = {
+        let state = shared.state.lock().await;
+        // vendor-edit: an unmapped blob (stored before the map existed) is
+        // DENIED — the flagged layer has no real deployments, so there are
+        // no legacy blobs to migrate.
+        let Some(doc) = state.core.blob_docs.get(&hash.to_hex()).copied() else {
             return false;
         };
-        for id in self.shared.project_ids().await {
-            if matches!(
-                self.shared.auth.query_access(&id, member).await,
-                Ok(Some(_))
-            ) {
-                return true;
-            }
-        }
-        false
+        let project = state
+            .projects
+            .iter()
+            .find(|(_, p)| p.beelay_doc == doc)
+            .map(|(id, _)| id.clone());
+        (doc, project)
+    };
+    match announced {
+        Some(announced) => announced == doc,
+        None => match project {
+            Some(project) => blob_role_allows(shared, &project, member).await,
+            None => false,
+        },
     }
 }
 
 impl ProtocolHandler for GatedBlobs {
     async fn accept(&self, conn: Connection) -> std::result::Result<(), AcceptError> {
-        if !self.allows(conn.remote_id()).await {
+        let remote = conn.remote_id();
+        // the dialer's first uni stream announces the project (empty frame =
+        // unscoped dial); deadline-bounded like every pre-auth read.
+        let mut announce = tokio::time::timeout(RECV_TIMEOUT, conn.accept_uni())
+            .await
+            .map_err(|_| anyerr!("no blob announce stream within deadline"))??;
+        let announced = recv_frame_max(&mut announce, MAX_PROJECT_ID_FRAME as u64).await?;
+        let member = self.shared.peers.lock().unwrap().get(&remote).copied();
+        let Some(member) = member else {
             conn.close(REFUSED_CODE.into(), b"refused");
             return Ok(());
-        }
-        self.inner.accept(conn).await
+        };
+        let announced_doc = match &announced {
+            Some(project) => {
+                let project =
+                    std::str::from_utf8(project).map_err(AcceptError::from_err)?;
+                let doc = self
+                    .shared
+                    .state
+                    .lock()
+                    .await
+                    .projects
+                    .get(project)
+                    .map(|p| p.beelay_doc);
+                match doc {
+                    Some(doc) if blob_role_allows(&self.shared, project, member).await => {
+                        Some(doc)
+                    }
+                    _ => {
+                        conn.close(REFUSED_CODE.into(), b"refused");
+                        return Ok(());
+                    }
+                }
+            }
+            None => None,
+        };
+        // per-request gate: intercept events answer allow/deny for each
+        // requested hash; push stays Disabled (see the type docs), observe
+        // is denied outright (no client of ours sends it).
+        let (events, mut rx) = EventSender::channel(
+            16,
+            EventMask {
+                get: RequestMode::Intercept,
+                get_many: RequestMode::Intercept,
+                observe: ObserveMode::Intercept,
+                ..EventMask::DEFAULT
+            },
+        );
+        let shared = self.shared.clone();
+        tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                match msg {
+                    ProviderMessage::GetRequestReceived(m) => {
+                        let ok =
+                            blob_allowed(&shared, member, announced_doc, &m.inner.request.hash)
+                                .await;
+                        let verdict = ok.then_some(()).ok_or(AbortReason::Permission);
+                        m.tx.send(verdict).await.ok();
+                    }
+                    ProviderMessage::GetManyRequestReceived(m) => {
+                        let mut ok = true;
+                        for hash in &m.inner.request.hashes {
+                            if !blob_allowed(&shared, member, announced_doc, hash).await {
+                                ok = false;
+                                break;
+                            }
+                        }
+                        let verdict = ok.then_some(()).ok_or(AbortReason::Permission);
+                        m.tx.send(verdict).await.ok();
+                    }
+                    ProviderMessage::ObserveRequestReceived(m) => {
+                        m.tx.send(Err(AbortReason::Permission)).await.ok();
+                    }
+                    // only the intercepts above are enabled in the mask
+                    _ => {}
+                }
+            }
+        });
+        handle_connection(conn, self.inner.store().clone(), events).await;
+        Ok(())
     }
 
     async fn shutdown(&self) {
@@ -1608,6 +1932,7 @@ impl ProtocolHandler for BeelayProtocol {
                 Some(Core::scratch(
                     self.shared.peer_id.clone(),
                     state.core.storage.clone(),
+                    state.core.blob_docs.clone(),
                 ))
             }
             Some(Role::Relay) | None => {
