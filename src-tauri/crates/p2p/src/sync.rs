@@ -72,62 +72,11 @@ impl DeviceIdentity {
         Self::load_or_generate_at(path.as_ref(), dek)
     }
 
-    // `_dek` is only read under `encrypted-store`; the underscore keeps the
-    // plaintext-only build warning-free.
-    fn load_or_generate_at(path: &Path, _dek: Option<&[u8; 32]>) -> std::io::Result<Self> {
-        let secret = if path.exists() {
-            let bytes = std::fs::read(path)?;
-            #[cfg(feature = "encrypted-store")]
-            if let Some(sealed) = bytes.strip_prefix(DEVICE_KEY_MAGIC) {
-                let dek = _dek.ok_or(KeyStoreError::Locked)?;
-                let seed: [u8; 32] = unseal(dek, sealed)?.as_slice().try_into().map_err(|_| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!("decrypted device key {} is not 32 bytes", path.display()),
-                    )
-                })?;
-                return Ok(Self {
-                    secret: SecretKey::from_bytes(&seed),
-                });
-            }
-            let bytes: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("device key file {} is not 32 bytes", path.display()),
-                )
-            })?;
-            let key = SecretKey::from_bytes(&bytes);
-            // legacy plaintext + DEK: rewrite encrypted once, tmp+rename so a
-            // crash cannot lose the identity. No dir fsync — a lost rename
-            // just leaves the plaintext file to re-migrate next run.
-            #[cfg(feature = "encrypted-store")]
-            if let Some(dek) = _dek {
-                let mut tmp = path.as_os_str().to_owned();
-                tmp.push(".tmp");
-                let tmp = std::path::PathBuf::from(tmp);
-                write_private(&tmp, &seal_device_key(dek, &key.to_bytes()))
-                    .and_then(|f| f.sync_all())?;
-                std::fs::rename(&tmp, path)?;
-            }
-            key
-        } else {
-            let key = SecretKey::generate();
-            if let Some(parent) = path.parent()
-                && !parent.as_os_str().is_empty()
-            {
-                std::fs::create_dir_all(parent)?;
-            }
-            #[cfg(feature = "encrypted-store")]
-            let file_bytes = match _dek {
-                Some(dek) => seal_device_key(dek, &key.to_bytes()),
-                None => key.to_bytes().to_vec(),
-            };
-            #[cfg(not(feature = "encrypted-store"))]
-            let file_bytes = key.to_bytes();
-            write_key(path, &file_bytes)?;
-            key
-        };
-        Ok(Self { secret })
+    fn load_or_generate_at(path: &Path, dek: Option<&[u8; 32]>) -> std::io::Result<Self> {
+        let seed = load_or_generate_seed(path, dek, || SecretKey::generate().to_bytes())?;
+        Ok(Self {
+            secret: SecretKey::from_bytes(&seed),
+        })
     }
 
     /// This device's share identity.
@@ -158,6 +107,70 @@ pub(crate) fn write_key(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 #[cfg(not(unix))]
 pub(crate) fn write_key(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     std::fs::write(path, bytes)
+}
+
+// vendor-edit: shared 32-byte seed-file store — device.key and the keyhive
+// auth key use the same sealed format and legacy-plaintext migration.
+/// Loads the 32-byte seed at `path`, creating it via `generate` (parent dirs
+/// included) when absent. With `Some(dek)` (under `encrypted-store`) the file
+/// is AEAD-wrapped; a legacy plaintext file is rewritten encrypted once, and
+/// an encrypted file loaded without the right DEK fails with an `io::Error`
+/// whose source downcasts to [`KeyStoreError`].
+///
+/// `_dek` is only read under `encrypted-store`; the underscore keeps the
+/// plaintext-only build warning-free.
+pub(crate) fn load_or_generate_seed(
+    path: &Path,
+    _dek: Option<&[u8; 32]>,
+    generate: impl FnOnce() -> [u8; 32],
+) -> std::io::Result<[u8; 32]> {
+    if path.exists() {
+        let bytes = std::fs::read(path)?;
+        #[cfg(feature = "encrypted-store")]
+        if let Some(sealed) = bytes.strip_prefix(DEVICE_KEY_MAGIC) {
+            let dek = _dek.ok_or(KeyStoreError::Locked)?;
+            return unseal(dek, sealed)?.as_slice().try_into().map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("decrypted key file {} is not 32 bytes", path.display()),
+                )
+            });
+        }
+        let seed: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("key file {} is not 32 bytes", path.display()),
+            )
+        })?;
+        // legacy plaintext + DEK: rewrite encrypted once, tmp+rename so a
+        // crash cannot lose the identity. No dir fsync — a lost rename
+        // just leaves the plaintext file to re-migrate next run.
+        #[cfg(feature = "encrypted-store")]
+        if let Some(dek) = _dek {
+            let mut tmp = path.as_os_str().to_owned();
+            tmp.push(".tmp");
+            let tmp = std::path::PathBuf::from(tmp);
+            write_private(&tmp, &seal_device_key(dek, &seed)).and_then(|f| f.sync_all())?;
+            std::fs::rename(&tmp, path)?;
+        }
+        Ok(seed)
+    } else {
+        let seed = generate();
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        #[cfg(feature = "encrypted-store")]
+        let file_bytes = match _dek {
+            Some(dek) => seal_device_key(dek, &seed),
+            None => seed.to_vec(),
+        };
+        #[cfg(not(feature = "encrypted-store"))]
+        let file_bytes = seed;
+        write_key(path, &file_bytes)?;
+        Ok(seed)
+    }
 }
 
 // --- encrypted key store (write-enforcement spec §8) -------------------------

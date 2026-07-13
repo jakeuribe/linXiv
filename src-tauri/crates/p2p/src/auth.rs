@@ -58,28 +58,25 @@ impl AuthIdentity {
     /// if the file doesn't exist yet. The key IS the keyhive identity, so the
     /// same path always yields the same individual.
     pub fn load_or_generate(path: impl AsRef<Path>) -> std::io::Result<Self> {
-        let path = path.as_ref();
-        let key = if path.exists() {
-            let bytes = std::fs::read(path)?;
-            let seed: [u8; 32] = bytes.as_slice().try_into().map_err(|_| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("keyhive key file {} is not 32 bytes", path.display()),
-                )
-            })?;
-            SigningKey::from_bytes(&seed)
-        } else {
-            let key = SigningKey::generate(&mut OsRng);
-            if let Some(parent) = path.parent()
-                && !parent.as_os_str().is_empty()
-            {
-                std::fs::create_dir_all(parent)?;
-            }
-            crate::sync::write_key(path, key.as_bytes())?;
-            key
-        };
+        Self::load_or_generate_with_dek(path, None)
+    }
+
+    // vendor-edit: DEK-wrapped keyhive seed at rest (write-enforcement spec §8
+    // gap: the app persists this signing seed in its own file, not state.bin).
+    /// Like [`Self::load_or_generate`], but with `Some(dek)` the seed file is
+    /// AEAD-wrapped under the DEK — same sealed format and one-time plaintext
+    /// migration as the device key. An encrypted file loaded without the
+    /// right DEK fails with an `io::Error` whose source downcasts to
+    /// [`KeyStoreError`].
+    pub fn load_or_generate_with_dek(
+        path: impl AsRef<Path>,
+        dek: Option<&[u8; 32]>,
+    ) -> std::io::Result<Self> {
+        let seed = crate::sync::load_or_generate_seed(path.as_ref(), dek, || {
+            SigningKey::generate(&mut OsRng).to_bytes()
+        })?;
         Ok(Self {
-            signer: MemorySigner(key),
+            signer: MemorySigner(SigningKey::from_bytes(&seed)),
         })
     }
 

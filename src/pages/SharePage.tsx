@@ -16,12 +16,14 @@ import {
   memberCode,
   publishSecure,
   revokeMember,
+  setMemberRole,
   sharingAvailable,
   syncShare,
   unpublishShare,
   updateShareSettings,
   type ShareDirection,
   type SharedSummary,
+  type ShareMember,
   type ShareSettings,
 } from "../api/share";
 import { listProjects } from "../api/projects";
@@ -352,6 +354,24 @@ function MembersSection({ shareId }: { shareId: string }) {
       invalidateMembers();
     },
   });
+  // §3.3 viewer ↔ editor dropdown: optimistic flip, rolled back on error
+  // (the error line below is the page's toast equivalent).
+  const roleM = useMutation({
+    mutationFn: ({ memberId, role }: { memberId: string; role: "editor" | "viewer" }) =>
+      setMemberRole(shareId, memberId, role),
+    onMutate: async ({ memberId, role }) => {
+      await queryClient.cancelQueries({ queryKey: ["share", "members", shareId] });
+      const prev = queryClient.getQueryData<ShareMember[]>(["share", "members", shareId]);
+      queryClient.setQueryData<ShareMember[]>(["share", "members", shareId], (list) =>
+        list?.map((m) => (m.member_id === memberId ? { ...m, role } : m))
+      );
+      return { prev };
+    },
+    onError: (_e, _v, ctx) => {
+      if (ctx?.prev) queryClient.setQueryData(["share", "members", shareId], ctx.prev);
+    },
+    onSettled: () => invalidateMembers(),
+  });
 
   async function handleCopy() {
     try {
@@ -387,12 +407,25 @@ function MembersSection({ shareId }: { shareId: string }) {
                 ? "This device"
                 : m.member_id.slice(0, 8) || "unknown device")}
           </span>
-          <span
-            className="shrink-0 rounded-full border border-[var(--color-border)] bg-[var(--color-surface-2)] px-2 py-0.5 font-mono text-[10px] font-semibold"
-            style={{ color: "var(--color-muted)" }}
-          >
-            {m.revoked ? "revoked" : m.verified ? m.role : `${m.role} (unverified)`}
-          </span>
+          {!m.revoked && m.role !== "hoster" && m.verified && m.member_id ? (
+            // Viewer/Editor only — co-admin is keyhive-supported but
+            // app-deferred (spec §1.1); the route refuses admin targets.
+            <OptionSelect
+              aria-label={`Role for ${m.name || m.member_id.slice(0, 8)}`}
+              size="sm"
+              value={m.role as "editor" | "viewer"}
+              onChange={(r) => roleM.mutate({ memberId: m.member_id, role: r })}
+              disabled={roleM.isPending}
+              options={INVITE_ROLE_OPTIONS}
+            />
+          ) : (
+            <span
+              className="shrink-0 rounded-full border border-[var(--color-border)] bg-[var(--color-surface-2)] px-2 py-0.5 font-mono text-[10px] font-semibold"
+              style={{ color: "var(--color-muted)" }}
+            >
+              {m.revoked ? "revoked" : m.verified ? m.role : `${m.role} (unverified)`}
+            </span>
+          )}
           {!m.revoked && m.role !== "hoster" && revoking === m.member_id && (
             <Button
               variant="muted"
@@ -467,9 +500,9 @@ function MembersSection({ shareId }: { shareId: string }) {
           {inviteM.isPending ? <Spinner size={14} /> : "Invite"}
         </Button>
       </div>
-      {(inviteM.isError || revokeM.isError || membersQ.isError) && (
+      {(inviteM.isError || revokeM.isError || roleM.isError || membersQ.isError) && (
         <p className="text-xs" style={{ color: "var(--color-danger)" }}>
-          {errText(inviteM.error ?? revokeM.error ?? membersQ.error)}
+          {errText(inviteM.error ?? revokeM.error ?? roleM.error ?? membersQ.error)}
         </p>
       )}
       {invite && (
