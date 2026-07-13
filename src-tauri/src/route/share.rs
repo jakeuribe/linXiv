@@ -104,6 +104,7 @@ impl From<ShareError> for ApiError {
             ShareError::Core(c) => c.http_status(),
             ShareError::Transport(_) => 502,
             ShareError::TooLarge(_) => 413,
+            ShareError::RoleConflict | ShareError::LastReader => 409,
             ShareError::Io(_) | ShareError::Crdt(_) => 500,
         };
         ApiError::new(status, e.to_string())
@@ -158,6 +159,11 @@ pub async fn share_api(
             return put_settings(share.inner(), id, ctx.body).await
         }
         ("GET", ["api", "share", "member_code"]) => return member_code(share.inner()).await,
+        // Shadows the sync arm in `handle` so the live app gets role-stamped
+        // summaries; the store-only tests keep dispatching through `handle`.
+        ("GET", ["api", "share", "received"]) => {
+            return list_received_with_role(state.inner(), share.inner()).await
+        }
         ("POST", ["api", "share", "project", id, "publish_secure"]) => {
             return publish_secure(state.inner(), share.inner(), id).await
         }
@@ -165,6 +171,9 @@ pub async fn share_api(
             return invite(state.inner(), share.inner(), id, ctx.body).await
         }
         ("GET", ["api", "share", id, "members"]) => return members(share.inner(), id).await,
+        ("POST", ["api", "share", id, "member", mid, "role"]) => {
+            return set_member_role(state.inner(), share.inner(), id, mid, ctx.body).await
+        }
         ("POST", ["api", "share", id, "revoke"]) => {
             return revoke_member(share.inner(), id, ctx.body).await
         }
@@ -258,6 +267,42 @@ fn list_received(state: &AppState, share: &ShareState) -> Result<Value, ApiError
         out.push(v);
     }
     Ok(json!({ "received": out }))
+}
+
+/// `list_received` plus the reader's own capability (spec §7): each e2ee
+/// entry gets `role` ("viewer" | "editor") from a live `query_role` against
+/// this device's member id. Absent when the node is offline or on plain
+/// mirrors — the GUI treats an unknown role as editable (no regression);
+/// enforcement is server+crypto, this field is UX only.
+async fn list_received_with_role(
+    state: &AppState,
+    share: &ShareState,
+) -> Result<Value, ApiError> {
+    let mut v = list_received(state, share)?;
+    let Some(node) = share.node().await else {
+        return Ok(v);
+    };
+    let Ok(me) = node.self_member_id() else {
+        return Ok(v);
+    };
+    let Some(list) = v.get_mut("received").and_then(Value::as_array_mut) else {
+        return Ok(v);
+    };
+    for entry in list.iter_mut().filter(|e| e["e2ee"] == json!(true)) {
+        let Some(sid) = entry["share_id"].as_str().map(String::from) else {
+            continue;
+        };
+        // A failed or empty query leaves `role` unset (degrades editable).
+        if let Ok(Some(role)) = e2ee_timeout(node.query_role(&sid, me), "role query").await {
+            entry["role"] = match role {
+                Role::Read => json!("viewer"),
+                Role::Edit => json!("editor"),
+                Role::Admin => json!("hoster"),
+                Role::Relay => continue,
+            };
+        }
+    }
+    Ok(v)
 }
 
 /// A doc file for `id` in any role (plain/e2ee, hosted/received).
@@ -677,6 +722,8 @@ async fn join_invite(
 fn fetch_error(e: ShareError) -> ApiError {
     match e {
         ShareError::NotFound(_) => ApiError::new(404, e.to_string()),
+        // Typed capability conflicts keep their 409 through the live-dial path.
+        ShareError::RoleConflict | ShareError::LastReader => ApiError::new(409, e.to_string()),
         _ => ApiError::new(502, e.to_string()),
     }
 }
@@ -799,15 +846,8 @@ async fn invite(
     let _lock = share.lock_writes(id).await;
     // A concurrent unpublish may have parked the doc between the entry check and the lock.
     ensure_e2ee_hosted(&dir, id)?;
-    let (member, invite) = match e2ee_timeout(node.invite_member(id, code, role), "invite").await {
-        Err(e) if e.detail.contains("different role") => {
-            return Err(ApiError::new(
-                409,
-                "member already holds a different role; revoke them first, then re-invite",
-            ))
-        }
-        other => other?,
-    };
+    // A typed ShareError::RoleConflict surfaces as 409 via fetch_error.
+    let (member, invite) = e2ee_timeout(node.invite_member(id, code, role), "invite").await?;
     // Keyhive accepted the grant, so a sidecar entry disagreeing on role is
     // stale — overwritten below, never a post-grant 409.
     let hex = member_id_hex(&member);
@@ -852,6 +892,12 @@ async fn invite(
 
 /// `GET /api/share/{id}/members` — the sidecar list, with a live `query_role`
 /// truth-check per invited entry (no role after having been invited = revoked).
+///
+/// Co-admin (spec §1.1): keyhive supports granting a member Admin, but
+/// management ops that force PCS rotation (revoke, downgrade) must run where
+/// the doc is hosted — so membership management stays Hoster-only in the app
+/// and co-admin is a supported-but-deferred capability, not built UI. Roles
+/// offered here and on the role route are viewer/editor only.
 async fn members(share: &ShareState, id: &str) -> Result<Value, ApiError> {
     let dir = share.share_dir().to_path_buf();
     ensure_e2ee_hosted(&dir, id)?;
@@ -878,6 +924,81 @@ async fn members(share: &ShareState, id: &str) -> Result<Value, ApiError> {
         }));
     }
     Ok(json!({ "members": out }))
+}
+
+/// `POST /api/share/{id}/member/{mid}/role {role: "editor"|"viewer"}` — change
+/// an invited member's role on a hoster-owned e2ee share. The capability layer
+/// revokes + regrants (a downgrade rotates the project key), so stored PDF
+/// blobs are re-keyed + republished afterwards, then the sidecar entry updates.
+/// Admin/relay targets are refused: co-admin is app-deferred (see `members`).
+async fn set_member_role(
+    state: &AppState,
+    share: &ShareState,
+    id: &str,
+    mid: &str,
+    body: Option<&Value>,
+) -> Result<Value, ApiError> {
+    let dir = share.share_dir().to_path_buf();
+    ensure_e2ee_hosted(&dir, id)?;
+    let role_s = body
+        .and_then(|b| b.get("role"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| ApiError::new(422, "missing `role` in body"))?;
+    let role = match role_s {
+        "editor" => Role::Edit,
+        "viewer" => Role::Read,
+        // keyhive-supported, app-deferred (co-admin / relay, spec §1.1).
+        "admin" | "hoster" | "relay" => {
+            return Err(ApiError::new(400, "role must be \"editor\" or \"viewer\""))
+        }
+        _ => return Err(ApiError::new(422, "role must be \"editor\" or \"viewer\"")),
+    };
+    let member = member_id_from_hex(mid).ok_or_else(|| ApiError::new(422, "malformed member id"))?;
+    let canon_hex = member_id_hex(&member);
+    let active = load_members(&dir, id)
+        .into_iter()
+        .find(|m| m.member_id_hex == canon_hex && !m.revoked)
+        .ok_or_else(|| ApiError::new(404, "member not found on this share"))?;
+    if active.role == "hoster" {
+        return Err(ApiError::new(409, "cannot change the host's role"));
+    }
+    let node = live_node(share).await?;
+    if node.self_member_id().map(|s| s == member).unwrap_or(false) {
+        return Err(ApiError::new(409, "cannot change your own role as host"));
+    }
+    let _lock = share.lock_writes(id).await;
+    // A concurrent unpublish may have parked the doc between the entry check and the lock.
+    ensure_e2ee_hosted(&dir, id)?;
+    // Re-check under the lock: a concurrent revoke may have landed after the
+    // entry check above — set_role on a member with no live delegation is a
+    // fresh grant in the capability layer, silently re-admitting them.
+    if !load_members(&dir, id)
+        .iter()
+        .any(|m| m.member_id_hex == canon_hex && !m.revoked)
+    {
+        return Err(ApiError::new(404, "member not found on this share"));
+    }
+    // ShareError::LastReader surfaces as 409 via fetch_error.
+    e2ee_timeout(node.set_role(id, member, role), "role change").await?;
+    // A downgrade rotated the project key: blobs stored under the old epoch
+    // must re-key + republish. The role change already happened, so a re-key
+    // failure must not abort the request — the interval hoster leg re-runs
+    // population on its next pass (same contract as invite).
+    let mut sp = linxiv_share::load(&e2ee_dir(&dir), id).map_err(fetch_error)?;
+    if sp.papers.iter().any(|p| p.pdf_blob.is_some()) {
+        match share_sync::populate_pdf_blobs(state, &node, &dir, &mut sp, true).await {
+            Ok(()) => e2ee_timeout(node.publish_secure(&sp), "secure publish").await?,
+            Err(e) => eprintln!("share {id}: blob re-key after role change: {e}"),
+        }
+    }
+    let mut list = load_members(&dir, id);
+    for m in list.iter_mut().filter(|m| m.member_id_hex == canon_hex) {
+        m.role = role_s.into();
+    }
+    if let Err(e) = save_members(&dir, id, &list) {
+        eprintln!("share {id}: could not persist members sidecar: {e}");
+    }
+    Ok(json!({ "member_id": canon_hex, "role": role_s }))
 }
 
 /// `POST /api/share/{id}/revoke {member_id}` — revoke a member (the project key
@@ -1425,6 +1546,61 @@ mod tests {
         );
     }
 
+    // Role-route input validation, cheap (no node, store-only state).
+    #[tokio::test]
+    async fn set_member_role_validates_before_network() {
+        let state = empty_state();
+        let dir = tempfile::tempdir().unwrap();
+        let share = ShareState::new(dir.path());
+        let viewer = json!({ "role": "viewer" });
+
+        // Not a hosted e2ee share → 404.
+        let err = set_member_role(&state, &share, SID, "ab", Some(&viewer))
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, 404);
+
+        save(&e2ee_dir(dir.path()), &remote_shared(SID, "b")).unwrap();
+        // Admin/relay targets refused: co-admin is app-deferred (spec §1.1).
+        let err = set_member_role(&state, &share, SID, "ab", Some(&json!({ "role": "admin" })))
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, 400);
+        // Unknown role word → 422.
+        let err = set_member_role(&state, &share, SID, "ab", Some(&json!({ "role": "owner" })))
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, 422);
+        // Malformed member id → 422.
+        let err = set_member_role(&state, &share, SID, "zz", Some(&viewer))
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, 422);
+        // Well-formed id that was never invited → 404 (never a blind grant).
+        let hex = "aa".repeat(32);
+        let err = set_member_role(&state, &share, SID, &hex, Some(&viewer))
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, 404);
+        // Invited member, but store-only state has no live node → 503.
+        save_members(
+            dir.path(),
+            SID,
+            &[MemberEntry {
+                member_id_hex: hex.clone(),
+                name: None,
+                role: "viewer".into(),
+                invited_at: chrono::Utc::now().to_rfc3339(),
+                revoked: false,
+            }],
+        )
+        .unwrap();
+        let err = set_member_role(&state, &share, SID, &hex, Some(&json!({ "role": "editor" })))
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, 503);
+    }
+
     #[tokio::test]
     async fn shared_pdf_without_blob_is_404() {
         let state = empty_state();
@@ -1531,6 +1707,31 @@ mod tests {
         assert_eq!(viewer["name"], json!("Bee"));
         assert_eq!(viewer["revoked"], json!(false));
         let member_id = viewer["member_id"].as_str().unwrap().to_string();
+
+        // §3.3 role route: promote the viewer to editor and back; the
+        // sidecar reflects each change (query_role verified via members()).
+        for target in ["editor", "viewer"] {
+            let changed = slow(set_member_role(
+                &state_a,
+                &share_a,
+                SID,
+                &member_id,
+                Some(&json!({ "role": target })),
+            ))
+            .await
+            .unwrap();
+            assert_eq!(changed["role"], json!(target));
+            let m = slow(members(&share_a, SID)).await.unwrap();
+            let bee = m["members"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|m| m["member_id"] == json!(member_id.clone()))
+                .unwrap()
+                .clone();
+            assert_eq!(bee["role"], json!(target));
+            assert_eq!(bee["revoked"], json!(false));
+        }
 
         // B saves the shared PDF through the cap-checked path.
         let body = json!({ "source_id": "arxiv:9" });

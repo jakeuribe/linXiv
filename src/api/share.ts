@@ -22,6 +22,8 @@ async function shareApi<T>(
 
 export const sharingAvailable = isTauri;
 
+export type MemberRole = "hoster" | "editor" | "viewer";
+
 export interface SharedSummary {
   share_id: string;
   name: string;
@@ -38,9 +40,11 @@ export interface SharedSummary {
   e2ee?: boolean;
   /** Members-sidecar length; only on hoster-owned e2ee shares. */
   member_count?: number;
+  /** The reader's own capability on a received e2ee share (live query_role at
+   * list time). Absent offline / on plain mirrors → treated as editable; the
+   * write boundary is enforced server+crypto side, this drives UX only. */
+  role?: MemberRole;
 }
-
-export type MemberRole = "hoster" | "editor" | "viewer";
 
 export interface ShareMember {
   /** Hex member id — the only handle for revoke. May be "" for the hoster
@@ -180,6 +184,18 @@ export async function listMembers(shareId: string): Promise<ShareMember[]> {
     `/api/share/${shareId}/members`
   );
   return res.members;
+}
+
+/** Change an invited member's role on a hosted e2ee share (viewer ↔ editor;
+ *  admin is keyhive-supported but app-deferred, the route rejects it). */
+export async function setMemberRole(
+  shareId: string,
+  memberId: string,
+  role: Exclude<MemberRole, "hoster">
+): Promise<{ member_id: string; role: string }> {
+  return shareApi("POST", `/api/share/${shareId}/member/${memberId}/role`, {
+    role,
+  });
 }
 
 /** Revoke a member: stops receiving future updates; content already synced

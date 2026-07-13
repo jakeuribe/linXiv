@@ -1,17 +1,20 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate, useNavigationType, Link } from "react-router-dom";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Download, FolderOpen, Upload } from "lucide-react";
+import { ArrowLeft, Download, FolderOpen, GitFork, Upload } from "lucide-react";
 import { useUiStore, type ExportFormatKey } from "../stores/ui";
 import {
   getProject,
   updateProject,
+  createProject,
   addPapersToProject,
   removePaperFromProject,
   archiveProject,
   restoreProject,
   deleteProject,
 } from "../api/projects";
+import { listReceived, sharingAvailable } from "../api/share";
+import { receivedShareRole } from "../lib/shareRole";
 import { listPapers } from "../api/papers";
 import { exportProject, exportBibtex, exportObsidian } from "../api/exportImport";
 import { ImportDialog } from "../components/import/ImportDialog";
@@ -390,9 +393,11 @@ interface PaperRowProps {
   projectId: number;
   /** Owning project; used only to detect reading-list projects for the status pill. */
   project: Pick<Project, "project_tags">;
+  /** Viewer read-only shares hide the selection checkbox (spec §7). */
+  selectable: boolean;
 }
 
-function PaperRow({ paper, checked, onToggle, projectId, project }: PaperRowProps) {
+function PaperRow({ paper, checked, onToggle, projectId, project, selectable }: PaperRowProps) {
   const navigate = useNavigate();
   const authors = Array.isArray(paper.authors)
     ? paper.authors.slice(0, 3).join(", ")
@@ -403,13 +408,15 @@ function PaperRow({ paper, checked, onToggle, projectId, project }: PaperRowProp
       className="flex items-start gap-3 px-4 py-3 transition-colors hover:bg-[var(--color-panel)]"
       style={{ borderBottom: "1px solid var(--color-border)" }}
     >
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={onToggle}
-        className="mt-1 accent-[var(--color-accent)] shrink-0 cursor-pointer"
-        onClick={(e) => e.stopPropagation()}
-      />
+      {selectable && (
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={onToggle}
+          className="mt-1 accent-[var(--color-accent)] shrink-0 cursor-pointer"
+          onClick={(e) => e.stopPropagation()}
+        />
+      )}
       <div
         className="flex-1 min-w-0 cursor-pointer"
         onClick={() =>
@@ -615,6 +622,42 @@ export default function ProjectDetailPage() {
     enabled: Boolean(project),
   });
 
+  // §7 viewer read-only: a project linked (share_id) to a received share where
+  // our capability is viewer renders with NO edit affordances (hidden, not
+  // disabled). Unknown role (offline / plain / hosted) → editable as today;
+  // the write boundary itself is enforced host+crypto side, this is UX.
+  const { data: receivedShares } = useQuery({
+    queryKey: ["share", "received"],
+    queryFn: listReceived,
+    enabled: sharingAvailable && Boolean(project?.share_id),
+  });
+  const readOnly = receivedShareRole(project, receivedShares) === "viewer";
+
+  // §7 fork: deep-copy the shared project into an independent local project
+  // the user owns (new ids, never synced back), then jump to it.
+  async function handleFork() {
+    if (!project || statusBusy) return;
+    setStatusBusy(true);
+    setStatusError(null);
+    try {
+      const { project: created } = await createProject({
+        name: `${project.name} (copy)`,
+        description: project.description,
+        color_hex: project.color_hex,
+        project_tags: project.project_tags,
+      });
+      // ponytail: copies project metadata + paper links; notes/annotations are
+      // library-global in linXiv, so they need no per-project copy.
+      await addPapersToProject(created.id, project.source_ids);
+      await queryClient.invalidateQueries({ queryKey: ["projects"] });
+      navigate(`/projects/${created.id}`);
+    } catch (err) {
+      setStatusError(err instanceof Error ? err.message : "Failed to fork project");
+    } finally {
+      setStatusBusy(false);
+    }
+  }
+
   const projectPapers: Paper[] = project && papersData
     ? papersData.papers.filter((p) =>
         project.source_ids.includes(p.source_id)
@@ -758,17 +801,45 @@ export default function ProjectDetailPage() {
             >
               {project.name}
             </h1>
+            {readOnly && (
+              <span
+                className="shrink-0 rounded-full border px-2 py-1 font-mono text-[10.5px] font-semibold leading-none"
+                style={{
+                  color: "var(--color-muted)",
+                  borderColor: "var(--color-border)",
+                  backgroundColor: "var(--color-surface-2)",
+                }}
+              >
+                Viewer · read only
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2 shrink-0 flex-wrap">
-            <Button variant="muted" size="sm" onClick={() => setImportOpen(true)}>
-              <Upload size={13} className="mr-1" />Import
-            </Button>
+            {readOnly && (
+              <Button variant="muted" size="sm" onClick={handleFork} disabled={statusBusy}>
+                {statusBusy ? (
+                  <Spinner size={13} />
+                ) : (
+                  <>
+                    <GitFork size={13} className="mr-1" />Fork to my library
+                  </>
+                )}
+              </Button>
+            )}
+            {!readOnly && (
+              <Button variant="muted" size="sm" onClick={() => setImportOpen(true)}>
+                <Upload size={13} className="mr-1" />Import
+              </Button>
+            )}
             <Button variant="muted" size="sm" onClick={() => setExportOpen(true)}>
               <Download size={13} className="mr-1" />Export
             </Button>
-            <Button variant="muted" size="sm" onClick={() => setEditOpen(true)}>
-              Edit
-            </Button>
+            {!readOnly && (
+              <Button variant="muted" size="sm" onClick={() => setEditOpen(true)}>
+                Edit
+              </Button>
+            )}
+            {!readOnly && (
             <div className="relative" ref={moreRef}>
               <Button
                 variant="ghost"
@@ -821,6 +892,7 @@ export default function ProjectDetailPage() {
                 </div>
               )}
             </div>
+            )}
           </div>
         </div>
 
@@ -856,17 +928,19 @@ export default function ProjectDetailPage() {
           >
             Papers in this project
           </h2>
-          <Button
-            variant="muted"
-            size="sm"
-            onClick={() => setAddPapersOpen(true)}
-          >
-            Add Papers
-          </Button>
+          {!readOnly && (
+            <Button
+              variant="muted"
+              size="sm"
+              onClick={() => setAddPapersOpen(true)}
+            >
+              Add Papers
+            </Button>
+          )}
         </div>
 
         {/* Selection action bar */}
-        {selectedIds.size > 0 && (
+        {!readOnly && selectedIds.size > 0 && (
           <div
             className="flex items-center justify-between rounded-lg px-4 py-2.5"
             style={{
@@ -914,9 +988,13 @@ export default function ProjectDetailPage() {
             <EmptyState
               icon={<FolderOpen size={28} strokeWidth={1.5} />}
               title="No papers in this project"
-              description="Add papers from your library to start organizing this project."
-              actionLabel="Add Papers"
-              onAction={() => setAddPapersOpen(true)}
+              description={
+                readOnly
+                  ? "This shared project has no papers yet."
+                  : "Add papers from your library to start organizing this project."
+              }
+              actionLabel={readOnly ? undefined : "Add Papers"}
+              onAction={readOnly ? undefined : () => setAddPapersOpen(true)}
             />
           ) : (
             projectPapers.map((paper) => (
@@ -927,6 +1005,7 @@ export default function ProjectDetailPage() {
                 onToggle={() => toggle(paper.source_id)}
                 projectId={projectId}
                 project={project}
+                selectable={!readOnly}
               />
             ))
           )}
@@ -938,26 +1017,30 @@ export default function ProjectDetailPage() {
       {/* A project-level notes panel could be added here once the API supports */}
       {/* querying notes by project_id without requiring a source_id. */}
 
-      {/* Dialogs */}
+      {/* Dialogs (edit affordances unmounted entirely on viewer shares) */}
       {project && (
         <>
-          <EditProjectDialog
-            key={projectId}
-            open={editOpen}
-            onClose={() => setEditOpen(false)}
-            projectId={projectId}
-            initialName={project.name}
-            initialDescription={project.description}
-            initialColor={project.color_hex}
-            initialTags={project.project_tags}
-          />
-          <AddPapersDialog
-            key={projectId}
-            open={addPapersOpen}
-            onClose={() => setAddPapersOpen(false)}
-            projectId={projectId}
-            existingSourceIds={project.source_ids}
-          />
+          {!readOnly && (
+            <EditProjectDialog
+              key={projectId}
+              open={editOpen}
+              onClose={() => setEditOpen(false)}
+              projectId={projectId}
+              initialName={project.name}
+              initialDescription={project.description}
+              initialColor={project.color_hex}
+              initialTags={project.project_tags}
+            />
+          )}
+          {!readOnly && (
+            <AddPapersDialog
+              key={projectId}
+              open={addPapersOpen}
+              onClose={() => setAddPapersOpen(false)}
+              projectId={projectId}
+              existingSourceIds={project.source_ids}
+            />
+          )}
           <ExportDialog
             key={projectId}
             open={exportOpen}
@@ -965,20 +1048,22 @@ export default function ProjectDetailPage() {
             projectId={projectId}
             projectName={project.name}
           />
-          <ImportDialog
-            open={importOpen}
-            onClose={() => setImportOpen(false)}
-            projectId={projectId}
-            onDone={(newProjectIds) => {
-              setImportOpen(false);
-              queryClient.invalidateQueries({ queryKey: ["project", id] });
-              queryClient.invalidateQueries({ queryKey: ["papers"] });
-              const newId = newProjectIds[0];
-              if (newId && newId !== projectId) {
-                navigate(`/projects/${newId}`);
-              }
-            }}
-          />
+          {!readOnly && (
+            <ImportDialog
+              open={importOpen}
+              onClose={() => setImportOpen(false)}
+              projectId={projectId}
+              onDone={(newProjectIds) => {
+                setImportOpen(false);
+                queryClient.invalidateQueries({ queryKey: ["project", id] });
+                queryClient.invalidateQueries({ queryKey: ["papers"] });
+                const newId = newProjectIds[0];
+                if (newId && newId !== projectId) {
+                  navigate(`/projects/${newId}`);
+                }
+              }}
+            />
+          )}
         </>
       )}
     </div>

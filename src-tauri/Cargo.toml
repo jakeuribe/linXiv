@@ -56,6 +56,19 @@ chrono = "0.4"
 # File-upload routes carry bytes as base64 in the JSON `api` body (the webview
 # can't put a multipart body through `invoke`).
 base64 = "0.22"
+# p2p key-store DEK (write-enforcement spec §8): OS keychain storage. The
+# secret-service backend is the pure-Rust zbus one so no C dbus lib is needed.
+keyring = { version = "3", features = [
+    "apple-native",
+    "windows-native",
+    "async-secret-service",
+    "crypto-rust",
+    "tokio",
+] }
+# Headless DEK derivation from LINXIV_P2P_PASSPHRASE (Argon2id).
+argon2 = "0.5"
+# Random DEK bytes on first run (same major as the lockfile's transitive copy).
+getrandom = "0.3"
 
 [dev-dependencies]
 # Share-dispatcher test injects a tempdir share dir (never the real data dir).

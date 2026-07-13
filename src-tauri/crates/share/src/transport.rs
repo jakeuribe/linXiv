@@ -113,20 +113,47 @@ impl ShareNode {
     /// Production node: iroh n0 defaults (relay + discovery). `share_dir` is the
     /// only directory served; `p2p_dir` holds the persisted device key.
     pub async fn bind(share_dir: impl Into<PathBuf>, p2p_dir: &Path) -> Result<Self> {
-        Self::bind_inner(share_dir.into(), p2p_dir, false).await
+        Self::bind_inner(share_dir.into(), p2p_dir, false, None).await
+    }
+
+    /// Like [`Self::bind`], but with `Some(dek)` the at-rest key files
+    /// (`device.key`, `auth.key`, keyhive `state.bin`) are AEAD-wrapped under
+    /// the 32-byte DEK; legacy plaintext files migrate encrypted once. The
+    /// DEK comes from the app (OS keychain / passphrase); `None` keeps
+    /// today's plaintext store.
+    #[cfg(feature = "sync-beelay")]
+    pub async fn bind_with_dek(
+        share_dir: impl Into<PathBuf>,
+        p2p_dir: &Path,
+        dek: Option<[u8; 32]>,
+    ) -> Result<Self> {
+        Self::bind_inner(share_dir.into(), p2p_dir, false, dek).await
     }
 
     /// Offline/hermetic node: no relays or discovery, direct addrs only. Used by
     /// tests and any same-host transfer.
     pub async fn bind_offline(share_dir: impl Into<PathBuf>, p2p_dir: &Path) -> Result<Self> {
-        Self::bind_inner(share_dir.into(), p2p_dir, true).await
+        Self::bind_inner(share_dir.into(), p2p_dir, true, None).await
     }
 
-    async fn bind_inner(share_dir: PathBuf, p2p_dir: &Path, offline: bool) -> Result<Self> {
+    // `_dek` is only read with the beelay stack; the underscore keeps the
+    // plain-sync build warning-free.
+    async fn bind_inner(
+        share_dir: PathBuf,
+        p2p_dir: &Path,
+        offline: bool,
+        _dek: Option<[u8; 32]>,
+    ) -> Result<Self> {
         std::fs::create_dir_all(p2p_dir)?;
+        #[cfg(feature = "sync-beelay")]
+        let identity = DeviceIdentity::load_or_generate_with_dek(
+            p2p_dir.join(DEVICE_KEY_FILE),
+            _dek.as_ref(),
+        )?;
+        #[cfg(not(feature = "sync-beelay"))]
         let identity = DeviceIdentity::load_or_generate(p2p_dir.join(DEVICE_KEY_FILE))?;
         #[cfg(feature = "sync-beelay")]
-        let (inner, beelay) = Self::bind_stack(&identity, p2p_dir, offline).await?;
+        let (inner, beelay) = Self::bind_stack(&identity, p2p_dir, offline, _dek.as_ref()).await?;
         #[cfg(not(feature = "sync-beelay"))]
         let inner = Self::bind_plain(&identity, offline).await?;
         let node = Self {
@@ -155,24 +182,37 @@ impl ShareNode {
     }
 
     /// Plain sync + beelay + blobs on ONE endpoint. On a corrupt keyhive
-    /// state, falls back to a plain bind with no beelay node.
+    /// state (or an auth key that won't decrypt), falls back to a plain bind
+    /// with no beelay node.
     #[cfg(feature = "sync-beelay")]
     async fn bind_stack(
         identity: &DeviceIdentity,
         p2p_dir: &Path,
         offline: bool,
+        dek: Option<&[u8; 32]>,
     ) -> Result<(linxiv_p2p::ShareNode, Option<linxiv_p2p::BeelayNode>)> {
-        let auth_identity = linxiv_p2p::AuthIdentity::load_or_generate(p2p_dir.join("auth.key"))?;
-        let auth =
-            match linxiv_p2p::ProjectAuth::load_or_new(&auth_identity, &p2p_dir.join("keyhive"))
-                .await
+        let auth_identity =
+            match linxiv_p2p::AuthIdentity::load_or_generate_with_dek(p2p_dir.join("auth.key"), dek)
             {
-                Ok(auth) => auth,
+                Ok(identity) => identity,
                 Err(e) => {
-                    tracing::warn!("keyhive auth state failed to load, e2ee sharing disabled: {e}");
+                    tracing::warn!("keyhive auth key failed to load, e2ee sharing disabled: {e}");
                     return Ok((Self::bind_plain(identity, offline).await?, None));
                 }
             };
+        let auth = match linxiv_p2p::ProjectAuth::load_or_new_with_dek(
+            &auth_identity,
+            &p2p_dir.join("keyhive"),
+            dek,
+        )
+        .await
+        {
+            Ok(auth) => auth,
+            Err(e) => {
+                tracing::warn!("keyhive auth state failed to load, e2ee sharing disabled: {e}");
+                return Ok((Self::bind_plain(identity, offline).await?, None));
+            }
+        };
         let beelay_dir = p2p_dir.join("beelay");
         let stack = if offline {
             linxiv_p2p::bind_stack_local(identity, &auth_identity, auth, Some(&beelay_dir)).await
@@ -398,7 +438,7 @@ impl ShareNode {
                     .map_err(net);
             }
             Some(_) => {
-                return Err(net("role conflict: member already holds a different role"));
+                return Err(ShareError::RoleConflict);
             }
             None => {}
         }
@@ -434,6 +474,25 @@ impl ShareNode {
             .query_access(share_id, member)
             .await
             .map_err(net)
+    }
+
+    /// Change a member's role on an e2ee share (viewer ↔ editor). The
+    /// capability layer revokes + regrants under the hood; a downgrade also
+    /// rotates the project key (PCS), so the caller should re-key stored
+    /// blobs afterwards. Refusing to drop the doc's last reader surfaces as
+    /// [`ShareError::LastReader`].
+    pub async fn set_role(&self, share_id: &str, member: MemberId, role: Role) -> Result<()> {
+        if !valid_share_id(share_id) {
+            return Err(ShareError::NotFound(share_id.to_string()));
+        }
+        self.beelay()?
+            .auth()
+            .set_role(share_id, member, role)
+            .await
+            .map_err(|e| match e.downcast_ref::<linxiv_p2p::SetRoleError>() {
+                Some(linxiv_p2p::SetRoleError::LastReader) => ShareError::LastReader,
+                None => net(e),
+            })
     }
 
     /// Revoke a member; the project key rotates (PCS).
@@ -509,6 +568,19 @@ impl ShareNode {
         // Persist the mirror before the first sync so the interval loop
         // retries this share when that sync fails.
         if let Some(doc) = beelay.doc(&share_id).await {
+            // Validate the doc-internal share_id (host-controlled) BEFORE the
+            // mirror lands on disk: a prior failed sync can leave a hostile
+            // merge in the in-memory doc, and this write must never persist
+            // it. A fresh adopt is an empty doc — nothing to validate.
+            if !doc.get_heads().is_empty() {
+                let sp: SharedProject = autosurgeon::hydrate(&doc).map_err(super::crdt)?;
+                if sp.share_id != share_id {
+                    return Err(net(format!(
+                        "remote share_id {:?} does not match invite id {share_id:?}",
+                        sp.share_id
+                    )));
+                }
+            }
             let dir = e2ee_received_dir(&self.share_dir);
             let id = share_id.clone();
             let bytes = doc.save();
@@ -844,6 +916,82 @@ mod tests {
             );
             // old mirror content intact, no post-revoke content gained
             assert_eq!(ShareNode::e2ee_received(b_dir.path(), "7").unwrap(), sp);
+
+            a.shutdown().await.unwrap();
+            b.shutdown().await.unwrap();
+        }
+
+        // §3.3: set_role transitions Read→Edit→Read; query_role is the truth.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn set_role_upgrades_and_downgrades() {
+            let a_dir = tempfile::tempdir().unwrap();
+            let b_dir = tempfile::tempdir().unwrap();
+            let a = node(a_dir.path()).await;
+            let b = node(b_dir.path()).await;
+
+            let sp = sample("7", "Secret Project");
+            let member = share_to(&a, &b, &sp).await;
+            assert_eq!(a.query_role("7", member).await.unwrap(), Some(Role::Read));
+
+            slow(a.set_role("7", member, Role::Edit)).await.unwrap();
+            assert_eq!(a.query_role("7", member).await.unwrap(), Some(Role::Edit));
+
+            slow(a.set_role("7", member, Role::Read)).await.unwrap();
+            assert_eq!(a.query_role("7", member).await.unwrap(), Some(Role::Read));
+
+            a.shutdown().await.unwrap();
+            b.shutdown().await.unwrap();
+        }
+
+        // §6 validate-before-persist: a host serving a doc whose INTERNAL
+        // share_id mismatches the invite id must never land in the reader's
+        // mirror — neither via the first sync (validated in sync_e2ee) nor
+        // via a re-accept persisting the poisoned in-memory doc.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn hostile_share_id_never_persisted_on_accept() {
+            let a_dir = tempfile::tempdir().unwrap();
+            let b_dir = tempfile::tempdir().unwrap();
+            let a = node(a_dir.path()).await;
+            let b = node(b_dir.path()).await;
+
+            let sp = sample("7", "Evil Host");
+            a.publish_secure(&sp).await.unwrap();
+            // Swap the doc-internal share_id before the invite (invite
+            // flushes/encrypts pending changes, so the reader will fetch it).
+            let mut evil = sp.clone();
+            evil.share_id = "8".into();
+            a.beelay
+                .as_ref()
+                .unwrap()
+                .with_doc("7", |d| {
+                    let mut tx = d.transaction();
+                    autosurgeon::reconcile(&mut tx, &evil).unwrap();
+                    tx.commit();
+                })
+                .await
+                .unwrap();
+            let code = b.member_code().await.unwrap();
+            let (_member, invite) = a.invite_member("7", &code, Role::Read).await.unwrap();
+
+            // First accept: the initial sync pulls the hostile doc → error.
+            let r1 = slow(b.accept_invite(&invite)).await;
+            assert!(
+                matches!(&r1, Err(ShareError::Transport(m)) if m.contains("does not match")),
+                "hostile doc must error the accept, got {r1:?}"
+            );
+            // Re-accept: the hostile merge now sits in the in-memory doc;
+            // the pre-persist validation must refuse to park it.
+            let r2 = slow(b.accept_invite(&invite)).await;
+            assert!(
+                matches!(&r2, Err(ShareError::Transport(m)) if m.contains("does not match")),
+                "re-accept must not persist the hostile doc, got {r2:?}"
+            );
+            // Whatever is on disk (empty placeholder or nothing), it is
+            // never the hostile doc.
+            match ShareNode::e2ee_received(b_dir.path(), "7") {
+                Err(_) => {}
+                Ok(mirror) => assert_ne!(mirror.share_id, "8", "hostile doc landed in the mirror"),
+            }
 
             a.shutdown().await.unwrap();
             b.shutdown().await.unwrap();

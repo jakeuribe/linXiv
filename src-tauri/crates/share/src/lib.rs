@@ -92,6 +92,12 @@ pub enum ShareError {
     /// blob exceeds the byte cap.
     #[error("too large: {0}")]
     TooLarge(String),
+    /// invite-time conflict: the member already holds a different role.
+    #[error("member already holds a different role; revoke them first, then re-invite")]
+    RoleConflict,
+    /// role change refused: it would remove the project's last reader.
+    #[error("role change would remove the project's last reader")]
+    LastReader,
 }
 
 pub type Result<T> = std::result::Result<T, ShareError>;
