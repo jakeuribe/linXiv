@@ -59,26 +59,28 @@ fn p2p_dek() -> Option<[u8; 32]> {
         Ok(entry) => entry,
         Err(e) => return unavailable(&e),
     };
+    let parse = |hex: &str| -> Option<[u8; 32]> {
+        let bytes: Option<Vec<u8>> = (hex.len() == 64 && hex.is_ascii())
+            .then(|| {
+                (0..64)
+                    .step_by(2)
+                    .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
+                    .collect()
+            })
+            .flatten();
+        bytes.and_then(|b| <[u8; 32]>::try_from(b).ok())
+    };
+    let malformed = || {
+        // Never clobber an entry we can't read — regenerating would orphan
+        // any files sealed under the old DEK.
+        eprintln!("warning: keychain p2p-dek entry is malformed, p2p key store stays plaintext");
+        None
+    };
     match entry.get_password() {
-        Ok(hex) => {
-            let bytes: Option<Vec<u8>> = (hex.len() == 64 && hex.is_ascii())
-                .then(|| {
-                    (0..64)
-                        .step_by(2)
-                        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
-                        .collect()
-                })
-                .flatten();
-            match bytes.and_then(|b| <[u8; 32]>::try_from(b).ok()) {
-                Some(dek) => Some(dek),
-                None => {
-                    // Never clobber an entry we can't read — regenerating
-                    // would orphan any files sealed under the old DEK.
-                    eprintln!("warning: keychain p2p-dek entry is malformed, p2p key store stays plaintext");
-                    None
-                }
-            }
-        }
+        Ok(hex) => match parse(&hex) {
+            Some(dek) => Some(dek),
+            None => malformed(),
+        },
         Err(keyring::Error::NoEntry) => {
             let mut dek = [0u8; 32];
             if let Err(e) = getrandom::fill(&mut dek) {
@@ -90,7 +92,18 @@ fn p2p_dek() -> Option<[u8; 32]> {
                 // passphrase fallback is fine here — it's re-derivable.
                 return unavailable(&e);
             }
-            Some(dek)
+            // First-run mint race: two instances launched together can both
+            // see NoEntry and set different DEKs — the keychain keeps the
+            // last write. Seal files only under the READ-BACK value, never
+            // the local mint, or state.bin can end up sealed under a key the
+            // keychain no longer holds (unrecoverable from the next launch).
+            match entry.get_password() {
+                Ok(stored) => match parse(&stored) {
+                    Some(dek) => Some(dek),
+                    None => malformed(),
+                },
+                Err(e) => unavailable(&e),
+            }
         }
         Err(e) => unavailable(&e),
     }
