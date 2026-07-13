@@ -191,15 +191,16 @@ impl ShareNode {
         offline: bool,
         dek: Option<&[u8; 32]>,
     ) -> Result<(linxiv_p2p::ShareNode, Option<linxiv_p2p::BeelayNode>)> {
-        let auth_identity =
-            match linxiv_p2p::AuthIdentity::load_or_generate_with_dek(p2p_dir.join("auth.key"), dek)
-            {
-                Ok(identity) => identity,
-                Err(e) => {
-                    tracing::warn!("keyhive auth key failed to load, e2ee sharing disabled: {e}");
-                    return Ok((Self::bind_plain(identity, offline).await?, None));
-                }
-            };
+        let auth_identity = match linxiv_p2p::AuthIdentity::load_or_generate_with_dek(
+            p2p_dir.join("auth.key"),
+            dek,
+        ) {
+            Ok(identity) => identity,
+            Err(e) => {
+                tracing::warn!("keyhive auth key failed to load, e2ee sharing disabled: {e}");
+                return Ok((Self::bind_plain(identity, offline).await?, None));
+            }
+        };
         let auth = match linxiv_p2p::ProjectAuth::load_or_new_with_dek(
             &auth_identity,
             &p2p_dir.join("keyhive"),

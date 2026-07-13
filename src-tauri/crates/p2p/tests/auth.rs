@@ -602,7 +602,8 @@ async fn state_migrates_v1_to_encrypted() -> Result<()> {
 }
 
 fn io_key_store_err(err: &std::io::Error) -> Option<&KeyStoreError> {
-    err.get_ref().and_then(|e| e.downcast_ref::<KeyStoreError>())
+    err.get_ref()
+        .and_then(|e| e.downcast_ref::<KeyStoreError>())
 }
 
 /// device.key generated with a DEK is not the bare seed, round-trips with the
