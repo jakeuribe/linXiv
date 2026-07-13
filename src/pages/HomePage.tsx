@@ -209,7 +209,6 @@ export default function HomePage() {
 
   return (
     <div className="p-8 space-y-8">
-      {feedUrl !== "" && <FeedSection url={feedUrl} />}
 
       {isLoading ? (
         <div className="flex items-center justify-center h-full">
@@ -259,6 +258,7 @@ export default function HomePage() {
               to="/tags"
             />
           </div>
+          {feedUrl !== "" && <FeedSection url={feedUrl} />}
 
           {(() => {
             const recentPapers = data?.recent_papers?.slice(0, 10) ?? [];
