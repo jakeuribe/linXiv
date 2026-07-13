@@ -1618,7 +1618,8 @@ impl BeelayNode {
         ticket: &str,
         max_bytes: u64,
     ) -> Result<()> {
-        self.fetch_blob_inner(Some(project_id), ticket, max_bytes).await
+        self.fetch_blob_inner(Some(project_id), ticket, max_bytes)
+            .await
     }
 
     async fn fetch_blob_inner(
@@ -1649,7 +1650,9 @@ impl BeelayNode {
             project_id.map(str::as_bytes).unwrap_or_default(),
         )
         .await?;
-        announce.finish().std_context("closing blob announce stream")?;
+        announce
+            .finish()
+            .std_context("closing blob announce stream")?;
         let mut progress = std::pin::pin!(self.blobs.remote().fetch(conn, ticket.hash()).stream());
         while let Some(item) = progress.next().await {
             match item {
@@ -1875,8 +1878,7 @@ impl ProtocolHandler for GatedBlobs {
         };
         let announced_doc = match &announced {
             Some(project) => {
-                let project =
-                    std::str::from_utf8(project).map_err(AcceptError::from_err)?;
+                let project = std::str::from_utf8(project).map_err(AcceptError::from_err)?;
                 let doc = self
                     .shared
                     .state
@@ -1886,9 +1888,7 @@ impl ProtocolHandler for GatedBlobs {
                     .get(project)
                     .map(|p| p.beelay_doc);
                 match doc {
-                    Some(doc) if blob_role_allows(&self.shared, project, member).await => {
-                        Some(doc)
-                    }
+                    Some(doc) if blob_role_allows(&self.shared, project, member).await => Some(doc),
                     _ => {
                         conn.close(REFUSED_CODE.into(), b"refused");
                         return Ok(());
@@ -2116,7 +2116,10 @@ mod tests {
         let mut core = Core::new(PeerId::from("test".to_owned()), Some(dir.path())).unwrap();
         let storage_key = key_from_components(&key).unwrap();
         assert_eq!(core.storage.get(&storage_key), Some(&value));
-        assert_eq!(core.blob_docs.get(&hash), Some(&DocumentId::from(doc_bytes)));
+        assert_eq!(
+            core.blob_docs.get(&hash),
+            Some(&DocumentId::from(doc_bytes))
+        );
 
         // persist rewrites the combined format; drain the writer, reload.
         core.persist_kv().unwrap();

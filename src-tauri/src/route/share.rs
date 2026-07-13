@@ -274,10 +274,7 @@ fn list_received(state: &AppState, share: &ShareState) -> Result<Value, ApiError
 /// this device's member id. Absent when the node is offline or on plain
 /// mirrors — the GUI treats an unknown role as editable (no regression);
 /// enforcement is server+crypto, this field is UX only.
-async fn list_received_with_role(
-    state: &AppState,
-    share: &ShareState,
-) -> Result<Value, ApiError> {
+async fn list_received_with_role(state: &AppState, share: &ShareState) -> Result<Value, ApiError> {
     let mut v = list_received(state, share)?;
     let Some(node) = share.node().await else {
         return Ok(v);
@@ -953,7 +950,8 @@ async fn set_member_role(
         }
         _ => return Err(ApiError::new(422, "role must be \"editor\" or \"viewer\"")),
     };
-    let member = member_id_from_hex(mid).ok_or_else(|| ApiError::new(422, "malformed member id"))?;
+    let member =
+        member_id_from_hex(mid).ok_or_else(|| ApiError::new(422, "malformed member id"))?;
     let canon_hex = member_id_hex(&member);
     let active = load_members(&dir, id)
         .into_iter()
@@ -1595,9 +1593,15 @@ mod tests {
             }],
         )
         .unwrap();
-        let err = set_member_role(&state, &share, SID, &hex, Some(&json!({ "role": "editor" })))
-            .await
-            .unwrap_err();
+        let err = set_member_role(
+            &state,
+            &share,
+            SID,
+            &hex,
+            Some(&json!({ "role": "editor" })),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(err.status, 503);
     }
 

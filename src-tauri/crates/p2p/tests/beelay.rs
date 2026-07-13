@@ -676,7 +676,12 @@ async fn viewer_cannot_write() -> Result<()> {
         .await
         .map_err(anyhow::Error::msg)?;
     let carol_member = hoster_auth
-        .receive_contact_card(&carol_auth.contact_card().await.map_err(anyhow::Error::msg)?)
+        .receive_contact_card(
+            &carol_auth
+                .contact_card()
+                .await
+                .map_err(anyhow::Error::msg)?,
+        )
         .await
         .map_err(anyhow::Error::msg)?;
     let hoster = BeelayNode::bind_local(&hoster_device, &hoster_auth_id, hoster_auth, None)
@@ -793,7 +798,12 @@ async fn downgraded_editor_cannot_write() -> Result<()> {
         .await
         .map_err(anyhow::Error::msg)?;
     let carol_member = hoster_auth
-        .receive_contact_card(&carol_auth.contact_card().await.map_err(anyhow::Error::msg)?)
+        .receive_contact_card(
+            &carol_auth
+                .contact_card()
+                .await
+                .map_err(anyhow::Error::msg)?,
+        )
         .await
         .map_err(anyhow::Error::msg)?;
     let hoster = BeelayNode::bind_local(&hoster_device, &hoster_auth_id, hoster_auth, None)
@@ -1241,14 +1251,20 @@ async fn bad_host_ticket_errors_typed() -> Result<()> {
     let (device, auth_id) = identities(dir.path(), "node");
     let data_dir = dir.path().join("data");
     std::fs::create_dir_all(&data_dir)?;
-    let entries = vec![("proj".to_string(), [7u8; 16], Some("not a ticket".to_string()))];
+    let entries = vec![(
+        "proj".to_string(),
+        [7u8; 16],
+        Some("not a ticket".to_string()),
+    )];
     let peers: Vec<([u8; 32], [u8; 32])> = Vec::new();
     std::fs::write(
         data_dir.join("registry.bin"),
         postcard::to_stdvec(&(entries, peers))?,
     )?;
 
-    let auth = ProjectAuth::new(&auth_id).await.map_err(anyhow::Error::msg)?;
+    let auth = ProjectAuth::new(&auth_id)
+        .await
+        .map_err(anyhow::Error::msg)?;
     let node = BeelayNode::bind_local(&device, &auth_id, auth, Some(&data_dir))
         .await
         .map_err(anyhow::Error::msg)?;
