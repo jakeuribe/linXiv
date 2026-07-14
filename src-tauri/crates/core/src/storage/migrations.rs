@@ -4,6 +4,10 @@
 //! DBs, so each MUST be idempotent — guarded by `PRAGMA table_info` (missing
 //! column) or by index existence. Re-running them is the normal case, not the
 //! exception (in practice the column/index already exists and each is a no-op).
+//!
+//! The migration SQL itself lives in `crates/core/sql/migrations/` (ground
+//! truth) and is embedded here with `include_str!`; this file is guard logic
+//! (has the column/index already been added?) plus call order, not SQL text.
 
 use std::collections::HashMap;
 
@@ -69,12 +73,14 @@ fn paper_to_reading_has_cascade_fk(conn: &Connection) -> Result<bool> {
 
 fn paper_roots_soft_delete(conn: &Connection) -> Result<()> {
     if !has_column(conn, "PAPER_ROOTS", "STATUS")? {
-        conn.execute_batch(
-            "ALTER TABLE PAPER_ROOTS ADD COLUMN STATUS TEXT NOT NULL DEFAULT 'active'",
-        )?;
+        conn.execute_batch(include_str!(
+            "../../sql/migrations/01_paper_roots_status.sql"
+        ))?;
     }
     if !has_column(conn, "PAPER_ROOTS", "DELETED_AT")? {
-        conn.execute_batch("ALTER TABLE PAPER_ROOTS ADD COLUMN DELETED_AT TIMESTAMP")?;
+        conn.execute_batch(include_str!(
+            "../../sql/migrations/01_paper_roots_deleted_at.sql"
+        ))?;
     }
     Ok(())
 }
@@ -83,7 +89,9 @@ fn paper_roots_soft_delete(conn: &Connection) -> Result<()> {
 
 fn paper_meta_provider(conn: &Connection) -> Result<()> {
     if !has_column(conn, "PAPER_META", "PROVIDER")? {
-        conn.execute_batch("ALTER TABLE PAPER_META ADD COLUMN PROVIDER TEXT DEFAULT 'arxiv'")?;
+        conn.execute_batch(include_str!(
+            "../../sql/migrations/02_paper_meta_provider.sql"
+        ))?;
     }
     Ok(())
 }
@@ -92,7 +100,9 @@ fn paper_meta_provider(conn: &Connection) -> Result<()> {
 
 fn search_state_sort_json(conn: &Connection) -> Result<()> {
     if !has_column(conn, "SEARCH_STATE", "SORT_JSON")? {
-        conn.execute_batch("ALTER TABLE SEARCH_STATE ADD COLUMN SORT_JSON TEXT")?;
+        conn.execute_batch(include_str!(
+            "../../sql/migrations/03_search_state_sort_json.sql"
+        ))?;
     }
     Ok(())
 }
@@ -128,25 +138,35 @@ fn tag_label_unique_index(conn: &Connection) -> Result<()> {
             // UPDATE OR IGNORE absorbs the link onto the canonical FK; the DELETE
             // sweeps any link that could not move (canonical link already existed).
             conn.execute(
-                "UPDATE OR IGNORE PROJECT_TO_TAG SET TAG_FK = ?1 WHERE TAG_FK = ?2",
+                include_str!("../../sql/migrations/04_tag_label_remap_project_to_tag.sql"),
                 [canon, *fk],
             )?;
-            conn.execute("DELETE FROM PROJECT_TO_TAG WHERE TAG_FK = ?1", [*fk])?;
             conn.execute(
-                "UPDATE OR IGNORE PAPER_TO_TAG SET TAG_FK = ?1 WHERE TAG_FK = ?2",
+                include_str!("../../sql/migrations/04_tag_label_delete_project_to_tag_orphan.sql"),
+                [*fk],
+            )?;
+            conn.execute(
+                include_str!("../../sql/migrations/04_tag_label_remap_paper_to_tag.sql"),
                 [canon, *fk],
             )?;
-            conn.execute("DELETE FROM PAPER_TO_TAG WHERE TAG_FK = ?1", [*fk])?;
-            conn.execute("DELETE FROM TAG WHERE TAG_FK = ?1", [*fk])?;
+            conn.execute(
+                include_str!("../../sql/migrations/04_tag_label_delete_paper_to_tag_orphan.sql"),
+                [*fk],
+            )?;
+            conn.execute(
+                include_str!("../../sql/migrations/04_tag_label_delete_tag.sql"),
+                [*fk],
+            )?;
         }
     }
     if remapped {
-        conn.execute_batch(
-            "DELETE FROM PAPER_TO_TAG WHERE PTT_FK NOT IN (
-                 SELECT MIN(PTT_FK) FROM PAPER_TO_TAG GROUP BY PAPER_ID, TAG_FK)",
-        )?;
+        conn.execute_batch(include_str!(
+            "../../sql/migrations/04_tag_label_dedup_paper_to_tag.sql"
+        ))?;
     }
-    conn.execute_batch("CREATE UNIQUE INDEX idx_tag_label_unique ON TAG (TAG COLLATE NOCASE)")?;
+    conn.execute_batch(include_str!(
+        "../../sql/migrations/04_tag_label_unique_index.sql"
+    ))?;
     Ok(())
 }
 
@@ -156,11 +176,9 @@ fn project_to_tag_unique_index(conn: &Connection) -> Result<()> {
     if index_exists(conn, "idx_project_to_tag_unique")? {
         return Ok(());
     }
-    conn.execute_batch(
-        "DELETE FROM PROJECT_TO_TAG WHERE PROJECT_TO_TAG_FK NOT IN (
-             SELECT MIN(PROJECT_TO_TAG_FK) FROM PROJECT_TO_TAG GROUP BY PROJECT_FK, TAG_FK);
-         CREATE UNIQUE INDEX idx_project_to_tag_unique ON PROJECT_TO_TAG (PROJECT_FK, TAG_FK);",
-    )?;
+    conn.execute_batch(include_str!(
+        "../../sql/migrations/05_project_to_tag_unique_index.sql"
+    ))?;
     Ok(())
 }
 
@@ -174,9 +192,9 @@ fn project_to_tag_unique_index(conn: &Connection) -> Result<()> {
 /// composite FK needs this parent-key index to exist by then (SQLite checks it at
 /// DML time, not CREATE TABLE time).
 fn project_to_paper_unique_index(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_project_to_paper_unique ON PROJECT_TO_PAPER (PROJECT_FK, SOURCE_FK)",
-    )?;
+    conn.execute_batch(include_str!(
+        "../../sql/migrations/06_project_to_paper_unique_index.sql"
+    ))?;
     Ok(())
 }
 
@@ -197,10 +215,9 @@ pub fn dedup_project_to_paper(conn: &Connection) -> Result<()> {
     if table_exists == 0 || index_exists(conn, "idx_project_to_paper_unique")? {
         return Ok(());
     }
-    conn.execute_batch(
-        "DELETE FROM PROJECT_TO_PAPER WHERE PROJECT_TO_PAPER_FK NOT IN (
-             SELECT MIN(PROJECT_TO_PAPER_FK) FROM PROJECT_TO_PAPER GROUP BY PROJECT_FK, SOURCE_FK)",
-    )?;
+    conn.execute_batch(include_str!(
+        "../../sql/migrations/00_dedup_project_to_paper.sql"
+    ))?;
     Ok(())
 }
 
@@ -208,9 +225,9 @@ pub fn dedup_project_to_paper(conn: &Connection) -> Result<()> {
 
 fn author_full_name_index(conn: &Connection) -> Result<()> {
     // CREATE INDEX IF NOT EXISTS is itself idempotent — no separate guard needed.
-    conn.execute_batch(
-        "CREATE INDEX IF NOT EXISTS idx_author_full_name ON AUTHOR (AUTHOR_FULL_NAME COLLATE NOCASE)",
-    )?;
+    conn.execute_batch(include_str!(
+        "../../sql/migrations/07_author_full_name_index.sql"
+    ))?;
     Ok(())
 }
 
@@ -232,7 +249,9 @@ fn annotation_table(conn: &Connection) -> Result<()> {
 /// stalest-first rotation, NEW_VERSION flags an un-acknowledged discovery. Added
 /// after the initial schema, so created here like ANNOTATION.
 fn version_check_table(conn: &Connection) -> Result<()> {
-    conn.execute_batch(include_str!("../../sql/tables/VERSION_CHECK.sql"))?;
+    conn.execute_batch(include_str!(
+        "../../sql/migrations/09_version_check_table.sql"
+    ))?;
     Ok(())
 }
 
@@ -242,11 +261,9 @@ fn version_check_table(conn: &Connection) -> Result<()> {
 /// the table existed, so index any pre-existing note. `NOT IN` skips rows
 /// already indexed.
 fn notes_fts_backfill(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "INSERT INTO notes_fts(rowid, title, note, source_fk)
-         SELECT NOTE_SK, TITLE, CAST(NOTE AS TEXT), SOURCE_FK FROM NOTE
-         WHERE NOTE_SK NOT IN (SELECT rowid FROM notes_fts)",
-    )?;
+    conn.execute_batch(include_str!(
+        "../../sql/migrations/10_notes_fts_backfill.sql"
+    ))?;
     Ok(())
 }
 
@@ -256,9 +273,9 @@ fn notes_fts_backfill(conn: &Connection) -> Result<()> {
 /// Per-paper reading status for such projects lives sparsely in PAPER_TO_READING.
 fn project_reading_list_flag(conn: &Connection) -> Result<()> {
     if !has_column(conn, "PROJECT", "IS_READING_LIST")? {
-        conn.execute_batch(
-            "ALTER TABLE PROJECT ADD COLUMN IS_READING_LIST INTEGER NOT NULL DEFAULT 0",
-        )?;
+        conn.execute_batch(include_str!(
+            "../../sql/migrations/11_project_reading_list_flag.sql"
+        ))?;
     }
     Ok(())
 }
@@ -280,25 +297,9 @@ fn paper_to_reading_cascade_fk(conn: &Connection) -> Result<()> {
     if paper_to_reading_has_cascade_fk(conn)? {
         return Ok(());
     }
-    conn.execute_batch(
-        "BEGIN;
-         CREATE TABLE PAPER_TO_READING_NEW(
-             PROJECT_FK  INTEGER NOT NULL,
-             SOURCE_FK   INTEGER NOT NULL,
-             STATUS      TEXT    NOT NULL CHECK (STATUS IN ('reading', 'read')),
-             UPDATED_AT  TIMESTAMP NOT NULL DEFAULT (datetime('now')),
-             PRIMARY KEY (PROJECT_FK, SOURCE_FK),
-             FOREIGN KEY (PROJECT_FK, SOURCE_FK) REFERENCES PROJECT_TO_PAPER(PROJECT_FK, SOURCE_FK) ON DELETE CASCADE
-         );
-         INSERT INTO PAPER_TO_READING_NEW (PROJECT_FK, SOURCE_FK, STATUS, UPDATED_AT)
-             SELECT r.PROJECT_FK, r.SOURCE_FK, r.STATUS, r.UPDATED_AT
-             FROM PAPER_TO_READING r
-             JOIN PROJECT_TO_PAPER m ON m.PROJECT_FK = r.PROJECT_FK AND m.SOURCE_FK = r.SOURCE_FK;
-         DROP TABLE PAPER_TO_READING;
-         ALTER TABLE PAPER_TO_READING_NEW RENAME TO PAPER_TO_READING;
-         CREATE INDEX IF NOT EXISTS idx_paper_to_reading_source_fk ON PAPER_TO_READING (SOURCE_FK);
-         COMMIT;",
-    )?;
+    conn.execute_batch(include_str!(
+        "../../sql/migrations/12_paper_to_reading_cascade_fk.sql"
+    ))?;
     Ok(())
 }
 
@@ -308,11 +309,13 @@ fn paper_to_reading_cascade_fk(conn: &Connection) -> Result<()> {
 /// never at project creation.
 fn project_share_id(conn: &Connection) -> Result<()> {
     if !has_column(conn, "PROJECT", "SHARE_ID")? {
-        conn.execute_batch("ALTER TABLE PROJECT ADD COLUMN SHARE_ID TEXT")?;
+        conn.execute_batch(include_str!(
+            "../../sql/migrations/13_project_share_id_column.sql"
+        ))?;
     }
-    conn.execute_batch(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_project_share_id_unique ON PROJECT (SHARE_ID) WHERE STATUS != 'deleted'",
-    )?;
+    conn.execute_batch(include_str!(
+        "../../sql/migrations/13_project_share_id_unique_index.sql"
+    ))?;
     Ok(())
 }
 
@@ -339,7 +342,7 @@ fn backfill_uuid_column(conn: &Connection, table: &str, col: &str, index: &str) 
 
 fn note_uuid(conn: &Connection) -> Result<()> {
     if !has_column(conn, "NOTE", "NOTE_UUID")? {
-        conn.execute_batch("ALTER TABLE NOTE ADD COLUMN NOTE_UUID TEXT")?;
+        conn.execute_batch(include_str!("../../sql/migrations/14_note_uuid_column.sql"))?;
     }
     backfill_uuid_column(conn, "NOTE", "NOTE_UUID", "idx_note_uuid_unique")
 }
@@ -350,7 +353,9 @@ fn note_uuid(conn: &Connection) -> Result<()> {
 /// the guard adds the column to DBs created before it existed.
 fn annotation_uuid(conn: &Connection) -> Result<()> {
     if !has_column(conn, "ANNOTATION", "ANNOTATION_UUID")? {
-        conn.execute_batch("ALTER TABLE ANNOTATION ADD COLUMN ANNOTATION_UUID TEXT")?;
+        conn.execute_batch(include_str!(
+            "../../sql/migrations/15_annotation_uuid_column.sql"
+        ))?;
     }
     backfill_uuid_column(
         conn,

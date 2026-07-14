@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX idx_tag_label_unique ON TAG (TAG COLLATE NOCASE)
