@@ -36,6 +36,7 @@ Upload your PDFs, create projects, manage notes, tags, and annotations to organi
 - **Interactive graph** — Force-directed network of papers and authors (Cytoscape rendering with an fCoSE / D3 layout), with real-time force controls.
 - **TeX rendering** — MathJax renders LaTeX math in titles and abstracts, bundled locally for full offline use.
 - **CLI & MCP server** — A headless `linxiv` CLI and an `linxiv-mcp` MCP server expose the same library over the terminal and to LLM clients such as Claude.
+- **Peer-to-peer project sharing** — Share a project over [iroh](https://www.iroh.computer/) (QUIC + node tickets, no relay server to run) with end-to-end encrypted sync via keyhive + beelay CRDTs; you're the Hoster or a Reader of a share, and a Hoster can invite members as Editor or Viewer; join with a pasted ticket, mirror shared projects into your local library, and sync on your own schedule.
 
 <img src="assets/demo.gif" width="800" />
 
@@ -53,13 +54,15 @@ linXiv/
 ├── public/graph/               # Force-directed graph viewer (Cytoscape + fCoSE + D3), loaded over linxiv://
 ├── src-tauri/                  # Tauri shell + Cargo workspace root
 │   ├── src/                    # Tauri app: window, api-command router, integrations (install CLI/MCP)
+│   │   └── bin/dev_server.rs   # linxiv-dev-server: dev-only HTTP shim over the Rust core (see Run in development)
 │   ├── crates/
 │   │   ├── core/               # linxiv-core: all library logic (sources, storage, formats, graph, service)
 │   │   │   └── src/sources/    #   arXiv, OpenAlex, CrossRef, DOI resolution, PDF metadata, downloads
 │   │   ├── cli/                # linxiv-cli → the `linxiv` binary (headless CLI)
 │   │   ├── mcp/                # linxiv-mcp → the `linxiv-mcp` binary (MCP stdio server)
 │   │   ├── migrate/            # one-off schema migration binary
-│   │   └── share/              # quarantined CRDT "shared projects" store (phase 0, P2P roadmap)
+│   │   ├── p2p/                # linxiv-p2p: vendored iroh transport, keyhive membership/roles, beelay E2EE sync
+│   │   └── share/              # shared-project store — service layer over linxiv-p2p (publish/join/sync, encrypted key store)
 │   ├── binaries/               # staged CLI + MCP sidecars (target-triple suffixed) for `tauri build`
 │   ├── tauri.conf.json         # app config; bundles the linxiv + linxiv-mcp sidecars as externalBin
 │   └── Cargo.toml              # workspace manifest
@@ -229,7 +232,7 @@ linxiv doi save 10.48550/arXiv.1706.03762        # resolve and save to library
 # Authors
 linxiv author list
 linxiv author get 12
-linxiv author update 12 --name "A. N. Other"
+linxiv author update 12 --full-name "A. N. Other"
 linxiv author delete 12                          # blocked if still linked to papers
 
 # BibTeX import
@@ -298,6 +301,8 @@ The database (`papers.db`), managed PDFs, and the Obsidian vault live in the per
 
 ## Acknowledgements
 
+Thank you to arXiv for use of its open access interoperability!
+
 linXiv owes a debt to [Qiqqa](https://github.com/jimmejardine/qiqqa-open-source), the open-source research management tool originally created by Jimme Jardine.
 
-PDF text and metadata extraction is powered by [PDFium](https://pdfium.googlesource.com/pdfium/) (Google's PDF rendering library) via the [`pdfium-render`](https://github.com/ajrcarey/pdfium-render) Rust bindings.
+PDF text and metadata extraction is currently powered by [PDFium](https://pdfium.googlesource.com/pdfium/) (Google's PDF rendering library) via the [`pdfium-render`](https://github.com/ajrcarey/pdfium-render) Rust bindings.
