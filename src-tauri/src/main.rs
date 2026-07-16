@@ -137,6 +137,8 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_texbrain::init())
         .setup(|app| {
             // In-process backend: open the DB once and manage it. The webview
@@ -215,6 +217,8 @@ fn main() {
             integrations::install_mcp,
             integrations::uninstall_mcp,
             integrations::is_mcp_installed,
+            integrations::get_linux_package_kind,
+            integrations::apply_linux_package_update,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

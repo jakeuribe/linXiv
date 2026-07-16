@@ -1,6 +1,12 @@
 # linXiv
 
-<img src="assets/wide_logo.png" alt="linXiv logo" width="800" />
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/logo-light.svg">
+    <img alt="Project Logo" src="assets/svg_logo.svg" width="180">
+  </picture>
+</p>
 
 A local-first desktop application for discovering, managing, and visualizing academic papers from arXiv and other sources. It bundles a native Rust backend (bundled SQLite storage, arXiv/OpenAlex/CrossRef sources, PDF text extraction, BibTeX/Obsidian export) with a React + TypeScript frontend and an interactive paper–author graph, all wrapped in a Tauri v2 desktop shell.
 
