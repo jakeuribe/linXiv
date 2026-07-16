@@ -14,6 +14,7 @@ pub mod note;
 pub mod paper;
 pub mod project;
 pub mod reading_list;
+pub mod rss;
 pub mod search;
 pub mod search_history;
 pub mod search_state;

@@ -1,7 +1,0 @@
---Dedicated table of patterns to automatch and strip against? 
--- Or anti-patterns to show, could be stuff like authors, titles, etc, 
--- i.e, don't show "AI"&&"quantum computing" unless "ML" in abstract, or, Isaac Chuang in authors
--- or less complicated examples, but complicated examples should be available through 
--- complicated compositions, nothing missing, but no things like html commands sneaking their way in
--- like the great 'rgba' debacle of linxiv v.0.1.0
--- Filter out "trasj would be default behavior", this might not be a sql file, RSS feeds are composable, but out side of just queries on arxiv? I am pretty sure not but worth checking.

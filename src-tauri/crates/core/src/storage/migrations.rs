@@ -34,6 +34,7 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     project_share_id(conn)?;
     note_uuid(conn)?;
     annotation_uuid(conn)?;
+    rss_feed_tables(conn)?;
     Ok(())
 }
 
@@ -365,6 +366,17 @@ fn annotation_uuid(conn: &Connection) -> Result<()> {
     )
 }
 
+// ── 16. RSS feed tables (persisted home-feed items, dismiss state, filter rules) ──
+
+/// Added after the initial schema, so created here like ANNOTATION. Order matters:
+/// RSS_PAPER's FK needs RSS_PAPER_ROOTS to already exist.
+fn rss_feed_tables(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../../sql/tables/RSS_PAPER_ROOTS.sql"))?;
+    conn.execute_batch(include_str!("../../sql/tables/RSS_PAPER.sql"))?;
+    conn.execute_batch(include_str!("../../sql/tables/RSS_FILTER_RULE.sql"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -408,6 +420,16 @@ mod tests {
             )
             .unwrap();
         assert_eq!(version_check_tables, 1);
+        for table in ["RSS_PAPER_ROOTS", "RSS_PAPER", "RSS_FILTER_RULE"] {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    [table],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "{table} must exist after run_migrations");
+        }
         schema::apply_views(&conn).unwrap();
     }
 

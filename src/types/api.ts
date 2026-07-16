@@ -113,12 +113,21 @@ export interface FeedEntry {
   summary: string;
   published: string;
   arxiv_id: string | null;
+  version: number | null;
 }
 
 export interface FeedResponse {
   title: string;
   entries: FeedEntry[];
   saved_arxiv_ids: string[];
+}
+
+export interface FeedFilterRule {
+  rule_id: number;
+  field: "TITLE" | "SUMMARY" | "AUTHOR";
+  keywords: string;
+  action: "DENY" | "ALLOW";
+  enabled: boolean;
 }
 
 export interface PaperVersionSummary {
