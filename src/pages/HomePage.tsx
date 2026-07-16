@@ -2,13 +2,15 @@ import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { getSettings, getStats } from "../api/settings";
-import { getFeed } from "../api/feed";
+import { dismissFeedEntry, getFeed } from "../api/feed";
 import { fetchArxiv } from "../api/search";
+import { getPaperPdfUrl } from "../api/papers";
 import { Spinner } from "../components/ui/spinner";
 import { Button } from "../components/ui/button";
 import { PaperCard } from "../components/papers/PaperCard";
 import { Card, MonoLabel, SectionTitle } from "../components/ui/card";
-import type { FeedEntry, Paper } from "../types/api";
+import type { FeedEntry, Paper, SearchResult } from "../types/api";
+import { MathText } from "../lib/tex";
 
 interface StatCardProps {
   label: string;
@@ -52,9 +54,20 @@ function StatCard({ label, value, hint, to }: StatCardProps) {
 
 const FEED_ENTRY_LIMIT = 25;
 
-function FeedRow({ entry, alreadySaved }: { entry: FeedEntry; alreadySaved?: boolean }) {
+function FeedRow({
+  entry,
+  alreadySaved,
+  onDismissed,
+}: {
+  entry: FeedEntry;
+  alreadySaved?: boolean;
+  onDismissed: () => void;
+}) {
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [dismissing, setDismissing] = useState(false);
+  const [dismissError, setDismissError] = useState(false);
 
   async function handleSave(arxivId: string) {
     setSaveState("saving");
@@ -69,6 +82,41 @@ function FeedRow({ entry, alreadySaved }: { entry: FeedEntry; alreadySaved?: boo
     }
   }
 
+  // Same in-house preview machinery the search page uses (/pdf-preview): a
+  // saved paper reads through our own PDF proxy, an unsaved one hits arXiv
+  // directly (with a CORS-proxy fallback baked into PdfPreviewPage itself).
+  function handlePreview() {
+    if (entry.arxiv_id === null || entry.version === null) return;
+    const paperUrl = alreadySaved
+      ? getPaperPdfUrl(entry.arxiv_id, entry.version)
+      : `https://arxiv.org/pdf/${entry.arxiv_id}v${entry.version}`;
+    const result: SearchResult = {
+      source_id: entry.arxiv_id,
+      version: entry.version,
+      title: entry.title,
+      summary: entry.summary,
+      authors: entry.authors,
+      published: entry.published,
+      paper_url: paperUrl,
+      primary_category: "",
+      entry_id: `arxiv:${entry.arxiv_id}`,
+    };
+    navigate("/pdf-preview", { state: { result, isSaved: alreadySaved ?? false } });
+  }
+
+  async function handleDismiss(arxivId: string, version: number) {
+    setDismissing(true);
+    setDismissError(false);
+    try {
+      await dismissFeedEntry(arxivId, version);
+      onDismissed();
+    } catch (err) {
+      console.error(err);
+      setDismissing(false);
+      setDismissError(true);
+    }
+  }
+
   return (
     <div className="flex items-start justify-between gap-4 border-b border-border py-3 last:border-0">
       <div className="min-w-0">
@@ -80,7 +128,7 @@ function FeedRow({ entry, alreadySaved }: { entry: FeedEntry; alreadySaved?: boo
             entry.link ? " hover:text-accent" : " cursor-default"
           }`}
         >
-          {entry.title || entry.link || "Untitled entry"}
+          <MathText forceInline>{entry.title || entry.link || "Untitled entry"}</MathText>
         </a>
         {entry.authors.length > 0 && (
           <p className="mt-0.5 text-xs text-muted truncate">
@@ -89,7 +137,7 @@ function FeedRow({ entry, alreadySaved }: { entry: FeedEntry; alreadySaved?: boo
         )}
         {entry.summary !== "" && (
           <p className="mt-1 text-xs text-muted line-clamp-2 leading-relaxed">
-            {entry.summary}
+            <MathText forceInline>{entry.summary}</MathText>
           </p>
         )}
         {entry.published !== "" && (
@@ -97,24 +145,54 @@ function FeedRow({ entry, alreadySaved }: { entry: FeedEntry; alreadySaved?: boo
         )}
       </div>
       <div className="flex flex-col items-end gap-1 shrink-0">
-        {entry.arxiv_id !== null && (
-          (() => {
-            const arxivId = entry.arxiv_id;
-            return (
-              <Button
-                variant="outline"
-                size="sm"
-                disabled={alreadySaved || (saveState !== "idle" && saveState !== "error")}
-                onClick={() => handleSave(arxivId)}
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2.5">
+            {entry.arxiv_id !== null && entry.version !== null && (
+              <button
+                type="button"
+                className="text-xs font-medium text-accent hover:underline"
+                onClick={handlePreview}
               >
-                {(alreadySaved || saveState === "saved") ? "Saved" : saveState === "saving" ? "Saving…" : "Save"}
-              </Button>
-            );
-          })()
-        )}
+                PDF →
+              </button>
+            )}
+            {entry.arxiv_id !== null && (
+              (() => {
+                const arxivId = entry.arxiv_id;
+                return (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={alreadySaved || (saveState !== "idle" && saveState !== "error")}
+                    onClick={() => handleSave(arxivId)}
+                  >
+                    {(alreadySaved || saveState === "saved") ? "Saved" : saveState === "saving" ? "Saving…" : "Save"}
+                  </Button>
+                );
+              })()
+            )}
+          </div>
+          {entry.arxiv_id !== null && entry.version !== null && (
+            <button
+              type="button"
+              aria-label="Dismiss"
+              title="Dismiss"
+              disabled={dismissing}
+              className="border-l border-border pl-3 text-muted hover:text-text transition-colors disabled:opacity-50"
+              onClick={() => handleDismiss(entry.arxiv_id as string, entry.version as number)}
+            >
+              ✕
+            </button>
+          )}
+        </div>
         {saveState === "error" && (
           <p className="text-xs" style={{ color: "var(--color-danger)" }}>
             Save failed
+          </p>
+        )}
+        {dismissError && (
+          <p className="text-xs" style={{ color: "var(--color-danger)" }}>
+            Dismiss failed
           </p>
         )}
       </div>
@@ -123,6 +201,7 @@ function FeedRow({ entry, alreadySaved }: { entry: FeedEntry; alreadySaved?: boo
 }
 
 function FeedSection({ url }: { url: string }) {
+  const queryClient = useQueryClient();
   const { data, isLoading, error } = useQuery({
     queryKey: ["home-feed", url],
     queryFn: () => getFeed(url),
@@ -166,6 +245,7 @@ function FeedSection({ url }: { url: string }) {
                   key={`${entry.link}-${i}`}
                   entry={entry}
                   alreadySaved={entry.arxiv_id != null && savedArxivIds.has(entry.arxiv_id)}
+                  onDismissed={() => queryClient.invalidateQueries({ queryKey: ["home-feed", url] })}
                 />
               ))}
             </div>
@@ -209,7 +289,6 @@ export default function HomePage() {
 
   return (
     <div className="p-8 space-y-8">
-      {feedUrl !== "" && <FeedSection url={feedUrl} />}
 
       {isLoading ? (
         <div className="flex items-center justify-center h-full">
@@ -259,6 +338,7 @@ export default function HomePage() {
               to="/tags"
             />
           </div>
+          {feedUrl !== "" && <FeedSection url={feedUrl} />}
 
           {(() => {
             const recentPapers = data?.recent_papers?.slice(0, 10) ?? [];

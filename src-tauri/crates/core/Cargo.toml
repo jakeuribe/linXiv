@@ -40,6 +40,9 @@ biblatex = "0.12"
 base64 = "0.22"
 # Stable ids: PROJECT.SHARE_ID + NOTE/ANNOTATION uuids (v4, generated at insert).
 uuid = { version = "1", features = ["v4"] }
+# NFC-folds base letter + combining accent into precomposed chars (sources::feed's
+# LaTeX-accent decoder). Already in the tree transitively; promoted to a direct dep.
+unicode-normalization = "0.1"
 
 [dev-dependencies]
 tempfile = "3"

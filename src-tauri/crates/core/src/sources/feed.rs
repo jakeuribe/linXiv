@@ -14,6 +14,7 @@ use quick_xml::events::Event;
 use quick_xml::Reader;
 use reqwest::Url;
 use serde::Serialize;
+use unicode_normalization::UnicodeNormalization;
 
 use crate::error::{CoreError, Result};
 use crate::sources::arxiv::{attr, local};
@@ -32,6 +33,9 @@ pub struct FeedEntry {
     pub summary: String,
     pub published: String,
     pub arxiv_id: Option<String>,
+    /// arXiv version parsed from the link's trailing `v<N>` (absent -> `1`).
+    /// `None` when `arxiv_id` is `None`.
+    pub version: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -40,10 +44,11 @@ pub struct Feed {
     pub entries: Vec<FeedEntry>,
 }
 
-/// Extract a bare arXiv id from an abs/pdf link on an arxiv.org host.
-/// `https://arxiv.org/abs/2401.12345v2` → `2401.12345`;
-/// old-style `http://arxiv.org/abs/math-ph/0309136` → `math-ph/0309136`.
-pub fn arxiv_id_from_link(link: &str) -> Option<String> {
+/// Extract a bare arXiv id + version from an abs/pdf link on an arxiv.org host.
+/// `https://arxiv.org/abs/2401.12345v2` → `("2401.12345", 2)`;
+/// old-style `http://arxiv.org/abs/math-ph/0309136` → `("math-ph/0309136", 1)`
+/// (no explicit `vN` suffix means version 1 -- a fresh submission's first appearance).
+fn parse_arxiv_link(link: &str) -> Option<(String, i64)> {
     let url = Url::parse(link).ok()?;
     let host = url.host_str()?;
     if host != "arxiv.org" && !host.ends_with(".arxiv.org") {
@@ -56,9 +61,11 @@ pub fn arxiv_id_from_link(link: &str) -> Option<String> {
     let id = id.strip_suffix(".pdf").unwrap_or(id).trim_end_matches('/');
     // Strip a trailing `v<digits>` version; the digit check keeps archive names
     // containing 'v' (e.g. solv-int/9509007) intact.
-    let base = match id.rfind('v') {
-        Some(i) if i + 1 < id.len() && id[i + 1..].bytes().all(|b| b.is_ascii_digit()) => &id[..i],
-        _ => id,
+    let (base, version) = match id.rfind('v') {
+        Some(i) if i + 1 < id.len() && id[i + 1..].bytes().all(|b| b.is_ascii_digit()) => {
+            (&id[..i], id[i + 1..].parse().unwrap_or(1))
+        }
+        _ => (id, 1),
     };
     if base.is_empty() {
         return None;
@@ -82,12 +89,146 @@ pub fn arxiv_id_from_link(link: &str) -> Option<String> {
             return None;
         }
     }
-    Some(base.to_string())
+    Some((base.to_string(), version))
+}
+
+/// Extract a bare arXiv id from an abs/pdf link on an arxiv.org host.
+/// `https://arxiv.org/abs/2401.12345v2` → `2401.12345`;
+/// old-style `http://arxiv.org/abs/math-ph/0309136` → `math-ph/0309136`.
+pub fn arxiv_id_from_link(link: &str) -> Option<String> {
+    parse_arxiv_link(link).map(|(id, _)| id)
+}
+
+/// arXiv's RSS `<description>` is prefixed with its own announce-type boilerplate
+/// (`arXiv:2401.12345v1 Announce Type: new\nAbstract: ...`) that the Atom API used
+/// by search/save doesn't emit. Strip it, keeping just the actual abstract.
+fn strip_announce_prefix(summary: &str) -> &str {
+    let Some(rest) = summary.strip_prefix("arXiv:") else {
+        return summary;
+    };
+    let Some(idx) = rest.find("Abstract:") else {
+        return summary;
+    };
+    if !rest[..idx].contains("Announce Type:") {
+        return summary;
+    }
+    rest[idx + "Abstract:".len()..].trim_start()
+}
+
+/// The base letter following a LaTeX accent command at `at`: `{X}` (braced) or,
+/// when `allow_bare` is set, a bare `X`. Returns the letter and how many chars
+/// (starting at `at`) it consumed.
+fn accented_base(chars: &[char], at: usize, allow_bare: bool) -> Option<(char, usize)> {
+    if chars.get(at) == Some(&'{') {
+        let close = chars[at + 1..].iter().position(|&c| c == '}')?;
+        let mut inner = chars[at + 1..at + 1 + close].iter();
+        let base = *inner.next()?;
+        if inner.next().is_some() {
+            return None; // more than one char inside the braces -- not a simple accent
+        }
+        return base.is_ascii_alphabetic().then_some((base, 2 + close));
+    }
+    if !allow_bare {
+        return None;
+    }
+    let base = *chars.get(at)?;
+    base.is_ascii_alphabetic().then_some((base, 1))
+}
+
+/// Decode the common LaTeX accent/ligature macros (`\'e` -> é, `\"o` -> ö, `\o` -> ø, ...)
+/// that arXiv's RSS feed occasionally leaks raw into author names -- unlike the Atom API
+/// used by search/save, which is clean UTF-8. Accent macros map to their Unicode combining
+/// mark and fold onto the base letter via NFC normalization, so any base letter works
+/// without a per-letter lookup table.
+///
+/// Only safe to run on plain-text fields with no real TeX in them (author names) --
+/// NOT on titles/abstracts, which legitimately carry math macros for MathJax (`\cos`,
+/// `\rho`, `\vec{v}`, ...). A LaTeX accent command is a *control word* when letter-named
+/// (`c`,`v`,`u`,`r`,`H`,`k`) -- terminated by braces, a single swallowed space, or a
+/// non-letter/EOF, so a bare adjacent letter with none of those belongs to a longer
+/// macro name and is left untouched. It's a *control symbol* when punctuation-named
+/// (`'`,`` ` ``,`^`,`"`,`~`,`=`,`.`) -- exactly one char, unambiguously followed by its
+/// base with no separator needed.
+/// ponytail: covers accent marks + the handful of single-letter ligatures seen in real
+/// arXiv author names; multi-letter ligatures (`\ss`, `\ae`, `\oe` + capitals) and nested
+/// macros are out of scope -- extend the tables below if one shows up.
+fn decode_latex_accents(s: &str) -> String {
+    if !s.contains('\\') {
+        return s.to_string();
+    }
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '\\' && i + 1 < chars.len() {
+            let cmd = chars[i + 1];
+            let ligature = match cmd {
+                'o' => Some('ø'),
+                'O' => Some('Ø'),
+                'l' => Some('ł'),
+                'L' => Some('Ł'),
+                _ => None,
+            };
+            // No-argument control word: word-boundary check so `\oint`-style macros
+            // aren't mistaken for `\o` + "int"; a boundary space is the terminator
+            // and is swallowed too, not printed (`S\o rensen` -> "Sørensen").
+            if let Some(lig) = ligature {
+                if chars.get(i + 2).map_or(true, |c| !c.is_ascii_alphabetic()) {
+                    out.push(lig);
+                    i += 2;
+                    if chars.get(i) == Some(&' ') {
+                        i += 1;
+                    }
+                    continue;
+                }
+            }
+            let combining = match cmd {
+                '\'' => Some('\u{0301}'), // acute
+                '`' => Some('\u{0300}'),  // grave
+                '^' => Some('\u{0302}'),  // circumflex
+                '"' => Some('\u{0308}'),  // diaeresis
+                '~' => Some('\u{0303}'),  // tilde
+                'c' => Some('\u{0327}'),  // cedilla
+                'v' => Some('\u{030C}'),  // caron
+                'u' => Some('\u{0306}'),  // breve
+                '=' => Some('\u{0304}'),  // macron
+                '.' => Some('\u{0307}'),  // dot above
+                'r' => Some('\u{030A}'),  // ring above
+                'H' => Some('\u{030B}'),  // double acute
+                'k' => Some('\u{0328}'),  // ogonek
+                _ => None,
+            };
+            if let Some(mark) = combining {
+                let is_word = cmd.is_ascii_alphabetic();
+                // Control symbol: bare adjacent base is always unambiguous. Control
+                // word: only braced or space-terminated bare forms are unambiguous --
+                // a bare adjacent letter with neither belongs to a longer macro name
+                // (`\cos`, `\rho`, `\vec`, `\kappa`, `\check{x}`) and is left alone.
+                let (base_at, allow_bare, cmd_len) = if !is_word {
+                    (i + 2, true, 2)
+                } else if chars.get(i + 2) == Some(&' ') {
+                    (i + 3, true, 3)
+                } else {
+                    (i + 2, false, 2)
+                };
+                if let Some((base, consumed)) = accented_base(&chars, base_at, allow_bare) {
+                    out.push(base);
+                    out.push(mark);
+                    i += cmd_len + consumed;
+                    continue;
+                }
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out.nfc().collect()
 }
 
 fn finalize(mut e: FeedEntry) -> FeedEntry {
     e.title = e.title.split_whitespace().collect::<Vec<_>>().join(" ");
-    e.summary = e.summary.trim().to_string();
+    e.summary = strip_announce_prefix(e.summary.trim()).to_string();
+    e.authors = e.authors.iter().map(|a| decode_latex_accents(a)).collect();
     // Reject non-http(s) links (guard against javascript:/data: URIs).
     if !e.link.is_empty() {
         let lower = e.link.to_ascii_lowercase();
@@ -95,7 +236,16 @@ fn finalize(mut e: FeedEntry) -> FeedEntry {
             e.link = String::new();
         }
     }
-    e.arxiv_id = arxiv_id_from_link(&e.link);
+    match parse_arxiv_link(&e.link) {
+        Some((id, version)) => {
+            e.arxiv_id = Some(id);
+            e.version = Some(version);
+        }
+        None => {
+            e.arxiv_id = None;
+            e.version = None;
+        }
+    }
     e
 }
 
@@ -401,14 +551,24 @@ Abstract: We study attention.</description>
         assert_eq!(e.title, "Attention & Memory in Deep Learning");
         assert_eq!(e.link, "https://arxiv.org/abs/2401.12345");
         assert_eq!(e.authors, vec!["Ada Lovelace", "Alan Turing"]);
-        assert!(e.summary.starts_with("arXiv:2401.12345v1"));
+        // "arXiv:2401.12345v1 Announce Type: new" boilerplate prefix is stripped.
+        assert_eq!(e.summary, "We study attention.");
         assert_eq!(e.published, "Mon, 15 Jan 2024 00:00:00 -0500");
         assert_eq!(e.arxiv_id.as_deref(), Some("2401.12345"));
+        // Link has no explicit vN suffix -> first appearance, version 1.
+        assert_eq!(e.version, Some(1));
 
         let e = &feed.entries[1];
         assert_eq!(e.summary, "Abstract: CDATA body.");
         // Old-style id: version stripped, category prefix kept.
         assert_eq!(e.arxiv_id.as_deref(), Some("math-ph/0309136"));
+        assert_eq!(e.version, Some(2));
+    }
+
+    #[test]
+    fn version_none_for_non_arxiv_entries() {
+        let feed = parse_feed(ATOM.as_bytes()).unwrap();
+        assert_eq!(feed.entries[0].version, None);
     }
 
     #[test]
@@ -453,6 +613,60 @@ Abstract: We study attention.</description>
             None
         );
         assert_eq!(arxiv_id_from_link("not a url"), None);
+    }
+
+    #[test]
+    fn decode_latex_accents_covers_common_macros() {
+        assert_eq!(decode_latex_accents("R\\^omulo"), "Rômulo");
+        assert_eq!(decode_latex_accents("M\\\"oller"), "Möller");
+        assert_eq!(decode_latex_accents("Erd\\H{o}s"), "Erdős");
+        assert_eq!(decode_latex_accents("Ren\\'e"), "René");
+        // Space-terminated control word: the terminator space is swallowed, not printed.
+        assert_eq!(decode_latex_accents("S\\o rensen"), "Sørensen");
+        assert_eq!(decode_latex_accents("Fran\\c{c}ois"), "François");
+        // Space-separated bare accent argument (no braces).
+        assert_eq!(decode_latex_accents("Fran\\c cois"), "François");
+        // Braced multi-char content isn't a simple accent -- left alone.
+        assert_eq!(decode_latex_accents("\\'{ab}"), "\\'{ab}");
+        // A non-letter base (braced or bare) isn't a simple accent either.
+        assert_eq!(decode_latex_accents("\\'{1}"), "\\'{1}");
+        assert_eq!(decode_latex_accents("\\'1"), "\\'1");
+        // No backslash -> untouched (and the common case, so it takes the fast path).
+        assert_eq!(decode_latex_accents("Ada Lovelace"), "Ada Lovelace");
+    }
+
+    #[test]
+    fn decode_latex_accents_leaves_real_math_macros_alone() {
+        // Letter-named accent commands (c, v, u, r, H, k) must not eat the first
+        // letter of a longer macro name with no space/braces to disambiguate.
+        assert_eq!(decode_latex_accents("$\\cos x$"), "$\\cos x$");
+        assert_eq!(decode_latex_accents("$\\rho$"), "$\\rho$");
+        assert_eq!(decode_latex_accents("$\\vec{v}$"), "$\\vec{v}$");
+        assert_eq!(decode_latex_accents("$\\kappa$"), "$\\kappa$");
+        assert_eq!(decode_latex_accents("$\\check{x}$"), "$\\check{x}$");
+        assert_eq!(decode_latex_accents("$\\underline{x}$"), "$\\underline{x}$");
+    }
+
+    #[test]
+    fn strip_announce_prefix_only_matches_real_boilerplate() {
+        assert_eq!(
+            strip_announce_prefix("arXiv:2401.12345v1 Announce Type: new\nAbstract: Body text."),
+            "Body text."
+        );
+        assert_eq!(
+            strip_announce_prefix("arXiv:2401.12345v1 Announce Type: replace-cross\nAbstract: X."),
+            "X."
+        );
+        // No "Announce Type:" -> not our boilerplate, left untouched.
+        assert_eq!(
+            strip_announce_prefix("arXiv preprint, Abstract: foo"),
+            "arXiv preprint, Abstract: foo"
+        );
+        // Doesn't start with "arXiv:" -> untouched.
+        assert_eq!(
+            strip_announce_prefix("Abstract: CDATA body."),
+            "Abstract: CDATA body."
+        );
     }
 
     #[test]
