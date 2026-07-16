@@ -9,6 +9,8 @@
     "dialog:allow-save",
     "dialog:allow-open",
     "opener:default",
-    "texbrain:default"
+    "texbrain:default",
+    "updater:default",
+    "process:default"
   ]
 }

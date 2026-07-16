@@ -336,6 +336,248 @@ pub fn uninstall_cli() -> Result<(), String> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// In-place update: deb/rpm
+//
+// The Tauri updater plugin (main.rs) only ever swaps an AppImage, a macOS
+// app.tar.gz, or a Windows NSIS/MSI in place — it has no notion of a
+// dpkg/rpm-managed install. Rather than standing up an APT/YUM repository (a
+// separate hosting + package-signing project), a deb/rpm install self-updates
+// by downloading the matching asset straight off the GitHub release and
+// installing it with `pkexec`, the same one-time privilege prompt a user
+// would see running `dpkg -i`/`rpm -U` by hand.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// "deb", "rpm", or `None` (AppImage, dev build, or a non-Linux platform).
+///
+/// Resolved by asking the system package database whether it owns the
+/// running executable — `is_cli_installed`'s approach of trusting a fixed
+/// path doesn't apply here, since deb/rpm both put the binary at
+/// `/usr/bin/linxiv` and only the package manager can say which one (if
+/// either) actually installed it.
+fn linux_package_kind() -> Option<&'static str> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let exe = std::env::current_exe().ok()?;
+    let owned_by = |cmd: &str, args: &[&str]| {
+        std::process::Command::new(cmd)
+            .args(args)
+            .output()
+            .is_ok_and(|o| o.status.success())
+    };
+    if owned_by("dpkg", &["-S", &exe.to_string_lossy()]) {
+        Some("deb")
+    } else if owned_by("rpm", &["-qf", &exe.to_string_lossy()]) {
+        Some("rpm")
+    } else {
+        None
+    }
+}
+
+/// JS-facing: which package manager (if any) owns this install, so the UI can
+/// pick the update path (deb/rpm here vs. the Tauri updater plugin for
+/// everything else). `dpkg -S`/`rpm -qf` read the whole package database, so
+/// this runs off the main thread like any other blocking probe.
+#[tauri::command]
+pub async fn get_linux_package_kind() -> Option<String> {
+    tokio::task::spawn_blocking(|| linux_package_kind().map(str::to_string))
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Asset download hosts trusted for `apply_linux_package_update` — defense in
+/// depth on top of the fact that the URL is no longer caller-supplied (see
+/// `resolve_release_asset` below): it comes from our own GET to the pinned
+/// `linxiv-dev/linXiv` repo's release, not from the webview. Not covered by
+/// `tauri.conf.json`'s CSP — CSP only gates the webview's own fetch/XHR, and
+/// this download runs in Rust via `reqwest`, which never sees it. Only checks
+/// the first hop (reqwest follows redirects by default); `verify_digest`
+/// below is the control that actually matters for what ends up on disk.
+const ALLOWED_ASSET_HOSTS: [&str; 3] = [
+    "github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+];
+
+fn is_allowed_asset_url(url: &str) -> bool {
+    let Ok(parsed) = url::Url::parse(url) else {
+        return false;
+    };
+    parsed.scheme() == "https"
+        && parsed.username().is_empty()
+        && parsed.password().is_none()
+        && parsed
+            .host_str()
+            .is_some_and(|h| ALLOWED_ASSET_HOSTS.contains(&h))
+}
+
+/// Upper bound on a downloaded deb/rpm — generous for a desktop app package,
+/// just enough to refuse an absurd/misconfigured response before install.
+const MAX_UPDATE_PACKAGE_BYTES: u64 = 300 * 1024 * 1024;
+
+#[derive(serde::Deserialize)]
+struct GhReleaseAsset {
+    name: String,
+    browser_download_url: String,
+    digest: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct GhRelease {
+    assets: Vec<GhReleaseAsset>,
+}
+
+/// Resolve the `.deb`/`.rpm` asset to install from the pinned repo's latest
+/// release — fetched here, not trusted from the webview. `apply_linux_
+/// package_update` is a root-privileged install; letting the caller pass in
+/// the URL (and a matching digest) would let any JS running in the webview
+/// point it at an arbitrary GitHub-hosted asset (the app renders untrusted
+/// LaTeX/abstracts, so webview JS execution is an in-scope threat, not a
+/// hypothetical one) and get it installed as root.
+async fn resolve_release_asset(
+    client: &reqwest::Client,
+    kind: &str,
+) -> Result<GhReleaseAsset, String> {
+    let release: GhRelease = client
+        .get("https://api.github.com/repos/linxiv-dev/linXiv/releases/latest")
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", "linXiv-updater")
+        .send()
+        .await
+        .map_err(|e| format!("Could not reach GitHub: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("Unexpected response from GitHub: {e}"))?;
+    let arch = arch_token(std::env::consts::ARCH, kind);
+    release
+        .assets
+        .into_iter()
+        .find(|a| a.name.ends_with(&format!(".{kind}")) && a.name.contains(arch))
+        .ok_or_else(|| format!("No {arch} .{kind} asset found on the latest release"))
+}
+
+/// release.yml's asset naming: rpm carries the raw Rust arch ("x86_64",
+/// "aarch64", ...), deb uses Debian's names ("amd64", "arm64").
+fn arch_token<'a>(rust_arch: &'a str, kind: &str) -> &'a str {
+    match (rust_arch, kind) {
+        ("x86_64", "deb") => "amd64",
+        ("aarch64", "deb") => "arm64",
+        (other, _) => other,
+    }
+}
+
+/// `dpkg -i`/`rpm -U` don't check a signature on what they install, and
+/// deb/rpm assets aren't covered by `createUpdaterArtifacts`'s minisign
+/// signing (that only signs the AppImage/app.tar.gz/NSIS-MSI artifacts) — so
+/// unlike that path, this one has no real code-signing: the sha256 checked
+/// here comes from the same GitHub API response as the download URL, so it
+/// catches transit/CDN corruption but not a forged API response or a
+/// malicious release. TLS to GitHub is the actual trust boundary.
+fn verify_digest(bytes: &[u8], expected: &str) -> Result<(), String> {
+    let Some(hex) = expected.strip_prefix("sha256:") else {
+        return Err(format!("Unrecognized digest format: {expected}"));
+    };
+    use sha2::{Digest, Sha256};
+    let actual = format!("{:x}", Sha256::digest(bytes));
+    if actual.eq_ignore_ascii_case(hex) {
+        Ok(())
+    } else {
+        Err("Downloaded package does not match the release's checksum".to_string())
+    }
+}
+
+/// Download the `.deb`/`.rpm` release asset and install it over the running
+/// app via `pkexec`. The caller relaunches on success (see `updates.ts`).
+#[tauri::command]
+pub async fn apply_linux_package_update() -> Result<(), String> {
+    let kind = tokio::task::spawn_blocking(linux_package_kind)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("Not a deb/rpm install")?;
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(600))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let asset = resolve_release_asset(&client, kind).await?;
+    if !is_allowed_asset_url(&asset.browser_download_url) {
+        return Err("Refusing to download from an untrusted host".to_string());
+    }
+
+    eprintln!(
+        "[linxiv] apply_linux_package_update: downloading {}",
+        asset.browser_download_url
+    );
+    use futures_util::StreamExt;
+    let mut stream = client
+        .get(&asset.browser_download_url)
+        .send()
+        .await
+        .map_err(|e| format!("Download failed: {e}"))?
+        .bytes_stream();
+    // Bounded by running total as chunks arrive, not by trusting
+    // Content-Length (absent on a chunked response) or buffering an
+    // unbounded body before checking its length.
+    let mut bytes = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("Download failed: {e}"))?;
+        if bytes.len() + chunk.len() > MAX_UPDATE_PACKAGE_BYTES as usize {
+            return Err("Release asset is larger than expected; refusing to install".to_string());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+
+    let expected_digest = asset
+        .digest
+        .as_deref()
+        .ok_or("Release asset has no checksum on file; refusing to install")?;
+    verify_digest(&bytes, expected_digest)?;
+
+    // Writing the package and running pkexec both block (a real temp file,
+    // then the interactive polkit prompt) — off the async runtime so a slow
+    // password prompt can't stall other in-flight commands.
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        use std::io::Write;
+        // O_EXCL unique temp path in the sticky-bit temp dir: a predictable
+        // shared-dir path could be symlink-swapped by another local user
+        // between write and pkexec's read; this one can't be pre-created or
+        // guessed.
+        let mut tmp = tempfile::Builder::new()
+            .prefix("linxiv-update-")
+            .suffix(&format!(".{kind}"))
+            .tempfile()
+            .map_err(|e| format!("Could not create temp file: {e}"))?;
+        tmp.write_all(&bytes)
+            .and_then(|_| tmp.flush())
+            .map_err(|e| format!("Could not write update package: {e}"))?;
+
+        let (installer, install_args): (&str, &str) = match kind {
+            "deb" => ("dpkg", "-i"),
+            _ => ("rpm", "-U"),
+        };
+        let path_str = tmp.path().to_string_lossy().to_string();
+        eprintln!(
+            "[linxiv] apply_linux_package_update: pkexec {installer} {install_args} {path_str}"
+        );
+        let status = std::process::Command::new("pkexec")
+            .args([installer, install_args, &path_str])
+            .status()
+            .map_err(|e| format!("Could not launch pkexec: {e}"))?;
+        // tmp stays in scope (not dropped/deleted) until here.
+        if !status.success() {
+            return Err(format!("{installer} exited with {status}"));
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("Install task panicked: {e}"))??;
+
+    eprintln!("[linxiv] apply_linux_package_update: installed, ready to relaunch");
+    Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // MCP types & helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1107,6 +1349,53 @@ mod tests {
         #[cfg(debug_assertions)]
         {
             assert!(dev_install_guard(Some("0")).is_err());
+        }
+    }
+
+    #[test]
+    fn asset_url_allowlist() {
+        let cases: &[(&str, bool)] = &[
+            (
+                "https://github.com/linxiv-dev/linXiv/releases/download/v1/x.deb",
+                true,
+            ),
+            ("https://objects.githubusercontent.com/abc", true),
+            ("https://release-assets.githubusercontent.com/abc", true),
+            ("http://github.com/x.deb", false), // not https
+            ("https://evil.com/x.deb", false),  // not allowlisted
+            ("https://github.com:x@evil.com/x.deb", false), // userinfo host-confusion
+            ("https://github.com@evil.com/x.deb", false), // userinfo, no port
+            ("not a url", false),
+        ];
+        for (url, expected) in cases {
+            assert_eq!(is_allowed_asset_url(url), *expected, "url: {url}");
+        }
+    }
+
+    #[test]
+    fn digest_verification() {
+        let bytes = b"hello world";
+        // Round-trip against our own hasher rather than a hand-typed hex
+        // digest, so the test can't just have the wrong constant.
+        use sha2::{Digest, Sha256};
+        let matching = format!("sha256:{:x}", Sha256::digest(bytes));
+        assert!(verify_digest(bytes, &matching).is_ok());
+
+        let wrong = "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+        assert!(verify_digest(bytes, wrong).is_err());
+        assert!(verify_digest(bytes, "md5:abc").is_err());
+    }
+
+    #[test]
+    fn arch_token_mapping() {
+        let cases: &[(&str, &str, &str)] = &[
+            ("x86_64", "deb", "amd64"),
+            ("x86_64", "rpm", "x86_64"),
+            ("aarch64", "deb", "arm64"),
+            ("aarch64", "rpm", "aarch64"),
+        ];
+        for (rust_arch, kind, expected) in cases {
+            assert_eq!(arch_token(rust_arch, kind), *expected);
         }
     }
 }

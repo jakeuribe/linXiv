@@ -28,6 +28,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Refuse to release without real updater signing set up
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if grep -q "REPLACE_WITH_TAURI_SIGNER_GENERATE_PUBLIC_KEY" src-tauri/tauri.conf.json; then
+            echo "::error::src-tauri/tauri.conf.json still has the placeholder updater pubkey." \
+                 "Run 'npm run tauri signer generate', paste the public key into" \
+                 "plugins.updater.pubkey, and set the TAURI_SIGNING_PRIVATE_KEY(_PASSWORD)" \
+                 "repo secrets before cutting a release."
+            exit 1
+          fi
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY repo secret is not set." \
+                 "createUpdaterArtifacts requires it to build at all."
+            exit 1
+          fi
+
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -62,9 +80,14 @@ jobs:
         run: npm run build:sidecar
 
       - name: Build Tauri app and publish to GitHub Release
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Update-artifact signing (independent of Apple codesigning / Windows
+          # Authenticode — this only covers the in-place updater's payloads).
+          # Losing TAURI_SIGNING_PRIVATE_KEY is permanent: keep an offline copy.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "linXiv ${{ github.ref_name }}"
@@ -72,6 +95,9 @@ jobs:
           prerelease: false
           generateReleaseNotes: true
           args: ${{ matrix.args }}
+          # We ship both NSIS and MSI; the updater's latest.json can only name
+          # one Windows artifact, so pin it to NSIS (passive installMode above).
+          updaterJsonPreferNsis: true
           # macOS and Windows builds are unsigned.
           # macOS: right-click → Open to bypass Gatekeeper.
           # Windows: More info → Run anyway on the SmartScreen prompt.
