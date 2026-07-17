@@ -27,6 +27,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # crates/p2p is a git submodule; ci.yml already does this.
+          submodules: recursive
 
       - name: Refuse to release without real updater signing set up
         shell: bash
