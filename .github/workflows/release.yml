@@ -92,7 +92,13 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: "linXiv ${{ github.ref_name }}"
           releaseDraft: true
-          prerelease: false
+          # Semver convention (matches compareVersions() in src/api/updates.ts):
+          # a hyphen marks a pre-release tag (v0.3.0-beta, v0.3.0-rc.1, ...).
+          # GitHub's /releases/latest API -- what both the updater plugin and
+          # apply_linux_package_update query -- skips prereleases, so tagging a
+          # beta this way keeps it from being offered to everyone as "the
+          # latest version" the moment it's published.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           generateReleaseNotes: true
           args: ${{ matrix.args }}
           # We ship both NSIS and MSI; the updater's latest.json can only name
