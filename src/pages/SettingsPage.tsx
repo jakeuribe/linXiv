@@ -4,6 +4,7 @@ import { ApiKeysSection } from "../components/settings/ApiKeysSection";
 import { StorageSection } from "../components/settings/StorageSection";
 import { CrossRefSection } from "../components/settings/CrossRefSection";
 import { OpenAlexSection } from "../components/settings/OpenAlexSection";
+import { OrcidBackfillSection } from "../components/settings/OrcidBackfillSection";
 import { SearchSection } from "../components/settings/SearchSection";
 import { HomeFeedSection } from "../components/settings/HomeFeedSection";
 import { SidebarSection } from "../components/settings/SidebarSection";
@@ -64,6 +65,7 @@ const GROUPS: SettingsGroup[] = [
         <ApiKeysSection />
         <CrossRefSection />
         <OpenAlexSection />
+        <OrcidBackfillSection />
       </div>
     ),
   },

@@ -37,6 +37,9 @@ pub struct SharedPaper {
     /// (`ShareNode::store_pdf_blob`).
     #[autosurgeon(missing = "Default::default")]
     pub pdf_blob: Option<String>,
+    /// Index-aligned with `authors`; absent in pre-upgrade docs.
+    #[autosurgeon(missing = "Default::default")]
+    pub author_orcids: Vec<Option<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Reconcile, Hydrate)]
@@ -123,6 +126,7 @@ mod tests {
         .unwrap();
         let paper: SharedPaper = autosurgeon::hydrate(&doc).unwrap();
         assert_eq!(paper.pdf_blob, None);
+        assert_eq!(paper.author_orcids, Vec::<Option<String>>::new());
 
         let mut doc = automerge::AutoCommit::new();
         autosurgeon::reconcile(

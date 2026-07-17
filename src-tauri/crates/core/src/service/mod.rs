@@ -5,6 +5,7 @@ pub mod editor_project;
 pub mod export_import;
 pub mod files;
 pub mod note;
+pub mod orcid_backfill;
 pub mod paper;
 pub mod paper_import;
 pub mod project;

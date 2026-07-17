@@ -224,6 +224,7 @@ pub fn upsert(
         url: paper.url.clone(),
         tags: paper.tags.clone(),
         source: paper.source.clone(),
+        author_orcids: None,
     };
     store::save_paper_metadata(conn, &meta, tags)
 }
@@ -440,6 +441,7 @@ mod tests {
             url: Some("http://x".into()),
             tags: Some(tags.iter().map(|t| t.to_string()).collect()),
             source: Some("arxiv".into()),
+            author_orcids: None,
         }
     }
 

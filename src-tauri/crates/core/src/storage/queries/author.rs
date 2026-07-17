@@ -135,6 +135,59 @@ pub fn count_paper_links(conn: &Connection, author_id: i64) -> Result<i64> {
     )?)
 }
 
+/// An ORCID-less author linked to a DOI-bearing paper, for `service::orcid_backfill`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct OrcidCandidate {
+    pub author_id: i64,
+    pub full_name: String,
+    pub doi: String,
+}
+
+/// Authors with `AUTHOR_ORCID IS NULL` linked to a DOI-bearing active/latest
+/// paper, one row per author, randomly ordered (both author and, for a
+/// multi-DOI author, which DOI) so repeated passes don't wedge on one pair.
+// ponytail: full scan + RANDOM(), upgrade to a last-attempted-at column if slow.
+pub fn orcid_backfill_candidates(conn: &Connection, limit: i64) -> Result<Vec<OrcidCandidate>> {
+    let mut stmt = conn.prepare(
+        "SELECT a.AUTHOR_FK, a.AUTHOR_FULL_NAME, lp.doi \
+         FROM AUTHOR a \
+         JOIN PAPER_TO_AUTHOR pta ON pta.AUTHOR_FK = a.AUTHOR_FK \
+         JOIN latest_papers lp ON lp.paper_id = pta.PAPER_ID \
+         WHERE a.AUTHOR_ORCID IS NULL AND lp.doi IS NOT NULL AND lp.doi != '' \
+         ORDER BY RANDOM()",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok(OrcidCandidate {
+            author_id: r.get(0)?,
+            full_name: r.get(1)?,
+            doi: r.get(2)?,
+        })
+    })?;
+    // De-dupe to one (randomly-ordered) row per author, then cap at `limit`.
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for row in rows {
+        let cand = row?;
+        if seen.insert(cand.author_id) {
+            out.push(cand);
+            if out.len() as i64 >= limit {
+                break;
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Set `AUTHOR_ORCID` only if it's currently NULL — never overwrites a
+/// manually-set or already-harvested value. Returns whether a row changed.
+pub fn fill_orcid_if_null(conn: &Connection, author_id: i64, orcid: &str) -> Result<bool> {
+    let changed = conn.execute(
+        "UPDATE AUTHOR SET AUTHOR_ORCID = ? WHERE AUTHOR_FK = ? AND AUTHOR_ORCID IS NULL",
+        params![orcid, author_id],
+    )?;
+    Ok(changed > 0)
+}
+
 // ── writes ────────────────────────────────────────────────────────────────
 
 /// `authors.py::create_author` — plain INSERT (no dedup; the full-name index is
@@ -194,10 +247,19 @@ pub fn update_author(
     Ok(())
 }
 
-/// `authors.py::delete_author` — delete the AUTHOR row by FK.
-pub fn delete_author(conn: &Connection, author_id: i64) -> Result<()> {
-    conn.execute("DELETE FROM AUTHOR WHERE AUTHOR_FK = ?", params![author_id])?;
-    Ok(())
+/// `authors.py::delete_author` — unlink every PAPER_TO_AUTHOR row for this author
+/// (same cascade-clean shape as `merge_authors`), then delete the AUTHOR row, in
+/// one transaction. Without this, a bare `DELETE FROM AUTHOR` hard-fails on the
+/// FK constraint whenever the author is still linked to a paper.
+pub fn delete_author(conn: &mut Connection, author_id: i64) -> Result<()> {
+    db::transaction(conn, |tx| {
+        tx.execute(
+            "DELETE FROM PAPER_TO_AUTHOR WHERE AUTHOR_FK = ?",
+            params![author_id],
+        )?;
+        tx.execute("DELETE FROM AUTHOR WHERE AUTHOR_FK = ?", params![author_id])?;
+        Ok(())
+    })
 }
 
 /// `authors.py::link_author_to_paper` — INSERT OR IGNORE the PAPER_TO_AUTHOR row
@@ -460,7 +522,7 @@ mod tests {
 
     #[test]
     fn unlink_and_delete() {
-        let conn = open_in_memory().unwrap();
+        let mut conn = open_in_memory().unwrap();
         init_db(&conn).unwrap();
         let (pid, a1, _a2) = seed(&conn);
 
@@ -468,8 +530,30 @@ mod tests {
         assert_eq!(count_paper_links(&conn, a1).unwrap(), 0);
         assert_eq!(get_paper_authors(&conn, pid).unwrap().len(), 1); // only Alice left
 
-        delete_author(&conn, a1).unwrap();
+        delete_author(&mut conn, a1).unwrap();
         assert!(get_author(&conn, a1).unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_author_still_linked_cascades_link_cleanup() {
+        let mut conn = open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        let (pid, a1, _a2) = seed(&conn); // a1 still linked to pid via PAPER_TO_AUTHOR
+
+        // Would previously hard-fail on the AUTHOR FK from PAPER_TO_AUTHOR.
+        delete_author(&mut conn, a1).unwrap();
+
+        assert!(get_author(&conn, a1).unwrap().is_none());
+        let link_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM PAPER_TO_AUTHOR WHERE AUTHOR_FK = ?",
+                params![a1],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(link_count, 0);
+        // Sibling link (Alice, still linked) is untouched.
+        assert_eq!(get_paper_authors(&conn, pid).unwrap().len(), 1);
     }
 
     #[test]
@@ -512,5 +596,122 @@ mod tests {
         init_db(&conn).unwrap();
         let (_pid, _a1, a2) = seed(&conn);
         assert!(merge_authors(&mut conn, 9999, &[a2]).is_err());
+    }
+
+    #[test]
+    fn orcid_backfill_candidates_and_fill_if_null() {
+        let conn = open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        conn.execute("INSERT INTO PAPER_ROOTS (SOURCE_ID) VALUES ('arxiv:1')", [])
+            .unwrap();
+        let fk = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO PAPER (SOURCE_ID, VERSION, TITLE, SOURCE_FK) VALUES ('arxiv:1', 1, 'T1', ?)",
+            params![fk],
+        )
+        .unwrap();
+        let pid = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO PAPER_META (PAPER_ID, PUBLISHED, DOI) VALUES (?, '2024-01-01', '10.1/x')",
+            params![pid],
+        )
+        .unwrap();
+
+        let no_orcid = create_author(&conn, "Bob Stone", None, None, None).unwrap();
+        let has_orcid = create_author(&conn, "Alice Cole", None, None, Some("0000-1")).unwrap();
+        let unlinked = create_author(&conn, "Ghost Author", None, None, None).unwrap();
+        link_author_to_paper(&conn, no_orcid, pid, Some(0)).unwrap();
+        link_author_to_paper(&conn, has_orcid, pid, Some(1)).unwrap();
+
+        // Only the ORCID-less, DOI-linked author is a candidate.
+        let candidates = orcid_backfill_candidates(&conn, 10).unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].author_id, no_orcid);
+        assert_eq!(candidates[0].full_name, "Bob Stone");
+        assert_eq!(candidates[0].doi, "10.1/x");
+        let _ = unlinked;
+
+        assert!(fill_orcid_if_null(&conn, no_orcid, "0000-9").unwrap());
+        assert_eq!(
+            get_author(&conn, no_orcid)
+                .unwrap()
+                .unwrap()
+                .orcid
+                .as_deref(),
+            Some("0000-9")
+        );
+        // Already-filled orcid is never overwritten.
+        assert!(!fill_orcid_if_null(&conn, no_orcid, "0000-8").unwrap());
+        assert_eq!(
+            get_author(&conn, no_orcid)
+                .unwrap()
+                .unwrap()
+                .orcid
+                .as_deref(),
+            Some("0000-9")
+        );
+    }
+
+    #[test]
+    fn orcid_backfill_candidates_dedupes_multi_doi_author_to_one_row() {
+        let conn = open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        let paper = |sid: &str, doi: &str| -> i64 {
+            conn.execute("INSERT INTO PAPER_ROOTS (SOURCE_ID) VALUES (?)", [sid])
+                .unwrap();
+            let fk = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO PAPER (SOURCE_ID, VERSION, TITLE, SOURCE_FK) VALUES (?, 1, 'T', ?)",
+                params![sid, fk],
+            )
+            .unwrap();
+            let pid = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO PAPER_META (PAPER_ID, PUBLISHED, DOI) VALUES (?, '2024-01-01', ?)",
+                params![pid, doi],
+            )
+            .unwrap();
+            pid
+        };
+        let pid_a = paper("arxiv:a", "10.1/a");
+        let pid_b = paper("arxiv:b", "10.1/b");
+
+        let author = create_author(&conn, "Bob Stone", None, None, None).unwrap();
+        link_author_to_paper(&conn, author, pid_a, Some(0)).unwrap();
+        link_author_to_paper(&conn, author, pid_b, Some(0)).unwrap();
+
+        // Two DOI-bearing papers for the same author -> exactly one candidate
+        // row, carrying one of the two DOIs (never both, never neither).
+        let candidates = orcid_backfill_candidates(&conn, 10).unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].author_id, author);
+        assert!(["10.1/a", "10.1/b"].contains(&candidates[0].doi.as_str()));
+    }
+
+    #[test]
+    fn orcid_backfill_candidates_respects_limit() {
+        let conn = open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        for i in 0..5 {
+            let sid = format!("arxiv:{i}");
+            conn.execute("INSERT INTO PAPER_ROOTS (SOURCE_ID) VALUES (?)", [&sid])
+                .unwrap();
+            let fk = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO PAPER (SOURCE_ID, VERSION, TITLE, SOURCE_FK) VALUES (?, 1, 'T', ?)",
+                params![sid, fk],
+            )
+            .unwrap();
+            let pid = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO PAPER_META (PAPER_ID, PUBLISHED, DOI) VALUES (?, '2024-01-01', ?)",
+                params![pid, format!("10.1/{i}")],
+            )
+            .unwrap();
+            let author = create_author(&conn, &format!("Author {i}"), None, None, None).unwrap();
+            link_author_to_paper(&conn, author, pid, Some(0)).unwrap();
+        }
+        assert_eq!(orcid_backfill_candidates(&conn, 3).unwrap().len(), 3);
+        assert_eq!(orcid_backfill_candidates(&conn, 100).unwrap().len(), 5);
     }
 }

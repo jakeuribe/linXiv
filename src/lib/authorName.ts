@@ -18,12 +18,8 @@ export interface ParsedName {
   last: string;
 }
 
-// Strip a single trailing suffix token (Jr., III, PhD, …) off the end of a
-// token list, keeping at least one token. Only the trailing token is
-// stripped — with a stacked suffix like "Jr. III", the leftover "Jr." stays
-// in the token list and the caller's surname walk then takes IT as the last
-// name ("John Smith Jr. III" → first "John Smith", last "Jr. III", surname
-// lost; pinned by authorName.test.ts).
+// Strip one trailing suffix token (Jr., III, PhD, …), keeping ≥1 token. A
+// stacked suffix ("Jr. III") leaves "Jr." for the caller's surname walk.
 function stripTrailingSuffixes(tokens: string[]): { rest: string[]; suffix: string } {
   const last = tokens[tokens.length - 1];
   if (tokens.length > 1 && SUFFIXES.has(last.toLowerCase())) {
@@ -32,19 +28,14 @@ function stripTrailingSuffixes(tokens: string[]): { rest: string[]; suffix: stri
   return { rest: tokens, suffix: "" };
 }
 
-// Split a display name into first/given and last/family parts with a small local
-// heuristic — no name-parsing dependency. Handles the common shapes:
-//   "First Last", "First Middle Last", "Last, First",
-//   initials ("J. R. R. Tolkien" → first "J. R. R.", last "Tolkien"),
-//   particled surnames ("Ludwig van Beethoven" → last "van Beethoven"),
-//   and mononyms ("Aristotle" → last "Aristotle").
+// Splits a display name into first/last with a small heuristic (no
+// name-parsing dependency) — see authorName.test.ts for the shapes covered.
 export function parseFullName(full: string): ParsedName {
   const name = full.trim();
   if (!name) return { first: "", last: "" };
 
-  // "Last, First" — the comma is an explicit family-name-first marker.
-  // Suffix handling is skipped here: anything after the comma is the given
-  // name as written (e.g. "Smith, John Jr." → first "John Jr.").
+  // Comma is an explicit "Last, First" marker; suffix handling is skipped,
+  // text after the comma is taken as written.
   const comma = name.indexOf(",");
   if (comma !== -1) {
     const last = name.slice(0, comma).trim();
@@ -55,18 +46,18 @@ export function parseFullName(full: string): ParsedName {
   let tokens = name.split(/\s+/);
   if (tokens.length === 1) return { first: "", last: tokens[0] };
 
-  // Strip trailing suffixes (Jr., III, PhD, …) so the particle walk doesn't
-  // treat them as part of the surname; reattached to the last name below.
+  // Strip suffixes before the particle walk so they land on the last name
+  // rather than leaking into the first-name slot.
   const { rest, suffix } = stripTrailingSuffixes(tokens);
   tokens = rest;
   if (tokens.length === 1) {
     return { first: "", last: suffix ? `${tokens[0]} ${suffix}` : tokens[0] };
   }
 
-  // Walk left from the last token, absorbing particles ("van", "de", …) so a
-  // multi-word surname stays together.
+  // Absorb particles ("van", "de", …) leftward, but stop at i=1: a given
+  // name colliding with a particle ("Van Morrison") must keep ≥1 first token.
   let i = tokens.length - 1;
-  while (i > 0 && PARTICLES.has(tokens[i - 1].toLowerCase())) i--;
+  while (i > 1 && PARTICLES.has(tokens[i - 1].toLowerCase())) i--;
   const last = tokens.slice(i).join(" ");
   return {
     first: tokens.slice(0, i).join(" "),

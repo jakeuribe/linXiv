@@ -57,6 +57,28 @@ test("parseFullName covers common name shapes", () => {
   assert.equal(first("Smith, John Jr."), "John Jr.");
 });
 
+test("parseFullName strips a trailing suffix before the particle walk", () => {
+  const last = (s: string) => parseFullName(s).last;
+  const first = (s: string) => parseFullName(s).first;
+
+  assert.equal(last("Ludwig van Beethoven Jr."), "van Beethoven Jr.");
+  assert.equal(first("Ludwig van Beethoven Jr."), "Ludwig");
+});
+
+test("parseFullName keeps a given name that collides with a surname particle", () => {
+  const last = (s: string) => parseFullName(s).last;
+  const first = (s: string) => parseFullName(s).first;
+
+  // "Van" and "Al" are surname particles (van Beethoven, al-Rashid), but here
+  // they're the given name of a 2-token full name — the particle walk must
+  // not swallow the whole name into last, leaving first empty.
+  assert.equal(last("Van Morrison"), "Morrison");
+  assert.equal(first("Van Morrison"), "Van");
+
+  assert.equal(last("Al Pacino"), "Pacino");
+  assert.equal(first("Al Pacino"), "Al");
+});
+
 test("nameSortKey falls back to parsed full_name when first/last are null", () => {
   const a = author({ full_name: "Ludwig van Beethoven" });
   assert.equal(nameSortKey(a, "full_name"), "ludwig van beethoven");

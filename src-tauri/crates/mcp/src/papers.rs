@@ -301,6 +301,7 @@ impl Server {
                 // Python `tags or None`: an empty list becomes None.
                 tags: tags.clone().filter(|t| !t.is_empty()),
                 source: None,
+                author_orcids: None,
             };
             svc_paper::repair_paper(conn, root.source_fk, &meta)?;
             Ok(Ok(()))

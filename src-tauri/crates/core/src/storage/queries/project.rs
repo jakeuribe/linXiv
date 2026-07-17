@@ -266,18 +266,30 @@ pub fn update_project_fields(
     Ok(n > 0)
 }
 
-/// Full membership replace: DELETE all then re-INSERT (OR IGNORE) in list order —
-/// Python `_save_source_fks`. Takes `&Transaction` (not `&Connection`) so it can
-/// only be called inside a transaction — DELETE-then-INSERT on a bare autocommit
-/// connection would wipe membership with no rollback if an INSERT failed. The
-/// service-layer insert+membership composer (Python `save()` on insert) must run
-/// `insert_project` and this in the SAME transaction.
+/// Full membership replace, diffed against current rows (not a blanket
+/// delete-then-reinsert) so a retained paper's PAPER_TO_READING cascade FK never
+/// fires. Must run in the same transaction as `insert_project`.
 pub fn save_source_fks(tx: &Transaction, project_fk: i64, source_fks: &[i64]) -> Result<()> {
-    tx.execute(
-        "DELETE FROM PROJECT_TO_PAPER WHERE PROJECT_FK = ?1",
-        [project_fk],
-    )?;
-    add_papers(tx, project_fk, source_fks)
+    let existing: std::collections::HashSet<i64> = {
+        let mut stmt =
+            tx.prepare("SELECT SOURCE_FK FROM PROJECT_TO_PAPER WHERE PROJECT_FK = ?1")?;
+        let rows = stmt
+            .query_map([project_fk], |r| r.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        rows
+    };
+    let incoming: std::collections::HashSet<i64> = source_fks.iter().copied().collect();
+
+    let to_remove: Vec<i64> = existing.difference(&incoming).copied().collect();
+    if !to_remove.is_empty() {
+        remove_papers(tx, project_fk, &to_remove)?;
+    }
+    let to_add: Vec<i64> = source_fks
+        .iter()
+        .copied()
+        .filter(|s| !existing.contains(s))
+        .collect();
+    add_papers(tx, project_fk, &to_add)
 }
 
 /// Incremental add — INSERT OR IGNORE per row (idx_project_to_paper_unique makes
@@ -302,8 +314,8 @@ pub fn remove_papers(conn: &Connection, project_fk: i64, source_fks: &[i64]) -> 
     Ok(())
 }
 
-/// Set membership to exactly `source_fks` (dedup, ordered), atomically. Python
-/// `Project.replace_papers` → `_save_source_fks` inside one transaction.
+/// Set membership to exactly `source_fks` (dedup), atomically. Order is only
+/// honored for newly-added papers; reordering existing members is a no-op.
 pub fn replace_papers(conn: &mut Connection, project_fk: i64, source_fks: &[i64]) -> Result<()> {
     let mut seen = std::collections::HashSet::new();
     let deduped: Vec<i64> = source_fks
@@ -459,10 +471,11 @@ mod tests {
             get_project(&conn, id, true).unwrap().unwrap().source_fks,
             vec![10, 11]
         );
-        replace_papers(&mut conn, id, &[11, 11, 10]).unwrap(); // dedup, reorder
+        // same set as existing {10, 11} (dedup applies) — reorder is a no-op.
+        replace_papers(&mut conn, id, &[11, 11, 10]).unwrap();
         assert_eq!(
             get_project(&conn, id, true).unwrap().unwrap().source_fks,
-            vec![11, 10]
+            vec![10, 11]
         );
         remove_papers(&conn, id, &[11]).unwrap();
         assert_eq!(
@@ -622,20 +635,10 @@ mod tests {
         );
     }
 
-    /// Documents a landmine, not a fix: `replace_papers`/`save_source_fks` do a
-    /// blanket DELETE-then-reinsert of every PROJECT_TO_PAPER row for the project
-    /// (see `save_source_fks` above), and SQLite's `ON DELETE CASCADE` fires
-    /// synchronously per-statement — it is NOT deferred to COMMIT, so a row
-    /// deleted and then reinserted in the same transaction still loses its
-    /// cascaded children. That means calling `replace_papers` against a project
-    /// that already has reading-list state wipes it even for papers that stay in
-    /// the list. Today this is inert: `save_source_fks`'s only production caller
-    /// (`insert_project`) runs on a brand-new project with no existing
-    /// PAPER_TO_READING rows to lose, and nothing else in the app currently calls
-    /// `replace_papers`. Whoever wires `replace_papers` to an existing reading
-    /// list next needs to switch it to a diff (add/remove only what changed).
+    /// A retained paper must keep its row (and reading status) — CASCADE fires
+    /// per-statement, so even a same-set reinsert would otherwise wipe it.
     #[test]
-    fn replace_papers_blanket_delete_reinsert_clears_reading_status_even_for_retained_papers() {
+    fn replace_papers_retains_untouched_papers_reading_status() {
         use crate::storage::queries::reading_list::{
             get_reading_status, set_reading_status, ReadingStatus,
         };
@@ -653,6 +656,61 @@ mod tests {
         assert_eq!(get_paper_project_fks(&conn, 10).unwrap(), vec![1]);
         assert_eq!(
             get_reading_status(&conn, 1, 10).unwrap(),
+            ReadingStatus::Read
+        );
+    }
+
+    #[test]
+    fn save_source_fks_partial_removal_only_touches_removed_paper() {
+        use crate::storage::queries::reading_list::{
+            get_reading_status, set_reading_status, ReadingStatus,
+        };
+
+        let mut conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO PAPER_ROOTS (SOURCE_FK, SOURCE_ID, STATUS) VALUES
+                 (10, 'arxiv:1', 'active'), (11, 'arxiv:2', 'active'), (12, 'arxiv:3', 'active');
+             INSERT INTO PROJECT (PROJECT_FK, NAME, IS_READING_LIST, STATUS, CREATED_AT, UPDATED_AT) VALUES
+                 (1, 'RL', 1, 'active', '2024-01-01T00:00:00', '2024-01-01T00:00:00');",
+        )
+        .unwrap();
+
+        add_papers(&conn, 1, &[10, 11]).unwrap();
+        set_reading_status(&conn, 1, 10, ReadingStatus::Read).unwrap();
+        set_reading_status(&conn, 1, 11, ReadingStatus::Reading).unwrap();
+
+        // no-op save (same set, same order): reading status for both survives.
+        replace_papers(&mut conn, 1, &[10, 11]).unwrap();
+        assert_eq!(
+            get_reading_status(&conn, 1, 10).unwrap(),
+            ReadingStatus::Read
+        );
+        assert_eq!(
+            get_reading_status(&conn, 1, 11).unwrap(),
+            ReadingStatus::Reading
+        );
+
+        // partial removal: 11 drops out, 12 is new, 10 stays untouched.
+        replace_papers(&mut conn, 1, &[10, 12]).unwrap();
+        assert_eq!(
+            get_project(&conn, 1, true).unwrap().unwrap().source_fks,
+            vec![10, 12]
+        );
+        // 10 kept its row and reading status — not wiped by an incidental reinsert.
+        assert_eq!(
+            get_reading_status(&conn, 1, 10).unwrap(),
+            ReadingStatus::Read
+        );
+        // 11 was genuinely removed: membership gone and its reading row cascaded away.
+        assert!(get_paper_project_fks(&conn, 11).unwrap().is_empty());
+        assert_eq!(
+            get_reading_status(&conn, 1, 11).unwrap(),
+            ReadingStatus::Unread
+        );
+        // 12 is new, starts unread.
+        assert_eq!(
+            get_reading_status(&conn, 1, 12).unwrap(),
             ReadingStatus::Unread
         );
     }

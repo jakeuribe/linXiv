@@ -645,6 +645,7 @@ pub async fn resolve_pdf_metadata(
             url: enriched.url,
             tags: None,
             source: Some("pdf".into()),
+            author_orcids: None,
         };
         return Ok((meta, external));
     }
@@ -683,6 +684,7 @@ pub async fn resolve_pdf_metadata(
         url: None,
         tags: None,
         source: Some("pdf".into()),
+        author_orcids: None,
     };
     Ok((meta, None))
 }

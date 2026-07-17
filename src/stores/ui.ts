@@ -3,7 +3,7 @@ import { persist } from "zustand/middleware";
 import { applyZoom, clampZoom, DEFAULT_ZOOM } from "../lib/zoom.ts";
 import { applyDensity, normalizeDensity, DEFAULT_DENSITY, type Density } from "../lib/density.ts";
 
-export type SidebarPageKey = "graph" | "search" | "doi" | "tags" | "notes" | "shared";
+export type SidebarPageKey = "graph" | "search" | "doi" | "tags" | "notes" | "shared" | "reading";
 
 export type SidebarPages = Record<SidebarPageKey, boolean>;
 
@@ -14,6 +14,7 @@ const DEFAULT_SIDEBAR_PAGES: SidebarPages = {
   tags: false,
   notes: false,
   shared: true,
+  reading: true,
 };
 
 export type ExportFormatKey = "lxproj" | "bibtex" | "obsidian";
@@ -85,7 +86,7 @@ export const useUiStore = create<UiState>()(
     }),
     {
       name: "linxiv-ui",
-      version: 6,
+      version: 7,
       migrate(persisted, fromVersion) {
         const state = (persisted ?? {}) as Partial<UiState>;
         if (fromVersion < 1) {
@@ -105,6 +106,10 @@ export const useUiStore = create<UiState>()(
         }
         if (fromVersion < 6) {
           // Backfill the new "shared" page key into persisted sidebarPages.
+          state.sidebarPages = { ...DEFAULT_SIDEBAR_PAGES, ...state.sidebarPages };
+        }
+        if (fromVersion < 7) {
+          // Backfill the new "reading" page key into persisted sidebarPages.
           state.sidebarPages = { ...DEFAULT_SIDEBAR_PAGES, ...state.sidebarPages };
         }
         return state;

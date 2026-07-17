@@ -9,6 +9,7 @@ const SIDEBAR_PAGE_OPTIONS: { key: SidebarPageKey; label: string; description: s
   { key: "tags",   label: "Tags",       description: "Tag browser" },
   { key: "notes",  label: "Editor (Notes)", description: "LaTeX editor (TeXbrain)" },
   { key: "shared", label: "Shared",     description: "P2P shared projects" },
+  { key: "reading", label: "Reading",   description: "Reading lists" },
 ];
 
 export function SidebarSection() {

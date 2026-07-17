@@ -188,6 +188,7 @@ fn repair(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
             url: b.url,
             tags,
             source: paper.source,
+            author_orcids: None,
         };
         // Python maps sqlite3.IntegrityError -> 409, but this endpoint
         // never renames source_id so no UNIQUE conflict can arise; a stray rusqlite
