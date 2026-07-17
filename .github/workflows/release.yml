@@ -31,6 +31,19 @@ jobs:
           # crates/p2p is a git submodule; ci.yml already does this.
           submodules: recursive
 
+      - name: Set app version from tag
+        shell: bash
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          jq --arg v "$ver" '.version = $v' src-tauri/tauri.conf.json > /tmp/tauri.conf.json
+          mv /tmp/tauri.conf.json src-tauri/tauri.conf.json
+          npm version "$ver" --no-git-tag-version --allow-same-version
+          # linxiv-p2p is a separate vendored submodule; its version is independent.
+          for f in src-tauri/Cargo.toml src-tauri/crates/*/Cargo.toml; do
+            [ "$f" = "src-tauri/crates/p2p/Cargo.toml" ] && continue
+            sed -i "s/^version = \".*\"/version = \"$ver\"/" "$f"
+          done
+
       - name: Refuse to release without real updater signing set up
         shell: bash
         env:
