@@ -23,7 +23,11 @@ jobs:
             args: ""
           - os: windows-latest
             platform: windows-x86_64
-            args: ""
+            # WiX/MSI's ProductVersion is strictly numeric (major.minor.build,
+            # 0-65535) and rejects alphabetic prerelease tags like "-beta" or
+            # "-rc.1". NSIS has no such restriction, so prereleases build
+            # NSIS-only; stable tags (no hyphen) still build both.
+            args: ${{ contains(github.ref_name, '-') && '--bundles nsis' || '' }}
 
     steps:
       - uses: actions/checkout@v4
