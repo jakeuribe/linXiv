@@ -27,6 +27,27 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # crates/p2p is a git submodule; ci.yml already does this.
+          submodules: recursive
+
+      - name: Refuse to release without real updater signing set up
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if grep -q "REPLACE_WITH_TAURI_SIGNER_GENERATE_PUBLIC_KEY" src-tauri/tauri.conf.json; then
+            echo "::error::src-tauri/tauri.conf.json still has the placeholder updater pubkey." \
+                 "Run 'npm run tauri signer generate', paste the public key into" \
+                 "plugins.updater.pubkey, and set the TAURI_SIGNING_PRIVATE_KEY(_PASSWORD)" \
+                 "repo secrets before cutting a release."
+            exit 1
+          fi
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY repo secret is not set." \
+                 "createUpdaterArtifacts requires it to build at all."
+            exit 1
+          fi
 
       - name: Refuse to release without real updater signing set up
         shell: bash
