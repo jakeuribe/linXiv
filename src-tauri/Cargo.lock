@@ -3918,7 +3918,7 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
 name = "linxiv-app"
-version = "0.2.0"
+version = "0.3.0-beta"
 dependencies = [
  "anyhow",
  "argon2",
@@ -3952,7 +3952,7 @@ dependencies = [
 
 [[package]]
 name = "linxiv-cli"
-version = "0.2.0"
+version = "0.3.0-beta"
 dependencies = [
  "anyhow",
  "clap",
@@ -3965,7 +3965,7 @@ dependencies = [
 
 [[package]]
 name = "linxiv-core"
-version = "0.2.0"
+version = "0.3.0-beta"
 dependencies = [
  "base64 0.22.1",
  "biblatex",
@@ -3991,7 +3991,7 @@ dependencies = [
 
 [[package]]
 name = "linxiv-mcp"
-version = "0.2.0"
+version = "0.3.0-beta"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4008,7 +4008,7 @@ dependencies = [
 
 [[package]]
 name = "linxiv-migrate"
-version = "0.2.0"
+version = "0.3.0-beta"
 dependencies = [
  "anyhow",
  "linxiv-core",
@@ -4043,7 +4043,7 @@ dependencies = [
 
 [[package]]
 name = "linxiv-share"
-version = "0.2.0"
+version = "0.3.0-beta"
 dependencies = [
  "automerge",
  "autosurgeon",
