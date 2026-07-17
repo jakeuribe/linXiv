@@ -199,7 +199,14 @@ fn author_fk_for_name(tx: &Transaction, full_name: &str) -> Result<i64> {
 /// `_sync_paper_authors` — relational half of dual author storage. Replaces the
 /// PAPER_TO_AUTHOR rows for this paper, then garbage-collects AUTHOR rows that no
 /// paper references any more (ADR-0009: hard-delete leaves orphans, this does not).
-fn sync_paper_authors(tx: &Transaction, paper_id: i64, authors: &[String]) -> Result<()> {
+/// `author_orcids`, index-aligned with `authors` when present, fills a NULL
+/// ORCID only (never overwrites); inherits `author_fk_for_name`'s name-collision ceiling.
+fn sync_paper_authors(
+    tx: &Transaction,
+    paper_id: i64,
+    authors: &[String],
+    author_orcids: Option<&[Option<String>]>,
+) -> Result<()> {
     let old_fks: Vec<i64> = {
         let mut stmt = tx.prepare("SELECT AUTHOR_FK FROM PAPER_TO_AUTHOR WHERE PAPER_ID = ?")?;
         let rows = stmt.query_map([paper_id], |r| r.get::<_, i64>(0))?;
@@ -212,6 +219,15 @@ fn sync_paper_authors(tx: &Transaction, paper_id: i64, authors: &[String]) -> Re
             "INSERT INTO PAPER_TO_AUTHOR (PAPER_ID, AUTHOR_FK, AUTHOR_INDEX) VALUES (?, ?, ?)",
             params![paper_id, aid, i as i64],
         )?;
+        if let Some(orcid) = author_orcids
+            .and_then(|v| v.get(i))
+            .and_then(|o| o.as_deref())
+        {
+            tx.execute(
+                "UPDATE AUTHOR SET AUTHOR_ORCID = ? WHERE AUTHOR_FK = ? AND AUTHOR_ORCID IS NULL",
+                params![orcid, aid],
+            )?;
+        }
     }
     for fk in old_fks {
         let still: Option<i64> = tx
@@ -326,7 +342,7 @@ pub(crate) fn write_paper_version_in_tx(
         "UPDATE PAPER SET UPDATED_AT = date('now') WHERE PAPER_ID = ?",
         [paper_id],
     )?;
-    sync_paper_authors(tx, paper_id, &meta.authors)?;
+    sync_paper_authors(tx, paper_id, &meta.authors, meta.author_orcids.as_deref())?;
     sync_paper_tags(
         tx,
         paper_id,
@@ -563,7 +579,7 @@ pub fn repair_paper(conn: &mut Connection, source_fk: i64, meta: &PaperMetadata)
                 pid,
             ],
         )?;
-        sync_paper_authors(tx, pid, &meta.authors)?;
+        sync_paper_authors(tx, pid, &meta.authors, meta.author_orcids.as_deref())?;
         sync_paper_tags(tx, pid, new_id, ver, meta.tags.as_deref())?;
         Ok(())
     })
@@ -966,6 +982,7 @@ mod tests {
             url: Some("http://x".into()),
             tags: Some(vec!["ml".into()]),
             source: Some("arxiv".into()),
+            author_orcids: None,
         }
     }
 
@@ -1013,6 +1030,36 @@ mod tests {
             get_all_versions(&conn, "arxiv:2204.12985").unwrap().len(),
             1
         );
+    }
+
+    #[test]
+    fn sync_paper_authors_fills_null_orcid_but_never_overwrites() {
+        let mut conn = open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+
+        let mut m = meta("arxiv:2204.12985", 1);
+        m.author_orcids = Some(vec![Some("0000-1".to_string()), None]);
+        save_paper_metadata(&mut conn, &m, None).unwrap();
+
+        fn orcid(conn: &Connection, name: &str) -> Option<String> {
+            conn.query_row(
+                "SELECT AUTHOR_ORCID FROM AUTHOR WHERE AUTHOR_FULL_NAME = ?",
+                [name],
+                |r| r.get(0),
+            )
+            .unwrap()
+        }
+        assert_eq!(orcid(&conn, "Alice").as_deref(), Some("0000-1"));
+        assert_eq!(orcid(&conn, "Bob"), None);
+
+        // A second paper reusing the same author names (matched by name, not FK)
+        // with a *different* orcid for Alice must not clobber the one already
+        // stored, while still filling Bob's still-NULL orcid.
+        let mut m2 = meta("arxiv:9999.99999", 1);
+        m2.author_orcids = Some(vec![Some("0000-9".to_string()), Some("0000-2".to_string())]);
+        save_paper_metadata(&mut conn, &m2, None).unwrap();
+        assert_eq!(orcid(&conn, "Alice").as_deref(), Some("0000-1")); // unchanged
+        assert_eq!(orcid(&conn, "Bob").as_deref(), Some("0000-2")); // filled, was NULL
     }
 
     #[test]

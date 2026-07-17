@@ -171,6 +171,7 @@ fn parse_s2(data: &Value, doi: &str) -> Option<PaperMetadata> {
         url: Some(url),
         tags: None,
         source: Some("semanticscholar".to_string()),
+        author_orcids: None,
     })
 }
 

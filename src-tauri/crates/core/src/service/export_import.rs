@@ -115,6 +115,9 @@ pub struct PaperEntry {
     pub title: String,
     #[serde(default)]
     pub authors: Vec<String>,
+    /// Index-aligned with `authors`; empty on old exports (no ORCID data to fill).
+    #[serde(default)]
+    pub author_orcids: Vec<Option<String>>,
     #[serde(default)]
     pub published: Option<chrono::NaiveDate>,
     #[serde(default)]
@@ -144,12 +147,17 @@ fn default_version() -> i64 {
 }
 
 impl PaperEntry {
-    fn from_details(p: &PaperDetails) -> Self {
-        PaperEntry {
+    fn from_details(conn: &Connection, p: &PaperDetails) -> Result<Self> {
+        let author_orcids = crate::storage::queries::author::get_paper_authors(conn, p.paper_id)?
+            .into_iter()
+            .map(|a| a.orcid)
+            .collect();
+        Ok(PaperEntry {
             source_id: p.source_id.clone(),
             version: p.version,
             title: p.title.clone(),
             authors: p.authors.clone(),
+            author_orcids,
             published: p.published,
             updated: p.updated,
             summary: p.summary.clone().unwrap_or_default(),
@@ -161,7 +169,7 @@ impl PaperEntry {
             url: p.url.clone(),
             tags: p.tags.clone(),
             source: p.source.clone(),
-        }
+        })
     }
 
     /// `_deserialize_paper` — archive record → `PaperMetadata`. Missing `published`
@@ -183,6 +191,7 @@ impl PaperEntry {
             url: self.url.clone(),
             tags: (!self.tags.is_empty()).then(|| self.tags.clone()),
             source: self.source.clone(),
+            author_orcids: (!self.author_orcids.is_empty()).then(|| self.author_orcids.clone()),
         }
     }
 }
@@ -277,7 +286,10 @@ pub fn build_manifest(
         },
     )?;
 
-    let paper_entries: Vec<PaperEntry> = papers.iter().map(PaperEntry::from_details).collect();
+    let paper_entries: Vec<PaperEntry> = papers
+        .iter()
+        .map(|p| PaperEntry::from_details(conn, p))
+        .collect::<Result<Vec<_>>>()?;
 
     let mut note_entries = Vec::new();
     for n in &notes {
@@ -757,6 +769,7 @@ mod tests {
             url: Some("http://x".into()),
             tags: (!tags.is_empty()).then(|| tags.iter().map(|t| t.to_string()).collect()),
             source: Some("arxiv".into()),
+            author_orcids: None,
         }
     }
 
@@ -766,6 +779,7 @@ mod tests {
             version,
             title: title.into(),
             authors: vec!["Bob".into()],
+            author_orcids: vec![],
             published: NaiveDate::from_ymd_opt(2023, 5, 5),
             updated: None,
             summary: "s".into(),
@@ -1310,6 +1324,50 @@ mod tests {
         .unwrap();
         assert_eq!(notes[0].uuid, orig[0].uuid);
         assert_eq!(notes[0].uuid.len(), 36);
+    }
+
+    #[test]
+    fn build_and_commit_round_trip_author_orcids() {
+        let mut conn = mem();
+        let tmp = tempfile::tempdir().unwrap();
+
+        let mut m = meta("arxiv:1", 1, "P", &[]);
+        m.authors = vec!["Alice".into(), "Bob".into()];
+        m.author_orcids = Some(vec![Some("0000-0001".into()), None]);
+        paper::save_paper_metadata(&mut conn, &m, None).unwrap();
+        let fk1 = paper::ensure_paper_root(&mut conn, "arxiv:1").unwrap();
+        let pid = project::create(
+            &mut conn,
+            &ProjectIn {
+                name: "Proj".into(),
+                description: "d".into(),
+                color: None,
+                tags: vec![],
+                source_fks: vec![fk1],
+            },
+        )
+        .unwrap();
+
+        let (manifest, _) = build_manifest(&conn, pid, false, tmp.path()).unwrap();
+        assert_eq!(manifest.papers.len(), 1);
+        assert_eq!(
+            manifest.papers[0].author_orcids,
+            vec![Some("0000-0001".to_string()), None]
+        );
+
+        // Commit into a fresh DB and confirm AUTHOR_ORCID lands (fill-if-null).
+        let mut conn2 = mem();
+        commit_from_manifest(&mut conn2, &manifest, &[], OnConflict::Merge, tmp.path()).unwrap();
+        fn orcid(conn: &Connection, name: &str) -> Option<String> {
+            conn.query_row(
+                "SELECT AUTHOR_ORCID FROM AUTHOR WHERE AUTHOR_FULL_NAME = ?",
+                [name],
+                |r| r.get(0),
+            )
+            .unwrap()
+        }
+        assert_eq!(orcid(&conn2, "Alice").as_deref(), Some("0000-0001"));
+        assert_eq!(orcid(&conn2, "Bob"), None);
     }
 
     #[test]

@@ -122,25 +122,32 @@ pub fn build_shared_project(conn: &Connection, project_id: i64) -> Result<Shared
     let papers = if project.source_fks.is_empty() {
         Vec::new()
     } else {
-        paper_svc::get_many(
+        let mut out = Vec::new();
+        for p in paper_svc::get_many(
             conn,
             &paper_svc::Papers {
                 source_fks: Some(project.source_fks.clone()),
                 ..Default::default()
             },
-        )?
-        .into_iter()
-        .map(|p| SharedPaper {
-            source_id: p.source_id,
-            version: p.version,
-            published: p.published.map(|d| d.to_string()),
-            title: p.title,
-            summary: p.summary.unwrap_or_default(),
-            authors: p.authors,
-            tags: p.tags,
-            pdf_blob: None,
-        })
-        .collect()
+        )? {
+            let author_orcids =
+                linxiv_core::storage::queries::author::get_paper_authors(conn, p.paper_id)?
+                    .into_iter()
+                    .map(|a| a.orcid)
+                    .collect();
+            out.push(SharedPaper {
+                source_id: p.source_id,
+                version: p.version,
+                published: p.published.map(|d| d.to_string()),
+                title: p.title,
+                summary: p.summary.unwrap_or_default(),
+                authors: p.authors,
+                author_orcids,
+                tags: p.tags,
+                pdf_blob: None,
+            });
+        }
+        out
     };
 
     let mut notes = Vec::new();
@@ -225,6 +232,7 @@ fn paper_meta(p: &SharedPaper) -> PaperMetadata {
         url: None,
         tags: (!p.tags.is_empty()).then(|| p.tags.iter().map(|t| truncate_text(t)).collect()),
         source: None,
+        author_orcids: (!p.author_orcids.is_empty()).then(|| p.author_orcids.clone()),
     }
 }
 
@@ -799,6 +807,47 @@ mod tests {
     }
 
     #[test]
+    fn build_and_import_roundtrip_carries_author_orcids() {
+        let (conn, pid) = seed();
+        // "First" has authors Alice, Bob (seeded via seed()'s pin() helper); give
+        // Alice an ORCID directly on the AUTHOR row (as the harvest path would).
+        conn.execute(
+            "UPDATE AUTHOR SET AUTHOR_ORCID = ? WHERE AUTHOR_FULL_NAME = ?",
+            rusqlite::params!["0000-0001-2345-6789", "Alice"],
+        )
+        .unwrap();
+
+        let sp = build_shared_project(&conn, pid).unwrap();
+        let first = sp.papers.iter().find(|p| p.title == "First").unwrap();
+        assert_eq!(first.authors, vec!["Alice", "Bob"]);
+        assert_eq!(
+            first.author_orcids,
+            vec![Some("0000-0001-2345-6789".to_string()), None]
+        );
+
+        // Import into a fresh DB: AUTHOR_ORCID lands via the existing fill-if-null path.
+        let mut conn2 = open_in_memory().unwrap();
+        storage::init_db(&conn2).unwrap();
+        import_shared_project(&mut conn2, &sp).unwrap();
+        let orcid: Option<String> = conn2
+            .query_row(
+                "SELECT AUTHOR_ORCID FROM AUTHOR WHERE AUTHOR_FULL_NAME = ?",
+                ["Alice"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(orcid.as_deref(), Some("0000-0001-2345-6789"));
+        let bob_orcid: Option<String> = conn2
+            .query_row(
+                "SELECT AUTHOR_ORCID FROM AUTHOR WHERE AUTHOR_FULL_NAME = ?",
+                ["Bob"],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bob_orcid, None);
+    }
+
+    #[test]
     fn save_load_byte_roundtrip() {
         let (conn, pid) = seed();
         let dir = tempfile::tempdir().unwrap();
@@ -807,6 +856,26 @@ mod tests {
         save(dir.path(), &built).unwrap();
         let loaded = load(dir.path(), &built.share_id).unwrap();
         assert_eq!(built, loaded);
+    }
+
+    #[test]
+    fn save_load_byte_roundtrip_preserves_a_populated_orcid() {
+        let (conn, pid) = seed();
+        conn.execute(
+            "UPDATE AUTHOR SET AUTHOR_ORCID = ? WHERE AUTHOR_FULL_NAME = ?",
+            rusqlite::params!["0000-0001-2345-6789", "Alice"],
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let built = build_shared_project(&conn, pid).unwrap();
+
+        save(dir.path(), &built).unwrap();
+        let loaded = load(dir.path(), &built.share_id).unwrap();
+        let first = loaded.papers.iter().find(|p| p.title == "First").unwrap();
+        assert_eq!(
+            first.author_orcids,
+            vec![Some("0000-0001-2345-6789".to_string()), None]
+        );
     }
 
     #[test]

@@ -86,7 +86,7 @@ pub async fn run(cmd: AuthorCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                     "Author {author_id} is linked to {link_count} paper(s); unlink first"
                 ));
             }
-            svc_author::delete(&ctx.conn, &by_id(author_id))?;
+            svc_author::delete(&mut ctx.conn, &by_id(author_id))?;
             output(&json!({ "deleted_author_id": author_id }));
         }
     }

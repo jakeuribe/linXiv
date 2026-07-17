@@ -70,6 +70,38 @@ pub struct PaperMetadata {
     /// Backend that produced this record (must equal that source's `source_name`).
     #[serde(default)]
     pub source: Option<String>,
+    /// Index-aligned with `authors` (same length when present); `None` per-author
+    /// where the source didn't carry one. Only crossref/openalex populate this.
+    #[serde(default)]
+    pub author_orcids: Option<Vec<Option<String>>>,
+}
+
+/// Strip an `http(s)://orcid.org/` prefix + trailing slash/query/fragment,
+/// uppercase the checksum digit. `None` if not `\d{4}-\d{4}-\d{4}-\d{3}[\dX]`.
+pub fn normalize_orcid(raw: &str) -> Option<String> {
+    let t = raw.trim();
+    let t = ["https://orcid.org/", "http://orcid.org/"]
+        .iter()
+        .find_map(|p| t.strip_prefix(p))
+        .unwrap_or(t);
+    let t = t.split(['?', '#']).next().unwrap_or(t);
+    let t = t.trim_end_matches('/');
+    let up = t.to_uppercase();
+    is_orcid_shaped(&up).then_some(up)
+}
+
+/// `\d{4}-\d{4}-\d{4}-\d{3}[\dX]` — the ORCID iD checksum-digit shape.
+fn is_orcid_shaped(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 19
+        && b[4] == b'-'
+        && b[9] == b'-'
+        && b[14] == b'-'
+        && b[0..4].iter().all(u8::is_ascii_digit)
+        && b[5..9].iter().all(u8::is_ascii_digit)
+        && b[10..14].iter().all(u8::is_ascii_digit)
+        && b[15..18].iter().all(u8::is_ascii_digit)
+        && (b[18].is_ascii_digit() || b[18] == b'X')
 }
 
 // ---------------------------------------------------------------------------
@@ -552,6 +584,34 @@ pub struct ProjectUpdateIn {
 mod tests {
     use super::*;
 
+    #[test]
+    fn normalize_orcid_strips_prefix_trailing_slash_and_uppercases() {
+        assert_eq!(
+            normalize_orcid("https://orcid.org/0000-0002-1825-0097"),
+            Some("0000-0002-1825-0097".to_string())
+        );
+        assert_eq!(
+            normalize_orcid("http://orcid.org/0000-0002-1825-0097/"),
+            Some("0000-0002-1825-0097".to_string())
+        );
+        assert_eq!(
+            normalize_orcid("https://orcid.org/0000-0002-1825-0097/?foo=1"),
+            Some("0000-0002-1825-0097".to_string())
+        );
+        assert_eq!(
+            normalize_orcid("0000-0002-1825-009x"),
+            Some("0000-0002-1825-009X".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_orcid_rejects_malformed_values() {
+        assert_eq!(normalize_orcid(""), None);
+        assert_eq!(normalize_orcid("not-an-orcid"), None);
+        assert_eq!(normalize_orcid("0000-0002-1825-00977"), None); // too long
+        assert_eq!(normalize_orcid("0000-0002-1825-009"), None); // too short
+    }
+
     fn meta(source_id: &str, published: NaiveDate) -> PaperMetadata {
         PaperMetadata {
             source_id: source_id.into(),
@@ -569,6 +629,7 @@ mod tests {
             url: None,
             tags: None,
             source: None,
+            author_orcids: None,
         }
     }
 

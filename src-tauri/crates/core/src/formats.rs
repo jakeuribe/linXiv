@@ -256,6 +256,7 @@ pub fn bibtex_import(text: &str) -> Result<Vec<PaperMetadata>, String> {
             url,
             tags: None,
             source: Some("bibtex".into()),
+            author_orcids: None,
         });
     }
     Ok(out)

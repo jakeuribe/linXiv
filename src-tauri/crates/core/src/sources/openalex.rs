@@ -11,7 +11,7 @@ use chrono::NaiveDate;
 use serde_json::Value;
 
 use crate::error::{CoreError, Result};
-use crate::models::{date_min, PaperMetadata};
+use crate::models::{date_min, normalize_orcid, PaperMetadata};
 use crate::sources::http;
 
 const BASE_URL: &str = "https://api.openalex.org";
@@ -98,16 +98,28 @@ fn work_to_metadata(work: &Value) -> Result<PaperMetadata> {
         )));
     }
 
-    let authors: Vec<String> = work
+    // Paired so `author_orcids` stays index-aligned with `authors` after the
+    // no-display-name filter drops entries.
+    let author_pairs: Vec<(String, Option<String>)> = work
         .get("authorships")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter_map(|x| {
-            let s = x.get("author")?.get("display_name")?.as_str()?;
-            (!s.is_empty()).then(|| s.to_string())
+            let author = x.get("author")?;
+            let name = author.get("display_name")?.as_str()?;
+            (!name.is_empty()).then(|| {
+                let orcid = author
+                    .get("orcid")
+                    .and_then(Value::as_str)
+                    .and_then(normalize_orcid);
+                (name.to_string(), orcid)
+            })
         })
         .collect();
+    let authors: Vec<String> = author_pairs.iter().map(|(n, _)| n.clone()).collect();
+    let author_orcids =
+        (!author_pairs.is_empty()).then(|| author_pairs.into_iter().map(|(_, o)| o).collect());
 
     let published = work
         .get("publication_date")
@@ -155,6 +167,7 @@ fn work_to_metadata(work: &Value) -> Result<PaperMetadata> {
         url,
         tags: None,
         source: Some("openalex".into()),
+        author_orcids,
     })
 }
 
@@ -280,6 +293,50 @@ async fn fetch_by_id_at(
         CoreError::OpenAlexHttp(format!("OpenAlex fetch failed for '{source_id}': {e}"))
     })?;
     work_to_metadata(&work)
+}
+
+/// Look up a Work by DOI via `filter=doi:`, the closest OpenAlex offers to a
+/// direct-by-DOI GET. Errors `OpenAlexNotFound` when the filter has no hits.
+pub async fn fetch_by_doi(doi: &str, mailto: &str) -> Result<PaperMetadata> {
+    fetch_by_doi_at(BASE_URL, ALLOW, doi, mailto).await
+}
+
+/// `fetch_by_doi` against an injected base URL + host allowlist (test seam).
+async fn fetch_by_doi_at(
+    base_url: &str,
+    allow: &[&str],
+    doi: &str,
+    mailto: &str,
+) -> Result<PaperMetadata> {
+    let ua = user_agent(mailto);
+    let filter = format!("doi:{doi}");
+    let url = reqwest::Url::parse_with_params(
+        &format!("{base_url}/works"),
+        &[
+            ("filter", filter.as_str()),
+            ("select", WORK_FIELDS),
+            ("per_page", "1"),
+        ],
+    )
+    .map_err(|e| CoreError::OpenAlexInput(format!("bad OpenAlex DOI filter URL: {e}")))?;
+
+    let resp = http::get_guarded_with(url.as_str(), allow, &[("User-Agent", &ua)]).await?;
+    if !resp.status().is_success() {
+        return Err(CoreError::OpenAlexHttp(format!(
+            "OpenAlex DOI lookup failed: HTTP {}",
+            resp.status().as_u16()
+        )));
+    }
+    let body: Value = resp
+        .json()
+        .await
+        .map_err(|e| CoreError::OpenAlexHttp(format!("OpenAlex DOI lookup failed: {e}")))?;
+    parse_search_results(&body)
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            CoreError::OpenAlexNotFound(format!("No OpenAlex work found for DOI '{doi}'"))
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -434,6 +491,26 @@ mod tests {
     }
 
     #[test]
+    fn author_orcid_harvested_normalized_and_aligned_with_authors() {
+        let m = work_to_metadata(&work(json!({"authorships": [
+            {"author": {"display_name": "Alice", "orcid": "https://orcid.org/0000-0002-1825-0097"}},
+            {"author": {}},
+            {"author": {"display_name": "Bob"}}
+        ]})))
+        .unwrap();
+        assert_eq!(
+            m.author_orcids,
+            Some(vec![Some("0000-0002-1825-0097".to_string()), None])
+        );
+    }
+
+    #[test]
+    fn no_authorships_means_no_orcids_list() {
+        let m = work_to_metadata(&work(json!({"authorships": []}))).unwrap();
+        assert_eq!(m.author_orcids, None);
+    }
+
+    #[test]
     fn category_from_primary_topic_subfield() {
         let m = work_to_metadata(&work(json!({
             "primary_topic": {"subfield": {"display_name": "Machine Learning"}}
@@ -559,5 +636,36 @@ mod tests {
             .await
             .expect_err("503 maps to OpenAlexHttp");
         assert!(matches!(err, CoreError::OpenAlexHttp(_)), "got {err}");
+    }
+
+    #[tokio::test]
+    async fn fetch_by_doi_returns_first_match() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/works"))
+            .and(wiremock::matchers::query_param("filter", "doi:10.1000/xyz"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(SEARCH_RESPONSE))
+            .mount(&server)
+            .await;
+
+        let m = fetch_by_doi_at(&server.uri(), &["127.0.0.1"], "10.1000/xyz", "")
+            .await
+            .expect("filter hit parses");
+        assert_eq!(m.source_id, "openalex:W3123456789");
+    }
+
+    #[tokio::test]
+    async fn fetch_by_doi_no_match_is_not_found() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/works"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"results":[]}"#))
+            .mount(&server)
+            .await;
+
+        let err = fetch_by_doi_at(&server.uri(), &["127.0.0.1"], "10.1000/none", "")
+            .await
+            .expect_err("empty results is not-found");
+        assert!(matches!(err, CoreError::OpenAlexNotFound(_)), "got {err}");
     }
 }

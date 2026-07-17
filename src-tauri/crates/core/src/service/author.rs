@@ -139,8 +139,9 @@ pub fn merge(conn: &mut Connection, canonical_id: i64, duplicate_ids: &[i64]) ->
 }
 
 /// Delete by lookup key. No-op when the key carries no `author_id` (matching
-/// Python's `if author.author_id:`).
-pub fn delete(conn: &Connection, author: &Author) -> Result<()> {
+/// Python's `if author.author_id:`). Transactional (see `store::delete_author`),
+/// so it also cleans up any remaining PAPER_TO_AUTHOR links for that author.
+pub fn delete(conn: &mut Connection, author: &Author) -> Result<()> {
     if let Some(id) = author.author_id {
         store::delete_author(conn, id)?;
     }
@@ -367,7 +368,7 @@ mod tests {
 
     #[test]
     fn create_update_delete() {
-        let conn = mem();
+        let mut conn = mem();
         let id = create(
             &conn,
             &AuthorIn {
@@ -423,7 +424,7 @@ mod tests {
         assert_eq!(a.orcid.as_deref(), Some("0000-9"));
 
         // delete with no id is a no-op; with id removes the row
-        delete(&conn, &Author::default()).unwrap();
+        delete(&mut conn, &Author::default()).unwrap();
         assert!(get(
             &conn,
             &Author {
@@ -434,7 +435,7 @@ mod tests {
         .unwrap()
         .is_some());
         delete(
-            &conn,
+            &mut conn,
             &Author {
                 author_id: Some(id),
                 ..Default::default()

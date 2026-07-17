@@ -383,6 +383,7 @@ mod tests {
             url: None,
             tags: None,
             source: Some("arxiv".into()),
+            author_orcids: None,
         }
     }
 
