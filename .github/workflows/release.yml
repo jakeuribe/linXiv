@@ -45,7 +45,9 @@ jobs:
           # linxiv-p2p is a separate vendored submodule; its version is independent.
           for f in src-tauri/Cargo.toml src-tauri/crates/*/Cargo.toml; do
             [ "$f" = "src-tauri/crates/p2p/Cargo.toml" ] && continue
-            sed -i "s/^version = \".*\"/version = \"$ver\"/" "$f"
+            # -i.bak (suffix attached, no space) parses the same on GNU sed
+            # (Linux/Windows Git Bash) and BSD sed (macOS); bare `-i` doesn't.
+            sed -i.bak "s/^version = \".*\"/version = \"$ver\"/" "$f" && rm -f "$f.bak"
           done
 
       - name: Refuse to release without real updater signing set up
