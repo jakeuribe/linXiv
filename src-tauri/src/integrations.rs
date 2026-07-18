@@ -761,7 +761,11 @@ fn antigravity_target_path(roots: &Roots) -> PathBuf {
     paths
         .iter()
         .find(|p| registration_state(p, key).0)
-        .or_else(|| paths.iter().find(|p| p.parent().is_some_and(|d| d.exists())))
+        .or_else(|| {
+            paths
+                .iter()
+                .find(|p| p.parent().is_some_and(|d| d.exists()))
+        })
         .cloned()
         .unwrap_or_else(|| paths[0].clone())
 }
