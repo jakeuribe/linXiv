@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
-import { listAuthors, getAuthor, updateAuthor, deleteAuthor, mergeAuthors } from "../api/authors";
+import { listAuthors, getAuthor, updateAuthor, deleteAuthor, mergeAuthors, getMergeCandidates } from "../api/authors";
 import type { AuthorUpdateBody } from "../api/authors";
 import { Spinner } from "../components/ui/spinner";
 import { Button } from "../components/ui/button";
@@ -269,14 +269,21 @@ function AuthorDetailView({ authorId }: AuthorDetailViewProps) {
   );
   const mergeOptions = mergeFilterActive ? mergeCandidates : mergeCandidates.slice(0, 50);
 
+  // Other authors sharing this author's ORCID; empty (and not fetched at all)
+  // for an ORCID-less author.
+  const { data: orcidCandidates = [] } = useQuery({
+    queryKey: ["author-merge-candidates", authorId],
+    queryFn: () => getMergeCandidates(authorId),
+    enabled: Boolean(author?.orcid),
+  });
+
   const mergeMutation = useMutation({
-    mutationFn: () => mergeAuthors(authorId, mergeIds),
-    onSuccess: () => {
+    mutationFn: (ids: number[]) => mergeAuthors(authorId, ids),
+    onSuccess: (_data, ids) => {
       queryClient.invalidateQueries({ queryKey: ["author", authorId] });
       queryClient.invalidateQueries({ queryKey: ["authors"] });
-      mergeIds.forEach((dupId) =>
-        queryClient.removeQueries({ queryKey: ["author", dupId] })
-      );
+      queryClient.invalidateQueries({ queryKey: ["author-merge-candidates", authorId] });
+      ids.forEach((dupId) => queryClient.removeQueries({ queryKey: ["author", dupId] }));
       setMergeIds([]);
     },
   });
@@ -472,6 +479,32 @@ function AuthorDetailView({ authorId }: AuthorDetailViewProps) {
           Pick other records for the same person. Their papers move to this author and the
           duplicate records are deleted. This cannot be undone.
         </p>
+        {orcidCandidates.length > 0 && (
+          <div
+            className="rounded-md border px-3 py-2 space-y-2 text-sm"
+            style={{ borderColor: "var(--color-border)", backgroundColor: "var(--color-panel)" }}
+          >
+            <p style={{ color: "var(--color-text)" }}>
+              Same ORCID as{" "}
+              {orcidCandidates.map((a) => a.full_name ?? "(unnamed)").join(", ")} — likely the
+              same person.
+            </p>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={mergeMutation.isPending}
+              onClick={() => {
+                const ids = orcidCandidates.map((a) => a.author_id);
+                const names = orcidCandidates.map((a) => a.full_name ?? "(unnamed)");
+                if (window.confirm(`Merge ${names.join(", ")} into this author? This cannot be undone.`)) {
+                  mergeMutation.mutate(ids);
+                }
+              }}
+            >
+              Merge duplicate{orcidCandidates.length > 1 ? "s" : ""}
+            </Button>
+          </div>
+        )}
         <Input
           placeholder="Filter authors…"
           value={mergeFilter}
@@ -515,7 +548,7 @@ function AuthorDetailView({ authorId }: AuthorDetailViewProps) {
               .filter((a) => mergeIds.includes(a.author_id))
               .map((a) => a.full_name ?? "(unnamed)");
             if (window.confirm(`Merge ${names.join(", ")} into this author? This cannot be undone.`)) {
-              mergeMutation.mutate();
+              mergeMutation.mutate(mergeIds);
             }
           }}
           disabled={mergeIds.length === 0 || mergeMutation.isPending}

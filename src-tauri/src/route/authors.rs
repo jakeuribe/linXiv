@@ -17,6 +17,7 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
     match (ctx.method, ctx.segs) {
         ("GET", ["api", "authors"]) => Some(list(state, ctx)),
         ("GET", ["api", "authors", id]) => Some(detail(state, id)),
+        ("GET", ["api", "authors", id, "merge-candidates"]) => Some(merge_candidates(state, id)),
         ("PATCH", ["api", "authors", id]) => Some(update(state, id, ctx)),
         ("POST", ["api", "authors", id, "merge"]) => Some(merge(state, id, ctx)),
         ("DELETE", ["api", "authors", id]) => Some(delete(state, id)),
@@ -34,6 +35,19 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
 /// `GET /api/authors/{id}` — `api_author_get` → `_author_detail_response`.
 fn detail(state: &AppState, id: &str) -> Result<Value, ApiError> {
     detail_response(state, path_i64(id)?)
+}
+
+/// `GET /api/authors/{id}/merge-candidates` — other authors sharing this
+/// author's ORCID, for the merge UI's "likely duplicate" suggestion.
+fn merge_candidates(state: &AppState, id: &str) -> Result<Value, ApiError> {
+    let author_id = path_i64(id)?;
+    let candidates = state.with_conn(|conn| -> Result<_, ApiError> {
+        if svc_author::get(conn, &author_ref(author_id))?.is_none() {
+            return Err(ApiError::new(404, "Author not found"));
+        }
+        Ok(svc_author::orcid_merge_candidates(conn, author_id)?)
+    })?;
+    Ok(json!({ "candidates": candidates }))
 }
 
 /// `PATCH /api/authors/{id}` — `api_author_update`. Forwards the (all-optional)
@@ -278,6 +292,64 @@ mod tests {
         .unwrap();
 
         assert_eq!(resp["merged_ids"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn merge_candidates_matches_same_orcid_only() {
+        let st = state();
+        let (a, b, c) = st.with_conn(|conn| {
+            let mk = |c: &mut Connection, name: &str, orcid: Option<&str>| {
+                svc_author::create(
+                    c,
+                    &AuthorIn {
+                        full_name: name.into(),
+                        first_name: None,
+                        last_name: None,
+                        orcid: orcid.map(String::from),
+                    },
+                )
+                .unwrap()
+            };
+            let a = mk(conn, "Alice Cole", Some("0000-1"));
+            let b = mk(conn, "A. Cole", Some("0000-1"));
+            let c = mk(conn, "Carl No-Orcid", None);
+            (a, b, c)
+        });
+
+        let resp = req(
+            &st,
+            "GET",
+            &format!("/api/authors/{a}/merge-candidates"),
+            None,
+        )
+        .await
+        .unwrap();
+        let ids: Vec<i64> = resp["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["author_id"].as_i64().unwrap())
+            .collect();
+        assert_eq!(ids, vec![b]);
+
+        // No ORCID -> no candidates, not an error.
+        let resp = req(
+            &st,
+            "GET",
+            &format!("/api/authors/{c}/merge-candidates"),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp["candidates"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn merge_candidates_missing_author_is_404() {
+        let err = req(&state(), "GET", "/api/authors/999/merge-candidates", None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, 404);
     }
 
     #[tokio::test]
