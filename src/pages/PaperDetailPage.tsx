@@ -3,7 +3,13 @@ import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { Document, Page } from "react-pdf";
 import type { PDFDocumentProxy } from "pdfjs-dist";
-import { getPaperBySfk, getPaperVersions, getPaperPdfUrl, getPdfProxyUrl } from "../api/papers";
+import {
+  getPaperBySfk,
+  getPaperVersions,
+  getPaperPdfUrl,
+  getPdfProxyUrl,
+  getDoiVersionCandidates,
+} from "../api/papers";
 import { getNotes, deleteNote } from "../api/notes";
 import { getAnnotations, deleteAnnotation, updateAnnotation } from "../api/annotations";
 import { listProjects } from "../api/projects";
@@ -166,6 +172,18 @@ export default function PaperDetailPage() {
   });
 
   const versions = versionsData?.versions ?? [];
+
+  // Other paper roots sharing this one's DOI — same work, different source
+  // (e.g. arXiv vs OpenAlex/Crossref). Read-only surfacing, no auto-merge:
+  // paper roots have too many dependent FKs (projects/tags/notes/annotations)
+  // to safely re-point in one pass.
+  const { data: doiCandidates } = useQuery({
+    queryKey: ["paper", "doi-candidates", sfk],
+    queryFn: () => getDoiVersionCandidates(Number(sfk)),
+    // Gated on a DOI actually being present — skips the round trip for the
+    // (majority) of papers that have none.
+    enabled: !!sfk && Number.isFinite(Number(sfk)) && !!paper?.doi,
+  });
 
   // all_projects=true so project-scoped notes are visible alongside global
   // ones; each note carries its own scope, shown as a badge on the card.
@@ -569,6 +587,32 @@ export default function PaperDetailPage() {
                   <div className="flex flex-wrap gap-1.5">
                     {tags.map((tag) => (
                       <TagBadge key={tag} label={tag} />
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Same DOI, different source — read-only suggestion, no auto-merge */}
+              {doiCandidates && doiCandidates.length > 0 && (
+                <div
+                  className="rounded-md border px-3 py-2 text-sm space-y-1.5"
+                  style={{ borderColor: "var(--color-border)", backgroundColor: "var(--color-panel)" }}
+                >
+                  <p style={{ color: "var(--color-text)" }}>
+                    Same DOI found in {doiCandidates.length} other record
+                    {doiCandidates.length > 1 ? "s" : ""} — likely the same paper.
+                  </p>
+                  <div className="flex flex-wrap gap-x-3 gap-y-1">
+                    {doiCandidates.map((c) => (
+                      <button
+                        key={c.source_fk}
+                        type="button"
+                        className="text-xs underline underline-offset-2 hover:opacity-80"
+                        style={{ color: "var(--color-accent)" }}
+                        onClick={() => navigate(`/library/${c.source_fk}`)}
+                      >
+                        {c.source ?? c.source_id}: <MathText forceInline>{c.title}</MathText>
+                      </button>
                     ))}
                   </div>
                 </div>

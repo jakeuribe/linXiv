@@ -1,5 +1,5 @@
 import { apiFetch, BASE_URL, isTauri } from "./client";
-import type { Paper, PaperVersionsResponse } from "../types/api";
+import type { Paper, PaperVersionsResponse, DoiVersionCandidate } from "../types/api";
 
 // The in-process app serves PDF bytes over the `linxiv://` custom scheme (the
 // invoke()-based transport can't stream binary). The webview host form differs by
@@ -33,6 +33,13 @@ export async function getPaperBySfk(sfk: number, version?: number): Promise<Pape
 
 export async function getPaperVersions(sfk: number): Promise<PaperVersionsResponse> {
   return apiFetch<PaperVersionsResponse>(`/api/papers/sfk/${sfk}/versions`);
+}
+
+export async function getDoiVersionCandidates(sfk: number): Promise<DoiVersionCandidate[]> {
+  const data = await apiFetch<{ candidates: DoiVersionCandidate[] }>(
+    `/api/papers/sfk/${sfk}/doi-candidates`
+  );
+  return data.candidates;
 }
 
 export async function deletePaper(sourceId: string): Promise<{ deleted: string }> {
