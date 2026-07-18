@@ -98,7 +98,7 @@ git submodule update --init --recursive
 ### Prerequisites
 
 - [Rust toolchain](https://rustup.rs/) (stable) — builds the backend, CLI, MCP server, and Tauri shell
-- [Node.js](https://nodejs.org/) 18+ — frontend / Tauri tooling
+- [Node.js](https://nodejs.org/) 20.16+ (or 22.3+) — frontend / Tauri tooling; `pdfjs-dist` requires at least this
 - System Tauri dependencies — follow the [Tauri v2 prerequisites guide](https://tauri.app/start/prerequisites/) for your OS (WebKit2GTK on Linux, Xcode Command Line Tools on macOS, Microsoft C++ Build Tools on Windows)
 
 > The build pulls the `tauri-plugin-texbrain` crate as a git dependency (`github.com/linxiv-dev/tex-brain-linxiv-plugin`, pinned in `Cargo.lock`) — no extra checkout needed.
