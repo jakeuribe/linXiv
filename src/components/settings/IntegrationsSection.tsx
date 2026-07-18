@@ -76,7 +76,7 @@ function IntegrationRow({
               config unreadable
             </span>
           )}
-          {!available && !installed && !configError && (
+          {!available && !configError && (
             <span className="text-xs text-muted">(not detected)</span>
           )}
         </span>

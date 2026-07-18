@@ -711,9 +711,15 @@ fn mcp_config_path_in(client_id: &str, roots: &Roots) -> Result<PathBuf, String>
     Ok(path)
 }
 
-/// Runtime wrapper over `mcp_config_path_in` for the current machine.
+/// Runtime wrapper over `mcp_config_path_in` for the current machine, used by
+/// install/uninstall/is_mcp_installed. Antigravity has two candidate paths
+/// (see `antigravity_target_path`); every other client has one canonical path.
 fn mcp_config_path(client_id: &str) -> Result<PathBuf, String> {
-    mcp_config_path_in(client_id, &Roots::current()?)
+    let roots = Roots::current()?;
+    if client_id == "antigravity" {
+        return Ok(antigravity_target_path(&roots));
+    }
+    mcp_config_path_in(client_id, &roots)
 }
 
 /// Return paths to check for Antigravity MCP config in order of preference.
@@ -739,6 +745,25 @@ fn antigravity_config_paths(roots: &Roots) -> Vec<PathBuf> {
     };
     paths.push(legacy);
     paths
+}
+
+/// Which Antigravity config path install/uninstall should target: whichever
+/// already has linxiv registered (idempotent reinstall/uninstall), else
+/// whichever config dir already exists on disk (that's the app version
+/// actually present — e.g. a legacy Codeium-era install that never created
+/// the new Gemini path), else the modern default.
+// ponytail: the dir-exists fallback can't tell "Antigravity 2.0 created this"
+// from "the Gemini CLI created this" — no signal distinguishes them. Fine
+// until a bug report shows that combination in the wild.
+fn antigravity_target_path(roots: &Roots) -> PathBuf {
+    let paths = antigravity_config_paths(roots);
+    let key = servers_key("antigravity");
+    paths
+        .iter()
+        .find(|p| registration_state(p, key).0)
+        .or_else(|| paths.iter().find(|p| p.parent().is_some_and(|d| d.exists())))
+        .cloned()
+        .unwrap_or_else(|| paths[0].clone())
 }
 
 /// Paths whose existence indicates the client *application* is installed.
@@ -1318,6 +1343,43 @@ mod tests {
             registration_state(&cfg, "mcpServers"),
             (false, false, false)
         );
+    }
+
+    #[test]
+    fn antigravity_target_path_prefers_existing_registration_then_existing_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut roots = roots(Os::Linux);
+        roots.home = dir.path().to_path_buf();
+        let paths = antigravity_config_paths(&roots);
+        let (new_path, legacy_path) = (&paths[0], &paths[1]);
+
+        // Neither path's dir exists yet: default to the new canonical path.
+        assert_eq!(antigravity_target_path(&roots), *new_path);
+
+        // Only the legacy dir exists (old Codeium-era app, never ran the new
+        // Gemini-based one): install must target the path that app reads.
+        std::fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
+        assert_eq!(antigravity_target_path(&roots), *legacy_path);
+
+        // Both dirs exist but only legacy has linxiv registered: reinstall/
+        // uninstall must keep targeting the one with the real entry.
+        std::fs::create_dir_all(new_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            legacy_path,
+            serde_json::json!({ "mcpServers": { "linxiv": { "command": "linxiv-mcp" } } })
+                .to_string(),
+        )
+        .unwrap();
+        assert_eq!(antigravity_target_path(&roots), *legacy_path);
+
+        // Both registered: new path wins (checked first, matches list_mcp_clients).
+        std::fs::write(
+            new_path,
+            serde_json::json!({ "mcpServers": { "linxiv": { "command": "linxiv-mcp" } } })
+                .to_string(),
+        )
+        .unwrap();
+        assert_eq!(antigravity_target_path(&roots), *new_path);
     }
 
     #[test]
