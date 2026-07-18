@@ -824,6 +824,62 @@ pub fn get_paper_root(conn: &Connection, source_id: &str) -> Result<Option<Paper
     .transpose()
 }
 
+/// Another paper root sharing this root's DOI — same underlying work resolved
+/// independently by a different source (e.g. arXiv vs OpenAlex/Crossref).
+/// Local struct (no model; models.rs out of scope this phase).
+#[derive(Debug, Clone, Serialize)]
+pub struct DoiVersionCandidate {
+    pub source_fk: i64,
+    pub source_id: String,
+    pub title: String,
+    pub source: Option<String>,
+    pub published: Option<NaiveDate>,
+    pub doi: String,
+}
+
+/// Other active paper roots whose latest version shares `source_fk`'s DOI —
+/// likely the same work under a different source, for a "these look like the
+/// same paper" suggestion. Empty if this root has no DOI (NULL/'' never
+/// matches; mirrors `orcid_merge_candidates`'s self-join shape). Case-insensitive:
+/// sources normalize DOI casing differently (e.g. OpenAlex lowercases).
+// ponytail: unindexed self-join scan; fine at desktop-library scale, add a
+// PAPER_META(DOI) index if this ever profiles hot.
+pub fn find_doi_version_candidates(
+    conn: &Connection,
+    source_fk: i64,
+) -> Result<Vec<DoiVersionCandidate>> {
+    let mut stmt = conn.prepare(
+        "SELECT b.source_fk, b.source_id, b.title, b.source, b.published, b.doi \
+         FROM latest_papers b, latest_papers a \
+         WHERE a.source_fk = ? AND b.source_fk != a.source_fk \
+           AND a.doi IS NOT NULL AND a.doi != '' AND b.doi = a.doi COLLATE NOCASE",
+    )?;
+    let rows = stmt.query_map(params![source_fk], |r| {
+        let published: Option<String> = r.get("published")?;
+        Ok((
+            r.get::<_, i64>("source_fk")?,
+            r.get::<_, String>("source_id")?,
+            r.get::<_, String>("title")?,
+            r.get::<_, Option<String>>("source")?,
+            published,
+            r.get::<_, String>("doi")?,
+        ))
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .map(|(source_fk, source_id, title, source, published, doi)| {
+            Ok(DoiVersionCandidate {
+                source_fk,
+                source_id,
+                title,
+                source,
+                published: published.as_deref().map(date_from_sql).transpose()?,
+                doi,
+            })
+        })
+        .collect()
+}
+
 /// A soft-deleted paper from the `deleted_papers` view. Local struct (no model;
 /// models.rs out of scope this phase).
 #[derive(Debug, Clone, Serialize)]
@@ -1319,5 +1375,47 @@ mod tests {
         assert!(is_paper_deleted(&conn, "arxiv:v").unwrap());
         ensure_paper_root(&mut conn, "arxiv:v").unwrap();
         assert!(!is_paper_deleted(&conn, "arxiv:v").unwrap());
+    }
+
+    #[test]
+    fn find_doi_version_candidates_matches_same_doi_only() {
+        let mut conn = open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+
+        let mut arxiv_meta = meta("arxiv:2204.12985", 1);
+        arxiv_meta.doi = Some("10.1234/shared".into());
+        arxiv_meta.source = Some("arxiv".into());
+        save_paper_metadata(&mut conn, &arxiv_meta, None).unwrap();
+
+        // Different casing than the arXiv record's DOI (sources normalize
+        // differently, e.g. OpenAlex lowercases) — must still match.
+        let mut openalex_meta = meta("openalex:W123", 1);
+        openalex_meta.doi = Some("10.1234/SHARED".into());
+        openalex_meta.source = Some("openalex".into());
+        save_paper_metadata(&mut conn, &openalex_meta, None).unwrap();
+
+        let mut no_doi_meta = meta("arxiv:9999.00001", 1);
+        no_doi_meta.doi = None;
+        save_paper_metadata(&mut conn, &no_doi_meta, None).unwrap();
+
+        let arxiv_fk = ensure_paper_root(&mut conn, "arxiv:2204.12985").unwrap();
+        let openalex_fk = ensure_paper_root(&mut conn, "openalex:W123").unwrap();
+        let no_doi_fk = ensure_paper_root(&mut conn, "arxiv:9999.00001").unwrap();
+
+        let candidates = find_doi_version_candidates(&conn, arxiv_fk).unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].source_fk, openalex_fk);
+        assert_eq!(candidates[0].source_id, "openalex:W123");
+        assert_eq!(candidates[0].doi, "10.1234/SHARED");
+
+        // Symmetric: the other root sees this one as a candidate too.
+        let back = find_doi_version_candidates(&conn, openalex_fk).unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].source_fk, arxiv_fk);
+
+        // No DOI -> no candidates (NULL never equals NULL in SQL).
+        assert!(find_doi_version_candidates(&conn, no_doi_fk)
+            .unwrap()
+            .is_empty());
     }
 }

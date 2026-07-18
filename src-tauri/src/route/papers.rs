@@ -23,6 +23,9 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
     match (ctx.method, ctx.segs) {
         ("GET", ["api", "papers"]) => Some(list(state, ctx)),
         ("GET", ["api", "papers", "sfk", fk, "versions"]) => Some(versions(state, fk)),
+        ("GET", ["api", "papers", "sfk", fk, "doi-candidates"]) => {
+            Some(doi_candidates(state, fk))
+        }
         ("GET", ["api", "papers", "sfk", fk]) => Some(by_sfk(state, fk, ctx)),
         ("PUT", ["api", "papers", "sfk", fk]) => Some(repair(state, fk, ctx)),
         ("DELETE", ["api", "papers", "sfk", fk, "projects"]) => {
@@ -67,6 +70,19 @@ fn versions(state: &AppState, fk: &str) -> Result<Value, ApiError> {
         "latest_version": all.latest_version,
         "versions": versions,
     }))
+}
+
+/// `GET /api/papers/sfk/{fk}/doi-candidates` — other paper roots sharing this
+/// one's DOI, for the "same paper, different source" suggestion banner.
+fn doi_candidates(state: &AppState, fk: &str) -> Result<Value, ApiError> {
+    let source_fk = path_i64(fk)?;
+    let candidates = state.with_conn(|conn| -> Result<_, ApiError> {
+        if svc_paper::get_source_id(conn, source_fk)?.is_none() {
+            return Err(ApiError::new(404, "Paper not found"));
+        }
+        Ok(svc_paper::find_doi_version_candidates(conn, source_fk)?)
+    })?;
+    Ok(json!({ "candidates": candidates }))
 }
 
 /// `GET /api/papers/sfk/{fk}?version=` — `api_get_paper_by_sfk`. Bare `to_dict()`.
@@ -305,6 +321,61 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.status, 404);
         assert_eq!(err.detail, "Paper not found");
+    }
+
+    fn meta(source_id: &str, doi: Option<&str>) -> PaperMetadata {
+        let mut m: PaperMetadata = serde_json::from_value(json!({
+            "source_id": source_id,
+            "version": 1,
+            "title": "T",
+            "authors": ["A"],
+            "published": "2024-01-01",
+            "summary": "S",
+        }))
+        .unwrap();
+        m.doi = doi.map(String::from);
+        m
+    }
+
+    #[tokio::test]
+    async fn doi_candidates_missing_paper_is_404() {
+        let err = req(&state(), "GET", "/api/papers/sfk/999/doi-candidates", None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, 404);
+        assert_eq!(err.detail, "Paper not found");
+    }
+
+    #[tokio::test]
+    async fn doi_candidates_matches_same_doi_across_sources() {
+        let st = state();
+        let (arxiv_sid, _) = st
+            .with_conn(|conn| {
+                svc_paper::save_paper_metadata(conn, &meta("arxiv:1", Some("10.1/x")), None)
+            })
+            .unwrap();
+        let (openalex_sid, _) = st
+            .with_conn(|conn| {
+                svc_paper::save_paper_metadata(conn, &meta("openalex:W1", Some("10.1/x")), None)
+            })
+            .unwrap();
+        let arxiv_fk = st
+            .with_conn(|conn| svc_paper::ensure_paper_root(conn, &arxiv_sid))
+            .unwrap();
+        st.with_conn(|conn| svc_paper::ensure_paper_root(conn, &openalex_sid))
+            .unwrap();
+
+        let body = req(
+            &st,
+            "GET",
+            &format!("/api/papers/sfk/{arxiv_fk}/doi-candidates"),
+            None,
+        )
+        .await
+        .unwrap();
+        let candidates = body["candidates"].as_array().unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0]["source_id"], "openalex:W1");
     }
 
     #[tokio::test]

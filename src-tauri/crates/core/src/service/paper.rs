@@ -23,6 +23,8 @@ use chrono::{NaiveDate, NaiveDateTime};
 use rusqlite::Connection;
 use serde::Serialize;
 
+pub use store::DoiVersionCandidate;
+
 // ── lookup query objects (defined in service/paper.py, not models.py) ────────
 
 /// Identifies a single paper — supply one of the three keys. `version` is only
@@ -380,6 +382,15 @@ pub fn get_source_id(conn: &Connection, source_fk: i64) -> Result<Option<String>
 /// Resolve a list of SOURCE_FKs to SOURCE_IDs, dropping any that don't exist.
 pub fn sfks_to_source_ids(conn: &Connection, source_fks: &[i64]) -> Result<Vec<String>> {
     store::sfks_to_source_ids(conn, source_fks)
+}
+
+/// Other paper roots sharing this one's DOI — likely the same work resolved by
+/// a different source, for a "these look like the same paper" suggestion.
+pub fn find_doi_version_candidates(
+    conn: &Connection,
+    source_fk: i64,
+) -> Result<Vec<DoiVersionCandidate>> {
+    store::find_doi_version_candidates(conn, source_fk)
 }
 
 // ── PDF / full-text setters ──────────────────────────────────────────────────
