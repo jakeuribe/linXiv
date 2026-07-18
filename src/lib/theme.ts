@@ -170,6 +170,32 @@ export const PRESETS = {
       ink3: "rgba(235,235,245,0.45)",
     },
   },
+  "Reading Room": {
+    light: {
+      bg: "#ece4d6",
+      panel: "#faf6ee",
+      border: "#e2d9c7",
+      accent: "#b0451f",
+      text: "#221d16",
+      muted: "#8a7c66",
+      success: "#5c9a5e",
+      danger: "#c0442a",
+      surface2: "#f3ecdf",
+      ink3: "#a8987f",
+    },
+    dark: {
+      bg: "#1a140d",
+      panel: "#241b11",
+      border: "#3a2c1c",
+      accent: "#cf5a2c",
+      text: "#ece4d6",
+      muted: "#9c8a72",
+      success: "#81c784",
+      danger: "#ef5350",
+      surface2: "#1f160d",
+      ink3: "#6e5c47",
+    },
+  },
 } as const;
 
 export type PresetName = keyof typeof PRESETS;

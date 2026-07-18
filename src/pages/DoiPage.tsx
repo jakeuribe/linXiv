@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "../components/ui/button";
+import { formSubmitOnCtrlEnter } from "../lib/submitShortcut";
 import { Input } from "../components/ui/input";
 import { Spinner } from "../components/ui/spinner";
 import { resolveDoi, saveDoi } from "../api/search";
@@ -83,7 +84,7 @@ export default function DoiPage() {
         </h1>
 
         {/* Input form */}
-        <form onSubmit={handleSubmit} className="flex gap-2 mb-2">
+        <form onSubmit={handleSubmit} onKeyDown={formSubmitOnCtrlEnter} className="flex gap-2 mb-2">
           <Input
             placeholder="10.48550/arXiv.2312.00752"
             value={doi}

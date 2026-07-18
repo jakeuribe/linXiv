@@ -5,6 +5,7 @@ import { Button } from "../ui/button";
 import type { Paper } from "../../types/api";
 import { repairPaper } from "../../api/papers";
 import { normalizeAuthors } from "../../lib/papers";
+import { formSubmitOnCtrlEnter } from "../../lib/submitShortcut";
 
 interface PaperMetadataEditorProps {
   onClose: () => void;
@@ -32,6 +33,7 @@ export function PaperMetadataEditor({
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (submitting) return;
     if (!title.trim()) {
       setError("Title is required.");
       return;
@@ -70,7 +72,7 @@ export function PaperMetadataEditor({
 
   return (
     <Dialog open={true} onClose={onClose} title="Edit Paper" size="xl">
-      <form onSubmit={handleSubmit} className="flex flex-col" onInput={() => setError(null)}>
+      <form onSubmit={handleSubmit} onKeyDown={formSubmitOnCtrlEnter} className="flex flex-col" onInput={() => setError(null)}>
         {/* Scrollable fields */}
         <div className="flex flex-col gap-4 overflow-y-auto max-h-[60vh] pr-1">
           <div className="flex flex-col gap-1.5">
@@ -82,8 +84,8 @@ export function PaperMetadataEditor({
               onChange={(e) => setTitle(e.target.value)}
               placeholder="e.g. Attention Is All You Need"
               className="min-h-[60px]"
-              required
               autoFocus
+              aria-required="true"
             />
           </div>
 
@@ -109,7 +111,7 @@ export function PaperMetadataEditor({
                 type="date"
                 value={published}
                 onChange={(e) => setPublished(e.target.value)}
-                required
+                aria-required="true"
               />
             </div>
             <div className="flex flex-col gap-1.5">

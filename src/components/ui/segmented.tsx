@@ -73,7 +73,7 @@ export function Segmented<T extends string>({
       role="radiogroup"
       aria-label={ariaLabel}
       className={[
-        "inline-flex border-b border-[var(--color-border)]",
+        "inline-flex items-center gap-0.5 rounded-lg border border-border bg-surface2 p-0.5",
         className,
       ]
         .filter(Boolean)
@@ -95,13 +95,13 @@ export function Segmented<T extends string>({
             onClick={() => select(option.value)}
             onKeyDown={(event) => handleKeyDown(event, index)}
             className={[
-              "px-4 py-2 text-sm font-medium -mb-px border-b-2 border-transparent",
+              "px-3 py-1 text-xs font-medium rounded-md border",
               "transition-colors",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-accent)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--color-bg)]",
               "disabled:opacity-50 disabled:cursor-not-allowed",
               active
-                ? "text-[var(--color-text)] border-[var(--color-accent)]"
-                : "text-[var(--color-muted)] hover:text-[var(--color-text)]",
+                ? "bg-panel text-text border-border shadow-card"
+                : "border-transparent text-muted hover:text-text",
             ].join(" ")}
           >
             {option.label}

@@ -38,6 +38,8 @@ export interface Project {
   source_ids: string[];
   status: string;
   paper_count?: number;
+  /** Persisted share identity (uuid v4); null until first publish. */
+  share_id?: string | null;
 }
 
 export interface Note {
@@ -46,6 +48,18 @@ export interface Note {
   project_id: number | null;
   title: string;
   content: string;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+// PDF highlight annotation. `anchor` is opaque JSON (see lib/pdfAnchor); `comment`
+// is the written comment ("" = highlight-only).
+export interface Annotation {
+  id: number;
+  source_fk: number;
+  project_id: number | null;
+  anchor: string;
+  comment: string;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -88,7 +102,32 @@ export interface Settings {
   search_history_enabled?: boolean;
   search_history_max?: number;
   tex_rendering_enabled?: boolean;
+  home_feed_url?: string;
   [key: string]: unknown;
+}
+
+export interface FeedEntry {
+  title: string;
+  link: string;
+  authors: string[];
+  summary: string;
+  published: string;
+  arxiv_id: string | null;
+  version: number | null;
+}
+
+export interface FeedResponse {
+  title: string;
+  entries: FeedEntry[];
+  saved_arxiv_ids: string[];
+}
+
+export interface FeedFilterRule {
+  rule_id: number;
+  field: "TITLE" | "SUMMARY" | "AUTHOR";
+  keywords: string;
+  action: "DENY" | "ALLOW";
+  enabled: boolean;
 }
 
 export interface PaperVersionSummary {

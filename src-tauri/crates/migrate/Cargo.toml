@@ -1,0 +1,12 @@
+[package]
+name = "linxiv-migrate"
+version = "0.3.0-beta"
+edition = "2021"
+
+[[bin]]
+name = "linxiv-migrate"
+path = "src/main.rs"
+
+[dependencies]
+linxiv-core = { path = "../core" }
+anyhow = "1"

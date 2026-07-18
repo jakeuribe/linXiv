@@ -1,10 +1,30 @@
 import { useEffect, useRef, useState } from "react";
-import { checkForUpdates, getCurrentVersion, openReleaseUrl, type UpdateResult } from "../../api/updates";
+import { isTauri } from "../../api/client";
+import {
+  checkForUpdates,
+  getCurrentVersion,
+  getLinuxPackageKind,
+  installUpdate,
+  openReleaseUrl,
+  type UpdateResult,
+} from "../../api/updates";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
 import { SettingGroup, SettingGroupLabel, SettingRow } from "./SettingRow";
 
-function UpdateMessage({ result }: { result: UpdateResult }) {
+function UpdateMessage({
+  result,
+  packageKind,
+  onInstall,
+  installing,
+  installError,
+}: {
+  result: UpdateResult;
+  packageKind: "deb" | "rpm" | null;
+  onInstall: () => void;
+  installing: boolean;
+  installError: string | null;
+}) {
   if (result.error) {
     return <span style={{ color: "var(--color-danger)" }}>{result.error}</span>;
   }
@@ -14,13 +34,30 @@ function UpdateMessage({ result }: { result: UpdateResult }) {
         <span style={{ color: "var(--color-success)" }}>
           Version {result.latest} is available.
         </span>
+        {isTauri && (
+          <Button variant="primary" size="sm" onClick={onInstall} disabled={installing}>
+            {installing ? (
+              <>
+                <Spinner size={14} /> Installing…
+              </>
+            ) : (
+              "Install and restart"
+            )}
+          </Button>
+        )}
         <Button
-          variant="primary"
+          variant={isTauri ? "muted" : "primary"}
           size="sm"
           onClick={() => openReleaseUrl(result.releaseUrl).catch(console.error)}
         >
           Download
         </Button>
+        {installError && (
+          <span style={{ color: "var(--color-danger)" }}>
+            {installError}
+            {packageKind && " (requires accepting the authentication prompt)"}
+          </span>
+        )}
       </span>
     );
   }
@@ -49,6 +86,9 @@ export function AboutSection() {
   const [versionResolved, setVersionResolved] = useState(false);
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<UpdateResult | null>(null);
+  const [packageKind, setPackageKind] = useState<"deb" | "rpm" | null>(null);
+  const [installing, setInstalling] = useState(false);
+  const [installError, setInstallError] = useState<string | null>(null);
   const alive = useRef(true);
 
   useEffect(() => {
@@ -62,6 +102,9 @@ export function AboutSection() {
       .catch(() => {
         if (alive.current) setVersionResolved(true);
       });
+    getLinuxPackageKind().then((k) => {
+      if (alive.current) setPackageKind(k);
+    });
     return () => {
       alive.current = false;
     };
@@ -70,11 +113,25 @@ export function AboutSection() {
   async function handleCheck() {
     setChecking(true);
     setResult(null);
+    setInstallError(null);
     try {
       const r = await checkForUpdates();
       if (alive.current) setResult(r);
     } finally {
       if (alive.current) setChecking(false);
+    }
+  }
+
+  async function handleInstall() {
+    setInstalling(true);
+    setInstallError(null);
+    try {
+      await installUpdate(packageKind);
+      // installUpdate relaunches the app on success; nothing left to do here.
+    } catch (e) {
+      if (alive.current) setInstallError(e instanceof Error ? e.message : "Install failed.");
+    } finally {
+      if (alive.current) setInstalling(false);
     }
   }
 
@@ -104,7 +161,13 @@ export function AboutSection() {
         </SettingRow>
         {result && (
           <SettingRow label="Update status">
-            <UpdateMessage result={result} />
+            <UpdateMessage
+              result={result}
+              packageKind={packageKind}
+              onInstall={handleInstall}
+              installing={installing}
+              installError={installError}
+            />
           </SettingRow>
         )}
       </SettingGroup>

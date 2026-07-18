@@ -1,10 +1,11 @@
-import { useParams, useNavigate } from "react-router-dom";
+import { useMemo, useState } from "react";
+import { useParams, useNavigate, Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { getAllTags, getTagDetail } from "../api/tags";
 import { Spinner } from "../components/ui/spinner";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
-import { TagBadge } from "../components/tags/TagBadge";
+import { SortHeader, nextSort, type SortDir } from "../components/ui/sort-header";
 import { PaperCard } from "../components/papers/PaperCard";
 import { ProjectCard } from "../components/projects/ProjectCard";
 
@@ -21,11 +22,30 @@ export default function TagPage() {
 // Tag index: all tags
 // ---------------------------------------------------------------------------
 
+type TagSortKey = "label" | "paper_count";
+
 function TagIndexView() {
+  const navigate = useNavigate();
+  const [sort, setSort] = useState<{ key: TagSortKey; dir: SortDir }>({
+    key: "paper_count",
+    dir: "desc",
+  });
+
   const { data: tags = [], isLoading, error } = useQuery({
     queryKey: ["tags"],
     queryFn: getAllTags,
   });
+
+  const sorted = useMemo(() => {
+    const dir = sort.dir === "asc" ? 1 : -1;
+    return [...tags].sort((a, b) => {
+      const primary =
+        sort.key === "label"
+          ? a.label.localeCompare(b.label)
+          : a.paper_count - b.paper_count;
+      return primary !== 0 ? primary * dir : a.label.localeCompare(b.label);
+    });
+  }, [tags, sort]);
 
   if (isLoading) {
     return (
@@ -45,6 +65,9 @@ function TagIndexView() {
     );
   }
 
+  const toggle = (key: TagSortKey) =>
+    setSort((s) => nextSort(s, key, key === "paper_count" ? "desc" : "asc"));
+
   return (
     <div className="max-w-5xl mx-auto px-6 py-8 space-y-6">
       <div>
@@ -59,11 +82,56 @@ function TagIndexView() {
           No tags yet. Add tags to papers to see them here.
         </p>
       ) : (
-        <div className="flex flex-wrap gap-2">
-          {tags.map((tag) => (
-            <TagBadge key={tag} label={tag} />
-          ))}
-        </div>
+        <table className="w-full text-sm border-collapse">
+          <thead>
+            <tr className="border-b" style={{ borderColor: "var(--color-border)" }}>
+              <SortHeader
+                label="Tag"
+                active={sort.key === "label"}
+                dir={sort.dir}
+                onSort={() => toggle("label")}
+              />
+              <SortHeader
+                label="Papers"
+                active={sort.key === "paper_count"}
+                dir={sort.dir}
+                onSort={() => toggle("paper_count")}
+                align="right"
+              />
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((tag) => {
+              const to = `/tags/${encodeURIComponent(tag.label)}`;
+              return (
+              <tr
+                key={tag.label}
+                onClick={() => navigate(to)}
+                className="border-b cursor-pointer hover:bg-[var(--color-panel)] transition-colors"
+                style={{ borderColor: "var(--color-border)" }}
+              >
+                <td className="py-2.5">
+                  <Link to={to} className="inline-block" onClick={(e) => e.stopPropagation()}>
+                    <Badge
+                      size="sm"
+                      style={{
+                        borderColor: "var(--color-accent)",
+                        color: "var(--color-accent)",
+                        backgroundColor: "color-mix(in srgb, var(--color-accent) 12%, transparent)",
+                      }}
+                    >
+                      {tag.label}
+                    </Badge>
+                  </Link>
+                </td>
+                <td className="py-2.5 text-right tabular-nums" style={{ color: "var(--color-muted)" }}>
+                  {tag.paper_count}
+                </td>
+              </tr>
+              );
+            })}
+          </tbody>
+        </table>
       )}
     </div>
   );

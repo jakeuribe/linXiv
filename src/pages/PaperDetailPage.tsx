@@ -1,16 +1,18 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
-import { Document, Page, pdfjs } from "react-pdf";
+import { Document, Page } from "react-pdf";
 import type { PDFDocumentProxy } from "pdfjs-dist";
-import "react-pdf/dist/Page/AnnotationLayer.css";
-import "react-pdf/dist/Page/TextLayer.css";
-import { getPaperBySfk, getPaperVersions, getPaperPdfUrl } from "../api/papers";
+import { getPaperBySfk, getPaperVersions, getPaperPdfUrl, getPdfProxyUrl } from "../api/papers";
 import { getNotes, deleteNote } from "../api/notes";
+import { getAnnotations, deleteAnnotation, updateAnnotation } from "../api/annotations";
 import { listProjects } from "../api/projects";
-import { fetchArxiv } from "../api/search";
-import { apiFetch, BASE_URL, isTauri } from "../api/client";
-import type { Note, Paper } from "../types/api";
+import { apiFetch, bytesToBase64, isTauri } from "../api/client";
+import type { Note, Paper, Annotation } from "../types/api";
+import { PdfReader } from "../components/pdf/PdfReader";
+import { PagePill } from "../components/pdf/PagePill";
+import { parseAnchor } from "../lib/pdfAnchor";
+import { submitOnCtrlEnter } from "../lib/submitShortcut";
 import { Spinner } from "../components/ui/spinner";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
@@ -25,12 +27,15 @@ import { formatDate } from "../lib/date";
 import { TagBadge } from "../components/tags/TagBadge";
 import { invoke } from "@tauri-apps/api/core";
 
-pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-  "pdfjs-dist/build/pdf.worker.min.mjs",
-  import.meta.url,
-).toString();
-
 const LATEST_VERSION_KEY = "latest" as const;
+
+// Draggable split between the PDF pane and the details/notes pane. Persisted so
+// the chosen width survives navigation/reload. Only active on lg screens where
+// the two panes sit side by side (below lg they stack vertically).
+const RIGHT_PANE_KEY = "paperDetail.rightPaneWidth";
+const MIN_RIGHT_PANE = 300;
+const MAX_RIGHT_PANE = 720;
+const DEFAULT_RIGHT_PANE = 388;
 
 export default function PaperDetailPage() {
   const { sfk } = useParams<{ sfk: string }>();
@@ -47,12 +52,81 @@ export default function PaperDetailPage() {
   // null means "latest"; a number means a specific stored version
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
 
+  // Resizable right (details/notes) pane width.
+  const [rightWidth, setRightWidth] = useState(() => {
+    const saved = Number(localStorage.getItem(RIGHT_PANE_KEY));
+    return saved >= MIN_RIGHT_PANE && saved <= MAX_RIGHT_PANE ? saved : DEFAULT_RIGHT_PANE;
+  });
+  const [isWide, setIsWide] = useState(
+    () => typeof window !== "undefined" && window.matchMedia("(min-width: 1024px)").matches,
+  );
+  const twoPaneRef = useRef<HTMLDivElement>(null);
+  const draggingRef = useRef(false);
+  const dividerRafRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 1024px)");
+    const onChange = (e: MediaQueryListEvent) => setIsWide(e.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (dividerRafRef.current !== null) {
+        cancelAnimationFrame(dividerRafRef.current);
+      }
+    },
+    [],
+  );
+
+  const onDividerPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    e.preventDefault();
+    draggingRef.current = true;
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const onDividerPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!draggingRef.current || !twoPaneRef.current) return;
+    const rect = twoPaneRef.current.getBoundingClientRect();
+    const clientX = e.clientX;
+    if (dividerRafRef.current !== null) return;
+    dividerRafRef.current = requestAnimationFrame(() => {
+      dividerRafRef.current = null;
+      const next = Math.min(MAX_RIGHT_PANE, Math.max(MIN_RIGHT_PANE, rect.right - clientX));
+      setRightWidth(next);
+    });
+  };
+  const onDividerPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!draggingRef.current) return;
+    draggingRef.current = false;
+    e.currentTarget.releasePointerCapture(e.pointerId);
+    localStorage.setItem(RIGHT_PANE_KEY, String(rightWidth));
+  };
+  const onDividerKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const step = 16;
+    let next: number;
+    if (e.key === "ArrowLeft") {
+      next = Math.min(MAX_RIGHT_PANE, rightWidth + step);
+    } else if (e.key === "ArrowRight") {
+      next = Math.max(MIN_RIGHT_PANE, rightWidth - step);
+    } else if (e.key === "Home") {
+      next = MIN_RIGHT_PANE;
+    } else if (e.key === "End") {
+      next = MAX_RIGHT_PANE;
+    } else {
+      return;
+    }
+    setRightWidth(next);
+    localStorage.setItem(RIGHT_PANE_KEY, String(next));
+    e.preventDefault();
+  };
+
   const [previewNumPages, setPreviewNumPages] = useState(0);
   const [previewPage, setPreviewPage] = useState(1);
   const [containerWidth, setContainerWidth] = useState(0);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   const [showPdfPreview, setShowPdfPreview] = useState(false);
-  const [useProxy, setUseProxy] = useState(false);
   const [pdfPreviewLoaded, setPdfPreviewLoaded] = useState(false);
   const pdfPreviewDocRef = useRef<PDFDocumentProxy | null>(null);
   const linkPdfInputRef = useRef<HTMLInputElement>(null);
@@ -101,6 +175,14 @@ export default function PaperDetailPage() {
     enabled: !!paper?.source_id,
   });
 
+  // Highlights created in the PDF reader; shown here as a list with comments.
+  // Same query key (allProjects) the reader uses, so the two share one cache.
+  const { data: annotationsData, isLoading: annotationsLoading } = useQuery({
+    queryKey: ["annotations", paper?.source_id, { allProjects: true }],
+    queryFn: () => getAnnotations(paper!.source_id, undefined, true),
+    enabled: !!paper?.source_id,
+  });
+
   const { data: projectsData, isLoading: projectsLoading } = useQuery({
     queryKey: ["projects"],
     queryFn: () => listProjects(),
@@ -109,24 +191,22 @@ export default function PaperDetailPage() {
   const isViewingLatest =
     selectedVersion === null || selectedVersion === versionsData?.latest_version;
 
-  const downloadPdfMutation = useMutation({
-    mutationFn: (sourceId: string) => fetchArxiv(sourceId, true),
-    onSuccess: () => {
-      setShowPdfPreview(true);
-      queryClient.invalidateQueries({ queryKey: ["paper", "sfk", sfk] });
-      queryClient.invalidateQueries({ queryKey: ["paper", "versions", sfk] });
-      queryClient.invalidateQueries({ queryKey: ["papers"] });
-      queryClient.invalidateQueries({ queryKey: ["stats"] });
-    },
-  });
+  function handlePreviewPdf() {
+    setShowPdfPreview(true);
+  }
 
   const savePdfMutation = useMutation({
     mutationFn: async (sourceId: string) => {
       if (!pdfPreviewDocRef.current) throw new Error("PDF not loaded");
       const bytes = await pdfPreviewDocRef.current.getData();
-      const form = new FormData();
-      form.append("file", new Blob([bytes.slice()], { type: "application/pdf" }), `${sourceId}.pdf`);
-      await apiFetch(`/api/papers/${encodeURIComponent(sourceId)}/pdf`, { method: "PUT", body: form });
+      const path = `/api/papers/${encodeURIComponent(sourceId)}/pdf`;
+      if (isTauri) {
+        await apiFetch(path, { method: "PUT", body: JSON.stringify({ file_b64: bytesToBase64(bytes) }) });
+      } else {
+        const form = new FormData();
+        form.append("file", new Blob([bytes.slice()], { type: "application/pdf" }), `${sourceId}.pdf`);
+        await apiFetch(path, { method: "PUT", body: form });
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["paper", "sfk", sfk] });
@@ -138,9 +218,15 @@ export default function PaperDetailPage() {
 
   const linkPdfMutation = useMutation({
     mutationFn: async ({ sourceId, file }: { sourceId: string; file: File }) => {
-      const form = new FormData();
-      form.append("file", file, file.name);
-      await apiFetch(`/api/papers/${encodeURIComponent(sourceId)}/pdf`, { method: "PUT", body: form });
+      const path = `/api/papers/${encodeURIComponent(sourceId)}/pdf`;
+      if (isTauri) {
+        const file_b64 = bytesToBase64(new Uint8Array(await file.arrayBuffer()));
+        await apiFetch(path, { method: "PUT", body: JSON.stringify({ file_b64 }) });
+      } else {
+        const form = new FormData();
+        form.append("file", file, file.name);
+        await apiFetch(path, { method: "PUT", body: form });
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["paper", "sfk", sfk] });
@@ -154,7 +240,19 @@ export default function PaperDetailPage() {
     mutationFn: (noteId: number) => deleteNote(noteId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["notes", paper?.source_id] });
+      // Drop the deleted note's read page from cache so back-nav to it shows the
+      // not-found state instead of its stale content.
+      queryClient.invalidateQueries({ queryKey: ["note"] });
     },
+  });
+
+  const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null);
+  const deleteAnnotationMutation = useMutation({
+    mutationFn: (id: number) => deleteAnnotation(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["annotations"] });
+    },
+    onSettled: () => setPendingDeleteId(null),
   });
 
   useEffect(() => {
@@ -168,7 +266,6 @@ export default function PaperDetailPage() {
     };
   }, []);
 
-  const { reset: resetDownloadPdf } = downloadPdfMutation;
   const { reset: resetSavePdf } = savePdfMutation;
   const { reset: resetLinkPdf } = linkPdfMutation;
 
@@ -176,22 +273,23 @@ export default function PaperDetailPage() {
     setPreviewNumPages(0);
     setPreviewPage(1);
     setShowPdfPreview(false);
-    setUseProxy(false);
     setPdfPreviewLoaded(false);
     setOpenNativeError(null);
     setOpenNativeLoading(false);
     pdfPreviewDocRef.current = null;
-    resetDownloadPdf();
     resetSavePdf();
     resetLinkPdf();
     return () => {
       openNativeAbortRef.current?.abort();
       openNativeAbortRef.current = null;
     };
-  }, [sfk, selectedVersion, paper?.has_pdf, resetDownloadPdf, resetSavePdf, resetLinkPdf]);
+  }, [sfk, selectedVersion, paper?.has_pdf, resetSavePdf, resetLinkPdf]);
 
   function handleNotesSaved() {
     queryClient.invalidateQueries({ queryKey: ["notes", paper?.source_id] });
+    // Also refresh any open single-note read page (keyed ["note", id]) so an
+    // edit here isn't masked by its 30s staleTime.
+    queryClient.invalidateQueries({ queryKey: ["note"] });
     setShowAddNote(false);
     setEditingNoteId(null);
     deleteNoteMutation.reset();
@@ -263,6 +361,7 @@ export default function PaperDetailPage() {
 
   const authors = normalizeAuthors(paper.authors ?? []);
   const notes = notesData?.notes ?? [];
+  const annotations = annotationsData?.annotations ?? [];
   const editingNote =
     editingNoteId != null ? notes.find((n) => n.id === editingNoteId) ?? null : null;
   const tags = paper.tags ?? [];
@@ -329,7 +428,15 @@ export default function PaperDetailPage() {
       </div>
 
       {/* Two-pane row: each pane scrolls independently */}
-      <div className={`flex-1 min-h-0 overflow-hidden ${hasPdfContent ? "grid grid-rows-[1fr_1fr] grid-cols-1 lg:grid-rows-1 lg:grid-cols-[1fr_388px]" : "flex flex-col"}`}>
+      <div
+        ref={twoPaneRef}
+        className={`flex-1 min-h-0 overflow-hidden ${hasPdfContent ? "grid grid-rows-[1fr_1fr] grid-cols-1 lg:grid-rows-1 lg:grid-cols-[1fr_388px]" : "flex flex-col"}`}
+        style={
+          hasPdfContent && isWide
+            ? { gridTemplateColumns: `minmax(0,1fr) 6px ${rightWidth}px` }
+            : undefined
+        }
+      >
         {/* Left pane: PDF */}
         <div className={hasPdfContent ? "min-h-0 overflow-y-auto bg-surface2 border-r border-border" : "shrink-0 flex items-center gap-3 flex-wrap px-6 py-3 bg-surface2 border-b border-border"}>
           <div className={hasPdfContent ? "h-full flex flex-col" : "contents"}>
@@ -337,13 +444,12 @@ export default function PaperDetailPage() {
               paper={paper}
               isViewingLatest={isViewingLatest}
               isOnline={isOnline}
-              downloadPdfMutation={downloadPdfMutation}
+              projectId={defaultProjectId}
+              onPreview={handlePreviewPdf}
               savePdfMutation={savePdfMutation}
               linkPdfMutation={linkPdfMutation}
               linkPdfInputRef={linkPdfInputRef}
               showPdfPreview={showPdfPreview}
-              useProxy={useProxy}
-              setUseProxy={setUseProxy}
               previewNumPages={previewNumPages}
               setPreviewNumPages={setPreviewNumPages}
               previewPage={previewPage}
@@ -359,6 +465,26 @@ export default function PaperDetailPage() {
           </div>
         </div>
 
+        {/* Draggable divider (side-by-side layout only) */}
+        {hasPdfContent && isWide && (
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize panels"
+            aria-valuenow={rightWidth}
+            aria-valuemin={MIN_RIGHT_PANE}
+            aria-valuemax={MAX_RIGHT_PANE}
+            tabIndex={0}
+            onPointerDown={onDividerPointerDown}
+            onPointerMove={onDividerPointerMove}
+            onPointerUp={onDividerPointerUp}
+            onPointerCancel={onDividerPointerUp}
+            onKeyDown={onDividerKeyDown}
+            className="h-full cursor-col-resize bg-border hover:bg-accent transition-colors"
+            style={{ touchAction: "none" }}
+          />
+        )}
+
         {/* Right pane: identity + Details/Notes */}
         <div className={`overflow-y-auto bg-panel ${hasPdfContent ? "min-h-0" : "flex-1 min-h-0"}`}>
           <div className={hasPdfContent ? "px-[18px] py-5 space-y-5" : "max-w-[760px] mx-auto px-8 py-6 space-y-5"}>
@@ -369,7 +495,10 @@ export default function PaperDetailPage() {
               </h2>
 
               {authors.length > 0 && (
-                <p className="text-muted text-sm">{authors.join(", ")}</p>
+                <div className="space-y-1.5">
+                  <MonoLabel>Authors</MonoLabel>
+                  <p className="text-muted text-sm">{authors.join(", ")}</p>
+                </div>
               )}
 
               {/* Meta row */}
@@ -452,6 +581,9 @@ export default function PaperDetailPage() {
                 <TabsTrigger value="details">Details</TabsTrigger>
                 <TabsTrigger value="notes">
                   Notes{notes.length > 0 ? ` (${notes.length})` : ""}
+                </TabsTrigger>
+                <TabsTrigger value="annotations">
+                  Annotations{annotations.length > 0 ? ` (${annotations.length})` : ""}
                 </TabsTrigger>
               </TabsList>
 
@@ -554,6 +686,46 @@ export default function PaperDetailPage() {
                   </>
                 )}
               </TabsContent>
+
+              <TabsContent value="annotations" className="pt-5 space-y-4">
+                <MonoLabel as="h3">Annotations</MonoLabel>
+                {annotationsLoading ? (
+                  <div className="flex justify-center py-6">
+                    <Spinner size={20} />
+                  </div>
+                ) : annotations.length === 0 ? (
+                  <p className="text-muted text-sm text-center py-8">
+                    No annotations yet. Highlight text in the saved PDF to create one.
+                  </p>
+                ) : (
+                  <div className="space-y-3">
+                    {annotations.map((a) => (
+                      <AnnotationCard
+                        key={a.id}
+                        annotation={a}
+                        isPending={
+                          a.id === pendingDeleteId &&
+                          deleteAnnotationMutation.isPending
+                        }
+                        onDelete={() => {
+                          if (!deleteAnnotationMutation.isPending) {
+                            setPendingDeleteId(a.id);
+                            deleteAnnotationMutation.mutate(a.id);
+                          }
+                        }}
+                      />
+                    ))}
+                  </div>
+                )}
+                {deleteAnnotationMutation.isError && (
+                  <p
+                    className="text-sm text-center"
+                    style={{ color: "var(--color-danger)" }}
+                  >
+                    Couldn't delete the annotation. Please try again.
+                  </p>
+                )}
+              </TabsContent>
             </Tabs>
           </div>
         </div>
@@ -570,6 +742,151 @@ export default function PaperDetailPage() {
   );
 }
 
+// One annotation in the Annotations tab: a color chip + quoted highlight + the
+// written comment. The quote expands to full text, and the comment is editable
+// inline (add/edit/remove) so a highlight can carry a comment without opening the
+// reader popup. All edits invalidate the shared cache, keeping the reader in sync.
+function AnnotationCard({
+  annotation,
+  onDelete,
+  isPending,
+}: {
+  annotation: Annotation;
+  onDelete: () => void;
+  isPending: boolean;
+}) {
+  const queryClient = useQueryClient();
+  const anchor = parseAnchor(annotation.anchor);
+  const [expanded, setExpanded] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(annotation.comment);
+  // Comment as seen when editing opened; diverges if another surface saves first.
+  const [baseComment, setBaseComment] = useState(annotation.comment);
+  const stale = baseComment !== annotation.comment;
+
+  const updateMutation = useMutation({
+    mutationFn: (comment: string) => updateAnnotation(annotation.id, comment),
+    onSuccess: (_data, comment) => {
+      setBaseComment(comment);
+      queryClient.invalidateQueries({ queryKey: ["annotations"] });
+      setEditing(false);
+    },
+  });
+
+  // Long quotes clamp to 3 lines; offer the toggle only when there's plausibly
+  // more to show (length heuristic, not exact overflow measurement).
+  const quote = anchor?.quote ?? "";
+  const clampable = quote.length > 160;
+
+  return (
+    <Card>
+      <div className="flex items-start gap-2.5">
+        <span
+          className="mt-1 h-3 w-3 shrink-0 rounded-full border border-black/20"
+          style={{ backgroundColor: anchor?.color ?? "var(--color-muted)" }}
+          aria-hidden
+        />
+        <div className="min-w-0 flex-1 space-y-1.5">
+          {quote && (
+            <p
+              className={`text-sm text-text italic ${
+                clampable && !expanded ? "line-clamp-3" : "whitespace-pre-wrap"
+              }`}
+            >
+              “{quote}”
+            </p>
+          )}
+          {clampable && (
+            <button
+              onClick={() => setExpanded((v) => !v)}
+              className="text-xs font-medium text-accent hover:underline"
+            >
+              {expanded ? "Show less" : "Show more"}
+            </button>
+          )}
+
+          {editing ? (
+            <div className="space-y-1.5">
+              <textarea
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={submitOnCtrlEnter(() => {
+                  if (!(updateMutation.isPending || draft === annotation.comment || stale))
+                    updateMutation.mutate(draft);
+                })}
+                placeholder="Add a comment…"
+                rows={3}
+                autoFocus
+                className="w-full resize-none rounded border border-border bg-surface2 px-2 py-1.5 text-sm text-text focus:outline-none focus:border-accent"
+              />
+              <div className="flex items-center gap-3 text-xs">
+                <button
+                  disabled={updateMutation.isPending || draft === annotation.comment || stale}
+                  onClick={() => updateMutation.mutate(draft)}
+                  className="font-medium text-accent hover:underline disabled:opacity-40"
+                >
+                  {updateMutation.isPending ? "Saving…" : "Save"}
+                </button>
+                <button
+                  onClick={() => {
+                    setDraft(annotation.comment);
+                    updateMutation.reset();
+                    setEditing(false);
+                  }}
+                  className="font-medium text-muted hover:underline"
+                >
+                  Cancel
+                </button>
+                {stale ? (
+                  <span style={{ color: "var(--color-danger)" }}>
+                    Comment was updated elsewhere — cancel to reload.
+                  </span>
+                ) : (
+                  updateMutation.isError && (
+                    <span style={{ color: "var(--color-danger)" }}>
+                      Couldn't save. Try again.
+                    </span>
+                  )
+                )}
+              </div>
+            </div>
+          ) : (
+            annotation.comment && (
+              <p className="text-sm text-muted whitespace-pre-wrap">
+                {annotation.comment}
+              </p>
+            )
+          )}
+
+          <div className="flex items-center gap-3 text-xs text-ink3">
+            {anchor && <span>p. {anchor.page}</span>}
+            {!editing && (
+              <button
+                onClick={() => {
+                  setDraft(annotation.comment);
+                  setBaseComment(annotation.comment);
+                  updateMutation.reset();
+                  setEditing(true);
+                }}
+                className="font-medium text-accent hover:underline"
+              >
+                {annotation.comment ? "Edit comment" : "Add comment"}
+              </button>
+            )}
+            <button
+              onClick={onDelete}
+              disabled={isPending || updateMutation.isPending}
+              className="ml-auto font-medium text-[var(--color-danger)] hover:underline disabled:opacity-50"
+            >
+              {isPending ? "Deleting…" : "Delete"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 type Mutation<TVars> = {
   mutate: (vars: TVars) => void;
   isPending: boolean;
@@ -583,13 +900,11 @@ interface PdfPaneProps {
   isViewingLatest: boolean;
   isOnline: boolean;
   asStrip?: boolean;
-  downloadPdfMutation: Mutation<string>;
+  onPreview: () => void;
   savePdfMutation: Mutation<string>;
   linkPdfMutation: Mutation<{ sourceId: string; file: File }>;
   linkPdfInputRef: React.RefObject<HTMLInputElement>;
   showPdfPreview: boolean;
-  useProxy: boolean;
-  setUseProxy: (v: boolean) => void;
   previewNumPages: number;
   setPreviewNumPages: (n: number) => void;
   previewPage: number;
@@ -600,55 +915,18 @@ interface PdfPaneProps {
   pdfPreviewDocRef: React.MutableRefObject<PDFDocumentProxy | null>;
   pdfContainerRef: (el: HTMLDivElement | null) => void;
   containerWidth: number;
-}
-
-// Bottom-center pill stepping through rendered react-pdf pages.
-function PagePill({
-  page,
-  total,
-  onGo,
-}: {
-  page: number;
-  total: number;
-  onGo: (n: number) => void;
-}) {
-  if (total <= 0) return null;
-  return (
-    <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex items-center gap-2 rounded-full bg-panel border border-border shadow-card px-3 py-1.5">
-      <button
-        className="text-muted hover:text-text disabled:opacity-40 disabled:pointer-events-none px-1"
-        onClick={() => onGo(page - 1)}
-        disabled={page <= 1}
-        aria-label="Previous page"
-      >
-        ‹
-      </button>
-      <span className="font-mono text-xs text-text tabular-nums">
-        {page} / {total}
-      </span>
-      <button
-        className="text-muted hover:text-text disabled:opacity-40 disabled:pointer-events-none px-1"
-        onClick={() => onGo(page + 1)}
-        disabled={page >= total}
-        aria-label="Next page"
-      >
-        ›
-      </button>
-    </div>
-  );
+  projectId?: number | null;
 }
 
 function PdfPane({
   paper,
   isViewingLatest,
   isOnline,
-  downloadPdfMutation,
+  onPreview,
   savePdfMutation,
   linkPdfMutation,
   linkPdfInputRef,
   showPdfPreview,
-  useProxy,
-  setUseProxy,
   previewNumPages,
   setPreviewNumPages,
   previewPage,
@@ -659,6 +937,7 @@ function PdfPane({
   pdfPreviewDocRef,
   pdfContainerRef,
   containerWidth,
+  projectId,
   asStrip,
 }: PdfPaneProps) {
   const previewScrollRafRef = useRef<number | null>(null);
@@ -672,16 +951,20 @@ function PdfPane({
   );
 
   if (paper.has_pdf) {
+    // Saved PDF: the annotating reader (select→highlight, click→comment/delete)
+    // replaces the plain iframe so highlights can overlay the pages.
     return (
       <div className="relative w-full h-full min-h-0 flex flex-col">
         <div className="flex-1 min-h-0 w-full overflow-hidden bg-panel">
-          <iframe
-            src={getPaperPdfUrl(
+          <PdfReader
+            file={getPaperPdfUrl(
               paper.source_id,
               paper.version > 0 ? paper.version : undefined
             )}
-            className="w-full h-full block"
-            title="PDF viewer"
+            sourceId={paper.source_id}
+            version={paper.version}
+            projectId={projectId}
+            errorUrl={paper.url}
           />
         </div>
       </div>
@@ -696,19 +979,12 @@ function PdfPane({
           <div className="flex items-center gap-3 flex-wrap self-center">
             <Button
               variant="muted"
-              onClick={() => downloadPdfMutation.mutate(paper.source_id)}
-              disabled={downloadPdfMutation.isPending || !isOnline}
+              onClick={onPreview}
+              disabled={!isOnline}
             >
-              {downloadPdfMutation.isPending ? "Fetching…" : "Preview PDF"}
+              Preview PDF
             </Button>
             {!isOnline && <span className="text-xs text-muted">Offline</span>}
-            {downloadPdfMutation.isError && (
-              <span className="text-xs" style={{ color: "var(--color-danger)" }}>
-                {downloadPdfMutation.error instanceof Error
-                  ? downloadPdfMutation.error.message
-                  : "Failed to fetch PDF"}
-              </span>
-            )}
           </div>
         )}
         {!showPdfPreview && paper.url && (
@@ -776,7 +1052,7 @@ function PdfPane({
                   className="w-full h-full overflow-y-auto bg-[#525659]"
                 >
                   <Document
-                    file={useProxy ? `${BASE_URL}/api/pdf/proxy?url=${encodeURIComponent(paper.url)}` : paper.url}
+                    file={getPdfProxyUrl(paper.url)}
                     onLoadSuccess={(pdf) => {
                       setPreviewNumPages(pdf.numPages);
                       pdfPreviewDocRef.current = pdf;
@@ -789,30 +1065,15 @@ function PdfPane({
                     }
                     error={
                       <div className="flex flex-col items-center justify-center gap-3 py-16 text-sm">
-                        {!useProxy ? (
-                          <>
-                            <span className="text-white/60">Could not load PDF directly (CORS).</span>
-                            <Button
-                              variant="primary"
-                              size="sm"
-                              onClick={() => { setPreviewNumPages(0); setPdfPreviewLoaded(false); pdfPreviewDocRef.current = null; setUseProxy(true); }}
-                            >
-                              Load via proxy
-                            </Button>
-                          </>
-                        ) : (
-                          <>
-                            <span className="text-danger">Failed to load PDF.</span>
-                            <a
-                              href={paper.url}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="text-accent hover:underline"
-                            >
-                              Open in browser
-                            </a>
-                          </>
-                        )}
+                        <span className="text-danger">Failed to load PDF.</span>
+                        <a
+                          href={paper.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-accent hover:underline"
+                        >
+                          Open in browser
+                        </a>
                       </div>
                     }
                   >

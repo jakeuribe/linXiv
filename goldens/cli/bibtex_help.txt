@@ -1,0 +1,8 @@
+usage: linxiv bibtex [-h] {import} ...
+
+positional arguments:
+  {import}
+    import    Import papers from a .bib file
+
+options:
+  -h, --help  show this help message and exit

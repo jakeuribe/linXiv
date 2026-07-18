@@ -1,4 +1,4 @@
-import { isTauri } from "../api/client";
+import { isTauri } from "../api/client.ts";
 
 // Interface zoom bounds. 100% is the unscaled baseline; the range mirrors what
 // a typical desktop browser offers via Ctrl +/− and what the underlying webview

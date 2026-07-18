@@ -8,6 +8,7 @@ import { listProjects, addPapersToProject, createProject } from "../api/projects
 import { getStats } from "../api/settings";
 import { Spinner } from "../components/ui/spinner";
 import { Button } from "../components/ui/button";
+import { formSubmitOnCtrlEnter } from "../lib/submitShortcut";
 import { Dialog } from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
 
@@ -335,6 +336,7 @@ export default function GraphPage() {
                   const name = newProjectName.trim();
                   if (name) createProjectMutation.mutate({ name, sourceIds: selectedSourceIds });
                 }}
+                onKeyDown={formSubmitOnCtrlEnter}
                 className="flex gap-2"
               >
                 <Input

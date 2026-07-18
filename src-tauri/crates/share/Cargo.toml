@@ -1,0 +1,33 @@
+[package]
+name = "linxiv-share"
+version = "0.3.0-beta"
+edition = "2021"
+
+[lib]
+name = "linxiv_share"
+path = "src/lib.rs"
+
+[features]
+auth-keyhive = ["linxiv-p2p/auth-keyhive"]
+sync-beelay = ["linxiv-p2p/sync-beelay"]
+
+[dependencies]
+linxiv-core = { path = "../core" }
+# Vendored p2p transport: iroh endpoint + automerge lockstep sync + tickets.
+linxiv-p2p = { path = "../p2p" }
+# Pinned to core's version so the `Connection` type unifies to one crate instance.
+rusqlite = "0.40"
+# CRDT engine: autosurgeon 0.12 derives Reconcile/Hydrate and requires automerge ^0.10.
+automerge = "0.10.0"
+autosurgeon = "0.12.0"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+tracing = "0.1"
+# import_shared_project's missing-publish-date fallback (mirrors export_import).
+chrono = "0.4"
+# Async runtime: transport.rs's refresh() calls spawn_blocking in production code.
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"] }
+
+[dev-dependencies]
+tempfile = "3"
+chrono = "0.4"

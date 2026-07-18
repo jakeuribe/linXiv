@@ -3,11 +3,10 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Document, Page, pdfjs } from "react-pdf";
 import type { PDFDocumentProxy } from "pdfjs-dist";
-import "react-pdf/dist/Page/AnnotationLayer.css";
-import "react-pdf/dist/Page/TextLayer.css";
 import { fetchArxiv } from "../api/search";
 import { appendSavedId } from "../api/searchState";
-import { apiFetch } from "../api/client";
+import { apiFetch, bytesToBase64, isTauri } from "../api/client";
+import { getPdfProxyUrl } from "../api/papers";
 import { Button } from "../components/ui/button";
 import { Spinner } from "../components/ui/spinner";
 import type { SearchResult } from "../types/api";
@@ -66,9 +65,14 @@ export default function PdfPreviewPage() {
       if (pdfDocRef.current) {
         try {
           const bytes = await pdfDocRef.current.getData();
-          const form = new FormData();
-          form.append("file", new Blob([bytes.slice()], { type: "application/pdf" }), `${sourceId}.pdf`);
-          await apiFetch(`/api/papers/${encodeURIComponent(sourceId)}/pdf`, { method: "PUT", body: form });
+          const path = `/api/papers/${encodeURIComponent(sourceId)}/pdf`;
+          if (isTauri) {
+            await apiFetch(path, { method: "PUT", body: JSON.stringify({ file_b64: bytesToBase64(bytes) }) });
+          } else {
+            const form = new FormData();
+            form.append("file", new Blob([bytes.slice()], { type: "application/pdf" }), `${sourceId}.pdf`);
+            await apiFetch(path, { method: "PUT", body: form });
+          }
         } catch (e) {
           console.error("PDF attach failed (non-fatal):", e);
         }
@@ -103,9 +107,7 @@ export default function PdfPreviewPage() {
   }
 
   const { result } = state;
-  const pdfSrc = useProxy
-    ? `/api/pdf/proxy?url=${encodeURIComponent(result.paper_url)}`
-    : result.paper_url;
+  const pdfSrc = useProxy ? getPdfProxyUrl(result.paper_url) : result.paper_url;
 
   return (
     <div className="flex flex-col h-full">

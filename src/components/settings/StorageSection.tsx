@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { getSettings, updateSettings } from "../../api/settings";
+import { backupDatabase, restoreDatabase } from "../../api/storage";
+import { isTauri } from "../../api/client";
 import { listSavedPdfs, deleteSavedPdf } from "../../api/pdfs";
 import type { SavedPdf } from "../../api/pdfs";
 import { getPaperPdfUrl } from "../../api/papers";
@@ -14,7 +16,8 @@ import { SettingGroup, SettingGroupLabel, SettingRow } from "./SettingRow";
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
 export function StorageSection() {
@@ -44,7 +47,28 @@ export function StorageSection() {
 
   const { mutate: save, isPending: saving, isError: saveError } = useMutation({
     mutationFn: () => updateSettings({ pdf_save_limit_mb: limitNum }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["settings"] }),
+  });
+
+  const [backupMsg, setBackupMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const { mutate: runBackup, isPending: backingUp } = useMutation({
+    mutationFn: backupDatabase,
+    onSuccess: (info) =>
+      setBackupMsg(info ? { ok: true, text: `Saved ${formatBytes(info.bytes)} to ${info.path}` } : null),
+    onError: (e) =>
+      setBackupMsg({ ok: false, text: e instanceof Error ? e.message : "Backup failed" }),
+  });
+
+  const restoreGuard = useConfirmWithTimeout();
+  const [restoreMsg, setRestoreMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const { mutate: runRestore, isPending: restoring } = useMutation({
+    mutationFn: restoreDatabase,
+    onSuccess: (done) => {
+      if (!done) return; // picker cancelled
+      setRestoreMsg({ ok: true, text: "Database restored — restart linXiv to finish." });
+      qc.invalidateQueries();
+    },
+    onError: (e) =>
+      setRestoreMsg({ ok: false, text: e instanceof Error ? e.message : "Restore failed" }),
   });
 
   const {
@@ -55,6 +79,7 @@ export function StorageSection() {
     queryKey: ["saved-pdfs"],
     queryFn: listSavedPdfs,
     staleTime: 30_000,
+    enabled: pdfsExpanded,
   });
   const savedPdfs = pdfData?.pdfs ?? [];
 
@@ -81,10 +106,14 @@ export function StorageSection() {
   return (
     <div>
       <SettingGroupLabel>Storage</SettingGroupLabel>
+      {!isTauri && (
+        <p className="mb-2.5 text-xs text-muted italic">
+          Available in the desktop app. The browser dev build can't backup or restore the database.
+        </p>
+      )}
       <SettingGroup>
-        {/* TODO: pdf_save_limit_mb is defined in default_settings.json (default 1024 MB) but no
-            backend enforcement was found — the limit is not currently checked when downloading
-            or saving PDFs. Verify backend enforcement before treating this as a hard cap. */}
+        {/* pdf_save_limit_mb: a total-storage cap enforced by the backend before every new
+            PDF write (core's import_pdf + download_pdf sum the managed PDF dir first). */}
         <SettingRow
           label="Total PDF storage (MB)"
           description="Maximum combined disk space for all locally saved PDFs."
@@ -114,6 +143,66 @@ export function StorageSection() {
             </>
           )}
         </SettingRow>
+
+        <SettingRow
+          label="Back up database"
+          description="Save a consistent snapshot of your database to a file. Also available as: linxiv backup <dest>"
+        >
+          <Button
+            size="sm"
+            disabled={!isTauri || backingUp || restoring}
+            onClick={() => {
+              setBackupMsg(null);
+              runBackup();
+            }}
+          >
+            {backingUp ? "Backing up…" : "Back up…"}
+          </Button>
+          {backupMsg && (
+            <span
+              className={backupMsg.ok ? "text-xs text-success truncate max-w-[220px]" : "text-xs text-danger truncate max-w-[220px]"}
+              title={backupMsg.text}
+              role="status"
+            >
+              {backupMsg.text}
+            </span>
+          )}
+        </SettingRow>
+        <SettingRow
+          label="Restore database"
+          description="Replace your database with a backup snapshot, then restart linXiv. Also available as: linxiv restore <src>"
+        >
+          <Button
+            size="sm"
+            disabled={!isTauri || backingUp || restoring}
+            onClick={() => {
+              if (restoreGuard.confirm) {
+                restoreGuard.disarm();
+                setRestoreMsg(null);
+                runRestore();
+              } else {
+                restoreGuard.arm();
+              }
+            }}
+            onMouseDown={(e) => e.preventDefault()}
+            onBlur={restoreGuard.disarm}
+            className={restoreGuard.confirm ? "text-[var(--color-danger)]" : undefined}
+          >
+            {restoring ? "Restoring…" : restoreGuard.confirm ? "Replace library?" : "Restore…"}
+          </Button>
+          {restoreMsg && (
+            <span
+              className={restoreMsg.ok ? "text-xs text-success truncate max-w-[220px]" : "text-xs text-danger truncate max-w-[220px]"}
+              title={restoreMsg.text}
+              role="status"
+            >
+              {restoreMsg.text}
+            </span>
+          )}
+        </SettingRow>
+        <p className="mt-2 text-xs text-muted">
+          Reading list status (unread/reading/read) and locally saved PDF files are stored locally and not included in backups.
+        </p>
       </SettingGroup>
 
       <div className="mt-8 flex items-center gap-2">

@@ -1,0 +1,6 @@
+[submodule "docs/adr"]
+	path = docs/adr
+	url = https://github.com/linxiv-dev/linxiv-adr.git
+[submodule "src-tauri/crates/p2p"]
+	path = src-tauri/crates/p2p
+	url = https://github.com/linxiv-dev/linxiv-p2p.git

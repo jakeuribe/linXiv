@@ -15,8 +15,16 @@ const adaptor = liteAdaptor();
 RegisterHTMLHandler(adaptor);
 const svgOutput = new SVG({ fontCache: "none" });
 // Exclude packages that emit raw HTML nodes (html) or persist macro definitions
-// across renders on the shared mjDoc (newcommand, configmacros).
-const excludedPackages = new Set(["html", "newcommand", "configmacros"]);
+// across renders on the shared mjDoc (newcommand, configmacros). require/setoptions
+// are excluded too: \require{html} would re-enable the filtered-out html extension
+// (\href, \style, …) and reopen the raw-HTML XSS path.
+const excludedPackages = new Set([
+  "html",
+  "require",
+  "setoptions",
+  "newcommand",
+  "configmacros",
+]);
 const mathPackages = AllPackages.filter((p) => !excludedPackages.has(p));
 const mjDoc = mathjax.document("", {
   InputJax: new TeX({ packages: mathPackages }),
@@ -51,8 +59,10 @@ export function useTexEnabled(): boolean {
 // $$...$$ (display) or $...$ (inline). Inline requires a non-space just inside
 // each delimiter: (?!\s) guards the open $ and the trailing [^$\s] guards the
 // close $. An unpaired opener like the first $ in "$5 and $6" matches nothing;
-// a paired "$5$" still renders as math.
-const MATH_RE = /\$\$([\s\S]+?)\$\$|\$(?!\s)([^$]*?[^$\s])\$/g;
+// a paired "$5$" still renders as math. Inline is kept to a single line ([^$\n])
+// so two stray `$` on consecutive lines (currency, $VAR) don't merge into math;
+// display $$…$$ may still span lines.
+const MATH_RE = /\$\$([\s\S]+?)\$\$|\$(?!\s)([^$\n]*?[^$\s])\$/g;
 
 function mathHtml(tex: string, display: boolean): string | null {
   if (!tex.trim()) return null;

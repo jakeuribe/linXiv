@@ -1,0 +1,4 @@
+usage: linxiv categories [-h]
+
+options:
+  -h, --help  show this help message and exit

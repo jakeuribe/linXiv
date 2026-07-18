@@ -2,18 +2,29 @@
 # resolves sidecar binaries relative to current_exe(), so the cargo target/
 # directory must stay at src-tauri/target (ADR 0016 / drift report 2026-06-05).
 [workspace]
-members = ["."]
+members = [".", "crates/core", "crates/cli", "crates/mcp", "crates/migrate", "crates/share", "crates/p2p"]
 
 [package]
 name = "linxiv-app"
-version = "0.2.0"
+version = "0.3.0-beta"
 description = "linXiv desktop app"
 authors = ["jakeuribe"]
 edition = "2021"
+# `tauri dev` runs a bare `cargo run`; pick the app over the dev-server bin.
+default-run = "linxiv-app"
+
+[lib]
+name = "linxiv_app"
+path = "src/lib.rs"
 
 [[bin]]
 name = "linxiv-app"
 path = "src/main.rs"
+
+# Dev-only HTTP shim (D32): serves /api/* over HTTP for the browser dev loop.
+[[bin]]
+name = "linxiv-dev-server"
+path = "src/bin/dev_server.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -23,22 +34,83 @@ tauri = { version = "2", features = ["unstable"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-opener = "2"
-tauri-plugin-shell = "2"
-tauri-plugin-texbrain = { git = "https://github.com/linxiv-dev/tex-brain-linxiv-plugin" }
+tauri-plugin-updater = "2"
+# relaunch() after an in-place update installs (AppImage via the updater plugin,
+# or deb/rpm via apply_linux_package_update below).
+tauri-plugin-process = "2"
+tauri-plugin-texbrain = { git = "https://github.com/linxiv-dev/tex-brain-linxiv-plugin", rev = "9499d4343033de0c3f1e52a2f2a06989fa4d2f13" }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# preserve_order: write_mcp_config (src/integrations.rs) rewrites third-party MCP
+# client config files and must not re-sort their keys.
+serde_json = { version = "1", features = ["preserve_order"] }
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json", "blocking"] }
+# Dev-only HTTP shim server (used by the linxiv-dev-server bin; not in the app).
+axum = "0.8"
+# In-process backend: the app calls linxiv-core directly via the `api` dispatch
+# command (replacing the HTTP hop to the Python sidecar). rusqlite is pinned to
+# core's version so the Connection type unifies to one crate instance.
+linxiv-core = { path = "crates/core" }
+# Phase-0 quarantined CRDT "shared projects" store, reached via the `share_api`
+# command. Reads canonical via linxiv-core; its own docs live under the share dir.
+linxiv-share = { path = "crates/share", features = ["auth-keyhive", "sync-beelay"] }
+rusqlite = "0.40"
+anyhow = "1"
+# Date parse/format parity with core's NaiveDate fields in router arms.
+chrono = "0.4"
+# File-upload routes carry bytes as base64 in the JSON `api` body (the webview
+# can't put a multipart body through `invoke`).
+base64 = "0.22"
+# p2p key-store DEK (write-enforcement spec §8): OS keychain storage. The
+# secret-service backend is the pure-Rust zbus one so no C dbus lib is needed.
+keyring = { version = "3", features = [
+    "apple-native",
+    "windows-native",
+    "async-secret-service",
+    "crypto-rust",
+    "tokio",
+] }
+# Headless DEK derivation from LINXIV_P2P_PASSPHRASE (Argon2id).
+argon2 = "0.5"
+# Random DEK bytes on first run (same major as the lockfile's transitive copy).
+getrandom = "0.3"
+# deb/rpm self-update (apply_linux_package_update): downloads the release asset
+# directly, since the Tauri updater plugin only ever swaps AppImage/app.tar.gz/
+# NSIS-MSI in place. 0.12.x already pulled transitively (linxiv-core/tex-brain);
+# tauri-plugin-updater pulls its own, newer 0.13.x separately. json: parses the
+# GitHub Releases API response; stream: bounds the download by running total
+# instead of trusting Content-Length.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+# apply_linux_package_update: an O_EXCL-created unique path for the downloaded
+# deb/rpm, so a local process can't symlink-swap a predictable temp path
+# before pkexec reads it. (Also used by the share-dispatcher test below.)
+tempfile = "3"
+# apply_linux_package_update: verify the downloaded deb/rpm against the sha256
+# GitHub's Releases API reports for the asset (fetched over api.github.com,
+# a separate channel from the objects.githubusercontent.com download).
+sha2 = "0.10"
+# Proper host parsing for is_allowed_asset_url — string-splitting a URL by
+# hand mishandles userinfo (a `user:pass@host` prefix defeats a naive host
+# check). Already pulled transitively by reqwest.
+url = "2"
+# StreamExt::next() for apply_linux_package_update's bounded download.
+# Already pulled transitively by tokio/reqwest.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+# Share-dispatcher test injects a tempdir share dir (never the real data dir).
+wiremock = "0.6"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
-
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
 
 [profile.release]
 codegen-units = 1
 lto = true
 opt-level = "s"
-panic = "abort"
+# D30: unwind so the PDF-extraction catch_unwind (sources/pdf_metadata.rs) can
+# degrade a libpdfium-binding Rust panic to "no metadata" instead of aborting the
+# whole app. The catch is inside the Rust→pdfium-render call, so nothing unwinds
+# across a C frame. (Native libpdfium *segfaults* are contained by the subprocess
+# boundary in pdf_metadata.rs::extract_pdf_metadata_isolated.)
+panic = "unwind"
 strip = true

@@ -2,9 +2,6 @@ name: CI
 
 on:
   push:
-    branches:
-      # - main
-      # - dev
     tags:
       - "v*"
   pull_request:
@@ -13,41 +10,47 @@ on:
       - dev
 
 jobs:
-  typecheck:
-    name: Type Check
+  rust:
+    name: Rust (cargo test + fmt)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-
-      - uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt pyright pytest
-
-      - name: Run Pyright
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      # Tauri 2 system deps (the linxiv-app crate links webkit2gtk).
+      - name: Install Tauri system deps
         run: |
-          echo '{"typeCheckingMode": "basic", "pythonVersion": "3.11", "exclude": ["linxiv_mcp.py"]}' > pyrightconfig.json
-          pyright
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libxdo-dev
+      # Native libpdfium for the PDF-extraction tests.
+      - name: Fetch pdfium
+        run: bash scripts/fetch_pdfium.sh
+      # linxiv-app's tauri-build validates the externalBin sidecar paths at
+      # compile time, so they must exist before cargo test builds the app.
+      - name: Stage Rust CLI/MCP sidecar binaries
+        run: bash scripts/stage_rust_bins.sh
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test --workspace
+      - name: cargo fmt
+        working-directory: src-tauri
+        run: cargo fmt --all --check
 
-  test:
-    name: Test (Python ${{ matrix.python-version }}, ${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.11", "3.12"]
+  frontend:
+    name: Frontend (tsc + test)
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-node@v4
         with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt pytest
-
-      - name: Run tests
-        run: pytest tests/
+          # npm test uses --experimental-transform-types, which needs Node 22+.
+          node-version: "22"
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm test

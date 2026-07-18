@@ -23,10 +23,68 @@ jobs:
             args: ""
           - os: windows-latest
             platform: windows-x86_64
-            args: ""
+            # WiX/MSI's ProductVersion is strictly numeric (major.minor.build,
+            # 0-65535) and rejects alphabetic prerelease tags like "-beta" or
+            # "-rc.1". NSIS has no such restriction, so prereleases build
+            # NSIS-only; stable tags (no hyphen) still build both.
+            args: ${{ contains(github.ref_name, '-') && '--bundles nsis' || '' }}
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # crates/p2p is a git submodule; ci.yml already does this.
+          submodules: recursive
+
+      - name: Set app version from tag
+        shell: bash
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          jq --arg v "$ver" '.version = $v' src-tauri/tauri.conf.json > /tmp/tauri.conf.json
+          mv /tmp/tauri.conf.json src-tauri/tauri.conf.json
+          npm version "$ver" --no-git-tag-version --allow-same-version
+          # linxiv-p2p is a separate vendored submodule; its version is independent.
+          for f in src-tauri/Cargo.toml src-tauri/crates/*/Cargo.toml; do
+            [ "$f" = "src-tauri/crates/p2p/Cargo.toml" ] && continue
+            # -i.bak (suffix attached, no space) parses the same on GNU sed
+            # (Linux/Windows Git Bash) and BSD sed (macOS); bare `-i` doesn't.
+            sed -i.bak "s/^version = \".*\"/version = \"$ver\"/" "$f" && rm -f "$f.bak"
+          done
+
+      - name: Refuse to release without real updater signing set up
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if grep -q "REPLACE_WITH_TAURI_SIGNER_GENERATE_PUBLIC_KEY" src-tauri/tauri.conf.json; then
+            echo "::error::src-tauri/tauri.conf.json still has the placeholder updater pubkey." \
+                 "Run 'npm run tauri signer generate', paste the public key into" \
+                 "plugins.updater.pubkey, and set the TAURI_SIGNING_PRIVATE_KEY(_PASSWORD)" \
+                 "repo secrets before cutting a release."
+            exit 1
+          fi
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY repo secret is not set." \
+                 "createUpdaterArtifacts requires it to build at all."
+            exit 1
+          fi
+
+      - name: Refuse to release without real updater signing set up
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          if grep -q "REPLACE_WITH_TAURI_SIGNER_GENERATE_PUBLIC_KEY" src-tauri/tauri.conf.json; then
+            echo "::error::src-tauri/tauri.conf.json still has the placeholder updater pubkey." \
+                 "Run 'npm run tauri signer generate', paste the public key into" \
+                 "plugins.updater.pubkey, and set the TAURI_SIGNING_PRIVATE_KEY(_PASSWORD)" \
+                 "repo secrets before cutting a release."
+            exit 1
+          fi
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY repo secret is not set." \
+                 "createUpdaterArtifacts requires it to build at all."
+            exit 1
+          fi
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
@@ -39,17 +97,6 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             patchelf
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-
-      - name: Install Python dependencies and PyInstaller
-        run: uv sync --extra mcp
 
       - uses: actions/setup-node@v4
         with:
@@ -65,20 +112,38 @@ jobs:
         with:
           workspaces: "src-tauri -> target"
 
-      - name: Build Python sidecars
+      # Native libpdfium for the in-process backend (CLI/MCP/app all link core).
+      - name: Fetch pdfium
+        run: bash scripts/fetch_pdfium.sh
+
+      - name: Stage Rust CLI/MCP binaries
         run: npm run build:sidecar
 
       - name: Build Tauri app and publish to GitHub Release
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Update-artifact signing (independent of Apple codesigning / Windows
+          # Authenticode — this only covers the in-place updater's payloads).
+          # Losing TAURI_SIGNING_PRIVATE_KEY is permanent: keep an offline copy.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "linXiv ${{ github.ref_name }}"
           releaseDraft: true
-          prerelease: false
+          # Semver convention (matches compareVersions() in src/api/updates.ts):
+          # a hyphen marks a pre-release tag (v0.3.0-beta, v0.3.0-rc.1, ...).
+          # GitHub's /releases/latest API -- what both the updater plugin and
+          # apply_linux_package_update query -- skips prereleases, so tagging a
+          # beta this way keeps it from being offered to everyone as "the
+          # latest version" the moment it's published.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           generateReleaseNotes: true
           args: ${{ matrix.args }}
+          # We ship both NSIS and MSI; the updater's latest.json can only name
+          # one Windows artifact, so pin it to NSIS (passive installMode above).
+          updaterJsonPreferNsis: true
           # macOS and Windows builds are unsigned.
           # macOS: right-click → Open to bypass Gatekeeper.
           # Windows: More info → Run anyway on the SmartScreen prompt.

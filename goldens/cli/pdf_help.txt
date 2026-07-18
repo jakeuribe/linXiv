@@ -1,0 +1,11 @@
+usage: linxiv pdf [-h] {path,download,storage,import} ...
+
+positional arguments:
+  {path,download,storage,import}
+    path                Show local PDF path for a paper
+    download            Download PDF for a paper
+    storage             Report total PDF storage usage
+    import              Import a local PDF (extract metadata)
+
+options:
+  -h, --help            show this help message and exit

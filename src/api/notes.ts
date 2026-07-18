@@ -18,6 +18,10 @@ export async function getNotes(
   return apiFetch<{ notes: Note[] }>(`/api/notes?${params.toString()}`);
 }
 
+export async function getNote(id: number): Promise<{ note: Note }> {
+  return apiFetch<{ note: Note }>(`/api/notes/${id}`);
+}
+
 export interface NoteCreateBody {
   source_id: string;
   project_id?: number | null;

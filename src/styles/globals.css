@@ -83,6 +83,57 @@ mjx-container[jax="SVG"] > svg {
   vertical-align: middle;
 }
 
+/* Minimal markdown preview — Tailwind preflight strips heading/list/quote
+   styling, so restore just enough for a readable note preview. */
+.note-markdown > :first-child { margin-top: 0; }
+.note-markdown > :last-child { margin-bottom: 0; }
+.note-markdown p { margin: 0 0 0.75em; }
+.note-markdown h1,
+.note-markdown h2,
+.note-markdown h3,
+.note-markdown h4,
+.note-markdown h5,
+.note-markdown h6 {
+  margin: 1.2em 0 0.5em;
+  font-weight: 600;
+  line-height: 1.25;
+}
+.note-markdown h1 { font-size: 1.5em; }
+.note-markdown h2 { font-size: 1.3em; }
+.note-markdown h3 { font-size: 1.15em; }
+.note-markdown h4,
+.note-markdown h5,
+.note-markdown h6 { font-size: 1em; }
+.note-markdown ul,
+.note-markdown ol { margin: 0 0 0.75em; padding-left: 1.5em; }
+.note-markdown ul { list-style: disc; }
+.note-markdown ol { list-style: decimal; }
+.note-markdown li { margin: 0.15em 0; }
+.note-markdown a { color: var(--color-accent); text-decoration: underline; }
+.note-markdown code {
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  background: var(--color-surface-2);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+.note-markdown pre {
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 0.75em 1em;
+  overflow-x: auto;
+  margin: 0 0 0.75em;
+}
+.note-markdown pre code { background: none; padding: 0; }
+.note-markdown blockquote {
+  margin: 0 0 0.75em;
+  padding-left: 1em;
+  border-left: 3px solid var(--color-border);
+  color: var(--color-muted);
+}
+.note-markdown hr { border: none; border-top: 1px solid var(--color-border); margin: 1em 0; }
+
 /* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 6px;
@@ -145,5 +196,14 @@ mjx-container[jax="SVG"] > svg {
 [data-theme="cupertino"][data-mode="dark"] body,
 [data-theme="cupertino"][data-mode="dark"] #root {
   background: linear-gradient(160deg, #0a0a1a 0%, #1c1c1e 50%, #0f1a2e 100%) fixed;
+}
+
+/* ── Suppress pdf.js hyperref link-annotation borders ─────────────────────── */
+/* pdf.js draws a bordered box for each PDF link annotation, which shows up as
+   stray red/green boxes over author ORCID/affiliation superscripts. Hide the
+   border/outline while keeping the annotation clickable (links stay live). */
+.annotationLayer .linkAnnotation {
+  border: 0 !important;
+  outline: 0 !important;
 }
 

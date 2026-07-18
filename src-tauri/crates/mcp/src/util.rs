@@ -1,0 +1,21 @@
+//! Small output-parity helpers shared across the tool clusters.
+
+use linxiv_core::error::CoreError;
+use rmcp::ErrorData;
+
+pub use linxiv_core::formats::pyrepr;
+
+/// `ValueError` → MCP invalid-params, preserving the Python message verbatim.
+pub(crate) fn invalid(msg: impl Into<String>) -> ErrorData {
+    ErrorData::invalid_params(msg.into(), None)
+}
+
+/// Unexpected core failure (not one of the explicit `ValueError` paths).
+pub(crate) fn core_err(e: CoreError) -> ErrorData {
+    ErrorData::internal_error(e.to_string(), None)
+}
+
+/// Serialize a core value to the tool's text result (compact JSON string).
+pub(crate) fn json_ok<T: serde::Serialize>(v: &T) -> Result<String, ErrorData> {
+    serde_json::to_string(v).map_err(|e| ErrorData::internal_error(e.to_string(), None))
+}

@@ -12,6 +12,7 @@ import type { Paper } from "../types/api";
 import { normalizeAuthors } from "../lib/papers";
 import { Spinner } from "../components/ui/spinner";
 import { Input } from "../components/ui/input";
+import { formSubmitOnCtrlEnter } from "../lib/submitShortcut";
 import { Button } from "../components/ui/button";
 import { Dialog } from "../components/ui/dialog";
 import { PaperCard } from "../components/papers/PaperCard";
@@ -485,6 +486,7 @@ export default function LibraryPage() {
                   const name = newProjectName.trim();
                   if (name) createProjectMutation.mutate({ name, sourceIds: [...selectedIds] });
                 }}
+                onKeyDown={formSubmitOnCtrlEnter}
                 className="flex gap-2"
               >
                 <Input
