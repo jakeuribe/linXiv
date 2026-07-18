@@ -21,6 +21,7 @@ Upload your PDFs, create projects, manage notes, tags, and annotations to organi
 - [Features](#features)
 - [Architecture](#architecture)
 - [Setup](#setup)
+  - [Clone](#clone)
   - [Prerequisites](#prerequisites)
   - [Install dependencies](#install-dependencies)
   - [Run in development](#run-in-development)
@@ -83,6 +84,16 @@ linXiv/
 **PDF extraction.** First-page text and metadata come from native `libpdfium` (`pdfium-render`). The shared library is fetched by `scripts/fetch_pdfium.sh` and bundled as a Tauri resource.
 
 ## Setup
+
+### Clone
+
+This repo has git submodules (`docs/adr`, `src-tauri/crates/p2p`) — a plain `git clone` leaves them empty and the build will fail resolving `linxiv-share`'s dependency on `crates/p2p`.
+
+```bash
+git clone --recurse-submodules https://github.com/linxiv-dev/linXiv.git
+# already cloned without --recurse-submodules?
+git submodule update --init --recursive
+```
 
 ### Prerequisites
 
