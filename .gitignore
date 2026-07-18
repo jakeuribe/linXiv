@@ -34,6 +34,9 @@ docs/*
 !docs/adr/
 docs/adr/*
 !docs/adr/**
+!docs/cli_ref/
+docs/cli_ref/*
+!docs/cli_ref/**
 # Node / Frontend
 node_modules/
 dist/

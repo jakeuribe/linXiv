@@ -23,9 +23,7 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
     match (ctx.method, ctx.segs) {
         ("GET", ["api", "papers"]) => Some(list(state, ctx)),
         ("GET", ["api", "papers", "sfk", fk, "versions"]) => Some(versions(state, fk)),
-        ("GET", ["api", "papers", "sfk", fk, "doi-candidates"]) => {
-            Some(doi_candidates(state, fk))
-        }
+        ("GET", ["api", "papers", "sfk", fk, "doi-candidates"]) => Some(doi_candidates(state, fk)),
         ("GET", ["api", "papers", "sfk", fk]) => Some(by_sfk(state, fk, ctx)),
         ("PUT", ["api", "papers", "sfk", fk]) => Some(repair(state, fk, ctx)),
         ("DELETE", ["api", "papers", "sfk", fk, "projects"]) => {
