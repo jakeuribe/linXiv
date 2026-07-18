@@ -135,6 +135,22 @@ pub fn count_paper_links(conn: &Connection, author_id: i64) -> Result<i64> {
     )?)
 }
 
+/// Other authors sharing `author_id`'s ORCID — a same-ORCID match is a near-certain
+/// duplicate. Empty if the author has no ORCID (NULL never equals NULL in SQL).
+pub fn orcid_merge_candidates(
+    conn: &Connection,
+    author_id: i64,
+) -> Result<Vec<BasicAuthorDetails>> {
+    let mut stmt = conn.prepare(
+        "SELECT b.AUTHOR_FK, b.AUTHOR_ORCID, b.AUTHOR_FULL_NAME, b.AUTHOR_FIRST, b.AUTHOR_LAST \
+         FROM AUTHOR b, AUTHOR a \
+         WHERE a.AUTHOR_FK = ? AND b.AUTHOR_FK != a.AUTHOR_FK AND b.AUTHOR_ORCID = a.AUTHOR_ORCID",
+    )?;
+    let rows = stmt.query_map(params![author_id], row_to_basic)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
 /// An ORCID-less author linked to a DOI-bearing paper, for `service::orcid_backfill`.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct OrcidCandidate {
@@ -247,19 +263,13 @@ pub fn update_author(
     Ok(())
 }
 
-/// `authors.py::delete_author` — unlink every PAPER_TO_AUTHOR row for this author
-/// (same cascade-clean shape as `merge_authors`), then delete the AUTHOR row, in
-/// one transaction. Without this, a bare `DELETE FROM AUTHOR` hard-fails on the
-/// FK constraint whenever the author is still linked to a paper.
-pub fn delete_author(conn: &mut Connection, author_id: i64) -> Result<()> {
-    db::transaction(conn, |tx| {
-        tx.execute(
-            "DELETE FROM PAPER_TO_AUTHOR WHERE AUTHOR_FK = ?",
-            params![author_id],
-        )?;
-        tx.execute("DELETE FROM AUTHOR WHERE AUTHOR_FK = ?", params![author_id])?;
-        Ok(())
-    })
+/// `authors.py::delete_author` — delete the AUTHOR row by FK. Fails on the FK
+/// constraint if the author is still linked via PAPER_TO_AUTHOR; callers must
+/// unlink first (see `unlink_author_from_paper`), so a merge can't silently
+/// drop paper links it didn't mean to touch.
+pub fn delete_author(conn: &Connection, author_id: i64) -> Result<()> {
+    conn.execute("DELETE FROM AUTHOR WHERE AUTHOR_FK = ?", params![author_id])?;
+    Ok(())
 }
 
 /// `authors.py::link_author_to_paper` — INSERT OR IGNORE the PAPER_TO_AUTHOR row
@@ -522,7 +532,7 @@ mod tests {
 
     #[test]
     fn unlink_and_delete() {
-        let mut conn = open_in_memory().unwrap();
+        let conn = open_in_memory().unwrap();
         init_db(&conn).unwrap();
         let (pid, a1, _a2) = seed(&conn);
 
@@ -530,30 +540,18 @@ mod tests {
         assert_eq!(count_paper_links(&conn, a1).unwrap(), 0);
         assert_eq!(get_paper_authors(&conn, pid).unwrap().len(), 1); // only Alice left
 
-        delete_author(&mut conn, a1).unwrap();
+        delete_author(&conn, a1).unwrap();
         assert!(get_author(&conn, a1).unwrap().is_none());
     }
 
     #[test]
-    fn delete_author_still_linked_cascades_link_cleanup() {
-        let mut conn = open_in_memory().unwrap();
+    fn delete_author_still_linked_is_an_error() {
+        let conn = open_in_memory().unwrap();
         init_db(&conn).unwrap();
-        let (pid, a1, _a2) = seed(&conn); // a1 still linked to pid via PAPER_TO_AUTHOR
+        let (_pid, a1, _a2) = seed(&conn); // a1 still linked via PAPER_TO_AUTHOR
 
-        // Would previously hard-fail on the AUTHOR FK from PAPER_TO_AUTHOR.
-        delete_author(&mut conn, a1).unwrap();
-
-        assert!(get_author(&conn, a1).unwrap().is_none());
-        let link_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM PAPER_TO_AUTHOR WHERE AUTHOR_FK = ?",
-                params![a1],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(link_count, 0);
-        // Sibling link (Alice, still linked) is untouched.
-        assert_eq!(get_paper_authors(&conn, pid).unwrap().len(), 1);
+        assert!(delete_author(&conn, a1).is_err());
+        assert!(get_author(&conn, a1).unwrap().is_some()); // row survives the failed delete
     }
 
     #[test]
@@ -596,6 +594,20 @@ mod tests {
         init_db(&conn).unwrap();
         let (_pid, _a1, a2) = seed(&conn);
         assert!(merge_authors(&mut conn, 9999, &[a2]).is_err());
+    }
+
+    #[test]
+    fn orcid_merge_candidates_matches_same_orcid_only() {
+        let conn = open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        let (_pid, bob, alice) = seed(&conn); // bob: no orcid, alice: "0000-1"
+        let twin = create_author(&conn, "A. Cole", None, None, Some("0000-1")).unwrap();
+
+        // Alice's twin shares her ORCID -> candidate; Bob has none -> no candidates.
+        let candidates = orcid_merge_candidates(&conn, alice).unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].author_id, twin);
+        assert!(orcid_merge_candidates(&conn, bob).unwrap().is_empty());
     }
 
     #[test]

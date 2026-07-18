@@ -139,9 +139,9 @@ pub fn merge(conn: &mut Connection, canonical_id: i64, duplicate_ids: &[i64]) ->
 }
 
 /// Delete by lookup key. No-op when the key carries no `author_id` (matching
-/// Python's `if author.author_id:`). Transactional (see `store::delete_author`),
-/// so it also cleans up any remaining PAPER_TO_AUTHOR links for that author.
-pub fn delete(conn: &mut Connection, author: &Author) -> Result<()> {
+/// Python's `if author.author_id:`). Fails if the author is still linked to a
+/// paper — callers must unlink (or merge) first.
+pub fn delete(conn: &Connection, author: &Author) -> Result<()> {
     if let Some(id) = author.author_id {
         store::delete_author(conn, id)?;
     }
@@ -177,6 +177,15 @@ pub fn list_with_paper_count(conn: &Connection, min_papers: i64) -> Result<Vec<A
 /// Authors of a paper version, ordered by AUTHOR_INDEX.
 pub fn get_paper_authors(conn: &Connection, paper_id: i64) -> Result<Vec<BasicAuthorDetails>> {
     store::get_paper_authors(conn, paper_id)
+}
+
+/// Other authors sharing this author's ORCID — likely-duplicate suggestions for
+/// the merge UI. Empty if the author has no ORCID.
+pub fn orcid_merge_candidates(
+    conn: &Connection,
+    author_id: i64,
+) -> Result<Vec<BasicAuthorDetails>> {
+    store::orcid_merge_candidates(conn, author_id)
 }
 
 /// Latest-version display rows for active papers linked to an author.
