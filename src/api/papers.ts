@@ -13,18 +13,6 @@ function linxivUrl(path: string): string {
   return `${base}/${path}`;
 }
 
-// The in-process app serves PDF bytes over the `linxiv://` custom scheme (the
-// invoke()-based transport can't stream binary). The webview host form differs by
-// platform (Tauri docs): linxiv://localhost on Linux/macOS, http://linxiv.localhost
-// on Windows. In browser dev there is no custom scheme — keep the HTTP URL so the
-// Vite proxy reaches the sidecar.
-function linxivUrl(path: string): string {
-  const isWindows =
-    typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent);
-  const base = isWindows ? "http://linxiv.localhost" : "linxiv://localhost";
-  return `${base}/${path}`;
-}
-
 export async function listPapers(
   limit = 200,
   offset = 0
