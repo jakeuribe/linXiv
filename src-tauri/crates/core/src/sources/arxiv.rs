@@ -124,6 +124,7 @@ fn finalize(b: Entry) -> Result<PaperMetadata> {
         url: b.url,
         tags: None,
         source: Some("arxiv".to_string()),
+        author_orcids: None,
     })
 }
 

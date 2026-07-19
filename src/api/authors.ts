@@ -29,6 +29,11 @@ export async function updateAuthor(
   });
 }
 
+export async function getMergeCandidates(authorId: number): Promise<Author[]> {
+  const data = await apiFetch<{ candidates: Author[] }>(`/api/authors/${authorId}/merge-candidates`);
+  return data.candidates;
+}
+
 export async function mergeAuthors(
   canonicalId: number,
   duplicateIds: number[],

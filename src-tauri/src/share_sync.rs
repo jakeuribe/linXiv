@@ -651,6 +651,7 @@ mod tests {
             authors: vec![],
             tags: vec![],
             pdf_blob: None,
+            author_orcids: vec![],
         });
         import_shared_project(&mut conn, &sp).unwrap();
         let state = AppState::from_parts(conn, pdf_dir.path().to_path_buf(), std::env::temp_dir());

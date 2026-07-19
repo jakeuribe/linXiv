@@ -34,6 +34,7 @@ mod editor;
 mod feed;
 mod graph;
 mod notes;
+mod orcid;
 mod papers;
 pub(crate) mod pdfs; // resolve_local_pdf reused by the linxiv:// protocol handler
 mod projects;
@@ -185,7 +186,8 @@ pub async fn route(state: &AppState, req: ApiRequest) -> Result<Value, ApiError>
         editor,
         feed,
         graph,
-        versions
+        versions,
+        orcid
     );
 
     Err(ApiError::not_routed())

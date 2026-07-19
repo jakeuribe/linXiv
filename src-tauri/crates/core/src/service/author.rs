@@ -139,7 +139,8 @@ pub fn merge(conn: &mut Connection, canonical_id: i64, duplicate_ids: &[i64]) ->
 }
 
 /// Delete by lookup key. No-op when the key carries no `author_id` (matching
-/// Python's `if author.author_id:`).
+/// Python's `if author.author_id:`). Fails if the author is still linked to a
+/// paper — callers must unlink (or merge) first.
 pub fn delete(conn: &Connection, author: &Author) -> Result<()> {
     if let Some(id) = author.author_id {
         store::delete_author(conn, id)?;
@@ -176,6 +177,15 @@ pub fn list_with_paper_count(conn: &Connection, min_papers: i64) -> Result<Vec<A
 /// Authors of a paper version, ordered by AUTHOR_INDEX.
 pub fn get_paper_authors(conn: &Connection, paper_id: i64) -> Result<Vec<BasicAuthorDetails>> {
     store::get_paper_authors(conn, paper_id)
+}
+
+/// Other authors sharing this author's ORCID — likely-duplicate suggestions for
+/// the merge UI. Empty if the author has no ORCID.
+pub fn orcid_merge_candidates(
+    conn: &Connection,
+    author_id: i64,
+) -> Result<Vec<BasicAuthorDetails>> {
+    store::orcid_merge_candidates(conn, author_id)
 }
 
 /// Latest-version display rows for active papers linked to an author.
@@ -367,7 +377,7 @@ mod tests {
 
     #[test]
     fn create_update_delete() {
-        let conn = mem();
+        let mut conn = mem();
         let id = create(
             &conn,
             &AuthorIn {
@@ -423,7 +433,7 @@ mod tests {
         assert_eq!(a.orcid.as_deref(), Some("0000-9"));
 
         // delete with no id is a no-op; with id removes the row
-        delete(&conn, &Author::default()).unwrap();
+        delete(&mut conn, &Author::default()).unwrap();
         assert!(get(
             &conn,
             &Author {
@@ -434,7 +444,7 @@ mod tests {
         .unwrap()
         .is_some());
         delete(
-            &conn,
+            &mut conn,
             &Author {
                 author_id: Some(id),
                 ..Default::default()

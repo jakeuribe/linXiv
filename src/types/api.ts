@@ -29,6 +29,16 @@ export interface Paper {
   source: string | null;
 }
 
+// Another paper root sharing this one's DOI (same work, different source).
+export interface DoiVersionCandidate {
+  source_fk: number;
+  source_id: string;
+  title: string;
+  source: string | null;
+  published: string | null;
+  doi: string;
+}
+
 export interface Project {
   id: number;
   name: string;

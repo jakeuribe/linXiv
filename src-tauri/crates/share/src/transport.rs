@@ -672,6 +672,7 @@ mod tests {
                 title: "First".into(),
                 summary: "s".into(),
                 authors: vec!["Alice".into()],
+                author_orcids: vec![],
                 tags: vec!["ml".into()],
                 published: None,
                 pdf_blob: None,

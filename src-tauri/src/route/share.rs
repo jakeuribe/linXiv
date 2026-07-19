@@ -1311,6 +1311,7 @@ mod tests {
                 authors: vec!["Zed".into()],
                 tags: vec!["remote-tag".into()],
                 pdf_blob: None,
+                author_orcids: vec![],
             }],
             notes: vec![linxiv_share::SharedNote {
                 uuid: "11111111-1111-4111-8111-111111111111".into(),

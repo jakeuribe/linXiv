@@ -11,7 +11,8 @@ use chrono::NaiveDate;
 use serde_json::Value;
 
 use super::http;
-use crate::models::PaperMetadata;
+use crate::error::{CoreError, Result};
+use crate::models::{normalize_orcid, PaperMetadata};
 
 const CROSSREF_BASE: &str = "https://api.crossref.org/works";
 /// CrossRef is reached over exactly one host; the http guard enforces it.
@@ -73,6 +74,7 @@ pub fn parse_work(msg: &Value, doi: &str) -> PaperMetadata {
         .to_string();
 
     let mut authors = Vec::new();
+    let mut author_orcids = Vec::new();
     if let Some(arr) = msg.get("author").and_then(Value::as_array) {
         for a in arr {
             let given = a.get("given").and_then(Value::as_str).unwrap_or("");
@@ -81,9 +83,15 @@ pub fn parse_work(msg: &Value, doi: &str) -> PaperMetadata {
             let name = name.trim();
             if !name.is_empty() {
                 authors.push(name.to_string());
+                author_orcids.push(
+                    a.get("ORCID")
+                        .and_then(Value::as_str)
+                        .and_then(normalize_orcid),
+                );
             }
         }
     }
+    let author_orcids = (!authors.is_empty()).then_some(author_orcids);
 
     let published = parse_published(msg).unwrap_or_else(|| chrono::Utc::now().date_naive());
 
@@ -131,6 +139,7 @@ pub fn parse_work(msg: &Value, doi: &str) -> PaperMetadata {
         url,
         tags: None,
         source: Some("crossref".to_string()),
+        author_orcids,
     }
 }
 
@@ -180,13 +189,45 @@ pub fn parse_search_body(body: &[u8]) -> Vec<PaperMetadata> {
 /// Fetch CrossRef metadata for a DOI. `None` on any non-200 / network / parse
 /// error, matching the Python `except Exception: return None`.
 pub async fn fetch_by_doi(doi: &str) -> Option<PaperMetadata> {
-    let url = format!("{CROSSREF_BASE}/{doi}");
-    let resp = http::get_guarded(&url, ALLOW).await.ok()?;
-    if resp.status() != reqwest::StatusCode::OK {
-        return None;
+    fetch_by_doi_checked(doi).await.ok().flatten()
+}
+
+/// Like `fetch_by_doi`, but distinguishes "no work found" (`Ok(None)`) from a
+/// transport/HTTP/malformed-body failure (`Err`).
+pub async fn fetch_by_doi_checked(doi: &str) -> Result<Option<PaperMetadata>> {
+    fetch_by_doi_checked_at(CROSSREF_BASE, ALLOW, doi).await
+}
+
+/// `fetch_by_doi_checked` against an injected base URL + host allowlist (the
+/// test seam, matching `openalex`'s `_at` pattern).
+async fn fetch_by_doi_checked_at(
+    base: &str,
+    allow: &[&str],
+    doi: &str,
+) -> Result<Option<PaperMetadata>> {
+    let url = format!("{base}/{doi}");
+    let resp = http::get_guarded(&url, allow).await?;
+    if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
     }
-    let body = resp.bytes().await.ok()?;
-    parse_doi_body(&body, doi)
+    if resp.status() != reqwest::StatusCode::OK {
+        return Err(CoreError::Upstream(format!(
+            "CrossRef DOI lookup failed: HTTP {}",
+            resp.status().as_u16()
+        )));
+    }
+    let body = resp
+        .bytes()
+        .await
+        .map_err(|e| CoreError::Upstream(format!("CrossRef DOI lookup failed: {e}")))?;
+    // A 200 that isn't even valid JSON is a failure, not "no work found" —
+    // matches how OpenAlex's side treats an unparseable 200 body.
+    if serde_json::from_slice::<Value>(&body).is_err() {
+        return Err(CoreError::Upstream(
+            "CrossRef DOI lookup failed: invalid response body".to_string(),
+        ));
+    }
+    Ok(parse_doi_body(&body, doi))
 }
 
 /// Search CrossRef by title. Empty vec on any error.
@@ -288,6 +329,33 @@ mod tests {
     }
 
     #[test]
+    fn author_orcid_harvested_normalized_and_aligned_with_authors() {
+        let msg = serde_json::json!({
+            "title": ["t"],
+            "author": [
+                {"given": "Jane", "family": "Doe", "ORCID": "http://orcid.org/0000-0002-1825-0097"},
+                {"given": "No", "family": "Orcid"},
+                {},
+            ],
+        });
+        let m = parse_work(&msg, "10.1/x");
+        assert_eq!(
+            m.authors,
+            vec!["Jane Doe".to_string(), "No Orcid".to_string()]
+        );
+        assert_eq!(
+            m.author_orcids,
+            Some(vec![Some("0000-0002-1825-0097".to_string()), None])
+        );
+    }
+
+    #[test]
+    fn no_authors_means_no_orcids_list() {
+        let msg = serde_json::json!({"title": ["t"], "author": []});
+        assert_eq!(parse_work(&msg, "10.1/x").author_orcids, None);
+    }
+
+    #[test]
     fn date_parts_year_only_and_year_month_default_to_1() {
         let yo = serde_json::json!({"title":["t"],"published":{"date-parts":[[2020]]}});
         assert_eq!(
@@ -355,5 +423,72 @@ mod tests {
         // empty body / no items -> empty.
         assert!(parse_search_body(br#"{"message":{"items":[]}}"#).is_empty());
         assert!(parse_search_body(b"garbage").is_empty());
+    }
+
+    // ---- fetch_by_doi_checked: 404-vs-failure distinction the backfill route relies on ----
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn checked_200_parses_ok_some() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/10.1000/xyz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(WORK_BODY))
+            .mount(&server)
+            .await;
+
+        let m = fetch_by_doi_checked_at(&server.uri(), &["127.0.0.1"], "10.1000/xyz")
+            .await
+            .expect("200 is Ok")
+            .expect("title present is Some");
+        assert_eq!(m.source_id, "doi:10.1000/xyz");
+    }
+
+    #[tokio::test]
+    async fn checked_404_is_ok_none_not_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/10.1000/missing"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let m = fetch_by_doi_checked_at(&server.uri(), &["127.0.0.1"], "10.1000/missing")
+            .await
+            .expect("404 is Ok, not Err");
+        assert!(m.is_none());
+    }
+
+    #[tokio::test]
+    async fn checked_200_with_garbage_body_is_err_not_silently_none() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/10.1000/xyz"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
+            .mount(&server)
+            .await;
+
+        let err = fetch_by_doi_checked_at(&server.uri(), &["127.0.0.1"], "10.1000/xyz")
+            .await
+            .expect_err(
+                "malformed 200 body must be Err, matching OpenAlex's json-parse-error path",
+            );
+        assert!(matches!(err, CoreError::Upstream(_)), "got {err}");
+    }
+
+    #[tokio::test]
+    async fn checked_503_is_err_not_silently_none() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/10.1000/xyz"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+
+        let err = fetch_by_doi_checked_at(&server.uri(), &["127.0.0.1"], "10.1000/xyz")
+            .await
+            .expect_err("503 must be Err, not Ok(None)");
+        assert!(matches!(err, CoreError::Upstream(_)), "got {err}");
     }
 }

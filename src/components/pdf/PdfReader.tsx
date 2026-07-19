@@ -39,10 +39,18 @@ interface PdfReaderProps {
 // spacers. Neighbors cover scroll momentum before onScroll re-centers the window.
 const PAGE_WINDOW = 4;
 
+// How long resize (ResizeObserver) activity must be quiet before the live
+// scaleX preview is committed as a real react-pdf re-render.
+const RESIZE_SETTLE_MS = 120;
+
+// Horizontal padding around each rendered page, subtracted from the scroller's
+// measured width to get the actual page width react-pdf renders at.
+const PAGE_INSET = 32;
+
 // Spacer height for unrendered pages, estimated from a letter/A4 aspect ratio so
 // the scrollbar and offsets stay roughly right until the real page mounts.
 function estPageHeight(width: number) {
-  return width ? Math.round((width - 32) * 1.3) : 800;
+  return width ? Math.round((width - PAGE_INSET) * 1.3) : 800;
 }
 
 interface SelToolbar {
@@ -72,8 +80,13 @@ export function PdfReader({ file, sourceId, version, projectId, errorUrl }: PdfR
   const [selError, setSelError] = useState(false);
 
   const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const pagesWrapRef = useRef<HTMLDivElement | null>(null);
   const rafRef = useRef<number | null>(null);
   const obsRef = useRef<ResizeObserver | null>(null);
+  // Last width actually committed to react-pdf (vs. the live, uncommitted
+  // ResizeObserver reading) so mid-drag ticks can be scaled instead of reflowed.
+  const committedWidthRef = useRef(0);
+  const resizeTimerRef = useRef<number | null>(null);
 
   // Key must match PaperDetailPage's annotations query so the overlay and the
   // Annotations tab share one cache entry rather than each fetching separately.
@@ -141,6 +154,10 @@ export function PdfReader({ file, sourceId, version, projectId, errorUrl }: PdfR
   useEffect(
     () => () => {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+      if (resizeTimerRef.current !== null) {
+        clearTimeout(resizeTimerRef.current);
+        pagesWrapRef.current?.style.removeProperty("transform");
+      }
       obsRef.current?.disconnect();
     },
     [],
@@ -162,11 +179,40 @@ export function PdfReader({ file, sourceId, version, projectId, errorUrl }: PdfR
   // on every render — e.g. each setPage during a scroll.
   const attachScroller = useCallback((el: HTMLDivElement | null) => {
     obsRef.current?.disconnect();
+    if (resizeTimerRef.current !== null) {
+      clearTimeout(resizeTimerRef.current);
+      resizeTimerRef.current = null;
+      pagesWrapRef.current?.style.removeProperty("transform");
+    }
     scrollerRef.current = el;
     if (!el) return;
-    const obs = new ResizeObserver((entries) =>
-      setWidth(entries[0].contentRect.width),
-    );
+    const obs = new ResizeObserver((entries) => {
+      const newWidth = entries[0].contentRect.width;
+      // First measurement (mount): commit immediately, nothing to scale from yet.
+      if (committedWidthRef.current === 0) {
+        committedWidthRef.current = newWidth;
+        setWidth(newWidth);
+        return;
+      }
+      // Mid-drag ticks: cheaply scale the already-rendered pages via CSS instead
+      // of reflowing react-pdf on every tick; commit the real width (and let
+      // react-pdf re-render at full quality) once resizing settles. Pages render
+      // at width-PAGE_INSET, so scale by the inset width, not the outer one;
+      // "top center" keeps mx-auto-centered pages from sliding sideways.
+      const wrap = pagesWrapRef.current;
+      const prevInset = committedWidthRef.current - PAGE_INSET;
+      if (wrap && prevInset > 0) {
+        wrap.style.transform = `scaleX(${(newWidth - PAGE_INSET) / prevInset})`;
+        wrap.style.transformOrigin = "top center";
+      }
+      if (resizeTimerRef.current !== null) clearTimeout(resizeTimerRef.current);
+      resizeTimerRef.current = window.setTimeout(() => {
+        resizeTimerRef.current = null;
+        if (wrap) wrap.style.transform = "";
+        committedWidthRef.current = newWidth;
+        setWidth(newWidth);
+      }, RESIZE_SETTLE_MS);
+    });
     obs.observe(el);
     obsRef.current = obs;
   }, []);
@@ -327,33 +373,37 @@ export function PdfReader({ file, sourceId, version, projectId, errorUrl }: PdfR
           }
         >
           {/* Only pages within PAGE_WINDOW of the current page mount a canvas;
-              the rest are fixed-height spacers so scroll offsets stay correct. */}
-          {Array.from({ length: numPages }, (_, i) => {
-            const pn = i + 1;
-            const pageWidth = width ? width - 32 : undefined;
-            if (Math.abs(pn - page) > PAGE_WINDOW) {
+              the rest are fixed-height spacers so scroll offsets stay correct.
+              Wrapped so a mid-drag resize can cheaply scaleX this whole group
+              (see attachScroller) instead of reflowing every page. */}
+          <div ref={pagesWrapRef}>
+            {Array.from({ length: numPages }, (_, i) => {
+              const pn = i + 1;
+              const pageWidth = width ? width - PAGE_INSET : undefined;
+              if (Math.abs(pn - page) > PAGE_WINDOW) {
+                return (
+                  <div
+                    key={pn}
+                    className="pdf-page-slot mx-auto my-2"
+                    style={{ width: pageWidth, height: estPageHeight(width) }}
+                  />
+                );
+              }
               return (
-                <div
-                  key={pn}
-                  className="pdf-page-slot mx-auto my-2"
-                  style={{ width: pageWidth, height: estPageHeight(width) }}
-                />
+                <div key={pn} className="pdf-page-slot mx-auto my-2">
+                  <Page
+                    pageNumber={pn}
+                    width={pageWidth}
+                    className="shadow-md"
+                    renderTextLayer
+                    renderAnnotationLayer
+                  >
+                    <HighlightLayer highlights={byPage.get(pn) ?? []} />
+                  </Page>
+                </div>
               );
-            }
-            return (
-              <div key={pn} className="pdf-page-slot mx-auto my-2">
-                <Page
-                  pageNumber={pn}
-                  width={pageWidth}
-                  className="shadow-md"
-                  renderTextLayer
-                  renderAnnotationLayer
-                >
-                  <HighlightLayer highlights={byPage.get(pn) ?? []} />
-                </Page>
-              </div>
-            );
-          })}
+            })}
+          </div>
         </Document>
       </div>
 

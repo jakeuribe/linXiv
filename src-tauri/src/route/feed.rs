@@ -235,7 +235,6 @@ fn delete_rule(state: &AppState, id: &str) -> Result<Value, ApiError> {
 
 #[cfg(test)]
 mod tests {
-    use super::CACHE;
     use crate::route::{route, ApiRequest};
     use crate::state::AppState;
     use linxiv_core::storage;
@@ -277,8 +276,9 @@ mod tests {
         use wiremock::matchers::method;
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        CACHE.lock().unwrap().clear();
-
+        // No CACHE.lock().unwrap().clear() here: CACHE is a process-wide static and
+        // cargo test runs these #[tokio::test]s concurrently, so a blind clear() races
+        // with sibling tests and can evict their entries mid-test.
         let mock_server = MockServer::start().await;
         let feed_url = format!("{}/feed.xml", mock_server.uri());
 
@@ -313,8 +313,6 @@ mod tests {
         use wiremock::matchers::method;
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        CACHE.lock().unwrap().clear();
-
         let mock_server = MockServer::start().await;
         let feed_url = format!("{}/feed.json", mock_server.uri());
 
@@ -348,8 +346,6 @@ mod tests {
     async fn feed_entries_limited_to_200() {
         use wiremock::matchers::method;
         use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        CACHE.lock().unwrap().clear();
 
         let mock_server = MockServer::start().await;
         let feed_url = format!("{}/feed.json", mock_server.uri());
