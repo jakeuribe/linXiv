@@ -800,7 +800,7 @@ function ShareProjectDialog({ open, onClose }: { open: boolean; onClose: () => v
       <div className="flex flex-col gap-4">
         <p className="text-xs" style={{ color: "var(--color-muted)" }}>
           {mode === "e2ee"
-            ? "Publish an encrypted copy of the project. There is no ticket — invite each member from the share's settings using their member code."
+            ? "Publish an encrypted copy of the project. There is no ticket. You may generate an invite string for each member from the share's settings using their member code."
             : "Generate a ticket, then paste it in linXiv on another computer to send a read-only copy of the project."}
         </p>
         <div className="flex items-center gap-2">
@@ -1081,7 +1081,7 @@ export default function SharePage() {
           className="flex flex-1 items-center justify-center text-sm"
           style={{ color: "var(--color-muted)" }}
         >
-          No shared projects yet — share one of yours or join with a ticket.
+          No shared projects yet. Press Create Shared Project to share one of yours, or join with a ticket provided by another linXiv user.
         </div>
       )}
       {!loading && cards.length > 0 && (

@@ -228,7 +228,7 @@ export function ImportDialog({ open, onClose, projectId, onDone }: ImportDialogP
             Add files…
           </Button>
           <p className="text-xs mt-1" style={{ color: "var(--color-muted)" }}>
-            Accepts .pdf · .bib (BibTeX) · .lxproj — multiple files supported
+            Accepts .pdf · .bib (BibTeX) · .lxproj. Multi-file uploads supported
             {projectId ? " · files linked to this project" : ""}
           </p>
         </div>
