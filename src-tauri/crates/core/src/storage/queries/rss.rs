@@ -1,6 +1,5 @@
-//! RSS_PAPER_ROOTS / RSS_PAPER / RSS_FILTER_RULE queries — persisted state for the
-//! home RSS feed: which entries have been seen and dismissed, and the keyword
-//! rules that auto-hide entries before they reach the client.
+//! RSS_PAPER_ROOTS / RSS_PAPER / RSS_FILTER_RULE queries: seen/dismissed feed
+//! entries and the keyword rules that auto-hide entries before the client sees them.
 
 use std::collections::HashSet;
 
@@ -30,11 +29,9 @@ pub fn upsert_seen(conn: &Connection, source_id: &str, version: i64, title: &str
     Ok(())
 }
 
-/// Hide a feed entry going forward. `permanent` blocks the whole paper, every
-/// version, forever (`RSS_PAPER_ROOTS.REMOVAL_TYPE = 'DOI'`); otherwise it
-/// dismisses just this exact version (`RSS_PAPER.REMOVAL_TYPE = 'VER'` on the
-/// `(source_id, version)` row) — a later, higher version is a new row and
-/// resurfaces undismissed.
+/// Hide a feed entry. `permanent` blocks the whole paper forever
+/// (`RSS_PAPER_ROOTS.REMOVAL_TYPE = 'DOI'`); otherwise dismisses just this
+/// version (`RSS_PAPER.REMOVAL_TYPE = 'VER'`) -- a later version resurfaces.
 pub fn dismiss(conn: &Connection, source_id: &str, version: i64, permanent: bool) -> Result<()> {
     if permanent {
         conn.execute(
@@ -82,12 +79,57 @@ pub fn dismissed_versions(conn: &Connection) -> Result<HashSet<(String, i64)>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
+// ponytail: not yet user-configurable (no settings UI wired up) -- hardcoded
+// until there's a reason to expose them.
+const VER_DISMISS_PRUNE_HOURS: i64 = 48;
+const DOI_DISMISS_PRUNE_DAYS: i64 = 730;
+
+/// Forget old `RSS_PAPER`/`RSS_PAPER_ROOTS` bookkeeping -- VER/DOI dismissals
+/// and plain 'NOT' seen rows, none of which anything reads back once stale.
+pub fn prune_dismissed(conn: &Connection, cache_retention_days: i64) -> Result<()> {
+    // Floored at cache_retention_days: a dismissal can't be forgotten while
+    // the RSS_CACHE_ENTRY row it hides is still served, or it reappears silently.
+    let ver_cutoff_hours = VER_DISMISS_PRUNE_HOURS.max(cache_retention_days.saturating_mul(24));
+    conn.execute(
+        "DELETE FROM RSS_PAPER
+         WHERE REMOVAL_TYPE = 'VER'
+           AND REMOVED_AT < datetime('now', '-' || ?1 || ' hours')",
+        [ver_cutoff_hours],
+    )?;
+    // 'NOT' (never-dismissed) rows: nothing reads them once the cache window
+    // that "seen" was tracking against has itself moved past them.
+    conn.execute(
+        "DELETE FROM RSS_PAPER
+         WHERE REMOVAL_TYPE = 'NOT'
+           AND CREATED_AT < datetime('now', '-' || ?1 || ' days')",
+        [cache_retention_days],
+    )?;
+    // Floored like the VER cutoff above -- same reappearance risk if retention
+    // is ever set past the DOI default.
+    let doi_cutoff_days = DOI_DISMISS_PRUNE_DAYS.max(cache_retention_days);
+    conn.execute(
+        "DELETE FROM RSS_PAPER_ROOTS
+         WHERE REMOVAL_TYPE = 'DOI'
+           AND REMOVED_AT < datetime('now', '-' || ?1 || ' days')",
+        [doi_cutoff_days],
+    )?;
+    // Orphaned 'NOT' root: only once no RSS_PAPER child references it (cascade
+    // only flows parent->child, so a stale child alone won't take this with it).
+    conn.execute(
+        "DELETE FROM RSS_PAPER_ROOTS
+         WHERE REMOVAL_TYPE = 'NOT'
+           AND CREATED_AT < datetime('now', '-' || ?1 || ' days')
+           AND NOT EXISTS (
+               SELECT 1 FROM RSS_PAPER WHERE RSS_PAPER.SOURCE_FK = RSS_PAPER_ROOTS.SOURCE_FK
+           )",
+        [cache_retention_days],
+    )?;
+    Ok(())
+}
+
 /// A freshly-fetched feed entry ready to persist into `RSS_CACHE_ENTRY`.
-/// `dedup_key` is arxiv `source_id+version` when available, else the entry's
-/// link (falls back to title) -- see `feed.rs::to_cache_entry`. `source_id` is
-/// carried separately (without version), stored alongside the entry purely
-/// for debugging/future use -- durable dismissal is checked directly against
-/// `RSS_PAPER_ROOTS` in `annotate_and_filter`, not via this column.
+/// `dedup_key` is arxiv `id+version` when available, else link/title (see
+/// `feed.rs::to_cache_entry`). `source_id` is stored for reference only.
 pub struct CacheEntry {
     pub dedup_key: String,
     pub source_id: Option<String>,
@@ -95,14 +137,8 @@ pub struct CacheEntry {
     pub published_at: Option<NaiveDateTime>,
 }
 
-/// Additively merge freshly-fetched entries into the persisted per-URL cache:
-/// insert only entries whose dedup key isn't already stored for this URL, never
-/// overwrite an existing row (`INSERT OR IGNORE` against the `(FEED_URL,
-/// DEDUP_KEY)` unique index). This is what keeps an empty/short upstream fetch
-/// (e.g. arXiv publishing nothing over a weekend) from clobbering what's
-/// already cached -- it just merges in zero new rows. One transaction for the
-/// whole batch, same reasoning as `annotate_and_filter`'s: avoids one commit
-/// per entry on a fetch that can bring in hundreds.
+/// Additively merge fresh entries into the per-URL cache: insert only unseen
+/// dedup keys, never overwrite an existing row. One transaction for the batch.
 pub fn merge_cache_entries(
     conn: &mut Connection,
     feed_url: &str,
@@ -119,10 +155,8 @@ pub fn merge_cache_entries(
                 e.dedup_key,
                 e.source_id,
                 e.entry_json,
-                // Space-separated to match the format `datetime('now')` writes into
-                // FETCHED_AT -- COALESCE(PUBLISHED_AT, FETCHED_AT) is compared/ordered
-                // as a raw SQL string below, and 'T' > ' ' would make same-day 'T'-form
-                // timestamps sort as newer regardless of actual time.
+                // Space-separated to match datetime('now')'s format -- sorted as a raw
+                // string below, so 'T' would sort newer than same-day ' '-form times.
                 e.published_at
                     .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string()),
             ],
@@ -132,27 +166,13 @@ pub fn merge_cache_entries(
     Ok(())
 }
 
-/// Cap on rows returned per feed GET -- well above the 200 `annotate_and_filter`
-/// truncates to, so dismissed/rule-filtered entries still leave enough headroom.
+/// Cap on rows loaded per feed GET -- above the 200 `annotate_and_filter` keeps.
 const MAX_LOADED_ENTRIES: i64 = 500;
 
-/// Cached entries for `feed_url` within the retention window, newest-first by
-/// published date (falling back to fetch time when the entry's own date didn't
-/// parse). The window itself is measured by `FETCHED_AT` (when we first cached
-/// the row), NOT `PUBLISHED_AT` -- an arXiv entry's `published` is its original
-/// submission date, which for a just-updated v2/v3 of an old paper can be years
-/// in the past even though we only just fetched it; keying the cutoff on that
-/// would drop it from the window on the very fetch that added it. Malformed
-/// stored JSON (should not happen; we wrote it) is logged and skipped rather
-/// than failing the whole feed response. Durably-dismissed entries
-/// (`RSS_PAPER_ROOTS.REMOVAL_TYPE = 'DOI'`) age out of this window like any
-/// other row -- the dismissal itself lives in `RSS_PAPER_ROOTS`, which is what
-/// `annotate_and_filter` actually checks, so nothing depends on keeping their
-/// cache row around. Sorting newest-published-first while capping by fetch
-/// recency is a deliberate tradeoff: if more than `MAX_LOADED_ENTRIES` rows are
-/// within the window, a just-fetched update of an old paper can sort past the
-/// cap despite being the newest fetch -- acceptable at the default retention
-/// window/feed volume, revisit if `MAX_LOADED_ENTRIES` needs to grow.
+/// Cached entries for `feed_url` within the retention window, newest-published-
+/// first. Windowed by `FETCHED_AT`, not `PUBLISHED_AT` -- a just-fetched v2/v3
+/// of an old paper must not age out on the fetch that added it. Malformed
+/// stored JSON is logged and skipped rather than failing the whole response.
 pub fn load_cache_entries(
     conn: &Connection,
     feed_url: &str,
@@ -246,9 +266,8 @@ fn field_value<'a>(field: &str, title: &'a str, summary: &'a str, authors: &'a s
     }
 }
 
-/// True if a feed entry should be hidden: some enabled DENY rule's keywords
-/// (comma-separated, ALL must match -- AND, case-insensitive substring) match,
-/// and no enabled ALLOW rule's keywords also match (ALLOW is the override).
+/// True if an enabled DENY rule matches (comma-separated keywords, all must
+/// match, case-insensitive substring) and no enabled ALLOW rule also matches.
 pub fn is_hidden(rules: &[FilterRule], title: &str, summary: &str, authors: &str) -> bool {
     let rule_matches = |r: &FilterRule| -> bool {
         if !r.enabled {
@@ -326,6 +345,192 @@ mod tests {
         assert!(!dismissed.contains(&("arxiv:2401.00003".to_string(), 2)));
     }
 
+    fn backdate_removed_at(c: &Connection, table: &str, source_id: &str, hours_old: i64) {
+        c.execute(
+            &format!(
+                "UPDATE {table} SET REMOVED_AT = datetime('now', '-' || ?1 || ' hours')
+                 WHERE SOURCE_ID = ?2"
+            ),
+            params![hours_old, source_id],
+        )
+        .unwrap();
+    }
+
+    fn backdate_created_at(c: &Connection, table: &str, source_id: &str, days_old: i64) {
+        c.execute(
+            &format!(
+                "UPDATE {table} SET CREATED_AT = datetime('now', '-' || ?1 || ' days')
+                 WHERE SOURCE_ID = ?2"
+            ),
+            params![days_old, source_id],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn prune_dismissed_forgets_stale_ver_but_keeps_fresh() {
+        let c = conn();
+        upsert_seen(&c, "arxiv:2401.00010", 1, "old").unwrap();
+        dismiss(&c, "arxiv:2401.00010", 1, false).unwrap();
+        backdate_removed_at(
+            &c,
+            "RSS_PAPER",
+            "arxiv:2401.00010",
+            VER_DISMISS_PRUNE_HOURS + 1,
+        );
+
+        upsert_seen(&c, "arxiv:2401.00011", 1, "fresh").unwrap();
+        dismiss(&c, "arxiv:2401.00011", 1, false).unwrap();
+
+        prune_dismissed(&c, 1).unwrap();
+        let dismissed = dismissed_versions(&c).unwrap();
+        assert!(!dismissed.contains(&("arxiv:2401.00010".to_string(), 1)));
+        assert!(dismissed.contains(&("arxiv:2401.00011".to_string(), 1)));
+    }
+
+    /// A VER dismissal must outlive its `RSS_CACHE_ENTRY` row, or the entry
+    /// silently reappears once the raw VER_DISMISS_PRUNE_HOURS cutoff passes.
+    #[test]
+    fn prune_dismissed_floors_ver_cutoff_at_cache_retention() {
+        let c = conn();
+        upsert_seen(&c, "arxiv:2401.00012", 1, "old-ish").unwrap();
+        dismiss(&c, "arxiv:2401.00012", 1, false).unwrap();
+        // Past the raw 48h constant, nowhere near a 30-day retention window.
+        backdate_removed_at(
+            &c,
+            "RSS_PAPER",
+            "arxiv:2401.00012",
+            VER_DISMISS_PRUNE_HOURS + 1,
+        );
+
+        prune_dismissed(&c, 30).unwrap();
+        assert!(dismissed_versions(&c)
+            .unwrap()
+            .contains(&("arxiv:2401.00012".to_string(), 1)));
+    }
+
+    #[test]
+    fn prune_dismissed_floors_doi_cutoff_at_cache_retention() {
+        let c = conn();
+        upsert_seen(&c, "arxiv:2401.00013", 1, "old-ish, blocked").unwrap();
+        dismiss(&c, "arxiv:2401.00013", 1, true).unwrap();
+        // Past the raw 730-day constant, nowhere near an 830-day retention window.
+        backdate_removed_at(
+            &c,
+            "RSS_PAPER_ROOTS",
+            "arxiv:2401.00013",
+            (DOI_DISMISS_PRUNE_DAYS + 1) * 24,
+        );
+
+        prune_dismissed(&c, DOI_DISMISS_PRUNE_DAYS + 100).unwrap();
+        assert!(blocked_source_ids(&c).unwrap().contains("arxiv:2401.00013"));
+    }
+
+    #[test]
+    fn prune_dismissed_forgets_stale_doi_and_cascades_to_paper_rows() {
+        let c = conn();
+        upsert_seen(&c, "arxiv:2401.00020", 1, "old blocked").unwrap();
+        dismiss(&c, "arxiv:2401.00020", 1, true).unwrap();
+        backdate_removed_at(
+            &c,
+            "RSS_PAPER_ROOTS",
+            "arxiv:2401.00020",
+            DOI_DISMISS_PRUNE_DAYS * 24 + 1,
+        );
+
+        upsert_seen(&c, "arxiv:2401.00021", 1, "fresh blocked").unwrap();
+        dismiss(&c, "arxiv:2401.00021", 1, true).unwrap();
+
+        prune_dismissed(&c, 1).unwrap();
+        let blocked = blocked_source_ids(&c).unwrap();
+        assert!(!blocked.contains("arxiv:2401.00020"));
+        assert!(blocked.contains("arxiv:2401.00021"));
+
+        // ON DELETE CASCADE must have taken the RSS_PAPER row with it.
+        let remaining: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM RSS_PAPER WHERE SOURCE_ID = 'arxiv:2401.00020'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 0);
+    }
+
+    /// A fresh DOI root must survive delete #2 pruning its own 'NOT' child --
+    /// delete #4's REMOVAL_TYPE='NOT' filter must never reach a DOI root.
+    #[test]
+    fn prune_dismissed_keeps_fresh_doi_root_after_its_not_child_is_pruned() {
+        let c = conn();
+        upsert_seen(&c, "arxiv:2401.00022", 1, "blocked, old seen row").unwrap();
+        backdate_created_at(&c, "RSS_PAPER", "arxiv:2401.00022", 31);
+        dismiss(&c, "arxiv:2401.00022", 1, true).unwrap();
+
+        prune_dismissed(&c, 30).unwrap();
+
+        assert!(blocked_source_ids(&c).unwrap().contains("arxiv:2401.00022"));
+        let remaining: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM RSS_PAPER WHERE SOURCE_ID = 'arxiv:2401.00022'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 0, "the 'NOT' child should still be pruned");
+    }
+
+    #[test]
+    fn prune_dismissed_forgets_stale_seen_rows_but_keeps_fresh() {
+        let c = conn();
+        upsert_seen(&c, "arxiv:2401.00030", 1, "old, never dismissed").unwrap();
+        backdate_created_at(&c, "RSS_PAPER_ROOTS", "arxiv:2401.00030", 31);
+        backdate_created_at(&c, "RSS_PAPER", "arxiv:2401.00030", 31);
+
+        upsert_seen(&c, "arxiv:2401.00031", 1, "fresh, never dismissed").unwrap();
+
+        prune_dismissed(&c, 30).unwrap();
+
+        let paper_count: i64 = c
+            .query_row("SELECT COUNT(*) FROM RSS_PAPER", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(paper_count, 1, "only the fresh seen row should survive");
+        let roots_count: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM RSS_PAPER_ROOTS WHERE SOURCE_ID = 'arxiv:2401.00030'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            roots_count, 0,
+            "orphaned root with no remaining children must go too"
+        );
+    }
+
+    /// The EXISTS guard must not orphan-delete a root while a live child
+    /// (not yet stale) still references it.
+    #[test]
+    fn prune_dismissed_keeps_old_root_with_a_live_child() {
+        let c = conn();
+        upsert_seen(&c, "arxiv:2401.00040", 1, "old root, fresh dismissal").unwrap();
+        backdate_created_at(&c, "RSS_PAPER_ROOTS", "arxiv:2401.00040", 31);
+        dismiss(&c, "arxiv:2401.00040", 1, false).unwrap();
+
+        prune_dismissed(&c, 30).unwrap();
+
+        assert!(dismissed_versions(&c)
+            .unwrap()
+            .contains(&("arxiv:2401.00040".to_string(), 1)));
+        let roots_count: i64 = c
+            .query_row(
+                "SELECT COUNT(*) FROM RSS_PAPER_ROOTS WHERE SOURCE_ID = 'arxiv:2401.00040'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(roots_count, 1, "root must survive while its child does");
+    }
+
     #[test]
     fn rule_crud_round_trips() {
         let c = conn();
@@ -395,8 +600,7 @@ mod tests {
         }
     }
 
-    /// Backdate a row's FETCHED_AT (the retention cutoff -- see `load_cache_entries`)
-    /// to simulate an old cache entry; `merge_cache_entries` always writes it as "now".
+    /// Backdate a row's FETCHED_AT to simulate an old cache entry.
     fn age_row(c: &Connection, dedup_key: &str, days_old: i64) {
         c.execute(
             "UPDATE RSS_CACHE_ENTRY SET FETCHED_AT = datetime('now', '-' || ?1 || ' days')
