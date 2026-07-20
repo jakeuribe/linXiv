@@ -386,7 +386,8 @@ mod tests {
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let mock_server = MockServer::start().await;
-        let feed_url = format!("{}/feed.json", mock_server.uri());
+        // Distinct path: a reused ephemeral port + shared path would collide in LAST_FETCH.
+        let feed_url = format!("{}/feed-saved-ids.json", mock_server.uri());
 
         // Mock a feed with an entry for arxiv paper 2301.00001
         Mock::given(method("GET"))
