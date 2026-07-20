@@ -1,10 +1,5 @@
-//! `GET /api/feed?url=…` — fetch the user's home RSS/Atom feed and persist
-//! entries into a rolling `RSS_CACHE_ENTRY` window (default 30 days), merged in
-//! additively so an empty upstream fetch can't clobber prior entries. Upstream
-//! is throttled to once per `CACHE_TTL`; a failed fetch falls back to serving
-//! the existing DB window, erroring only if that window is empty. Dismissed
-//! (`POST /api/feed/dismiss`) and rule-filtered (`RSS_FILTER_RULE`) entries are
-//! stripped before the response goes out.
+//! `GET /api/feed?url=…` — fetch the user's home RSS/Atom feed into a rolling
+//! `RSS_CACHE_ENTRY` window, throttled per `CACHE_TTL`, dismissed/rule-filtered before response.
 
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
