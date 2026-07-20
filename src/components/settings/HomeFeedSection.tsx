@@ -132,9 +132,12 @@ function FeedFilterRulesSection() {
   );
 }
 
+const DEFAULT_RETENTION_DAYS = 30;
+
 export function HomeFeedSection() {
   const queryClient = useQueryClient();
   const requestRef = useRef(0);
+  const retentionRequestRef = useRef(0);
   const { data: settings, isLoading: settingsLoading, isError: settingsError } = useQuery({
     queryKey: ["settings"],
     queryFn: getSettings,
@@ -178,6 +181,47 @@ export function HomeFeedSection() {
       });
   }
 
+  const savedRetention =
+    typeof settings?.rss_cache_retention_days === "number"
+      ? String(settings.rss_cache_retention_days)
+      : String(DEFAULT_RETENTION_DAYS);
+
+  const [retentionInput, setRetentionInput] = useState("");
+  const [prevSavedRetention, setPrevSavedRetention] = useState<string | null>(null);
+  const [retentionError, setRetentionError] = useState("");
+  if (settings && savedRetention !== prevSavedRetention) {
+    setRetentionInput(savedRetention);
+    setPrevSavedRetention(savedRetention);
+  }
+
+  function handleRetentionBlur() {
+    setRetentionError("");
+    const next = retentionInput.trim();
+    if (next === savedRetention) {
+      setRetentionInput(next);
+      return;
+    }
+    const parsed = Number(next);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      setRetentionError("Must be a positive whole number");
+      return;
+    }
+    const thisRequest = ++retentionRequestRef.current;
+    updateSettings({ rss_cache_retention_days: parsed })
+      .then(() => {
+        if (thisRequest === retentionRequestRef.current) {
+          setRetentionInput(String(parsed));
+          queryClient.invalidateQueries({ queryKey: ["home-feed"] });
+        }
+      })
+      .catch(() => {
+        if (thisRequest === retentionRequestRef.current) {
+          setRetentionError("Failed to save");
+          setRetentionInput(savedRetention);
+        }
+      });
+  }
+
   return (
     <div>
       <SettingGroupLabel>Home</SettingGroupLabel>
@@ -212,6 +256,45 @@ export function HomeFeedSection() {
               {error && (
                 <div id="home-feed-url-error" className="text-sm text-danger">
                   {error}
+                </div>
+              )}
+            </div>
+          )}
+        </SettingRow>
+        <SettingRow
+          label="Cache retention (days)"
+          description="How many days of feed entries are kept locally before pruning; permanently dismissed papers are always kept"
+          descriptionId="rss-cache-retention-desc"
+        >
+          {settingsLoading ? (
+            <span className="flex items-center gap-2 text-sm text-muted">
+              <Spinner size={14} /> Loading…
+            </span>
+          ) : settingsError ? (
+            <span className="text-xs text-danger">Could not load settings.</span>
+          ) : (
+            <div className="flex flex-col gap-2">
+              <Input
+                type="number"
+                min={1}
+                value={retentionInput}
+                onChange={(e) => {
+                  setRetentionInput(e.target.value);
+                  setRetentionError("");
+                }}
+                onBlur={handleRetentionBlur}
+                aria-label="Cache retention (days)"
+                aria-describedby={
+                  retentionError
+                    ? "rss-cache-retention-desc rss-cache-retention-error"
+                    : "rss-cache-retention-desc"
+                }
+                aria-invalid={!!retentionError}
+                className="w-24"
+              />
+              {retentionError && (
+                <div id="rss-cache-retention-error" className="text-sm text-danger">
+                  {retentionError}
                 </div>
               )}
             </div>

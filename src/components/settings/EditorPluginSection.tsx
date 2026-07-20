@@ -20,8 +20,8 @@ function CheckMessage({ check }: { check: UpdateCheck }) {
   if (check.noCompatibleRelease) {
     return (
       <span style={{ color: "var(--color-danger)" }}>
-        No editor release matches this version of linXiv — an app update may be
-        required.
+        No editor release matches this version of linXiv; check the recent
+        releases for more information.
       </span>
     );
   }

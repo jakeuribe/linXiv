@@ -40,7 +40,7 @@ import { Spinner } from "../components/ui/spinner";
 type ShareRole = "Hoster" | "Reader";
 
 function errText(e: unknown): string {
-  return e instanceof ApiError ? e.message : "Something went wrong";
+  return e instanceof ApiError ? e.message : "Unexpected sharing error";
 }
 
 function RolePill({ role }: { role: ShareRole }) {
@@ -801,7 +801,7 @@ function ShareProjectDialog({ open, onClose }: { open: boolean; onClose: () => v
         <p className="text-xs" style={{ color: "var(--color-muted)" }}>
           {mode === "e2ee"
             ? "Publish an encrypted copy of the project. There is no ticket — invite each member from the share's settings using their member code."
-            : "Generate a ticket, then paste it in linXiv on another computer to send a read-only copy of the project — papers, notes and tags travel with it."}
+            : "Generate a ticket, then paste it in linXiv on another computer to send a read-only copy of the project."}
         </p>
         <div className="flex items-center gap-2">
           <OptionSelect

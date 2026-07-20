@@ -113,6 +113,7 @@ export interface Settings {
   search_history_max?: number;
   tex_rendering_enabled?: boolean;
   home_feed_url?: string;
+  rss_cache_retention_days?: number;
   [key: string]: unknown;
 }
 

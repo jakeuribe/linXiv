@@ -87,8 +87,8 @@ function InstallCard({
         <h2 className="text-base font-semibold text-text">Install the LaTeX editor</h2>
         {check?.noCompatibleRelease ? (
           <p className="text-sm text-muted mt-2">
-            No editor release matches this version of linXiv — an app update may
-            be required before the editor can be installed.
+            No editor release matches this version of linXiv; check the recent
+            releases for more information.
           </p>
         ) : (
           <p className="text-sm text-muted mt-2">
@@ -455,7 +455,7 @@ export default function EditorPage() {
         dirtyRef.current = false; // fresh guest starts clean
         setProtocolWarning(
           protocol != null && !isSupportedBridgeProtocol(protocol)
-            ? `The editor reports bridge protocol ${protocol}, which this version of linXiv doesn't support — some integration features may misbehave. Check for app/editor updates.`
+            ? `The editor reports bridge protocol ${protocol}, which this version of linXiv doesn't support; if features misbehave, check the linXiv GitHub for more information.`
             : null
         );
         const pid = pendingOpenRef.current ?? noteIdRef.current;

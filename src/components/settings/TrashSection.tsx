@@ -233,7 +233,7 @@ export function TrashSection() {
       }
     } catch (e) {
       console.error(e);
-      setActionError(`Could not restore "${paper.title}". Please try again.`);
+      setActionError(`Failed to restore "${paper.title}".`);
     } finally {
       setRestoringId(null);
     }
@@ -250,7 +250,7 @@ export function TrashSection() {
       setProjectPrompt(null);
     } catch (e) {
       console.error(e);
-      setRemoveError("Failed to remove from projects. Please try again.");
+      setRemoveError("Failed to remove from projects.");
     } finally {
       setRemoving(false);
     }
@@ -268,7 +268,7 @@ export function TrashSection() {
       await qc.invalidateQueries({ queryKey: ["papers"] });
     } catch (e) {
       console.error(e);
-      setActionError("Could not permanently delete the paper. Please try again.");
+      setActionError("Failed to permanently delete the paper.");
     } finally {
       setDeletingId(null);
     }
@@ -283,7 +283,7 @@ export function TrashSection() {
       await qc.invalidateQueries({ queryKey: ["projects"] });
     } catch (e) {
       console.error(e);
-      setActionError("Could not restore the project. Please try again.");
+      setActionError("Failed to restore the project.");
     } finally {
       setRestoringProjectId(null);
     }
@@ -298,7 +298,7 @@ export function TrashSection() {
       await qc.invalidateQueries({ queryKey: ["projects"] });
     } catch (e) {
       console.error(e);
-      setActionError("Could not permanently delete the project. Please try again.");
+      setActionError("Failed to permanently delete the project.");
     } finally {
       setDeletingProjectId(null);
     }

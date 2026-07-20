@@ -7,6 +7,7 @@ import { fetchArxiv } from "../api/search";
 import { getPaperPdfUrl } from "../api/papers";
 import { Spinner } from "../components/ui/spinner";
 import { Button } from "../components/ui/button";
+import { Dialog } from "../components/ui/dialog";
 import { PaperCard } from "../components/papers/PaperCard";
 import { Card, MonoLabel, SectionTitle } from "../components/ui/card";
 import type { FeedEntry, Paper, SearchResult } from "../types/api";
@@ -68,6 +69,7 @@ function FeedRow({
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [dismissing, setDismissing] = useState(false);
   const [dismissError, setDismissError] = useState(false);
+  const [confirmPermanent, setConfirmPermanent] = useState(false);
 
   async function handleSave(arxivId: string) {
     setSaveState("saving");
@@ -104,11 +106,11 @@ function FeedRow({
     navigate("/pdf-preview", { state: { result, isSaved: alreadySaved ?? false } });
   }
 
-  async function handleDismiss(arxivId: string, version: number) {
+  async function handleDismiss(arxivId: string, version: number, permanent = false) {
     setDismissing(true);
     setDismissError(false);
     try {
-      await dismissFeedEntry(arxivId, version);
+      await dismissFeedEntry(arxivId, version, permanent);
       onDismissed();
     } catch (err) {
       console.error(err);
@@ -173,16 +175,28 @@ function FeedRow({
             )}
           </div>
           {entry.arxiv_id !== null && entry.version !== null && (
-            <button
-              type="button"
-              aria-label="Dismiss"
-              title="Dismiss"
-              disabled={dismissing}
-              className="border-l border-border pl-3 text-muted hover:text-text transition-colors disabled:opacity-50"
-              onClick={() => handleDismiss(entry.arxiv_id as string, entry.version as number)}
-            >
-              ✕
-            </button>
+            <div className="flex items-center gap-1.5 border-l border-border pl-3">
+              <button
+                type="button"
+                aria-label="Dismiss"
+                title="Dismiss this version"
+                disabled={dismissing}
+                className="text-muted hover:text-text transition-colors disabled:opacity-50"
+                onClick={() => handleDismiss(entry.arxiv_id as string, entry.version as number)}
+              >
+                ✕
+              </button>
+              <button
+                type="button"
+                aria-label="Never show this paper again"
+                title="Never show this paper again"
+                disabled={dismissing}
+                className="text-muted hover:text-[var(--color-danger)] transition-colors disabled:opacity-50"
+                onClick={() => setConfirmPermanent(true)}
+              >
+                ⛔
+              </button>
+            </div>
           )}
         </div>
         {saveState === "error" && (
@@ -196,6 +210,32 @@ function FeedRow({
           </p>
         )}
       </div>
+      <Dialog
+        open={confirmPermanent}
+        onClose={() => setConfirmPermanent(false)}
+        title="Never show this paper again?"
+      >
+        <p className="text-sm text-muted mb-4">
+          This hides every version of this paper from the home feed going forward.
+        </p>
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" size="sm" onClick={() => setConfirmPermanent(false)}>
+            Cancel
+          </Button>
+          <Button
+            variant="danger"
+            size="sm"
+            onClick={() => {
+              setConfirmPermanent(false);
+              if (entry.arxiv_id !== null && entry.version !== null) {
+                void handleDismiss(entry.arxiv_id, entry.version, true);
+              }
+            }}
+          >
+            Never show again
+          </Button>
+        </div>
+      </Dialog>
     </div>
   );
 }
