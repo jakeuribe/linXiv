@@ -35,6 +35,7 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     note_uuid(conn)?;
     annotation_uuid(conn)?;
     rss_feed_tables(conn)?;
+    rss_cache_entry_table(conn)?;
     Ok(())
 }
 
@@ -377,6 +378,15 @@ fn rss_feed_tables(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+// ── 17. RSS_CACHE_ENTRY table (persisted per-URL feed entries, replaces the
+//        old in-memory last-response cache) ─────────────────────────────────
+
+/// Added after the initial schema, same pattern as `rss_feed_tables` above.
+fn rss_cache_entry_table(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!("../../sql/tables/RSS_CACHE_ENTRY.sql"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,7 +430,12 @@ mod tests {
             )
             .unwrap();
         assert_eq!(version_check_tables, 1);
-        for table in ["RSS_PAPER_ROOTS", "RSS_PAPER", "RSS_FILTER_RULE"] {
+        for table in [
+            "RSS_PAPER_ROOTS",
+            "RSS_PAPER",
+            "RSS_FILTER_RULE",
+            "RSS_CACHE_ENTRY",
+        ] {
             let n: i64 = conn
                 .query_row(
                     "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",

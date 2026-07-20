@@ -1,17 +1,28 @@
 //! `GET /api/feed?url=…` — fetch + parse the user-configured home RSS/Atom feed
-//! (core `sources::feed`), with a small in-memory success cache so re-visiting
-//! the home page doesn't re-hit the upstream on every render. Entries the user
-//! dismissed (`POST /api/feed/dismiss`) or that match a filter rule
-//! (`RSS_FILTER_RULE`, CRUD under `/api/feed/rules`) are stripped before the
-//! response goes back to the client.
+//! (core `sources::feed`), persisting entries into `RSS_CACHE_ENTRY` (a rolling
+//! window, default last 30 days -- `rss_cache_retention_days`) instead of
+//! caching just the last raw response. Upstream is only re-fetched every
+//! `CACHE_TTL` (still throttles hammering the feed on every page load); each
+//! fetch is merged in additively (dedup by entry key, never overwritten), so an
+//! empty/short upstream response (e.g. arXiv publishing nothing over a
+//! weekend) can't clobber previously-cached entries -- the response is always
+//! built from the DB window, not the raw fetch. A failed upstream fetch falls
+//! back to serving the existing DB window rather than erroring outright; only
+//! an empty window (nothing cached yet, or fully pruned) surfaces the fetch
+//! error to the client. Entries the user dismissed (`POST /api/feed/dismiss`)
+//! or that match a filter rule (`RSS_FILTER_RULE`, CRUD under
+//! `/api/feed/rules`) are stripped before the response goes back to the
+//! client.
 
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
+use chrono::NaiveDateTime;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use linxiv_core::config::UserSettings;
 use linxiv_core::sources::feed as svc_feed;
 use linxiv_core::storage::queries::rss;
 
@@ -20,8 +31,12 @@ use crate::state::AppState;
 
 const CACHE_TTL: Duration = Duration::from_secs(300);
 
-// Unbounded per-URL map — in practice one home-feed URL lives here.
-static CACHE: LazyLock<Mutex<HashMap<String, (Instant, Value)>>> = LazyLock::new(Default::default);
+// Throttle-only: when a URL was last fetched from upstream, plus the feed's
+// channel title (needed to build a response on a throttled/no-fetch request --
+// the DB window only holds entries, not the channel title). Unbounded per-URL
+// map — in practice one home-feed URL lives here.
+static LAST_FETCH: LazyLock<Mutex<HashMap<String, (Instant, String)>>> =
+    LazyLock::new(Default::default);
 
 pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<Value, ApiError>> {
     match (ctx.method, ctx.segs) {
@@ -44,6 +59,40 @@ fn entry_identity(entry: &Value) -> (Option<String>, Option<i64>) {
     (source_id, version)
 }
 
+/// Best-effort parse of a feed entry's raw `published` string (RSS `pubDate` is
+/// RFC 822, Atom `published`/`updated` is RFC 3339) into a timestamp to prune
+/// by. `None` when it doesn't parse either way -- the caller then prunes by
+/// first-fetched time instead (`RSS_CACHE_ENTRY.FETCHED_AT`).
+fn parse_published(s: &str) -> Option<NaiveDateTime> {
+    chrono::DateTime::parse_from_rfc2822(s)
+        .or_else(|_| chrono::DateTime::parse_from_rfc3339(s))
+        .map(|dt| dt.naive_utc())
+        .ok()
+}
+
+/// Build the DB row for a freshly-fetched entry. Dedup key is arxiv
+/// `source_id+version` when the entry has one (a later version is a genuinely
+/// distinct entry, so it must get its own key, not overwrite v1's); otherwise
+/// the entry's link, falling back to its title if even that's blank. `None`
+/// only when the entry has neither an arxiv id, a link, nor a title -- nothing
+/// stable to key it by.
+fn to_cache_entry(entry: &svc_feed::FeedEntry) -> Option<rss::CacheEntry> {
+    let entry_json = serde_json::to_string(entry).ok()?;
+    let source_id = entry.arxiv_id.as_deref().map(|id| format!("arxiv:{id}"));
+    let dedup_key = match (&source_id, entry.version) {
+        (Some(sid), Some(v)) => format!("{sid}v{v}"),
+        _ if !entry.link.is_empty() => entry.link.clone(),
+        _ if !entry.title.is_empty() => entry.title.clone(),
+        _ => return None,
+    };
+    Some(rss::CacheEntry {
+        dedup_key,
+        source_id,
+        entry_json,
+        published_at: parse_published(&entry.published),
+    })
+}
+
 /// Drops entries the user dismissed or that match a filter rule, records each
 /// survivor as seen (`RSS_PAPER_ROOTS`/`RSS_PAPER`), and returns which of them
 /// are already saved to the library — all in one DB connection.
@@ -53,7 +102,6 @@ fn annotate_and_filter(state: &AppState, feed_value: &mut Value) -> Vec<String> 
     let Some(entries) = feed_value.get_mut("entries").and_then(|e| e.as_array_mut()) else {
         return Vec::new();
     };
-    entries.truncate(200);
 
     state.with_conn(|conn| {
         // One transaction for the whole read+write batch -- avoids up to ~200
@@ -94,6 +142,10 @@ fn annotate_and_filter(state: &AppState, feed_value: &mut Value) -> Vec<String> 
             }
             !rss::is_hidden(&rules, title, summary, &authors)
         });
+        // Truncate after filtering (not before) so dismissed/rule-hidden entries
+        // don't eat into the 200 the client actually gets to see -- the loader
+        // above pulls up to 500 rows precisely to leave this headroom.
+        entries.truncate(200);
 
         // Record each survivor as seen, separately from the (pure) filter above.
         for entry in entries.iter() {
@@ -137,30 +189,65 @@ async fn get_feed(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError>
         .filter(|u| !u.trim().is_empty())
         .ok_or_else(|| ApiError::new(422, "url query parameter is required"))?;
 
-    let cached = CACHE
+    let last_fetch = LAST_FETCH
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get(url)
-        .filter(|(at, _)| at.elapsed() < CACHE_TTL)
-        .map(|(_, v)| v.clone());
+        .cloned();
+    let due = last_fetch
+        .as_ref()
+        .map(|(at, _)| at.elapsed() >= CACHE_TTL)
+        .unwrap_or(true);
+    let mut title = last_fetch.map(|(_, t)| t).unwrap_or_default();
+    let retention_days = UserSettings::load()
+        .map(|s| s.rss_cache_retention_days())
+        .unwrap_or(30);
 
-    let mut result = match cached {
-        Some(v) => v,
-        None => {
-            // Cache miss or expired: fetch fresh from upstream.
-            // data_dir carries the shared .arxiv_ratelimit file (same one arxiv_get uses).
-            let feed = svc_feed::fetch_feed(url, &linxiv_core::config::data_dir()).await?;
-            let v = serde_json::to_value(&feed).map_err(|e| ApiError::new(500, e.to_string()))?;
-            CACHE
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(url.to_string(), (Instant::now(), v.clone()));
-            v
+    let mut fetch_err = None;
+    if due {
+        eprintln!("[linxiv] feed: fetching {url}");
+        // data_dir carries the shared .arxiv_ratelimit file (same one arxiv_get uses).
+        match svc_feed::fetch_feed(url, &linxiv_core::config::data_dir()).await {
+            Ok(feed) => {
+                eprintln!(
+                    "[linxiv] feed: fetched {url} ({} entries)",
+                    feed.entries.len()
+                );
+                title = feed.title.clone();
+                let fresh: Vec<rss::CacheEntry> =
+                    feed.entries.iter().filter_map(to_cache_entry).collect();
+                state.with_conn(|conn| -> linxiv_core::error::Result<()> {
+                    rss::merge_cache_entries(conn, url, &fresh)?;
+                    rss::prune_cache_entries(conn, url, retention_days)?;
+                    Ok(())
+                })?;
+                LAST_FETCH
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(url.to_string(), (Instant::now(), title.clone()));
+            }
+            Err(e) => {
+                // No throttle entry written on failure -- matches the old cache's
+                // behavior of retrying on the very next request rather than
+                // waiting out the TTL while upstream is down. Don't bail out here:
+                // fall through and try to serve the persisted window instead; only
+                // error out below if there's nothing cached to fall back to.
+                eprintln!("[linxiv] feed: fetch failed for {url}: {e}");
+                fetch_err = Some(e);
+            }
         }
-    };
+    }
+
+    let entries = state.with_conn(|conn| rss::load_cache_entries(conn, url, retention_days))?;
+    if entries.is_empty() {
+        if let Some(e) = fetch_err {
+            return Err(e.into());
+        }
+    }
+    let mut result = json!({ "title": title, "entries": entries });
 
     // Recompute dismiss/rule filtering + saved_arxiv_ids fresh against current DB
-    // state (cache hit or miss) -- the cached value above is the raw upstream feed.
+    // state -- the DB-window entries above are unfiltered.
     let saved_arxiv_ids = annotate_and_filter(state, &mut result);
     result["saved_arxiv_ids"] = serde_json::json!(saved_arxiv_ids);
     Ok(result)
@@ -235,6 +322,7 @@ fn delete_rule(state: &AppState, id: &str) -> Result<Value, ApiError> {
 
 #[cfg(test)]
 mod tests {
+    use super::rss;
     use crate::route::{route, ApiRequest};
     use crate::state::AppState;
     use linxiv_core::storage;
@@ -246,8 +334,18 @@ mod tests {
     }
 
     async fn get(path: &str) -> Result<serde_json::Value, crate::route::ApiError> {
+        get_in(&state(), path).await
+    }
+
+    /// Like `get`, but against a caller-supplied state — needed to pre-seed the
+    /// DB cache and then observe it survive a real `route()` call, rather than
+    /// each call getting its own throwaway in-memory DB.
+    async fn get_in(
+        state: &AppState,
+        path: &str,
+    ) -> Result<serde_json::Value, crate::route::ApiError> {
         route(
-            &state(),
+            state,
             ApiRequest {
                 method: "GET".into(),
                 path: path.into(),
@@ -276,9 +374,9 @@ mod tests {
         use wiremock::matchers::method;
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
-        // No CACHE.lock().unwrap().clear() here: CACHE is a process-wide static and
-        // cargo test runs these #[tokio::test]s concurrently, so a blind clear() races
-        // with sibling tests and can evict their entries mid-test.
+        // No LAST_FETCH.lock().unwrap().clear() here: LAST_FETCH is a process-wide
+        // static and cargo test runs these #[tokio::test]s concurrently, so a blind
+        // clear() races with sibling tests and can evict their entries mid-test.
         let mock_server = MockServer::start().await;
         let feed_url = format!("{}/feed.xml", mock_server.uri());
 
@@ -375,6 +473,121 @@ mod tests {
 
         let result = get(&format!("/api/feed?url={}", encoded_url)).await;
         assert!(result.is_ok());
+
+        mock_server.verify().await;
+    }
+
+    /// The bug the caching redesign fixes: arXiv (or any feed) publishing
+    /// nothing new (e.g. over a weekend) must not wipe entries a real earlier
+    /// fetch already persisted -- the additive merge inserts zero new rows and
+    /// the DB-backed window response still includes the earlier entry.
+    #[tokio::test]
+    async fn empty_upstream_fetch_does_not_clobber_previously_cached_entries() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let feed_url = format!("{}/weekend-feed.xml", mock_server.uri());
+        let encoded_url = feed_url.replace(":", "%3A").replace("/", "%2F");
+
+        let st = state();
+        st.with_conn(|conn| {
+            rss::merge_cache_entries(
+                conn,
+                &feed_url,
+                &[rss::CacheEntry {
+                    dedup_key: "arxiv:9999.00001v1".into(),
+                    source_id: Some("arxiv:9999.00001".into()),
+                    entry_json:
+                        r#"{"title":"Yesterday's Paper","arxiv_id":"9999.00001","version":1}"#
+                            .into(),
+                    published_at: None,
+                }],
+            )
+        })
+        .unwrap();
+
+        // Well-formed but empty upstream response -- the weekend case.
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"<?xml version="1.0"?><rss version="2.0"><channel><title>Empty</title></channel></rss>"#,
+            ))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let result = get_in(&st, &format!("/api/feed?url={}", encoded_url))
+            .await
+            .unwrap();
+        let titles: Vec<&str> = result["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|e| e.get("title").and_then(|t| t.as_str()))
+            .collect();
+        assert!(
+            titles.contains(&"Yesterday's Paper"),
+            "empty upstream fetch must not wipe previously cached entries, got: {titles:?}"
+        );
+
+        mock_server.verify().await;
+    }
+
+    /// Two successive fetches into the same DB accumulate rather than replace:
+    /// day 1's entry survives once day 2's (distinct) entry is merged in.
+    #[tokio::test]
+    async fn successive_fetches_accumulate_additively() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let feed_url = format!("{}/growing-feed.xml", mock_server.uri());
+        let encoded_url = feed_url.replace(":", "%3A").replace("/", "%2F");
+
+        let st = state();
+        st.with_conn(|conn| {
+            rss::merge_cache_entries(
+                conn,
+                &feed_url,
+                &[rss::CacheEntry {
+                    dedup_key: "arxiv:1111.00001v1".into(),
+                    source_id: Some("arxiv:1111.00001".into()),
+                    entry_json: r#"{"title":"Day One Paper","arxiv_id":"1111.00001","version":1}"#
+                        .into(),
+                    published_at: None,
+                }],
+            )
+        })
+        .unwrap();
+
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"<?xml version="1.0"?>
+<rss version="2.0">
+  <channel>
+    <title>Growing Feed</title>
+    <item>
+      <title>Day Two Paper</title>
+      <link>https://arxiv.org/abs/2222.00002v1</link>
+    </item>
+  </channel>
+</rss>"#,
+            ))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let result = get_in(&st, &format!("/api/feed?url={}", encoded_url))
+            .await
+            .unwrap();
+        let titles: Vec<&str> = result["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|e| e.get("title").and_then(|t| t.as_str()))
+            .collect();
+        assert!(titles.contains(&"Day One Paper"), "got: {titles:?}");
+        assert!(titles.contains(&"Day Two Paper"), "got: {titles:?}");
 
         mock_server.verify().await;
     }
