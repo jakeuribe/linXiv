@@ -695,7 +695,7 @@ export default function PaperDetailPage() {
                   >
                     {deleteNoteMutation.error instanceof Error
                       ? deleteNoteMutation.error.message
-                      : "Couldn't delete the note. Please try again."}
+                      : "Failed to delete the note."}
                   </p>
                 )}
 
@@ -766,7 +766,7 @@ export default function PaperDetailPage() {
                     className="text-sm text-center"
                     style={{ color: "var(--color-danger)" }}
                   >
-                    Couldn't delete the annotation. Please try again.
+                    Failed to delete the annotation.
                   </p>
                 )}
               </TabsContent>

@@ -138,6 +138,20 @@ impl UserSettings {
             .unwrap_or(1024) as u64;
         mb.saturating_mul(1024 * 1024)
     }
+
+    /// `rss_cache_retention_days`: how many days of persisted feed entries
+    /// (`RSS_CACHE_ENTRY`) the home-feed cache keeps before pruning, measured
+    /// from when each entry was first fetched. A permanent dismiss
+    /// (`RSS_PAPER_ROOTS.REMOVAL_TYPE = 'DOI'`) persists independently of this
+    /// window -- it's the dismissal that's kept forever, not the cache row,
+    /// which still ages out normally. Falls back to the bundled default
+    /// (30 days) if missing or not a positive integer.
+    pub fn rss_cache_retention_days(&self) -> i64 {
+        self.get("rss_cache_retention_days")
+            .and_then(Value::as_i64)
+            .filter(|&v| v > 0)
+            .unwrap_or(30)
+    }
 }
 
 fn parse_obj(s: &str) -> Result<Map<String, Value>> {
@@ -180,6 +194,7 @@ mod tests {
             s.get("tex_rendering_enabled").unwrap().as_bool().unwrap(),
             true
         );
+        assert_eq!(s.rss_cache_retention_days(), 30);
         assert!(s.get("nope").is_none());
 
         // Override + save persists ONLY the override, then reloads merged.

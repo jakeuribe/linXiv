@@ -16,7 +16,7 @@ import { Spinner } from "../ui/spinner";
 import { SettingGroup, SettingGroupLabel, SettingRow } from "./SettingRow";
 
 function errText(e: unknown): string {
-  return e instanceof ApiError ? e.message : "Something went wrong";
+  return e instanceof ApiError ? e.message : "Unexpected sharing error";
 }
 
 function summaryLine(s: SharedSummary): string {

@@ -12,7 +12,7 @@ A local-first desktop application for discovering, managing, and visualizing aca
 
 Upload your PDFs, create projects, manage notes, tags, and annotations to organize your library — all locally, without sending your data anywhere. linXiv aims to be a one-stop shop for researchers managing their literature, with the near-term goal of extending to research groups who want to share knowledge without going to the web.
 
-> **Development status:** Pre-1.0 (current version `0.3.0-beta`). The database schema is still evolving, but migration structure is in-place. We are deduping pdfs but working on deduping pdfs, from different sources. 
+> **Development status:** Pre-1.0 (current version `0.3.0-beta`). The database schema is still evolving, but migration structure is in-place. We are deduping from the same sources, but working on deduplicating pdfs originating from different sources.
 
 <img src="assets/carousel.gif" width="800" />
 
