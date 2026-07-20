@@ -600,7 +600,7 @@ export default function PaperDetailPage() {
                 >
                   <p style={{ color: "var(--color-text)" }}>
                     Same DOI found in {doiCandidates.length} other record
-                    {doiCandidates.length > 1 ? "s" : ""} — likely the same paper.
+                    {doiCandidates.length > 1 ? "s" : ""}. These are likely to be the same paper.
                   </p>
                   <div className="flex flex-wrap gap-x-3 gap-y-1">
                     {doiCandidates.map((c) => (
@@ -883,7 +883,7 @@ function AnnotationCard({
                 </button>
                 {stale ? (
                   <span style={{ color: "var(--color-danger)" }}>
-                    Comment was updated elsewhere — cancel to reload.
+                    Comment was updated elsewhere. Cancel to reload before saving.
                   </span>
                 ) : (
                   updateMutation.isError && (

@@ -152,7 +152,7 @@ export function EditorPluginSection() {
                 Version {info.pluginVersion ?? "?"} installed · {fmtMB(info.onDiskBytes)} on disk
               </>
             ) : (
-              "Not installed — the Editor tab offers the download."
+              "Not installed. Enable the Editor tab, and navigate to it to find the download."
             )
           }
         >

@@ -409,7 +409,7 @@ export default function HomePage() {
                 </section>
 
                 <section className="lg:sticky lg:top-8 self-start">
-                  <SectionTitle className="text-base mb-4">Tags — recent papers</SectionTitle>
+                  <SectionTitle className="text-base mb-4">Tags —— Recent Papers</SectionTitle>
                   {topTags.length === 0 ? (
                     <Card inset className="text-center">
                       <p className="text-muted text-sm">

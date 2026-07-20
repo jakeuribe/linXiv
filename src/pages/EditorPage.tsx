@@ -94,7 +94,7 @@ function InstallCard({
           <p className="text-sm text-muted mt-2">
             The editor is a one-time download (about {fmtMB(check?.downloadBytes)};
             ~78 MB of TeX Live on disk). After installing, it works fully
-            offline — compiling never touches the network.
+            offline.
           </p>
         )}
         {error && <p className="text-sm text-danger mt-3">{error}</p>}
@@ -624,9 +624,8 @@ export default function EditorPage() {
       {gate.state === "browser" && (
         <div className="flex-1 flex items-center justify-center">
           <p className="max-w-md text-sm text-muted text-center">
-            The LaTeX editor runs inside the linXiv desktop app — this is a
-            browser preview of the production build, where the editor plugin
-            (and its <code>texbrain://</code> scheme) isn&apos;t available.
+            The LaTeX editor runs inside the linXiv desktop app for now,
+            browser view isn&apos;t supported yet.
           </p>
         </div>
       )}

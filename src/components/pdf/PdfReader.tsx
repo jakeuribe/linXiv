@@ -477,7 +477,7 @@ export function PdfReader({ file, sourceId, version, projectId, errorUrl }: PdfR
           </div>
           {popupStale && (
             <p className="text-xs" style={{ color: "var(--color-danger)" }}>
-              Comment was updated elsewhere — close to reload.
+              Comment was updated elsewhere. Cancel to reload before saving.
             </p>
           )}
         </div>

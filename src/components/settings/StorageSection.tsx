@@ -64,7 +64,7 @@ export function StorageSection() {
     mutationFn: restoreDatabase,
     onSuccess: (done) => {
       if (!done) return; // picker cancelled
-      setRestoreMsg({ ok: true, text: "Database restored — restart linXiv to finish." });
+      setRestoreMsg({ ok: true, text: "Database restored. Restart linXiv to finish." });
       qc.invalidateQueries();
     },
     onError: (e) =>
