@@ -445,6 +445,7 @@ mod tests {
                 .unwrap();
             assert_eq!(n, 1, "{table} must exist after run_migrations");
         }
+        assert!(index_exists(&conn, "IDX_RSS_PAPER_SOURCE_FK").unwrap());
         schema::apply_views(&conn).unwrap();
     }
 

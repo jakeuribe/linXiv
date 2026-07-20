@@ -20,3 +20,8 @@ CREATE TABLE IF NOT EXISTS RSS_PAPER(
 
 -- Every feed GET scans for 'VER' rows (queries::rss::dismissed_versions).
 CREATE INDEX IF NOT EXISTS IDX_RSS_PAPER_REMOVAL_TYPE ON RSS_PAPER(REMOVAL_TYPE);
+
+-- Unindexed FK child columns force a full table scan per parent delete (SQLite
+-- foreign key docs 4.1) -- needed by both the ON DELETE CASCADE and prune_dismissed's
+-- orphan-root NOT EXISTS check.
+CREATE INDEX IF NOT EXISTS IDX_RSS_PAPER_SOURCE_FK ON RSS_PAPER(SOURCE_FK);
