@@ -139,13 +139,13 @@ impl UserSettings {
         mb.saturating_mul(1024 * 1024)
     }
 
-    /// `rss_cache_retention_days`: how many days of persisted feed entries
-    /// (`RSS_CACHE_ENTRY`) the home-feed cache keeps before pruning, measured
-    /// from when each entry was first fetched. A permanent dismiss
-    /// (`RSS_PAPER_ROOTS.REMOVAL_TYPE = 'DOI'`) persists independently of this
-    /// window -- it's the dismissal that's kept forever, not the cache row,
-    /// which still ages out normally. Falls back to the bundled default
-    /// (30 days) if missing or not a positive integer.
+    /// `rss_cache_retention_days`: how many days `RSS_CACHE_ENTRY` rows are kept
+    /// before pruning. Also floors `rss::prune_dismissed`'s VER cutoff -- a
+    /// dismissal can't be forgotten before the cache entry it hides is gone.
+    /// Falls back to 30 if missing or not a positive integer.
+    ///
+    /// TODO: prune_dismissed's cutoffs are hardcoded, not settings -- surface
+    /// once there's a real need to tune them per-user.
     pub fn rss_cache_retention_days(&self) -> i64 {
         self.get("rss_cache_retention_days")
             .and_then(Value::as_i64)

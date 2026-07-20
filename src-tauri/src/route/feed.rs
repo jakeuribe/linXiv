@@ -1,18 +1,10 @@
-//! `GET /api/feed?url=…` — fetch + parse the user-configured home RSS/Atom feed
-//! (core `sources::feed`), persisting entries into `RSS_CACHE_ENTRY` (a rolling
-//! window, default last 30 days -- `rss_cache_retention_days`) instead of
-//! caching just the last raw response. Upstream is only re-fetched every
-//! `CACHE_TTL` (still throttles hammering the feed on every page load); each
-//! fetch is merged in additively (dedup by entry key, never overwritten), so an
-//! empty/short upstream response (e.g. arXiv publishing nothing over a
-//! weekend) can't clobber previously-cached entries -- the response is always
-//! built from the DB window, not the raw fetch. A failed upstream fetch falls
-//! back to serving the existing DB window rather than erroring outright; only
-//! an empty window (nothing cached yet, or fully pruned) surfaces the fetch
-//! error to the client. Entries the user dismissed (`POST /api/feed/dismiss`)
-//! or that match a filter rule (`RSS_FILTER_RULE`, CRUD under
-//! `/api/feed/rules`) are stripped before the response goes back to the
-//! client.
+//! `GET /api/feed?url=…` — fetch the user's home RSS/Atom feed and persist
+//! entries into a rolling `RSS_CACHE_ENTRY` window (default 30 days), merged in
+//! additively so an empty upstream fetch can't clobber prior entries. Upstream
+//! is throttled to once per `CACHE_TTL`; a failed fetch falls back to serving
+//! the existing DB window, erroring only if that window is empty. Dismissed
+//! (`POST /api/feed/dismiss`) and rule-filtered (`RSS_FILTER_RULE`) entries are
+//! stripped before the response goes out.
 
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
@@ -31,10 +23,8 @@ use crate::state::AppState;
 
 const CACHE_TTL: Duration = Duration::from_secs(300);
 
-// Throttle-only: when a URL was last fetched from upstream, plus the feed's
-// channel title (needed to build a response on a throttled/no-fetch request --
-// the DB window only holds entries, not the channel title). Unbounded per-URL
-// map — in practice one home-feed URL lives here.
+// Throttle state: last-fetch time + channel title per URL (title isn't stored
+// in the DB window, so a throttled request still needs it from here).
 static LAST_FETCH: LazyLock<Mutex<HashMap<String, (Instant, String)>>> =
     LazyLock::new(Default::default);
 
@@ -59,10 +49,8 @@ fn entry_identity(entry: &Value) -> (Option<String>, Option<i64>) {
     (source_id, version)
 }
 
-/// Best-effort parse of a feed entry's raw `published` string (RSS `pubDate` is
-/// RFC 822, Atom `published`/`updated` is RFC 3339) into a timestamp to prune
-/// by. `None` when it doesn't parse either way -- the caller then prunes by
-/// first-fetched time instead (`RSS_CACHE_ENTRY.FETCHED_AT`).
+/// Parse a feed entry's `published` string (RSS is RFC 822, Atom is RFC 3339).
+/// `None` if neither parses -- caller then falls back to `FETCHED_AT`.
 fn parse_published(s: &str) -> Option<NaiveDateTime> {
     chrono::DateTime::parse_from_rfc2822(s)
         .or_else(|_| chrono::DateTime::parse_from_rfc3339(s))
@@ -71,11 +59,8 @@ fn parse_published(s: &str) -> Option<NaiveDateTime> {
 }
 
 /// Build the DB row for a freshly-fetched entry. Dedup key is arxiv
-/// `source_id+version` when the entry has one (a later version is a genuinely
-/// distinct entry, so it must get its own key, not overwrite v1's); otherwise
-/// the entry's link, falling back to its title if even that's blank. `None`
-/// only when the entry has neither an arxiv id, a link, nor a title -- nothing
-/// stable to key it by.
+/// `id+version` when present (so v2 doesn't overwrite v1), else link, else
+/// title. `None` if the entry has none of those to key by.
 fn to_cache_entry(entry: &svc_feed::FeedEntry) -> Option<rss::CacheEntry> {
     let entry_json = serde_json::to_string(entry).ok()?;
     let source_id = entry.arxiv_id.as_deref().map(|id| format!("arxiv:{id}"));
@@ -93,9 +78,8 @@ fn to_cache_entry(entry: &svc_feed::FeedEntry) -> Option<rss::CacheEntry> {
     })
 }
 
-/// Drops entries the user dismissed or that match a filter rule, records each
-/// survivor as seen (`RSS_PAPER_ROOTS`/`RSS_PAPER`), and returns which of them
-/// are already saved to the library — all in one DB connection.
+/// Drops dismissed/rule-hidden entries, records survivors as seen, and
+/// returns which of them are already saved to the library.
 fn annotate_and_filter(state: &AppState, feed_value: &mut Value) -> Vec<String> {
     use linxiv_core::storage::queries::paper;
 
@@ -104,8 +88,7 @@ fn annotate_and_filter(state: &AppState, feed_value: &mut Value) -> Vec<String> 
     };
 
     state.with_conn(|conn| {
-        // One transaction for the whole read+write batch -- avoids up to ~200
-        // individually-committed statements (one per surviving entry) per GET.
+        // One transaction for the whole read+write batch.
         let tx = match conn.transaction() {
             Ok(tx) => tx,
             Err(e) => {
@@ -142,9 +125,8 @@ fn annotate_and_filter(state: &AppState, feed_value: &mut Value) -> Vec<String> 
             }
             !rss::is_hidden(&rules, title, summary, &authors)
         });
-        // Truncate after filtering (not before) so dismissed/rule-hidden entries
-        // don't eat into the 200 the client actually gets to see -- the loader
-        // above pulls up to 500 rows precisely to leave this headroom.
+        // Truncate after filtering, not before, so hidden entries don't eat
+        // into the 200 the client gets to see.
         entries.truncate(200);
 
         // Record each survivor as seen, separately from the (pure) filter above.
@@ -205,6 +187,10 @@ async fn get_feed(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError>
 
     let mut fetch_err = None;
     if due {
+        // Cleanup before fetching, non-fatal (shouldn't fail the request).
+        if let Err(e) = state.with_conn(|conn| rss::prune_dismissed(conn, retention_days)) {
+            eprintln!("[linxiv] feed: prune_dismissed failed: {e}");
+        }
         eprintln!("[linxiv] feed: fetching {url}");
         // data_dir carries the shared .arxiv_ratelimit file (same one arxiv_get uses).
         match svc_feed::fetch_feed(url, &linxiv_core::config::data_dir()).await {
@@ -227,11 +213,8 @@ async fn get_feed(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError>
                     .insert(url.to_string(), (Instant::now(), title.clone()));
             }
             Err(e) => {
-                // No throttle entry written on failure -- matches the old cache's
-                // behavior of retrying on the very next request rather than
-                // waiting out the TTL while upstream is down. Don't bail out here:
-                // fall through and try to serve the persisted window instead; only
-                // error out below if there's nothing cached to fall back to.
+                // No throttle entry on failure, so the next request retries instead
+                // of waiting out the TTL. Fall through to serve the DB window.
                 eprintln!("[linxiv] feed: fetch failed for {url}: {e}");
                 fetch_err = Some(e);
             }
@@ -246,17 +229,14 @@ async fn get_feed(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError>
     }
     let mut result = json!({ "title": title, "entries": entries });
 
-    // Recompute dismiss/rule filtering + saved_arxiv_ids fresh against current DB
-    // state -- the DB-window entries above are unfiltered.
+    // The DB-window entries above are unfiltered; filter fresh against current state.
     let saved_arxiv_ids = annotate_and_filter(state, &mut result);
     result["saved_arxiv_ids"] = serde_json::json!(saved_arxiv_ids);
     Ok(result)
 }
 
-/// `POST /api/feed/dismiss` — hide an entry from the feed going forward.
-/// `permanent: true` blocks the whole paper, every version (REMOVAL_TYPE
-/// 'DOI'); otherwise it dismisses just this exact `version` (REMOVAL_TYPE
-/// 'VER' on that one row, the default) — a later, higher version resurfaces.
+/// `POST /api/feed/dismiss` — hide an entry. `permanent: true` blocks the
+/// whole paper; otherwise dismisses just this `version` (the default).
 fn dismiss(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     #[derive(Deserialize)]
     struct Body {
@@ -337,9 +317,8 @@ mod tests {
         get_in(&state(), path).await
     }
 
-    /// Like `get`, but against a caller-supplied state — needed to pre-seed the
-    /// DB cache and then observe it survive a real `route()` call, rather than
-    /// each call getting its own throwaway in-memory DB.
+    /// Like `get`, but against a caller-supplied state, so the DB cache can be
+    /// pre-seeded and observed across the call.
     async fn get_in(
         state: &AppState,
         path: &str,
@@ -477,10 +456,7 @@ mod tests {
         mock_server.verify().await;
     }
 
-    /// The bug the caching redesign fixes: arXiv (or any feed) publishing
-    /// nothing new (e.g. over a weekend) must not wipe entries a real earlier
-    /// fetch already persisted -- the additive merge inserts zero new rows and
-    /// the DB-backed window response still includes the earlier entry.
+    /// An empty upstream fetch must not wipe previously-persisted entries.
     #[tokio::test]
     async fn empty_upstream_fetch_does_not_clobber_previously_cached_entries() {
         use wiremock::matchers::method;
@@ -533,8 +509,7 @@ mod tests {
         mock_server.verify().await;
     }
 
-    /// Two successive fetches into the same DB accumulate rather than replace:
-    /// day 1's entry survives once day 2's (distinct) entry is merged in.
+    /// Two successive fetches accumulate rather than replace.
     #[tokio::test]
     async fn successive_fetches_accumulate_additively() {
         use wiremock::matchers::method;
