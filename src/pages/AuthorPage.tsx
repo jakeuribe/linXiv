@@ -157,7 +157,7 @@ function AuthorIndexView() {
           {search
             ? "No authors match your filter."
             : hideSingleAuthors
-            ? "No authors with more than one paper — uncheck “Hide single-paper authors” to show the rest."
+            ? "No authors with more than one paper."
             : "No authors yet."}
         </p>
       ) : (
@@ -532,7 +532,7 @@ function AuthorDetailView({ authorId }: AuthorDetailViewProps) {
         </select>
         {!mergeFilterActive && mergeCandidates.length > mergeOptions.length && (
           <p className="text-xs" style={{ color: "var(--color-muted)" }}>
-            Showing {mergeOptions.length} of {mergeCandidates.length} authors — type to narrow.
+            Showing {mergeOptions.length} of {mergeCandidates.length} authors.
           </p>
         )}
         {mergeMutation.error && (
@@ -587,7 +587,7 @@ function AuthorDetailView({ authorId }: AuthorDetailViewProps) {
         </Button>
         {authorDetail.papers.length > 0 && (
           <p className="text-xs" style={{ color: "var(--color-muted)" }}>
-            Cannot delete — author is linked to {authorDetail.papers.length} paper
+            Cannot delete: Author is linked to {authorDetail.papers.length} paper
             {authorDetail.papers.length !== 1 ? "s" : ""}.
           </p>
         )}

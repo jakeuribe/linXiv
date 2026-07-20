@@ -243,7 +243,7 @@ export default function GraphPage() {
         <h1 className="font-display text-[27px] font-semibold leading-tight tracking-[-0.015em] text-text">Knowledge Graph</h1>
         <span className="text-sm text-muted">
           {selectedSourceIds.length > 0
-            ? `${selectedSourceIds.length} paper${selectedSourceIds.length !== 1 ? "s" : ""} selected — Ctrl/Cmd+click to add more`
+            ? `${selectedSourceIds.length} paper${selectedSourceIds.length !== 1 ? "s" : ""} selected; Ctrl/Cmd+click to add more`
             : "Click a node to open · Ctrl/Cmd+click to select"}
         </span>
         <div className="ml-auto flex items-center gap-4">
@@ -254,7 +254,7 @@ export default function GraphPage() {
             disabled={refreshing}
             title={
               dirty
-                ? "Graph data has changed since it was loaded — click to refresh"
+                ? "Graph data has changed since it was loaded. Click to refresh"
                 : "Reload the graph from the latest data"
             }
           >
