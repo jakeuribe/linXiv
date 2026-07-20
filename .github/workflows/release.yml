@@ -147,3 +147,18 @@ jobs:
           # macOS and Windows builds are unsigned.
           # macOS: right-click → Open to bypass Gatekeeper.
           # Windows: More info → Run anyway on the SmartScreen prompt.
+
+      # Raw per-platform binaries for the linxiv PyPI wheels
+      # (linxiv-dev/linxiv-pypi downloads these by tag and bundles them).
+      # tauri-action created the draft release above; gh finds drafts by tag.
+      - name: Upload raw app/CLI binaries to the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          triple="$(rustc -vV | sed -n 's/^host: //p')"
+          exe=""; case "$triple" in *windows*) exe=".exe" ;; esac
+          cp "src-tauri/target/release/linxiv-app$exe" "linxiv-app-$triple$exe"
+          cp "src-tauri/target/release/linxiv-cli$exe" "linxiv-cli-$triple$exe"
+          gh release upload "$GITHUB_REF_NAME" \
+            "linxiv-app-$triple$exe" "linxiv-cli-$triple$exe" --clobber
