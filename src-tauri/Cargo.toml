@@ -103,6 +103,9 @@ wiremock = "0.6"
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
 
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = "2"
+
 [profile.release]
 codegen-units = 1
 lto = true
