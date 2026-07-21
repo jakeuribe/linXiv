@@ -131,6 +131,17 @@ fn passphrase_dek() -> Option<[u8; 32]> {
 
 fn main() {
     tauri::Builder::default()
+        // Prevent a second linXiv process from opening shared resources such as
+        // the P2P blob database. Focus the existing window instead.
+        .plugin(tauri_plugin_single_instance::init(
+            |app, _args, _cwd| {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.unminimize();
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+             },
+        ))
         // linxiv:// serves PDF bytes to the webview and bridges the graph iframe's
         // /api/* GETs — the in-process replacement for what invoke() can't stream.
         .register_asynchronous_uri_scheme_protocol(protocol::SCHEME, protocol::handler)
