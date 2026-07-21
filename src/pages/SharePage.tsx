@@ -992,7 +992,7 @@ export default function SharePage() {
             Shared projects
           </h1>
           <p className="mt-1.5 text-[13px]" style={{ color: "var(--color-muted)" }}>
-            Libraries you share with collaborators over peer-to-peer tickets —
+            Libraries you share with collaborators over peer-to-peer tickets ;
             papers, notes and tags travel with the share.
           </p>
         </div>
