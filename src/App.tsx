@@ -1,6 +1,7 @@
 import { lazy } from "react";
 import { createBrowserRouter, RouterProvider, useParams } from "react-router-dom";
 import AppShell from "./components/layout/AppShell";
+import TermsGate from "./components/TermsGate";
 
 const HomePage = lazy(() => import("./pages/HomePage"));
 const LibraryPage = lazy(() => import("./pages/LibraryPage"));
@@ -53,5 +54,9 @@ const router = createBrowserRouter([
 ]);
 
 export default function App() {
-  return <RouterProvider router={router} />;
+  return (
+    <TermsGate>
+      <RouterProvider router={router} />
+    </TermsGate>
+  );
 }
