@@ -10,6 +10,7 @@ import { Button } from "../components/ui/button";
 import { Dialog } from "../components/ui/dialog";
 import { PaperCard } from "../components/papers/PaperCard";
 import { Card, MonoLabel, SectionTitle } from "../components/ui/card";
+import { DismissControls } from "../components/feed/DismissControls";
 import type { FeedEntry, Paper, SearchResult } from "../types/api";
 import { MathText } from "../lib/tex";
 
@@ -175,28 +176,11 @@ function FeedRow({
             )}
           </div>
           {entry.arxiv_id !== null && entry.version !== null && (
-            <div className="flex items-center gap-1.5 border-l border-border pl-3">
-              <button
-                type="button"
-                aria-label="Dismiss"
-                title="Dismiss this version"
-                disabled={dismissing}
-                className="text-muted hover:text-text transition-colors disabled:opacity-50"
-                onClick={() => handleDismiss(entry.arxiv_id as string, entry.version as number)}
-              >
-                ✕
-              </button>
-              <button
-                type="button"
-                aria-label="Never show this paper again"
-                title="Never show this paper again"
-                disabled={dismissing}
-                className="text-muted hover:text-[var(--color-danger)] transition-colors disabled:opacity-50"
-                onClick={() => setConfirmPermanent(true)}
-              >
-                ⛔
-              </button>
-            </div>
+            <DismissControls
+              dismissing={dismissing}
+              onDismiss={() => handleDismiss(entry.arxiv_id as string, entry.version as number)}
+              onRequestPermanentDismiss={() => setConfirmPermanent(true)}
+            />
           )}
         </div>
         {saveState === "error" && (
