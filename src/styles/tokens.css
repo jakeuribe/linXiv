@@ -1,0 +1,86 @@
+/* Design tokens — single source of truth for the --color, --font, --card,
+ * --shadow-card and --row-pad-y custom properties, imported first thing in
+ * globals.css. Also the source the linXiv Design System sync (the sibling
+ * design-sync workspace) reads from, so a token change here should be
+ * followed by a rebuild and resync there. Originated from the design-sync
+ * review that caught light mode only overriding color-scheme and
+ * --shadow-card (every color token stayed on its dark value) and that 44%
+ * of the old inline token sheet was Tailwind and react-pdf noise unrelated
+ * to the design system.
+ */
+
+:root {
+  /* Native controls (select, checkbox, scrollbar) default to dark chrome,
+     matching the dark palette below — WebKitGTK otherwise draws them with
+     the OS's light theme regardless of our --color-* vars, washing out
+     text in every dark preset (selects, feed filter dropdowns, etc). */
+  color-scheme: dark;
+
+  /* color */
+  --color-bg: #0f0f1a;
+  --color-panel: #1a1a2e;
+  --color-surface-2: rgba(21, 21, 36, .25);
+  --color-border: #2e2e50;
+  --color-accent: #5b8dee;
+  --color-accent-tint: rgba(91, 141, 238, .13); /* Badge tints at `${color}22`; this is the CSS-side equivalent */
+  --color-text: #ccccdd;
+  --color-muted: #7777aa;
+  --color-ink-3: #5c5c85;
+  --color-success: #4caf88;
+  --color-danger: #e05c6c;
+
+  /* font */
+  --font-display: ui-serif, Georgia, "Times New Roman", serif;
+  --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* spacing */
+  --card-pad: 1.571429rem;
+  --row-pad-y: 15px;
+
+  /* radius */
+  --card-radius: .6875rem;
+
+  /* shadow */
+  --shadow-card:
+    0 1px 2px rgba(0, 0, 0, .5),
+    0 8px 24px rgba(0, 0, 0, .45),
+    inset 0 1px 0 rgba(255, 255, 255, .07);
+}
+
+/* P0 — light mode currently overrides only color-scheme and --shadow-card,
+ * so every color token keeps its dark value on top of the light body
+ * gradient. Same ten names, light values. */
+[data-mode="light"] {
+  color-scheme: light;
+
+  --color-bg: #f4f5fa;
+  --color-panel: #ffffff;
+  --color-surface-2: rgba(15, 15, 26, .035);
+  --color-border: #dcdeeb;
+  --color-accent: #3b6fd4;
+  --color-accent-tint: rgba(59, 111, 212, .10);
+  --color-text: #1b1b2b;
+  --color-muted: #5a5a7a;
+  --color-ink-3: #767696;
+  --color-success: #2f8a68;
+  --color-danger: #c0455a;
+
+  --shadow-card:
+    0 1px 2px rgba(0, 0, 0, .06),
+    0 8px 24px rgba(0, 0, 0, .08);
+}
+
+/* Density — note the attribute is [data-density], not the --density the
+ * README documents. */
+[data-density="compact"] {
+  --card-pad: 1.25rem;
+  --card-radius: .5rem;
+  --row-pad-y: 11px;
+}
+
+/* Contrast of the light values against their own surfaces:
+ *   text   #1b1b2b on #ffffff  ~15.8:1
+ *   muted  #5a5a7a on #ffffff   ~6.9:1
+ *   ink-3  #767696 on #ffffff   ~4.4:1  (MonoLabel is 10.5px — keep >=4.5 if it drops further)
+ *   accent #3b6fd4 on #ffffff   ~5.1:1
+ */
