@@ -1,3 +1,4 @@
+@import "./tokens.css";
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -21,38 +22,6 @@
   src: url("/fonts/inter-latin-ext-wght-normal.woff2") format("woff2");
   unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020,
     U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
-}
-
-:root {
-  --color-bg: #0f0f1a;
-  --color-panel: #1a1a2e;
-  --color-surface-2: rgba(21,21,36,0.25);
-  --color-border: #2e2e50;
-  --color-accent: #5b8dee;
-  --color-text: #ccccdd;
-  --color-muted: #7777aa;
-  --color-ink-3: #5c5c85;
-  --color-success: #4caf88;
-  --color-danger: #e05c6c;
-
-  --font-display: ui-serif, Georgia, "Times New Roman", serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, "JetBrains Mono", monospace;
-
-  --shadow-card: 0 1px 2px rgba(0,0,0,0.5), 0 8px 24px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.07);
-
-  --card-pad: 1.571429rem;
-  --card-radius: 0.6875rem;
-  --row-pad-y: 15px;
-}
-
-:root[data-density="compact"] {
-  --card-pad: 1.25rem;
-  --card-radius: 0.5rem;
-  --row-pad-y: 11px;
-}
-
-[data-mode="light"] {
-  --shadow-card: 0 1px 2px rgba(0,0,0,0.06), 0 8px 24px rgba(0,0,0,0.08);
 }
 
 * {
