@@ -23,7 +23,13 @@ Upload your PDFs, create projects, manage notes, tags, and annotations to organi
 
 > **Licensing:** linXiv is GPLv3. The vendored [`linxiv-p2p`](https://github.com/linxiv-dev/linxiv-p2p) submodule (`src-tauri/crates/p2p`) is licensed separately under Apache-2.0.
 
-<img src="assets/carousel.gif" width="800" />
+<p align="center">
+  <a href="https://youtu.be/t3aH28353P4">
+    <img src="https://img.youtube.com/vi/t3aH28353P4/maxresdefault.jpg" width="800" alt="Watch the linXiv demo">
+  </a>
+  <br>
+  <em><a href="https://youtu.be/t3aH28353P4">▶ Watch the full demo (3:16)</a></em>
+</p>
 
 ## Clone
 
