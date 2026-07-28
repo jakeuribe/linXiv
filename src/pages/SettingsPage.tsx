@@ -1,4 +1,5 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { useLocation } from "react-router-dom";
 import { AppearanceSection } from "../components/settings/AppearanceSection";
 import { ApiKeysSection } from "../components/settings/ApiKeysSection";
 import { StorageSection } from "../components/settings/StorageSection";
@@ -101,8 +102,17 @@ const GROUPS: SettingsGroup[] = [
 ];
 
 export default function SettingsPage() {
+  const { hash } = useLocation();
   const [active, setActive] = useState(GROUPS[0].id);
   const activeGroup = GROUPS.find((g) => g.id === active) ?? GROUPS[0];
+
+  // Deep link: /settings#about opens that group. An effect rather than a lazy
+  // initial value, so the jump also works when the page is already mounted
+  // (the update banner links here from anywhere, including Settings itself).
+  useEffect(() => {
+    const id = hash.slice(1);
+    if (GROUPS.some((g) => g.id === id)) setActive(id);
+  }, [hash]);
 
   return (
     <div className="flex h-full flex-col bg-bg">
