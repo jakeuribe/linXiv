@@ -1,6 +1,7 @@
 import { Suspense, useEffect } from "react";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
+import { UpdateBanner } from "./UpdateBanner";
 import { Spinner } from "../ui/spinner";
 import GraphPage from "../../pages/GraphPage";
 import EditorPage from "../../pages/EditorPage";
@@ -107,6 +108,8 @@ export default function AppShell() {
             </Suspense>
           </div>
         )}
+
+        <UpdateBanner />
       </main>
     </div>
   );
