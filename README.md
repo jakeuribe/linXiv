@@ -31,9 +31,23 @@ Upload your PDFs, create projects, manage notes, tags, and annotations to organi
   <em><a href="https://youtu.be/t3aH28353P4">▶ Watch the full demo (3:16)</a></em>
 </p>
 
+## Install
+
+Prebuilt installers for Linux, macOS, and Windows are on the [releases page](https://github.com/linxiv-dev/linXiv/releases/latest):
+
+| Platform | Download |
+| --- | --- |
+| Linux | `.deb`, `.rpm`, or `.AppImage` |
+| macOS (Apple silicon) | `.dmg` |
+| Windows | `.exe` (NSIS) or `.msi` |
+
+The macOS and Windows builds are unsigned. On macOS, right-click the app → **Open** to get past Gatekeeper the first time. On Windows, click **More info** → **Run anyway** on the SmartScreen prompt.
+
+To build from source instead, start at [Clone](#clone).
+
 ## Clone
 
-This repo has git submodules (`docs/adr`, `src-tauri/crates/p2p`) — a plain `git clone` leaves them empty and the build will fail resolving `linxiv-share`'s dependency on `crates/p2p`.
+This repo has git submodules (`docs/adr`, `src-tauri/crates/p2p`). The npm scripts that touch Rust (`tauri`, `dev:api`, `build:all`) init them for you, so a plain `git clone` is fine if you build through npm. Cloning with submodules up front is still the fastest path, and is required if you run `cargo` directly inside `src-tauri/`:
 
 ```bash
 git clone --recurse-submodules https://github.com/linxiv-dev/linXiv.git
@@ -43,6 +57,7 @@ git submodule update --init --recursive
 
 ## Table of Contents
 
+- [Install](#install)
 - [Clone](#clone)
 - [Features](#features)
 - [Architecture](#architecture)
@@ -69,8 +84,6 @@ git submodule update --init --recursive
 - **TeX rendering** — MathJax renders LaTeX math in titles and abstracts, bundled locally for full offline use.
 - **CLI & MCP server** — A headless `linxiv` CLI and an `linxiv-mcp` MCP server expose the same library over the terminal and to LLM clients such as Claude.
 - **Peer-to-peer project sharing** — Share a project over [iroh](https://www.iroh.computer/) (QUIC + node tickets, no relay server to run) with end-to-end encrypted sync via keyhive + beelay CRDTs; you're the Hoster or a Reader of a share, and a Hoster can invite members as Editor or Viewer; join with a pasted ticket, mirror shared projects into your local library, and sync on your own schedule.
-
-<img src="assets/demo.gif" width="800" />
 
 ## Architecture
 
@@ -187,7 +200,7 @@ In a checkout you can run it straight from source with `cargo run -p linxiv-mcp`
 
 ## Graph visualization
 
-Papers and authors form a force-directed network: papers connect to their authors, tags, D3 force simulation and rendered with Cytoscape. The control panel exposes real-time sliders to control how the nodes and connections interact. The viewer, MathJax, D3, and the UI font are all bundled locally.
+Papers and authors form a force-directed network: papers connect to their authors and tags, laid out by a D3 force simulation and rendered with Cytoscape. The control panel exposes real-time sliders to control how the nodes and connections interact. The viewer, MathJax, D3, and the UI font are all bundled locally.
 
 ## Data location
 
