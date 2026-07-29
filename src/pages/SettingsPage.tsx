@@ -1,6 +1,7 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { AppearanceSection } from "../components/settings/AppearanceSection";
-import { ApiKeysSection } from "../components/settings/ApiKeysSection";
+// import { ApiKeysSection } from "../components/settings/ApiKeysSection";
 import { StorageSection } from "../components/settings/StorageSection";
 import { CrossRefSection } from "../components/settings/CrossRefSection";
 import { OpenAlexSection } from "../components/settings/OpenAlexSection";
@@ -13,6 +14,7 @@ import { IntegrationsSection } from "../components/settings/IntegrationsSection"
 import { SharingSection } from "../components/settings/SharingSection";
 import { TrashSection } from "../components/settings/TrashSection";
 import { AboutSection } from "../components/settings/AboutSection";
+import { ABOUT_GROUP_ID } from "../lib/updateSchedule";
 import { EditorPluginSection } from "../components/settings/EditorPluginSection";
 import { ShortcutsSection } from "../components/settings/ShortcutsSection";
 import { VersionMonitorSection } from "../components/settings/VersionMonitorSection";
@@ -62,7 +64,9 @@ const GROUPS: SettingsGroup[] = [
     icon: "✦",
     render: () => (
       <div className="flex flex-col gap-8">
-        <ApiKeysSection />
+        {/* Hidden until something reads GEMINI_API_KEY / OPENAI_API_KEY — the
+            form saves keys no feature consumes yet.
+        <ApiKeysSection /> */}
         <CrossRefSection />
         <OpenAlexSection />
         <OrcidBackfillSection />
@@ -93,16 +97,38 @@ const GROUPS: SettingsGroup[] = [
     render: () => <ShortcutsSection />,
   },
   {
-    id: "about",
+    id: ABOUT_GROUP_ID,
     label: "About",
     icon: "ⓘ",
     render: () => <AboutSection />,
   },
 ];
 
+function groupFromHash(hash: string): string | null {
+  const id = hash.slice(1);
+  return GROUPS.some((g) => g.id === id) ? id : null;
+}
+
 export default function SettingsPage() {
-  const [active, setActive] = useState(GROUPS[0].id);
+  const navigate = useNavigate();
+  const { hash, pathname, search } = useLocation();
+  const [active, setActive] = useState(() => groupFromHash(hash) ?? GROUPS[0].id);
   const activeGroup = GROUPS.find((g) => g.id === active) ?? GROUPS[0];
+
+  // Deep link: /settings#about opens that group. Seeded above so the first
+  // paint is already the right panel, and repeated here for a hash arriving
+  // while the page is mounted.
+  useEffect(() => {
+    const id = groupFromHash(hash);
+    if (id !== null) setActive(id);
+  }, [hash]);
+
+  // Picking a tab by hand takes ownership of the URL, so a reload doesn't send
+  // the user back to the group a stale hash names.
+  function selectGroup(id: string) {
+    setActive(id);
+    if (hash !== "") navigate({ pathname, search }, { replace: true });
+  }
 
   return (
     <div className="flex h-full flex-col bg-bg">
@@ -127,7 +153,7 @@ export default function SettingsPage() {
               id={`settings-tab-${group.id}`}
               aria-controls="settings-tabpanel"
               aria-selected={active === group.id}
-              onClick={() => setActive(group.id)}
+              onClick={() => selectGroup(group.id)}
               className={[
                 "flex items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm transition-colors",
                 active === group.id

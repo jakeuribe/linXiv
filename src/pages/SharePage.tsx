@@ -803,7 +803,7 @@ function ShareProjectDialog({ open, onClose }: { open: boolean; onClose: () => v
             ? "Publish an encrypted copy of the project. There is no ticket. You may generate an invite string for each member from the share's settings using their member code."
             : "Generate a ticket, then paste it in linXiv on another computer to send a read-only copy of the project."}
         </p>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <OptionSelect
             aria-label="Project to share"
             size="sm"
@@ -992,7 +992,7 @@ export default function SharePage() {
             Shared projects
           </h1>
           <p className="mt-1.5 text-[13px]" style={{ color: "var(--color-muted)" }}>
-            Libraries you share with collaborators over peer-to-peer tickets —
+            Libraries you share with collaborators over peer-to-peer tickets ;
             papers, notes and tags travel with the share.
           </p>
         </div>

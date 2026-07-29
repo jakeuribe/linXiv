@@ -1,6 +1,13 @@
 # linXiv
 
 <p align="center">
+  <a href="https://github.com/linxiv-dev/linXiv/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/linxiv-dev/linXiv/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/linxiv-dev/linXiv/releases"><img alt="Release" src="https://img.shields.io/github/v/release/linxiv-dev/linXiv?include_prereleases"></a>
+  <a href="LICENSE"><img alt="License: GPL v3" src="https://img.shields.io/badge/License-GPLv3-blue.svg"></a>
+  <a href="https://tauri.app"><img alt="Tauri" src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=fff"></a>
+</p>
+
+<p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
     <source media="(prefers-color-scheme: light)" srcset="assets/logo-light.svg">
@@ -10,18 +17,51 @@
 
 A local-first desktop application for discovering, managing, and visualizing academic papers from arXiv and other sources. It bundles a native Rust backend (bundled SQLite storage, arXiv/OpenAlex/CrossRef sources, PDF text extraction, BibTeX/Obsidian export) with a React + TypeScript frontend and an interactive paper–author graph, all wrapped in a Tauri v2 desktop shell.
 
-Upload your PDFs, create projects, manage notes, tags, and annotations to organize your library — all locally, without sending your data anywhere. linXiv aims to be a one-stop shop for researchers managing their literature, with the near-term goal of extending to research groups who want to share knowledge without going to the web.
+Upload your PDFs, create projects, manage notes, tags, and annotations to organize your library; all locally. linXiv aims to be a one-stop shop for researchers managing their literature, with the near-term goal of extending to research groups who want to share knowledge without going to the web.
 
-> **Development status:** Pre-1.0 (current version `0.3.0-beta`). The database schema is still evolving, but migration structure is in-place. We are deduping from the same sources, but working on deduplicating pdfs originating from different sources.
+> **Development status:** Pre-1.0 (current version `0.3.0`). The database schema is still evolving, but migration structure is in-place.
 
-<img src="assets/carousel.gif" width="800" />
+> **Licensing:** linXiv is GPLv3. The vendored [`linxiv-p2p`](https://github.com/linxiv-dev/linxiv-p2p) submodule (`src-tauri/crates/p2p`) is licensed separately under Apache-2.0.
+
+<p align="center">
+  <a href="https://youtu.be/t3aH28353P4">
+    <img src="https://img.youtube.com/vi/t3aH28353P4/maxresdefault.jpg" width="800" alt="Watch the linXiv demo">
+  </a>
+  <br>
+  <em><a href="https://youtu.be/t3aH28353P4">▶ Watch the full demo (3:16)</a></em>
+</p>
+
+## Install
+
+Prebuilt installers for Linux, macOS, and Windows are on the [releases page](https://github.com/linxiv-dev/linXiv/releases/latest):
+
+| Platform | Download |
+| --- | --- |
+| Linux | `.deb`, `.rpm`, or `.AppImage` |
+| macOS (Apple silicon) | `.dmg` |
+| Windows | `.exe` (NSIS) or `.msi` |
+
+The macOS and Windows builds are unsigned. On macOS, right-click the app → **Open** to get past Gatekeeper the first time. On Windows, click **More info** → **Run anyway** on the SmartScreen prompt.
+
+To build from source instead, start at [Clone](#clone).
+
+## Clone
+
+This repo has git submodules (`docs/adr`, `src-tauri/crates/p2p`). The npm scripts that touch Rust (`tauri`, `dev:api`, `build:all`) init them for you, so a plain `git clone` is fine if you build through npm. Cloning with submodules up front is still the fastest path, and is required if you run `cargo` directly inside `src-tauri/`:
+
+```bash
+git clone --recurse-submodules https://github.com/linxiv-dev/linXiv.git
+# already cloned without --recurse-submodules?
+git submodule update --init --recursive
+```
 
 ## Table of Contents
 
+- [Install](#install)
+- [Clone](#clone)
 - [Features](#features)
 - [Architecture](#architecture)
 - [Setup](#setup)
-  - [Clone](#clone)
   - [Prerequisites](#prerequisites)
   - [Install dependencies](#install-dependencies)
   - [Run in development](#run-in-development)
@@ -45,55 +85,11 @@ Upload your PDFs, create projects, manage notes, tags, and annotations to organi
 - **CLI & MCP server** — A headless `linxiv` CLI and an `linxiv-mcp` MCP server expose the same library over the terminal and to LLM clients such as Claude.
 - **Peer-to-peer project sharing** — Share a project over [iroh](https://www.iroh.computer/) (QUIC + node tickets, no relay server to run) with end-to-end encrypted sync via keyhive + beelay CRDTs; you're the Hoster or a Reader of a share, and a Hoster can invite members as Editor or Viewer; join with a pasted ticket, mirror shared projects into your local library, and sync on your own schedule.
 
-<img src="assets/demo.gif" width="800" />
-
 ## Architecture
 
-linXiv is a Tauri v2 app. The frontend is React 18 + TypeScript (Vite); the backend is native Rust and runs **in-process** inside the app — the webview calls it through a single `api` Tauri command over IPC, and streams PDFs and graph assets over a custom `linxiv://` scheme. There is no HTTP server and no Python in the packaged app.
-
-The Rust workspace lives under `src-tauri/` (which is also the Cargo workspace root):
-
-```
-linXiv/
-├── src/                        # React + TypeScript frontend (Vite)
-│   ├── api/                    # Typed client — calls the in-process backend via invoke("api")
-│   ├── pages/ components/ …    # UI
-├── public/graph/               # Force-directed graph viewer (Cytoscape + fCoSE + D3), loaded over linxiv://
-├── src-tauri/                  # Tauri shell + Cargo workspace root
-│   ├── src/                    # Tauri app: window, api-command router, integrations (install CLI/MCP)
-│   │   └── bin/dev_server.rs   # linxiv-dev-server: dev-only HTTP shim over the Rust core (see Run in development)
-│   ├── crates/
-│   │   ├── core/               # linxiv-core: all library logic (sources, storage, formats, graph, service)
-│   │   │   └── src/sources/    #   arXiv, OpenAlex, CrossRef, DOI resolution, PDF metadata, downloads
-│   │   ├── cli/                # linxiv-cli → the `linxiv` binary (headless CLI)
-│   │   ├── mcp/                # linxiv-mcp → the `linxiv-mcp` binary (MCP stdio server)
-│   │   ├── migrate/            # one-off schema migration binary
-│   │   ├── p2p/                # linxiv-p2p: vendored iroh transport, keyhive membership/roles, beelay E2EE sync
-│   │   └── share/              # shared-project store — service layer over linxiv-p2p (publish/join/sync, encrypted key store)
-│   ├── binaries/               # staged CLI + MCP sidecars (target-triple suffixed) for `tauri build`
-│   ├── tauri.conf.json         # app config; bundles the linxiv + linxiv-mcp sidecars as externalBin
-│   └── Cargo.toml              # workspace manifest
-├── scripts/
-│   ├── fetch_pdfium.sh         # downloads the native libpdfium used for PDF text extraction
-│   └── stage_rust_bins.sh      # builds + stages the CLI/MCP sidecars into src-tauri/binaries/
-└── assets/                     # logo, icons, GIFs
-```
-
-**Storage.** SQLite is compiled in via `rusqlite` (bundled, FTS5 for full-text search) — no system `libsqlite3` needed. The database is `papers.db` in the per-user app data directory.
-
-**PDF extraction.** First-page text and metadata come from native `libpdfium` (`pdfium-render`). The shared library is fetched by `scripts/fetch_pdfium.sh` and bundled as a Tauri resource.
+linXiv is a Tauri v2 app. The frontend is React 18 + TypeScript (Vite); the backend is native Rust and runs **in-process** inside the app — the webview calls it through a single `api` Tauri command over IPC, and streams PDFs and graph assets over a custom `linxiv://` scheme. There is no HTTP server and no Python in the packaged app. SQLite (bundled, FTS5) and PDF extraction (native `libpdfium`) are compiled in — see [docs/architecture.md](docs/architecture.md) for the full workspace layout.
 
 ## Setup
-
-### Clone
-
-This repo has git submodules (`docs/adr`, `src-tauri/crates/p2p`) — a plain `git clone` leaves them empty and the build will fail resolving `linxiv-share`'s dependency on `crates/p2p`.
-
-```bash
-git clone --recurse-submodules https://github.com/linxiv-dev/linXiv.git
-# already cloned without --recurse-submodules?
-git submodule update --init --recursive
-```
 
 ### Prerequisites
 
@@ -113,8 +109,7 @@ bash scripts/stage_rust_bins.sh   # builds + stages the linxiv/linxiv-mcp sideca
 
 Rust crates are fetched automatically on first `cargo`/`tauri` build.
 
-> **Both scripts above are required before `cargo check`/`cargo build`/`tauri dev` will even compile — not just for a full `tauri build`.**
-> `src-tauri/tauri.conf.json` bundles `linxiv`/`linxiv-mcp` as Tauri sidecars (`bundle.externalBin`) and `vendor/pdfium/lib/` as a resource, and `tauri-build`'s build script validates all of these paths *at compile time*. They're gitignored, so on a fresh checkout `cargo check --workspace` fails first with `resource path "binaries/linxiv-<triple>" doesn't exist`, then (once the sidecars are staged) with `resource path "vendor/pdfium/lib" doesn't exist`. `fetch_pdfium.sh` downloads libpdfium into `src-tauri/vendor/pdfium/`; `stage_rust_bins.sh` runs `cargo build --release -p linxiv-cli -p linxiv-mcp` and copies the binaries into `src-tauri/binaries/` with the host target-triple suffix (`npm run build:sidecar` runs both). Re-run `stage_rust_bins.sh` whenever `linxiv-cli`/`linxiv-mcp` source changes and you need the sidecars to reflect it.
+> **Both scripts above are required before `cargo check`/`cargo build`/`tauri dev` will even compile — not just for a full `tauri build`** (they stage gitignored paths that `tauri-build` validates at compile time). See [docs/build.md](docs/build.md) if you hit a `resource path ... doesn't exist` error.
 
 ### Run in development
 
@@ -205,7 +200,7 @@ In a checkout you can run it straight from source with `cargo run -p linxiv-mcp`
 
 ## Graph visualization
 
-Papers and authors form a force-directed network: papers connect to their authors, tags, D3 force simulation and rendered with Cytoscape. The control panel exposes real-time sliders to control how the nodes and connections interact. The viewer, MathJax, D3, and the UI font are all bundled locally.
+Papers and authors form a force-directed network: papers connect to their authors and tags, laid out by a D3 force simulation and rendered with Cytoscape. The control panel exposes real-time sliders to control how the nodes and connections interact. The viewer, MathJax, D3, and the UI font are all bundled locally.
 
 ## Data location
 

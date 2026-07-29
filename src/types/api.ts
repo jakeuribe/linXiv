@@ -114,6 +114,7 @@ export interface Settings {
   tex_rendering_enabled?: boolean;
   home_feed_url?: string;
   rss_cache_retention_days?: number;
+  update_check_frequency?: string;
   [key: string]: unknown;
 }
 

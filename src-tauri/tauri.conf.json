@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "linXiv",
-  "version": "0.3.0-beta",
+  "version": "0.3.0",
   "identifier": "com.linxiv.app",
   "build": {
     "frontendDist": "../dist",
@@ -14,8 +14,8 @@
     "windows": [
       {
         "title": "linXiv",
-        "width": 1280,
-        "height": 820,
+        "width": 1020,
+        "height": 680,
         "minWidth": 900,
         "minHeight": 600,
         "resizable": true,
