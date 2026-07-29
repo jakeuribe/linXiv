@@ -8,7 +8,7 @@
 export type UpdateFrequency = "never" | "daily" | "weekly" | "monthly";
 
 /** Offered as the default answer to the launch prompt. */
-export const RECOMMENDED_FREQUENCY: UpdateFrequency = "monthly";
+export const RECOMMENDED_FREQUENCY: UpdateFrequency = "weekly";
 
 /** The settings group holding the update controls. The banner deep-links to
  *  `#${ABOUT_GROUP_ID}`, and the arrival check keys off the same hash. */
