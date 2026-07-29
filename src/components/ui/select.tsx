@@ -55,6 +55,10 @@ interface OptionSelectBaseProps<T extends string> {
   disabled?: boolean;
   size?: SelectSize;
   className?: string;
+  /** Props are destructured by name below, so any attribute meant to reach the
+   *  <select> has to be listed here — including hyphenated ARIA ones, which
+   *  JSX otherwise accepts and silently drops. */
+  "aria-describedby"?: string;
 }
 
 type OptionSelectProps<T extends string> = OptionSelectBaseProps<T> &
@@ -73,11 +77,13 @@ export function OptionSelect<T extends string>({
   className = "",
   id,
   "aria-label": ariaLabel,
+  "aria-describedby": ariaDescribedBy,
 }: OptionSelectProps<T>) {
   return (
     <select
       id={id}
       aria-label={ariaLabel}
+      aria-describedby={ariaDescribedBy}
       value={value}
       disabled={disabled}
       onChange={(event) => onChange(event.target.value as T)}
