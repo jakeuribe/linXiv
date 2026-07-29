@@ -19,7 +19,7 @@ A local-first desktop application for discovering, managing, and visualizing aca
 
 Upload your PDFs, create projects, manage notes, tags, and annotations to organize your library; all locally. linXiv aims to be a one-stop shop for researchers managing their literature, with the near-term goal of extending to research groups who want to share knowledge without going to the web.
 
-> **Development status:** Pre-1.0 (current version `0.3.0-beta`). The database schema is still evolving, but migration structure is in-place.
+> **Development status:** Pre-1.0 (current version `0.3.0`). The database schema is still evolving, but migration structure is in-place.
 
 > **Licensing:** linXiv is GPLv3. The vendored [`linxiv-p2p`](https://github.com/linxiv-dev/linxiv-p2p) submodule (`src-tauri/crates/p2p`) is licensed separately under Apache-2.0.
 

@@ -133,7 +133,7 @@ jobs:
           releaseName: "linXiv ${{ github.ref_name }}"
           releaseDraft: true
           # Semver convention (matches compareVersions() in src/api/updates.ts):
-          # a hyphen marks a pre-release tag (v0.3.0-beta, v0.3.0-rc.1, ...).
+          # a hyphen marks a pre-release tag (vX.Y.Z-beta, vX.Y.Z-rc.1, ...).
           # GitHub's /releases/latest API -- what both the updater plugin and
           # apply_linux_package_update query -- skips prereleases, so tagging a
           # beta this way keeps it from being offered to everyone as "the

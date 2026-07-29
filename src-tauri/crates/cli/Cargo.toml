@@ -1,6 +1,6 @@
 [package]
 name = "linxiv-cli"
-version = "0.3.0-beta"
+version = "0.3.0"
 edition = "2021"
 
 [[bin]]

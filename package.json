@@ -1,14 +1,17 @@
 {
   "name": "linxiv-gui-react",
   "private": true,
-  "version": "0.3.0-beta",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
+    "submodules": "git submodule update --init --recursive || true",
     "dev": "vite",
+    "predev:api": "npm run submodules",
     "dev:api": "cd src-tauri && cargo run --bin linxiv-dev-server",
     "build": "tsc && vite build",
     "test": "node --experimental-transform-types --test \"src/**/*.test.ts\" public/graph/cluster.test.js public/graph/graph.test.js",
     "preview": "vite preview",
+    "pretauri": "npm run submodules",
     "tauri": "tauri",
     "build:sidecar": "bash scripts/fetch_pdfium.sh && bash scripts/stage_rust_bins.sh",
     "build:all": "npm run build:sidecar && npm run tauri build"
