@@ -882,6 +882,10 @@ export default function SharePage() {
   const [joinInput, setJoinInput] = useState("");
   const [joining, setJoining] = useState(false);
   const [joinErr, setJoinErr] = useState("");
+  // set when a join was accepted but its host was offline: the invite is saved
+  // and the share only appears in the received list once it syncs, so this is
+  // the only feedback the user gets that anything happened.
+  const [joinPending, setJoinPending] = useState("");
   const [codeCopied, setCodeCopied] = useState(false);
   const [codeErr, setCodeErr] = useState("");
   const [myCode, setMyCode] = useState("");
@@ -942,10 +946,12 @@ export default function SharePage() {
     setJoining(true);
     setJoinErr("");
     setCodeErr("");
+    setJoinPending("");
     try {
-      await joinShare(t);
+      const res = await joinShare(t);
       if (!alive.current) return;
       setJoinInput("");
+      if (res.pending) setJoinPending(res.reason);
       queryClient.invalidateQueries({ queryKey: ["share", "received"] });
     } catch (e) {
       if (!alive.current) return;
@@ -1053,6 +1059,7 @@ export default function SharePage() {
           {joinErr || codeErr}
         </p>
       )}
+      {joinPending && <p className="-mt-4 text-xs text-muted">{joinPending}</p>}
 
       {(publishedIsError || receivedIsError) && (
         <div

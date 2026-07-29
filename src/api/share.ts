@@ -95,11 +95,18 @@ export async function createShareTicket(projectId: number): Promise<string> {
   return res.ticket;
 }
 
+/** Outcome of {@link joinShare}. `pending` means the invite was accepted but
+ *  its host was unreachable: it is saved and finishes syncing on a later pass,
+ *  so there is no name or counts yet. Such a share also stays out of
+ *  {@link listReceived} until that first sync lands. */
+export type JoinResult =
+  | ({ pending?: false } & Omit<SharedSummary, "synced_at" | "paused">)
+  | { pending: true; share_id: string; e2ee: true; reason: string };
+
 /** Dial a ticket's sender, fetch the shared project, and store it as a
- *  read-only mirror. Returns the joined project's summary (counts only). */
-export async function joinShare(
-  ticket: string
-): Promise<Omit<SharedSummary, "synced_at" | "paused">> {
+ *  read-only mirror. Returns the joined project's summary (counts only), or a
+ *  `pending` result when an e2ee invite's host could not be reached. */
+export async function joinShare(ticket: string): Promise<JoinResult> {
   return shareApi("POST", "/api/share/join", { ticket });
 }
 

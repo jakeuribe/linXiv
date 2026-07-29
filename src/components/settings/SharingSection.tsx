@@ -34,6 +34,10 @@ export function SharingSection() {
   const [joinInput, setJoinInput] = useState("");
   const [joining, setJoining] = useState(false);
   const [joinErr, setJoinErr] = useState("");
+  // set when a join was accepted but its host was offline: the invite is saved
+  // and the share appears once it syncs, so this is the only feedback the user
+  // gets that anything happened.
+  const [joinPending, setJoinPending] = useState("");
 
   const alive = useRef(true);
   useEffect(() => {
@@ -107,10 +111,14 @@ export function SharingSection() {
     if (!t) return;
     setJoining(true);
     setJoinErr("");
+    setJoinPending("");
     try {
-      await joinShare(t);
+      const res = await joinShare(t);
       queryClient.invalidateQueries({ queryKey: ["share", "received"] });
-      if (alive.current) setJoinInput("");
+      if (alive.current) {
+        setJoinInput("");
+        if (res.pending) setJoinPending(res.reason);
+      }
     } catch (e) {
       if (alive.current) setJoinErr(errText(e));
     } finally {
@@ -187,6 +195,7 @@ export function SharingSection() {
               {joinErr}
             </span>
           )}
+          {joinPending && <span className="text-xs text-muted">{joinPending}</span>}
         </div>
 
         {received.map((s) => (
