@@ -595,7 +595,10 @@ mod tests {
             .invite_member(E2EE_SID, &code, linxiv_share::Role::Read)
             .await
             .unwrap();
-        assert_eq!(slow(node_b.accept_invite(&invite)).await.unwrap(), E2EE_SID);
+        assert_eq!(
+            slow(node_b.accept_invite(&invite)).await.unwrap().share_id,
+            E2EE_SID
+        );
         let mirror = ShareNode::e2ee_received(b_dir.path(), E2EE_SID).unwrap();
         state_b
             .with_conn(|c| import_shared_project(c, &mirror))

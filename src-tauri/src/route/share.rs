@@ -701,7 +701,19 @@ async fn join_invite(
             "share id is already published or mirrored here; unpublish or leave it first",
         ));
     }
-    let share_id = e2ee_timeout(node.accept_invite(raw), "share join").await?;
+    let accepted = e2ee_timeout(node.accept_invite(raw), "share join").await?;
+    // Host asleep: the invite is saved and the share syncs on a later pass, so
+    // this is a success with nothing to summarize yet — no mirror to hydrate
+    // (it is an empty placeholder) and no counts to report.
+    if accepted.pending {
+        return Ok(json!({
+            "share_id": accepted.share_id,
+            "e2ee": true,
+            "pending": true,
+            "reason": "host unreachable; the invite is saved and will finish syncing when the host is online",
+        }));
+    }
+    let share_id = accepted.share_id;
     let sp = ShareNode::e2ee_received(share.share_dir(), &share_id)?;
     Ok(json!({
         "share_id": sp.share_id,

@@ -48,6 +48,18 @@ pub fn e2ee_received_dir(share_dir: &Path) -> PathBuf {
     e2ee_dir(share_dir).join(RECEIVED_SUBDIR)
 }
 
+/// What one [`ShareNode::accept_invite`] achieved.
+#[cfg(feature = "sync-beelay")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcceptedInvite {
+    pub share_id: String,
+    /// The host could not be reached, so the join is only half done: the invite
+    /// is parked and the mirror on disk is an empty placeholder. The interval
+    /// sync finishes it. Note this says nothing about membership either — a
+    /// host that would refuse this device gets to refuse it later instead.
+    pub pending: bool,
+}
+
 /// What one [`ShareNode::sync_e2ee`] changed locally.
 #[cfg(feature = "sync-beelay")]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -553,8 +565,13 @@ impl ShareNode {
     }
 
     /// Accept an e2ee invite: adopt the share, sync once, and mirror it under
-    /// `share_dir/e2ee/received`. Returns the share id.
-    pub async fn accept_invite(&self, invite: &str) -> Result<String> {
+    /// `share_dir/e2ee/received`.
+    ///
+    /// An unreachable host is not an error. The share is registered, the invite
+    /// is parked, a placeholder mirror lands on disk so the interval loop picks
+    /// it up, and the result comes back with `pending` set — pasting an invite
+    /// while the host is asleep is a supported flow.
+    pub async fn accept_invite(&self, invite: &str) -> Result<AcceptedInvite> {
         let beelay = self.beelay()?;
         // The invite's project id feeds file paths below; reject unsafe ids
         // before adopting anything.
@@ -589,8 +606,20 @@ impl ShareNode {
                 .await
                 .map_err(net)??;
         }
+        // The host never answered: the adoption is parked, so there is nothing
+        // to fetch and no point failing on a sync against the same dead host.
+        // The placeholder mirror written above is what the interval loop finds.
+        if beelay.join_pending(&share_id) {
+            return Ok(AcceptedInvite {
+                share_id,
+                pending: true,
+            });
+        }
         self.sync_e2ee(&share_id).await?;
-        Ok(share_id)
+        Ok(AcceptedInvite {
+            share_id,
+            pending: false,
+        })
     }
 
     /// Sync a received e2ee mirror and persist the refreshed doc under
@@ -862,8 +891,46 @@ mod tests {
                 .invite_member(&sp.share_id, &code, Role::Read)
                 .await
                 .unwrap();
-            assert_eq!(slow(b.accept_invite(&invite)).await.unwrap(), sp.share_id);
+            let accepted = slow(b.accept_invite(&invite)).await.unwrap();
+            assert_eq!(accepted.share_id, sp.share_id);
+            // both nodes are live here: the join must complete, not park
+            assert!(!accepted.pending, "loopback accept should not be pending");
             member
+        }
+
+        // Pasting an invite whose host is asleep is a success, not an error:
+        // the invite is parked and a placeholder mirror lands so the interval
+        // loop retries. The share stays out of the received listing until that
+        // first sync fills it in (list_shared skips a mirror whose hydrated id
+        // does not match its filename).
+        #[tokio::test(flavor = "multi_thread")]
+        async fn offline_invite_accept_is_pending_not_an_error() {
+            let a_dir = tempfile::tempdir().unwrap();
+            let b_dir = tempfile::tempdir().unwrap();
+            let a = node(a_dir.path()).await;
+            let b = node(b_dir.path()).await;
+
+            let sp = sample("7", "Asleep Host");
+            a.publish_secure(&sp).await.unwrap();
+            let code = b.member_code().await.unwrap();
+            let (_member, invite) = a.invite_member("7", &code, Role::Read).await.unwrap();
+            a.shutdown().await.unwrap();
+
+            let accepted = slow(b.accept_invite(&invite)).await.unwrap();
+            assert_eq!(accepted.share_id, "7");
+            assert!(accepted.pending, "an unreachable host must report pending");
+
+            // placeholder mirror exists so the sync loop can find it again...
+            assert!(b_dir.path().join("e2ee/received/7.automerge").is_file());
+            // ...but it carries no content yet, so it is not listed
+            assert!(
+                ShareNode::list_e2ee_received(b_dir.path())
+                    .unwrap()
+                    .is_empty(),
+                "a pending share should not surface as a joined one"
+            );
+
+            b.shutdown().await.unwrap();
         }
 
         #[tokio::test(flavor = "multi_thread")]
