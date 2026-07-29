@@ -155,6 +155,26 @@ mjx-container[jax="SVG"] > svg {
   animation: lx-rise-pill 0.16s ease-out;
 }
 
+/* Corner banner entrance — same rise as the pill, minus the centring offset. */
+@keyframes lx-rise-corner {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.lx-rise-corner {
+  animation: lx-rise-corner 0.16s ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .lx-rise-corner {
+    animation: none;
+  }
+}
+
 /* ── Cupertino: frosted glass background gradients ────────────────────────── */
 
 [data-theme="cupertino"][data-mode="light"] body,

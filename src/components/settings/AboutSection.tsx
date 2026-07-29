@@ -12,7 +12,9 @@ import {
   type UpdateResult,
 } from "../../api/updates";
 import {
-  asFrequency,
+  ABOUT_GROUP_ID,
+  isFrequency,
+  UPDATE_CHECK_QUERY_KEY,
   UPDATE_FREQUENCIES,
   type UpdateFrequency,
 } from "../../lib/updateSchedule";
@@ -21,15 +23,24 @@ import { OptionSelect } from "../ui/select";
 import { Spinner } from "../ui/spinner";
 import { SettingGroup, SettingGroupLabel, SettingRow } from "./SettingRow";
 
+/** How long a check's answer is treated as current, for both refetching and
+ *  display. */
+const UPDATE_CHECK_TTL_MS = 60 * 60_000;
+
 function AutoCheckControl() {
-  const { data: settings, isLoading, isError } = useQuery({
+  // isPending, not isLoading: a query paused by the offline manager reports
+  // neither loading nor error, and would fall through to "Could not load".
+  const { data: settings, isPending, isError } = useQuery({
     queryKey: ["settings"],
     queryFn: getSettings,
   });
   const requestRef = useRef(0);
   const [saveError, setSaveError] = useState(false);
+  // Held until the PATCH + refetch round-trip lands, so the select doesn't
+  // snap back to its previous value (or to the placeholder) in between.
+  const [pending, setPending] = useState<UpdateFrequency | null>(null);
 
-  if (isLoading) {
+  if (isPending) {
     return (
       <span className="flex items-center gap-2 text-sm text-muted">
         <Spinner size={14} /> Loading…
@@ -40,22 +51,39 @@ function AutoCheckControl() {
     return <span className="text-xs text-danger">Could not load settings.</span>;
   }
 
-  function handleChange(next: UpdateFrequency) {
+  function handleChange(next: UpdateFrequency | "") {
+    if (!isFrequency(next)) return;
     setSaveError(false);
+    setPending(next);
     const thisRequest = ++requestRef.current;
-    // updateSettings invalidates ["settings"], so the select follows the
-    // server value rather than optimistic local state.
-    updateSettings({ update_check_frequency: next }).catch(() => {
-      if (thisRequest === requestRef.current) setSaveError(true);
-    });
+    updateSettings({ update_check_frequency: next })
+      // Cleared either way: `updateSettings` awaits the refetch, so by now the
+      // stored value is authoritative and holding the override would mask a
+      // write from elsewhere (the launch prompt writes the same key).
+      .then(() => {
+        if (thisRequest === requestRef.current) setPending(null);
+      })
+      .catch(() => {
+        if (thisRequest !== requestRef.current) return;
+        setPending(null);
+        setSaveError(true);
+      });
   }
+
+  // An unanswered user has no stored frequency. Showing "Never" for that reads
+  // as an answer they never gave, and re-picking an already-selected option
+  // fires no change event — leaving the launch prompt unanswerable from here.
+  const stored = settings.update_check_frequency;
+  const shown = pending ?? (isFrequency(stored) ? stored : "");
 
   return (
     <div className="flex items-center gap-2">
       <OptionSelect
         aria-label="Check for updates automatically"
+        aria-describedby="update-frequency-desc"
         options={UPDATE_FREQUENCIES}
-        value={asFrequency(settings.update_check_frequency)}
+        value={shown}
+        placeholder={shown === "" ? "Not set" : undefined}
         onChange={handleChange}
         size="sm"
       />
@@ -67,19 +95,21 @@ function AutoCheckControl() {
 function UpdateMessage({
   result,
   packageKind,
+  packageKindResolved,
   onInstall,
   installing,
   installError,
 }: {
   result: UpdateResult;
   packageKind: "deb" | "rpm" | null;
+  packageKindResolved: boolean;
   onInstall: () => void;
   installing: boolean;
   installError: string | null;
 }) {
-  if (result.error) {
-    return <span style={{ color: "var(--color-danger)" }}>{result.error}</span>;
-  }
+  // A result carrying an error compared nothing; falling through would report
+  // "You're on the latest version" for a check that never completed.
+  if (result.error) return null;
   if (result.hasUpdate && result.latest) {
     return (
       <span className="flex items-center gap-3 flex-wrap">
@@ -87,7 +117,12 @@ function UpdateMessage({
           Version {result.latest} is available.
         </span>
         {isTauri && (
-          <Button variant="primary" size="sm" onClick={onInstall} disabled={installing}>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={onInstall}
+            disabled={installing || !packageKindResolved}
+          >
             {installing ? (
               <>
                 <Spinner size={14} /> Installing…
@@ -133,20 +168,47 @@ function UpdateMessage({
   return <span style={{ color: "var(--color-success)" }}>You're on the latest version.</span>;
 }
 
-/** Module-level, not a ref: tabbing away from About and back remounts the
- *  section, and that shouldn't hit GitHub again. */
-let autoCheckedThisSession = false;
-
 export function AboutSection() {
   const { hash } = useLocation();
   const [version, setVersion] = useState<string | null>(null);
   const [versionResolved, setVersionResolved] = useState(false);
-  const [checking, setChecking] = useState(false);
-  const [result, setResult] = useState<UpdateResult | null>(null);
   const [packageKind, setPackageKind] = useState<"deb" | "rpm" | null>(null);
+  // A seeded result paints Install on the first render, before the IPC hop
+  // that says which install path applies; a deb/rpm click before then would
+  // route through the AppImage updater.
+  const [packageKindResolved, setPackageKindResolved] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [installError, setInstallError] = useState<string | null>(null);
   const alive = useRef(true);
+
+  // Enabled only for the banner's /settings#about deep link, so opening the
+  // tab by hand doesn't fetch. A failed check rejects rather than resolving
+  // with `error`, which keeps it out of the cache.
+  const {
+    data: cachedResult,
+    dataUpdatedAt,
+    error: checkError,
+    isFetching: checking,
+    refetch,
+  } = useQuery({
+    queryKey: [UPDATE_CHECK_QUERY_KEY],
+    queryFn: async () => {
+      const r = await checkForUpdates();
+      if (r.error !== undefined) throw new Error(r.error);
+      return r;
+    },
+    enabled: hash === `#${ABOUT_GROUP_ID}`,
+    staleTime: UPDATE_CHECK_TTL_MS,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    retry: false,
+  });
+
+  // The query is disabled outside the deep link, and a disabled observer is
+  // served cached data without ever refetching it. Age is checked here so a
+  // verdict from hours ago isn't presented as the current one.
+  const result =
+    cachedResult && Date.now() - dataUpdatedAt < UPDATE_CHECK_TTL_MS ? cachedResult : undefined;
 
   useEffect(() => {
     alive.current = true;
@@ -159,35 +221,24 @@ export function AboutSection() {
       .catch(() => {
         if (alive.current) setVersionResolved(true);
       });
-    getLinuxPackageKind().then((k) => {
-      if (alive.current) setPackageKind(k);
-    });
+    getLinuxPackageKind()
+      .then((k) => {
+        if (!alive.current) return;
+        setPackageKind(k);
+        setPackageKindResolved(true);
+      })
+      .catch(() => {
+        if (alive.current) setPackageKindResolved(true);
+      });
     return () => {
       alive.current = false;
     };
   }, []);
 
-  async function handleCheck() {
-    setChecking(true);
-    setResult(null);
+  function handleCheck() {
     setInstallError(null);
-    try {
-      const r = await checkForUpdates();
-      if (alive.current) setResult(r);
-    } finally {
-      if (alive.current) setChecking(false);
-    }
+    void refetch();
   }
-
-  // Arriving from the update banner (/settings#about) should land on a
-  // ready-to-install row rather than another button to press. Only the deep
-  // link triggers it — picking the About tab by hand changes no hash, so
-  // opening Settings doesn't fire an update check on its own.
-  useEffect(() => {
-    if (hash !== "#about" || autoCheckedThisSession) return;
-    autoCheckedThisSession = true;
-    handleCheck();
-  }, [hash]);
 
   async function handleInstall() {
     setInstalling(true);
@@ -229,18 +280,43 @@ export function AboutSection() {
         <SettingRow
           label="Check automatically"
           description="Look for a new release in the background on this schedule. Off by default."
+          descriptionId="update-frequency-desc"
         >
           <AutoCheckControl />
         </SettingRow>
-        {result && (
+        {(checking || result || checkError) && (
           <SettingRow label="Update status">
-            <UpdateMessage
-              result={result}
-              packageKind={packageKind}
-              onInstall={handleInstall}
-              installing={installing}
-              installError={installError}
-            />
+            {checking ? (
+              // Shown while a check is in flight so arriving from the banner's
+              // Install link never lands on an empty row, and so a re-check
+              // doesn't leave the previous verdict on screen.
+              <span className="flex items-center gap-2 text-sm text-muted">
+                <Spinner size={14} /> Checking…
+              </span>
+            ) : result ? (
+              // A known result outranks a failed re-check: React Query keeps
+              // `data` alongside `error`, and dropping it would take the
+              // Install button away from someone who just followed the banner.
+              <>
+                <UpdateMessage
+                  result={result}
+                  packageKind={packageKind}
+                  packageKindResolved={packageKindResolved}
+                  onInstall={handleInstall}
+                  installing={installing}
+                  installError={installError}
+                />
+                {checkError && (
+                  <span className="text-xs text-danger">
+                    Last check failed: {checkError.message}
+                  </span>
+                )}
+              </>
+            ) : (
+              checkError && (
+                <span style={{ color: "var(--color-danger)" }}>{checkError.message}</span>
+              )
+            )}
           </SettingRow>
         )}
       </SettingGroup>
