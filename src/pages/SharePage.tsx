@@ -8,6 +8,7 @@ import {
   importReceived,
   inviteMember,
   joinShare,
+  JOIN_SLOW_HINT,
   leaveShare,
   listMembers,
   listReceived,
@@ -28,6 +29,7 @@ import {
 } from "../api/share";
 import { listProjects } from "../api/projects";
 import { ApiError } from "../api/client";
+import { useSlowHint } from "../hooks/useSlowHint";
 import { Button } from "../components/ui/button";
 import { Dialog } from "../components/ui/dialog";
 import { Input, Textarea } from "../components/ui/input";
@@ -886,6 +888,7 @@ export default function SharePage() {
   // and the share only appears in the received list once it syncs, so this is
   // the only feedback the user gets that anything happened.
   const [joinPending, setJoinPending] = useState("");
+  const joinSlow = useSlowHint(joining);
   const [codeCopied, setCodeCopied] = useState(false);
   const [codeErr, setCodeErr] = useState("");
   const [myCode, setMyCode] = useState("");
@@ -1059,6 +1062,7 @@ export default function SharePage() {
           {joinErr || codeErr}
         </p>
       )}
+      {joinSlow && <p className="-mt-4 text-xs text-muted">{JOIN_SLOW_HINT}</p>}
       {joinPending && <p className="-mt-4 text-xs text-muted">{joinPending}</p>}
 
       {(publishedIsError || receivedIsError) && (

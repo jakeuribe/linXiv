@@ -103,6 +103,14 @@ export type JoinResult =
   | ({ pending?: false } & Omit<SharedSummary, "synced_at" | "paused">)
   | { pending: true; share_id: string; e2ee: true; reason: string };
 
+/** Shown once a join has been running long enough to look stuck. An offline
+ *  host cannot be detected quickly — QUIC has no connection-refused, so the
+ *  dial can only time out (15s, `DIAL_TIMEOUT` in the p2p crate). Deliberately
+ *  conditional: a host that *refuses* this device fails and saves nothing, so
+ *  this must not promise the invite was kept. */
+export const JOIN_SLOW_HINT =
+  "Connecting to the host… If they are offline this takes about 15 seconds, and the invite is saved to finish syncing later.";
+
 /** Dial a ticket's sender, fetch the shared project, and store it as a
  *  read-only mirror. Returns the joined project's summary (counts only), or a
  *  `pending` result when an e2ee invite's host could not be reached. */

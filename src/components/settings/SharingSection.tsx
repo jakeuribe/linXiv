@@ -3,10 +3,12 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   createShareTicket,
   joinShare,
+  JOIN_SLOW_HINT,
   listReceived,
   sharingAvailable,
   type SharedSummary,
 } from "../../api/share";
+import { useSlowHint } from "../../hooks/useSlowHint";
 import { listProjects } from "../../api/projects";
 import { ApiError } from "../../api/client";
 import { Button } from "../ui/button";
@@ -38,6 +40,7 @@ export function SharingSection() {
   // and the share appears once it syncs, so this is the only feedback the user
   // gets that anything happened.
   const [joinPending, setJoinPending] = useState("");
+  const joinSlow = useSlowHint(joining);
 
   const alive = useRef(true);
   useEffect(() => {
@@ -195,6 +198,7 @@ export function SharingSection() {
               {joinErr}
             </span>
           )}
+          {joinSlow && <span className="text-xs text-muted">{JOIN_SLOW_HINT}</span>}
           {joinPending && <span className="text-xs text-muted">{joinPending}</span>}
         </div>
 
