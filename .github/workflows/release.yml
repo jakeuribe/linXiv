@@ -35,6 +35,10 @@ jobs:
           # crates/p2p is a git submodule; ci.yml already does this.
           submodules: recursive
 
+      # The tag lands verbatim in the RPM Version field, where a "-beta" suffix
+      # sorts ABOVE the bare core (rpm's only prerelease marker is "~"), so a
+      # stable tag sharing a core with a shipped prerelease can never rpm -U
+      # over it. After v0.3.0-beta the next release is v0.3.1 — see docs/build.md.
       - name: Set app version from tag
         shell: bash
         run: |
