@@ -27,6 +27,8 @@ export interface Paper {
   has_pdf: boolean;
   pdf_path: string | null;
   source: string | null;
+  // True once the arXiv TeX source has been fetched into the full-text index.
+  downloaded_source: boolean;
 }
 
 // Another paper root sharing this one's DOI (same work, different source).

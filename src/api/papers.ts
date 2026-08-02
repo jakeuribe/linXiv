@@ -80,6 +80,29 @@ export async function searchLibrary(
   );
 }
 
+export interface FullTextResult {
+  source_id: string;
+  version: number;
+  indexed: boolean;
+  chars?: number;
+  reason?: string;
+}
+
+/**
+ * Downloads a paper's arXiv TeX source and indexes it, so `searchLibrary` can
+ * match on the body and not just the metadata. arXiv-only; already-indexed
+ * papers are skipped unless `force`.
+ */
+export async function fetchFullText(
+  sourceId: string,
+  force = false
+): Promise<FullTextResult> {
+  return apiFetch<FullTextResult>(
+    `/api/papers/${encodeURIComponent(sourceId)}/full-text${force ? "?force=true" : ""}`,
+    { method: "POST" }
+  );
+}
+
 /**
  * Returns the URL to stream/download the PDF for a paper. In Tauri this hits
  * the backend directly; in browser dev it goes through the Vite proxy.

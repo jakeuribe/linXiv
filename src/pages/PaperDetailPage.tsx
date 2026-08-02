@@ -9,6 +9,7 @@ import {
   getPaperPdfUrl,
   getPdfProxyUrl,
   getDoiVersionCandidates,
+  fetchFullText,
 } from "../api/papers";
 import { getNotes, deleteNote } from "../api/notes";
 import { getAnnotations, deleteAnnotation, updateAnnotation } from "../api/annotations";
@@ -254,6 +255,16 @@ export default function PaperDetailPage() {
     },
   });
 
+  // Pulls the paper's arXiv TeX source into papers_fts, so library search
+  // matches the body and not just the metadata. On demand rather than on save:
+  // arXiv paces requests ~7s apart and the tarballs run to megabytes.
+  const indexFullTextMutation = useMutation({
+    mutationFn: (force: boolean) => fetchFullText(paper!.source_id, force),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["paper", "sfk", sfk] });
+    },
+  });
+
   const deleteNoteMutation = useMutation({
     mutationFn: (noteId: number) => deleteNote(noteId),
     onSuccess: () => {
@@ -286,6 +297,7 @@ export default function PaperDetailPage() {
 
   const { reset: resetSavePdf } = savePdfMutation;
   const { reset: resetLinkPdf } = linkPdfMutation;
+  const { reset: resetIndexFullText } = indexFullTextMutation;
 
   useEffect(() => {
     setPreviewNumPages(0);
@@ -297,11 +309,19 @@ export default function PaperDetailPage() {
     pdfPreviewDocRef.current = null;
     resetSavePdf();
     resetLinkPdf();
+    resetIndexFullText();
     return () => {
       openNativeAbortRef.current?.abort();
       openNativeAbortRef.current = null;
     };
-  }, [sfk, selectedVersion, paper?.has_pdf, resetSavePdf, resetLinkPdf]);
+  }, [
+    sfk,
+    selectedVersion,
+    paper?.has_pdf,
+    resetSavePdf,
+    resetLinkPdf,
+    resetIndexFullText,
+  ]);
 
   function handleNotesSaved() {
     queryClient.invalidateQueries({ queryKey: ["notes", paper?.source_id] });
@@ -400,6 +420,12 @@ export default function PaperDetailPage() {
 
   const hasPdfContent = paper.has_pdf || showPdfPreview;
 
+  // Mirrors the backend guard (service::paper::source_fetch_url): only arXiv
+  // publishes a TeX tarball, and only a /pdf/ URL can be rewritten to /src/.
+  const canIndexFullText =
+    isViewingLatest && paper.source === "arxiv" && !!paper.url?.includes("/pdf/");
+  const indexResult = indexFullTextMutation.data;
+
   const fadeStyle = {
     opacity: paperFetching && !paperLoading ? 0.6 : 1,
     transition: "opacity 0.15s",
@@ -437,6 +463,38 @@ export default function PaperDetailPage() {
         )}
         {openNativeError && (
           <span className="text-xs text-danger shrink-0">{openNativeError}</span>
+        )}
+        {canIndexFullText && (
+          <Button
+            variant="muted"
+            size="sm"
+            onClick={() => indexFullTextMutation.mutate(paper.downloaded_source)}
+            disabled={indexFullTextMutation.isPending || !isOnline}
+            title="Download the arXiv TeX source so library search can match the paper's body"
+          >
+            {indexFullTextMutation.isPending
+              ? "Indexing…"
+              : paper.downloaded_source
+                ? "Re-index full text"
+                : "Index full text"}
+          </Button>
+        )}
+        {canIndexFullText && !isOnline && <span className="text-xs text-muted">Offline</span>}
+        {canIndexFullText && indexFullTextMutation.error && (
+          <span className="text-xs text-danger shrink-0">
+            {indexFullTextMutation.error instanceof Error
+              ? indexFullTextMutation.error.message
+              : "Failed to index full text"}
+          </span>
+        )}
+        {canIndexFullText && indexResult && !indexFullTextMutation.isPending && (
+          <span className="text-xs text-ink3 shrink-0">
+            {indexResult.indexed
+              ? (indexResult.chars ?? 0) === 0
+                ? "No TeX source found; marked as checked"
+                : `Indexed ${(indexResult.chars ?? 0).toLocaleString()} characters`
+              : indexResult.reason}
+          </span>
         )}
         {isViewingLatest && (
           <Button variant="muted" size="sm" onClick={() => setShowEditor(true)}>

@@ -463,6 +463,36 @@ mod tests {
         assert_eq!(err.status, 400);
     }
 
+    /// `full_text` is the FTS payload, not a display field — once ingestion has
+    /// run it is megabytes of TeX per paper.
+    #[tokio::test]
+    async fn paper_responses_omit_the_indexed_full_text() {
+        let st = state();
+        st.with_conn(|conn| svc_paper::save_paper_metadata(conn, &meta("arxiv:4", None), None))
+            .unwrap();
+        st.with_conn(|conn| svc_paper::set_full_text(conn, "arxiv:4", 1, "the whole tex body"))
+            .unwrap();
+
+        let one = req(&st, "GET", "/api/papers/arxiv:4", None).await.unwrap();
+        assert!(one.get("full_text").is_none(), "leaked full_text: {one}");
+        assert_eq!(one["downloaded_source"], json!(true));
+
+        let listed = req(&st, "GET", "/api/papers", None).await.unwrap();
+        assert!(
+            listed["papers"][0].get("full_text").is_none(),
+            "leaked full_text: {listed}"
+        );
+
+        let searched = req(&st, "GET", "/api/papers/search?q=whole%20tex%20body", None)
+            .await
+            .unwrap();
+        assert!(
+            searched["papers"][0].get("full_text").is_none(),
+            "leaked full_text: {searched}"
+        );
+        assert_eq!(searched["papers"][0]["downloaded_source"], json!(true));
+    }
+
     #[tokio::test]
     async fn doi_candidates_missing_paper_is_404() {
         let err = req(&state(), "GET", "/api/papers/sfk/999/doi-candidates", None)
