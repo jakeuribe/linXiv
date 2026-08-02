@@ -4,15 +4,18 @@
 //!
 //! The generic `{source_id}` arms match EXACTLY 3 segments; the `/pdf` and
 //! `/pdf-path` subtrees belong to the `pdfs` group (tried first in `mod.rs`).
+//! `POST {source_id}/full-text` is the one 4-segment arm this group owns.
 
 use std::collections::HashSet;
 
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use linxiv_core::config;
 use linxiv_core::models::PaperMetadata;
 use linxiv_core::service::paper::{self as svc_paper, Paper};
 use linxiv_core::service::project as svc_project;
+use linxiv_core::sources::arxiv_downloads;
 use linxiv_core::storage::queries::{note as store_note, search as store_search};
 
 use crate::route::{path_i64, ApiError, ReqCtx};
@@ -31,6 +34,7 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
         }
         // `search` must precede the generic `{source_id}` arm (both 3 segments).
         ("GET", ["api", "papers", "search"]) => Some(search(state, ctx)),
+        ("POST", ["api", "papers", id, "full-text"]) => Some(fetch_full_text(state, id, ctx).await),
         ("GET", ["api", "papers", id]) => Some(get_one(state, id)),
         ("DELETE", ["api", "papers", id]) => Some(delete(state, id)),
         _ => None,
@@ -136,6 +140,57 @@ fn search(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
         Ok(papers)
     })?;
     Ok(json!({ "papers": papers }))
+}
+
+/// `POST /api/papers/{source_id}/full-text?force=` — the write half of `search`
+/// above. Downloads the paper's arXiv TeX tarball, extracts it, and stores the
+/// text so `papers_fts` actually has something to match; without this the index
+/// only ever held rows carried over by the Python-era migration.
+///
+/// Not automatic on save: arXiv paces requests ~7s apart and a tarball runs to
+/// megabytes, which is too much to spend on every paper the user stores without
+/// being asked. `ponytail: explicit per-paper trigger; make it opt-in-automatic
+/// behind a setting if users end up calling it on everything anyway.`
+async fn fetch_full_text(
+    state: &AppState,
+    source_id: &str,
+    ctx: &ReqCtx<'_>,
+) -> Result<Value, ApiError> {
+    let paper = state
+        .with_conn(|conn| svc_paper::get(conn, &sid_key(source_id)))?
+        .ok_or_else(|| ApiError::new(404, "Paper not found"))?;
+    if paper.downloaded_source && !ctx.q_bool("force") {
+        return Ok(json!({
+            "source_id": paper.source_id,
+            "version": paper.version,
+            "indexed": false,
+            "reason": "source already indexed; pass force=true to re-fetch",
+        }));
+    }
+    // Resolve the URL (and drop the connection) before the await — with_conn's
+    // guard must never span it.
+    let url = svc_paper::source_fetch_url(&paper)?.to_string();
+    let text = arxiv_downloads::fetch_source_text(&url, &config::data_dir()).await?;
+    let store = svc_paper::should_store_full_text(&paper, &text);
+    let (sid, version) = (paper.source_id, paper.version);
+    let chars = text.chars().count();
+    if !store {
+        return Ok(json!({
+            "source_id": sid,
+            "version": version,
+            "indexed": false,
+            "reason": "re-fetch produced no TeX; kept the text already indexed",
+        }));
+    }
+    // arXiv serves PDF-only submissions from the same `/src/` path, so an empty
+    // extract still marks the paper DOWNLOADED_SOURCE; `force` fetches again.
+    state.with_conn(|conn| svc_paper::set_full_text(conn, &sid, version, &text))?;
+    Ok(json!({
+        "source_id": sid,
+        "version": version,
+        "indexed": true,
+        "chars": chars,
+    }))
 }
 
 /// `GET /api/papers/{source_id}` — `api_get_paper`. Bare `to_dict()`.
@@ -333,6 +388,79 @@ mod tests {
         .unwrap();
         m.doi = doi.map(String::from);
         m
+    }
+
+    /// The guards that run BEFORE any network call, so they are the testable part
+    /// of the arm: unknown paper, and a paper with no arXiv source to fetch. The
+    /// happy path needs a real arXiv fetch, and `arxiv_get`'s host allowlist
+    /// rejects a loopback mock, so it isn't covered by an automated test here --
+    /// same constraint `service::files`'s existing download tests document.
+    #[tokio::test]
+    async fn fetch_full_text_rejects_before_reaching_the_network() {
+        let st = state();
+        let err = req(&st, "POST", "/api/papers/arxiv:nope/full-text", None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, 404);
+        assert_eq!(err.detail, "Paper not found");
+
+        // An arXiv paper saved without a `/pdf/` URL → refused as unfetchable.
+        let mut no_url = meta("arxiv:2", None);
+        no_url.source = Some("arxiv".into());
+        st.with_conn(|conn| svc_paper::save_paper_metadata(conn, &no_url, None))
+            .unwrap();
+        let err = req(&st, "POST", "/api/papers/arxiv:2/full-text", None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, 400, "got {} / {}", err.status, err.detail);
+        assert!(
+            err.detail.contains("no arXiv PDF URL"),
+            "unexpected detail: {}",
+            err.detail
+        );
+
+        // A non-arXiv paper is refused on the source, and names it rather than
+        // leaving a blank where the source should be.
+        let mut crossref = meta("doi:10.1/z", None);
+        crossref.source = Some("crossref".into());
+        st.with_conn(|conn| svc_paper::save_paper_metadata(conn, &crossref, None))
+            .unwrap();
+        let err = req(&st, "POST", "/api/papers/doi:10.1%2Fz/full-text", None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, 400);
+        assert!(
+            err.detail.contains("comes from crossref"),
+            "unexpected detail: {}",
+            err.detail
+        );
+    }
+
+    /// An already-indexed paper short-circuits instead of re-fetching; `force`
+    /// is what gets past it.
+    #[tokio::test]
+    async fn fetch_full_text_skips_an_already_indexed_paper() {
+        let st = state();
+        st.with_conn(|conn| svc_paper::save_paper_metadata(conn, &meta("arxiv:3", None), None))
+            .unwrap();
+        st.with_conn(|conn| svc_paper::set_full_text(conn, "arxiv:3", 1, "already here"))
+            .unwrap();
+        let out = req(&st, "POST", "/api/papers/arxiv:3/full-text", None)
+            .await
+            .unwrap();
+        assert_eq!(out["indexed"], json!(false));
+
+        // With force=true the skip no longer applies, so it falls through to the
+        // unfetchable-URL refusal rather than returning `indexed: false`.
+        let err = req(
+            &st,
+            "POST",
+            "/api/papers/arxiv:3/full-text?force=true",
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status, 400);
     }
 
     #[tokio::test]
