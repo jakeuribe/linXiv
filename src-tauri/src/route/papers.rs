@@ -125,8 +125,10 @@ fn search(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let limit = ctx.q_i64("limit").unwrap_or(50).clamp(1, 100);
     let papers = state.with_conn(|conn| -> Result<Vec<_>, ApiError> {
         // Recompose Python's FTS+notes merge here (FTS first, then note-linked
-        // papers, dedup, cap). FTS syntax errors fall back to [] like Python's
-        // OperationalError catch.
+        // papers, dedup, cap). search_full_text rewrites the query via match_expr
+        // before FTS5 sees it; unwrap_or_default still guards a missing/corrupt
+        // index (fts_matches also swallows any invalid MATCH syntax into an empty
+        // result, so a match_expr bug would not raise here either).
         let mut papers = store_search::search_full_text(conn, &q, limit).unwrap_or_default();
         let mut seen: HashSet<String> = papers.iter().map(|p| p.source_id.clone()).collect();
         for sfk in store_note::search_notes_source_fks(conn, &q, limit)? {
@@ -590,6 +592,54 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.status, 422);
+    }
+
+    /// FTS5 reads `-` as column-filter syntax, so a hyphenated query raised and
+    /// surfaced as an empty result set. Pinned at the HTTP boundary too, since
+    /// this is the path the GUI search box takes.
+    #[tokio::test]
+    async fn search_matches_a_hyphenated_query() {
+        let st = state();
+        st.with_conn(|conn| svc_paper::save_paper_metadata(conn, &meta("arxiv:5", None), None))
+            .unwrap();
+        st.with_conn(|conn| {
+            svc_paper::set_full_text(conn, "arxiv:5", 1, "an encoder-decoder, state-of-the-art")
+        })
+        .unwrap();
+
+        for q in ["encoder-decoder", "state-of-the-art", "encoder decoder"] {
+            let out = req(&st, "GET", &format!("/api/papers/search?q={q}"), None)
+                .await
+                .unwrap();
+            assert_eq!(
+                out["papers"][0]["source_id"],
+                json!("arxiv:5"),
+                "query {q:?}"
+            );
+        }
+    }
+
+    /// Adversarial FTS5 syntax: unterminated quote, dangling operators.
+    #[tokio::test]
+    async fn search_adversarial_queries_do_not_error() {
+        let st = state();
+        st.with_conn(|conn| svc_paper::save_paper_metadata(conn, &meta("arxiv:6", None), None))
+            .unwrap();
+        st.with_conn(|conn| svc_paper::set_full_text(conn, "arxiv:6", 1, "an abc term"))
+            .unwrap();
+
+        // %22abc decodes to `"abc` (unterminated quote): still finds the seeded paper.
+        let out = req(&st, "GET", "/api/papers/search?q=%22abc", None)
+            .await
+            .unwrap();
+        assert_eq!(out["papers"][0]["source_id"], json!("arxiv:6"));
+
+        // AND%20OR decodes to `AND OR` (dangling operators, nothing searchable):
+        // succeeds with an empty result rather than erroring.
+        let out = req(&st, "GET", "/api/papers/search?q=AND%20OR", None)
+            .await
+            .unwrap();
+        assert_eq!(out["papers"], json!([]));
     }
 
     #[tokio::test]
