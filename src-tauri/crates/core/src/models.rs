@@ -185,7 +185,9 @@ pub struct PaperDetails {
     pub pdf_path: Option<String>,
     #[serde(default)]
     pub source: Option<String>,
-    #[serde(default)]
+    /// Search-index payload, not a display field: megabytes of TeX per paper
+    /// once ingestion runs.
+    #[serde(default, skip_serializing)]
     pub full_text: Option<String>,
     #[serde(default)]
     pub downloaded_source: bool,
