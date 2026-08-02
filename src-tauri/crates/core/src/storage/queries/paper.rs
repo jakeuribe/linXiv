@@ -650,6 +650,20 @@ pub fn mark_pdf_saved(
     })
 }
 
+/// SOURCE_IDs of latest-version active papers whose TeX source has not been
+/// fetched, oldest-published first. Returns ids ONLY: `list_papers` would carry
+/// every row's FULL_TEXT along with it, so a backfill scan over an
+/// already-indexed library would pull every stored body into memory just to
+/// filter it out. The caller loads each paper individually instead.
+pub fn full_text_backfill_candidates(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT source_id FROM latest_papers \
+         WHERE COALESCE(downloaded_source, 0) = 0 ORDER BY published ASC, source_id ASC",
+    )?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 /// `set_full_text` — store extracted TeX, mark DOWNLOADED_SOURCE, refresh the FTS
 /// index (DELETE then INSERT). No-op if the version does not exist.
 pub fn set_full_text(

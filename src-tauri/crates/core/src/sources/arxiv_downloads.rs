@@ -9,6 +9,15 @@
 //! `http::arxiv_get` for pacing + the `export.arxiv.org` host rewrite + the
 //! arXiv host allowlist/redirect guard (so we never rebuild any of that here).
 //! Dest dirs are DI params — nothing reads config.
+//!
+//! Three size ceilings bound what an upstream response can cost us:
+//! `MAX_DOWNLOAD_BYTES` on the streamed body, `MAX_DECOMPRESSED_BYTES` on bytes
+//! pulled through the gzip decoder, and `MAX_TEX_BYTES` on the TeX read out of
+//! the tarball. `MAX_TEX_BYTES` and `MAX_DECOMPRESSED_BYTES` are both
+//! unit-tested; only `MAX_DOWNLOAD_BYTES` is not — `arxiv_get` rewrites the
+//! host to `export.arxiv.org` and enforces the arXiv allowlist, so a loopback
+//! wiremock cannot drive the download path without weakening that guard (the same
+//! constraint `service::files`' download tests document).
 
 use std::collections::HashSet;
 use std::io::Read;
@@ -177,9 +186,22 @@ fn member_is_safe(name: &str) -> bool {
         && !p.components().any(|c| matches!(c, Component::ParentDir))
 }
 
+/// Ceiling on `.tex` bytes retained for the FTS index, read out of one tarball
+/// through a shrinking allowance rather than trusting the archive's own sizes.
+/// Bytes from skipped (non-`.tex` or unsafe) members are bounded separately by
+/// `MAX_DECOMPRESSED_BYTES` on the shared reader.
+const MAX_TEX_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Ceiling on bytes pulled through the gzip decoder for the whole tarball,
+/// including bytes from members skipped before reaching `MAX_TEX_BYTES`.
+const MAX_DECOMPRESSED_BYTES: u64 = 256 * 1024 * 1024;
+
 /// Extract TeX source from a `.tar.gz` at `tarpath`, returning concatenated,
 /// noise-stripped plain text. `.tex` members only, root files before nested
 /// (stable sort by `/` depth), unsafe paths skipped. Any tar/io error -> `""`.
+/// Every safe `.tex` member is read in full (bounded only by the archive-level
+/// `MAX_DECOMPRESSED_BYTES` cap) before the root-first sort runs; `MAX_TEX_BYTES`
+/// is then applied to the sorted list.
 /// Port of `extract_source` (we read members straight from the stream rather
 /// than extracting to a temp dir — the path-guard makes a temp dir unneeded).
 pub fn extract_source(tarpath: &Path) -> String {
@@ -187,11 +209,17 @@ pub fn extract_source(tarpath: &Path) -> String {
 }
 
 fn extract_source_inner(tarpath: &Path) -> Result<String> {
+    extract_capped(tarpath, MAX_DECOMPRESSED_BYTES, MAX_TEX_BYTES)
+}
+
+/// `extract_source_inner` with both ceilings injected, so the bomb guards can be
+/// exercised at kilobyte scale instead of allocating the real 256 MiB.
+fn extract_capped(tarpath: &Path, max_decompressed: u64, max_tex: u64) -> Result<String> {
     let file = std::fs::File::open(tarpath)
         .map_err(|e| CoreError::Internal(format!("open {tarpath:?}: {e}")))?;
-    let mut archive = Archive::new(GzDecoder::new(file));
+    let mut archive = Archive::new(GzDecoder::new(file).take(max_decompressed));
 
-    let mut tex: Vec<(String, String)> = Vec::new();
+    let mut tex: Vec<(String, Vec<u8>)> = Vec::new();
     let entries = archive
         .entries()
         .map_err(|e| CoreError::Internal(format!("read tar: {e}")))?;
@@ -209,34 +237,74 @@ fn extract_source_inner(tarpath: &Path) -> Result<String> {
             continue;
         }
         let mut bytes = Vec::new();
+        // Bounded only by the archive-level `MAX_DECOMPRESSED_BYTES` cap; the
+        // MAX_TEX_BYTES budget is applied below, after the root-first sort.
         entry
             .read_to_end(&mut bytes)
             .map_err(|e| CoreError::Internal(format!("read member {name:?}: {e}")))?;
-        tex.push((name, String::from_utf8_lossy(&bytes).into_owned()));
+        tex.push((name, bytes));
     }
 
     if tex.is_empty() {
         return Ok(String::new());
     }
     tex.sort_by_key(|(name, _)| name.matches('/').count()); // stable: root first
-    let combined = tex
-        .iter()
-        .map(|(_, c)| c.as_str())
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    Ok(strip_tex_noise(&combined))
+
+    let mut remaining = max_tex;
+    let mut parts: Vec<String> = Vec::new();
+    for (_, bytes) in &tex {
+        if remaining == 0 {
+            break;
+        }
+        let take = (bytes.len() as u64).min(remaining) as usize;
+        remaining -= take as u64;
+        parts.push(String::from_utf8_lossy(&bytes[..take]).into_owned());
+    }
+    Ok(strip_tex_noise(&parts.join("\n\n")))
 }
 
 // ---------------------------------------------------------------------------
 // PDF / source download  (async, streamed; integration-tested via http later)
 // ---------------------------------------------------------------------------
 
-/// Stream `arxiv_get(url)` to `dest_dir/<filename>` atomically (tmp -> rename).
-async fn stream_to(url: &str, dest_dir: &Path, filename: &str, data_dir: &Path) -> Result<PathBuf> {
+/// Ceiling on a streamed download. The body is written as it arrives, so without
+/// a running total a hostile or merely enormous response would fill the disk;
+/// `Content-Length` is not trusted for this, only bytes actually written.
+/// Matches `sources::download::MAX_PDF_BYTES` (200 MiB, the Python spec's cap).
+const MAX_DOWNLOAD_BYTES: u64 = 200 * 1024 * 1024;
+
+/// Stream `arxiv_get(url)` to `dest_dir/<filename>` atomically (tmp -> rename),
+/// refusing a body that grows past `max_bytes`. The partial file is best-effort
+/// removed on failure (a failed cleanup delete is logged, not fatal).
+async fn stream_to(
+    url: &str,
+    dest_dir: &Path,
+    filename: &str,
+    data_dir: &Path,
+    max_bytes: u64,
+) -> Result<PathBuf> {
     tokio::fs::create_dir_all(dest_dir)
         .await
         .map_err(|e| CoreError::Internal(format!("mkdir {dest_dir:?}: {e}")))?;
 
+    let dest = dest_dir.join(filename);
+    let tmp = dest_dir.join(format!(".{filename}.{}.part", uuid::Uuid::new_v4()));
+    let out = stream_to_tmp(url, &tmp, &dest, data_dir, max_bytes).await;
+    if out.is_err() {
+        if let Err(e) = tokio::fs::remove_file(&tmp).await {
+            tracing::warn!("failed to remove partial download {tmp:?}: {e}");
+        }
+    }
+    out
+}
+
+async fn stream_to_tmp(
+    url: &str,
+    tmp: &Path,
+    dest: &Path,
+    data_dir: &Path,
+    max_bytes: u64,
+) -> Result<PathBuf> {
     let mut resp = http::arxiv_get(url, data_dir).await?;
     if !resp.status().is_success() {
         return Err(CoreError::Upstream(format!(
@@ -245,17 +313,22 @@ async fn stream_to(url: &str, dest_dir: &Path, filename: &str, data_dir: &Path) 
         )));
     }
 
-    let dest = dest_dir.join(filename);
-    let tmp = dest_dir.join(format!(".{filename}.part"));
-    let mut file = tokio::fs::File::create(&tmp)
+    let mut file = tokio::fs::File::create(tmp)
         .await
         .map_err(|e| CoreError::Internal(format!("create {tmp:?}: {e}")))?;
     // chunk() streams the body without pulling in a `futures` Stream dependency.
+    let mut written: u64 = 0;
     while let Some(chunk) = resp
         .chunk()
         .await
         .map_err(|e| CoreError::Upstream(format!("stream {url:?}: {e}")))?
     {
+        written += chunk.len() as u64;
+        if written > max_bytes {
+            return Err(CoreError::Upstream(format!(
+                "{url:?} exceeds the {max_bytes} byte download limit"
+            )));
+        }
         file.write_all(&chunk)
             .await
             .map_err(|e| CoreError::Internal(format!("write {tmp:?}: {e}")))?;
@@ -264,17 +337,17 @@ async fn stream_to(url: &str, dest_dir: &Path, filename: &str, data_dir: &Path) 
         .await
         .map_err(|e| CoreError::Internal(format!("flush {tmp:?}: {e}")))?;
     drop(file);
-    tokio::fs::rename(&tmp, &dest)
+    tokio::fs::rename(tmp, dest)
         .await
         .map_err(|e| CoreError::Internal(format!("rename -> {dest:?}: {e}")))?;
-    Ok(dest)
+    Ok(dest.to_path_buf())
 }
 
 /// Download a paper's PDF into `dest_dir`. `pdf_url` is the arXiv PDF URL
 /// (`arxiv_get` rewrites the host to `export.arxiv.org`). Returns the path.
 pub async fn download_pdf(pdf_url: &str, dest_dir: &Path, data_dir: &Path) -> Result<PathBuf> {
     let filename = default_filename(pdf_url, "pdf");
-    stream_to(pdf_url, dest_dir, &filename, data_dir).await
+    stream_to(pdf_url, dest_dir, &filename, data_dir, MAX_DOWNLOAD_BYTES).await
 }
 
 /// Download a paper's TeX-source tarball into `dest_dir`. Derived from the PDF
@@ -282,7 +355,30 @@ pub async fn download_pdf(pdf_url: &str, dest_dir: &Path, data_dir: &Path) -> Re
 pub async fn download_source(pdf_url: &str, dest_dir: &Path, data_dir: &Path) -> Result<PathBuf> {
     let src_url = pdf_to_src(pdf_url);
     let filename = default_filename(pdf_url, "tar.gz");
-    stream_to(&src_url, dest_dir, &filename, data_dir).await
+    stream_to(&src_url, dest_dir, &filename, data_dir, MAX_DOWNLOAD_BYTES).await
+}
+
+/// Fetch a paper's arXiv TeX source and return the extracted, noise-stripped
+/// text — the write half of full-text search, which until now had no caller.
+/// The tarball lands in a temp dir that is dropped (and deleted) before the text
+/// is returned.
+///
+/// An empty string means the tarball held no usable `.tex` (arXiv serves PDF-only
+/// submissions from the same `/src/` path); callers treat that as "no full text
+/// available", not as an error.
+pub async fn fetch_source_text(pdf_url: &str, data_dir: &Path) -> Result<String> {
+    let scratch = tempfile::tempdir()
+        .map_err(|e| CoreError::Internal(format!("create temp dir for TeX source: {e}")))?;
+    let tarball = download_source(pdf_url, scratch.path(), data_dir).await?;
+    // Gunzip + tar walk is CPU-bound and can run to MAX_TEX_BYTES, so keep it off
+    // the async worker. `scratch` is moved in and dropped here, deleting the tarball.
+    tokio::task::spawn_blocking(move || {
+        let text = extract_source(&tarball);
+        drop(scratch);
+        text
+    })
+    .await
+    .map_err(|e| CoreError::Internal(format!("extract TeX source: {e}")))
 }
 
 // ---------------------------------------------------------------------------
@@ -511,6 +607,54 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let p = write_tarball(dir.path(), "src.tar.gz", &[("readme.txt", "no tex here")]);
         assert_eq!(extract_source(&p), "");
+    }
+
+    // The two ceilings are exercised through `extract_capped` at kilobyte scale.
+    // Driving them through the real 16 MiB / 256 MiB constants would allocate a
+    // 257 MiB String per run for the same assertions.
+
+    #[test]
+    fn extract_stops_at_the_tex_byte_cap() {
+        // Two members, each already at the cap: the allowance carries across
+        // members rather than resetting per member.
+        let dir = tempfile::tempdir().unwrap();
+        let big = "a".repeat(4096);
+        let p = write_tarball(
+            dir.path(),
+            "big.tar.gz",
+            &[("main.tex", &big), ("more.tex", &big)],
+        );
+        let out = extract_capped(&p, 1 << 20, 4096).unwrap();
+        assert!(
+            out.len() <= 4096,
+            "extracted {} bytes, cap is 4096",
+            out.len()
+        );
+        // Truncated, not discarded.
+        assert!(!out.is_empty());
+    }
+
+    #[test]
+    fn extract_bounds_decompressed_bytes_against_zip_bomb() {
+        // A member that inflates well past the decompression allowance, and a
+        // non-.tex member ahead of it — the tar crate inflates skipped members to
+        // seek past them, so the guard has to sit on the shared reader.
+        let dir = tempfile::tempdir().unwrap();
+        let huge = "a".repeat(4 * 1024 * 1024);
+        let p = write_tarball(
+            dir.path(),
+            "bomb.tar.gz",
+            &[("padding.bin", &huge), ("main.tex", &huge)],
+        );
+        // Compresses to a few KB, so the cap — not the file size — is what binds.
+        assert!(std::fs::metadata(&p).unwrap().len() < 64 * 1024);
+        // The reader runs dry mid-skip, so the tar walk aborts instead of
+        // inflating the member: the allowance, not the archive, decides.
+        let err = extract_capped(&p, 64 * 1024, 4 * 1024 * 1024).unwrap_err();
+        assert!(
+            err.to_string().contains("tar entry"),
+            "expected the capped reader to cut the tar walk short, got {err}"
+        );
     }
 
     #[test]
