@@ -6,6 +6,31 @@ const DIM_OPACITY     = 0.08;   // filter dim (isolate / non-matching)
 const SEL_DIM_OPACITY = 0.28;   // softer dim for non-selected nodes
 const FULL_OPACITY    = 1.0;
 
+// ── Reproducible layout (opt-in) ─────────────────────────────────────────────
+// Initial node positions are normally Math.random() -- fine for real use, but
+// it makes scripted demo recordings a lottery (framing/coordinates differ
+// every run). If localStorage key LAYOUT_SEED_KEY holds a value, seed a small
+// deterministic PRNG (mulberry32) from it instead; absent (the default for
+// every real user), nothing changes. Re-seeded fresh on each loadGraph()/
+// relayout so "same seed" means "same sequence" regardless of reload count.
+const LAYOUT_SEED_KEY = 'linxiv-graph-seed';
+
+function mulberry32(seed) {
+    let a = seed >>> 0;
+    return function() {
+        a = (a + 0x6D2B79F5) | 0;
+        let t = Math.imul(a ^ (a >>> 15), 1 | a);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+
+function _layoutRng() {
+    const seed = localStorage.getItem(LAYOUT_SEED_KEY);
+    if (!seed) return Math.random;
+    return mulberry32(parseInt(seed, 10) || 0);
+}
+
 let cy           = null;
 let simulation   = null;
 let _simNodeById  = new Map();
@@ -166,9 +191,10 @@ bindSlider('linkStrength', 'linkStrengthVal', v => {
 
 $('relayout-btn').addEventListener('click', () => {
     if (!simulation) return;
+    const rand = _layoutRng();
     _simNodeById.forEach(n => {
-        n.x = (Math.random() - 0.5) * 800;
-        n.y = (Math.random() - 0.5) * 800;
+        n.x = (rand() - 0.5) * 800;
+        n.y = (rand() - 0.5) * 800;
         n.vx = 0; n.vy = 0; n.fx = null; n.fy = null;
     });
     simulation.alpha(1).restart();
@@ -341,12 +367,13 @@ function loadGraph(data, opts = {}) {
     _visibleAuthorIds = null;
     _visibleTagIds    = null;
 
+    const rand = _layoutRng();
     const simNodes = nodes.map(n => {
         const prev = prevPositions.get(String(n.id));
         return {
             id: String(n.id),
-            x:  prev ? prev.x : (Math.random() - 0.5) * 800,
-            y:  prev ? prev.y : (Math.random() - 0.5) * 800,
+            x:  prev ? prev.x : (rand() - 0.5) * 800,
+            y:  prev ? prev.y : (rand() - 0.5) * 800,
         };
     });
     // Store original edge defs before D3 mutates source/target to object refs
