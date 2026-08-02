@@ -28,6 +28,9 @@ linxiv list --limit 20 --offset 0 --category cs.LG
 linxiv paper get 2204.12985
 linxiv paper versions 2204.12985
 linxiv paper search "scaled dot-product"     # full-text search of the local library
+linxiv paper fetch-source 2204.12985         # pull the arXiv TeX source so `search` can find it
+linxiv paper fetch-source 2204.12985 --force # re-fetch a paper already indexed
+linxiv paper index-sources --limit 25        # backfill papers with no TeX source yet (~7s each)
 linxiv paper delete 2204.12985               # soft-delete
 linxiv paper restore 2204.12985
 linxiv paper hard-delete 2204.12985

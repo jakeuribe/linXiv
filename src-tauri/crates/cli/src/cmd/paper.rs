@@ -6,8 +6,10 @@ use serde_json::json;
 use crate::ctx::Ctx;
 use crate::output::{as_source_id, fail, output};
 
+use linxiv_core::config;
 use linxiv_core::models::PaperMetadata;
 use linxiv_core::service::{paper as svc_paper, project as svc_project};
+use linxiv_core::sources::arxiv_downloads;
 use linxiv_core::storage;
 
 #[derive(Subcommand)]
@@ -51,6 +53,42 @@ pub enum PaperCmd {
     },
     /// Remove a paper from every project
     RemoveFromAllProjects { source_id: String },
+    /// Fetch a paper's arXiv TeX source and index it for full-text search
+    FetchSource {
+        source_id: String,
+        /// Re-fetch even when the source was already indexed
+        #[arg(long)]
+        force: bool,
+    },
+    /// Backfill full-text search over stored arXiv papers with no TeX source yet
+    IndexSources {
+        /// Stop after this many papers — arXiv pacing puts each fetch ~7s apart
+        #[arg(long, default_value_t = 25)]
+        limit: usize,
+    },
+}
+
+/// Fetch one paper's TeX source and store it, returning the chars indexed —
+/// `None` when an empty extract was withheld to protect an existing body.
+///
+/// An empty result is normally stored rather than skipped: arXiv serves PDF-only
+/// submissions from the same `/src/` path, so writing "" marks the paper
+/// DOWNLOADED_SOURCE and stops the backfill re-fetching it on every run.
+/// `should_store_full_text` carves out the one case where that would lose data.
+///
+/// Always indexes the paper's latest version — the source URL is derived from
+/// that version's PDF link, so an older version would need a different URL.
+async fn ingest_source(
+    ctx: &mut Ctx,
+    paper: &linxiv_core::models::PaperDetails,
+) -> linxiv_core::error::Result<Option<usize>> {
+    let url = svc_paper::source_fetch_url(paper)?;
+    let text = arxiv_downloads::fetch_source_text(url, &config::data_dir()).await?;
+    if !svc_paper::should_store_full_text(paper, &text) {
+        return Ok(None);
+    }
+    svc_paper::set_full_text(&mut ctx.conn, &paper.source_id, paper.version, &text)?;
+    Ok(Some(text.chars().count()))
 }
 
 /// `_resolve_paper_or_exit`: load a paper or fail with the not-found error.
@@ -235,6 +273,173 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                 )),
             }
         }
+
+        // The write half of `paper search`: pull the TeX tarball, extract, index.
+        PaperCmd::FetchSource { source_id, force } => {
+            let source_id = as_source_id(&source_id, "arxiv");
+            let paper = resolve_paper_or_exit(ctx, &source_id);
+            output(&fetch_source_result(ctx, &paper, force).await);
+        }
+
+        // Backfill for papers saved before source retrieval was wired up. One
+        // paper's failure is reported and skipped, never aborting the run.
+        PaperCmd::IndexSources { limit } => {
+            output(&index_sources_result(ctx, limit).await);
+        }
     }
     Ok(())
+}
+
+/// Body of `PaperCmd::FetchSource`: skip-or-fetch, returning the reported JSON.
+async fn fetch_source_result(
+    ctx: &mut Ctx,
+    paper: &linxiv_core::models::PaperDetails,
+    force: bool,
+) -> serde_json::Value {
+    if paper.downloaded_source && !force {
+        return json!({
+            "source_id": paper.source_id,
+            "version": paper.version,
+            "indexed": false,
+            "reason": "source already indexed; pass --force to re-fetch",
+        });
+    }
+    let version = paper.version;
+    match ingest_source(ctx, paper).await {
+        Ok(Some(chars)) => json!({
+            "source_id": paper.source_id,
+            "version": version,
+            "indexed": true,
+            "chars": chars,
+        }),
+        Ok(None) => json!({
+            "source_id": paper.source_id,
+            "version": version,
+            "indexed": false,
+            "reason": "re-fetch produced no TeX; kept the text already indexed",
+        }),
+        Err(e) => fail(e),
+    }
+}
+
+/// Body of `PaperCmd::IndexSources`: walk the unfetched work list and ingest
+/// each, stopping after `limit` papers have actually been attempted.
+///
+/// The work list is source_ids only and each paper is loaded as its turn comes,
+/// so the scan never holds more than one paper's TeX body in memory.
+async fn index_sources_result(ctx: &mut Ctx, limit: usize) -> serde_json::Value {
+    let work_list = svc_paper::full_text_backfill_candidates(&ctx.conn).unwrap_or_else(|e| fail(e));
+    let pending = work_list.len();
+    let mut unfetchable = 0usize;
+    let mut attempted = 0usize;
+    let mut indexed = 0usize;
+    let mut skipped = 0usize;
+    let mut failed = Vec::new();
+
+    for source_id in &work_list {
+        if attempted >= limit {
+            break;
+        }
+        let Ok(Some(paper)) = svc_paper::get(&ctx.conn, &paper(source_id)) else {
+            continue; // deleted between building the list and reaching it
+        };
+        // Papers from non-arXiv sources stay on the list forever; count them so
+        // the summary explains why `pending` doesn't shrink to zero.
+        if svc_paper::source_fetch_url(&paper).is_err() {
+            unfetchable += 1;
+            continue;
+        }
+        attempted += 1;
+        match ingest_source(ctx, &paper).await {
+            Ok(Some(chars)) => {
+                indexed += 1;
+                eprintln!("[full-text] {} — {chars} chars", paper.source_id);
+            }
+            Ok(None) => skipped += 1,
+            Err(e) => failed.push(json!({
+                "source_id": paper.source_id,
+                "error": e.to_string(),
+            })),
+        }
+    }
+    json!({
+        "pending": pending,
+        "attempted": attempted,
+        "indexed": indexed,
+        "skipped": skipped,
+        "unfetchable": unfetchable,
+        "failed": failed,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+
+    fn arxiv_meta(source_id: &str, url: &str) -> PaperMetadata {
+        serde_json::from_value(json!({
+            "source_id": source_id,
+            "version": 1,
+            "title": "T",
+            "authors": ["Alice"],
+            "published": "2024-01-01",
+            "summary": "s",
+            "category": "cs.LG",
+            "url": url,
+            "source": "arxiv",
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn fetch_source_and_index_sources_never_touch_the_network() {
+        let dir = env::temp_dir().join(format!("linxiv-cli-paper-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let conn = storage::open(&dir.join("papers.db")).unwrap();
+        storage::init_db(&conn).unwrap();
+        let mut ctx = Ctx {
+            conn,
+            pdf_dir: dir.join("pdfs"),
+            settings: config::UserSettings::load().unwrap(),
+        };
+
+        // (a) already downloaded, no --force: skip without calling ingest_source.
+        svc_paper::save_paper_metadata(
+            &mut ctx.conn,
+            &arxiv_meta("arxiv:skip1", "http://arxiv.org/pdf/1v1"),
+            None,
+        )
+        .unwrap();
+        svc_paper::set_full_text(&mut ctx.conn, "arxiv:skip1", 1, "already have this").unwrap();
+
+        let fetched = resolve_paper_or_exit(&ctx, "arxiv:skip1");
+        let v = fetch_source_result(&mut ctx, &fetched, false).await;
+        assert_eq!(v["indexed"], false);
+        assert!(v["reason"].as_str().unwrap().contains("--force"));
+        let unchanged = svc_paper::get(&ctx.conn, &paper("arxiv:skip1"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(unchanged.full_text.as_deref(), Some("already have this"));
+
+        // (b) an arXiv paper with no /pdf/ URL is unfetchable, not a candidate.
+        svc_paper::save_paper_metadata(
+            &mut ctx.conn,
+            &arxiv_meta("arxiv:nopdf", "http://arxiv.org/abs/2v1"),
+            None,
+        )
+        .unwrap();
+
+        // skip1 is already fetched so it is off the work list; nopdf is on it but
+        // unfetchable, so nothing is attempted and no network call happens.
+        let v = index_sources_result(&mut ctx, 10).await;
+        assert_eq!(v["pending"], 1);
+        assert_eq!(v["attempted"], 0);
+        assert_eq!(v["indexed"], 0);
+        assert_eq!(v["unfetchable"], 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

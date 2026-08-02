@@ -16,7 +16,7 @@
 //! `get_papers_by_json_tag`); they are composed here from existing storage fns
 //! rather than adding raw SQL to the service.
 
-use crate::error::Result;
+use crate::error::{CoreError, Result};
 use crate::models::{PaperDetails, PaperDetailsAll, PaperIn, PaperMetadata};
 use crate::storage::queries::{paper as store, project as proj_store};
 use chrono::{NaiveDate, NaiveDateTime};
@@ -421,13 +421,65 @@ pub fn mark_pdf_saved(
 }
 
 /// Store extracted full text + refresh the FTS index for one version.
+/// Errors with `PaperNotFound` if the version no longer resolves (deleted or
+/// pruned between resolving the paper and the network fetch completing).
 pub fn set_full_text(
     conn: &mut Connection,
     source_id: &str,
     version: i64,
     full_text: &str,
 ) -> Result<()> {
+    if store::get_paper(conn, source_id, Some(version))?.is_none() {
+        return Err(CoreError::PaperNotFound);
+    }
     store::set_full_text(conn, source_id, version, Some(full_text))
+}
+
+/// The arXiv PDF URL a TeX-source fetch is derived from (`/pdf/` -> `/src/`), or
+/// an error naming why this paper has no fetchable source. Pure, so the three
+/// entry points that ingest full text (CLI, MCP, route) share one set of rules
+/// without any of them holding a connection across the network await.
+///
+/// Only arXiv publishes source tarballs — OpenAlex/CrossRef/DOI and locally
+/// imported PDFs are metadata-only, so they are refused here rather than each
+/// caller re-deriving that.
+pub fn source_fetch_url(paper: &PaperDetails) -> Result<&str> {
+    // An unset source reaches here as `Some("")` on some import paths, so blank
+    // and absent are folded together rather than printing "comes from ".
+    let source = paper.source.as_deref().filter(|s| !s.is_empty());
+    if source != Some("arxiv") {
+        return Err(CoreError::BadRequest(format!(
+            "TeX source is only published by arXiv; {} comes from {}",
+            paper.source_id,
+            source.unwrap_or("an unknown source")
+        )));
+    }
+    let url = paper.url.as_deref().unwrap_or_default();
+    if !url.contains("/pdf/") {
+        return Err(CoreError::BadRequest(format!(
+            "{} has no arXiv PDF URL to derive a source tarball from",
+            paper.source_id
+        )));
+    }
+    Ok(url)
+}
+
+/// Whether a freshly extracted body should replace what is already stored.
+///
+/// `extract_source` yields `""` for a corrupt, truncated, or PDF-only tarball,
+/// and that is indistinguishable from "this paper genuinely has no TeX". Storing
+/// it is right the first time (it marks DOWNLOADED_SOURCE so the backfill stops
+/// retrying), but a re-fetch that comes back empty must not erase a body that
+/// already indexes — one bad download would silently drop the paper out of
+/// search results.
+pub fn should_store_full_text(paper: &PaperDetails, extracted: &str) -> bool {
+    !extracted.is_empty() || paper.full_text.as_deref().unwrap_or_default().is_empty()
+}
+
+/// SOURCE_IDs of stored papers with no TeX source yet, oldest-published first —
+/// the backfill work list. Ids only; the caller loads each paper as it goes.
+pub fn full_text_backfill_candidates(conn: &Connection) -> Result<Vec<String>> {
+    store::full_text_backfill_candidates(conn)
 }
 
 #[cfg(test)]
@@ -880,6 +932,116 @@ mod tests {
         .unwrap();
         assert_eq!(got.full_text.as_deref(), Some("the full tex body"));
         assert!(got.downloaded_source);
+    }
+
+    /// Saving a paper then storing its text must make it findable — the claim the
+    /// whole ingestion path exists to satisfy. Seeding `papers_fts` by hand (as the
+    /// storage-layer search tests do) would not catch a break between the two.
+    #[test]
+    fn set_full_text_feeds_search_full_text() {
+        use crate::storage::queries::search::search_full_text;
+        let mut conn = mem();
+        save_paper_metadata(&mut conn, &meta("arxiv:ft", 1, "cs.LG", &[]), None).unwrap();
+        assert!(search_full_text(&conn, "zephyranthes", 10)
+            .unwrap()
+            .is_empty());
+
+        set_full_text(&mut conn, "arxiv:ft", 1, "a study of zephyranthes blooms").unwrap();
+        let hits = search_full_text(&conn, "zephyranthes", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].source_id, "arxiv:ft");
+    }
+
+    /// A re-fetch that extracts nothing must not wipe a body that already
+    /// indexes — `extract_source` returns "" for a corrupt download too.
+    #[test]
+    fn should_store_full_text_refuses_to_clobber_with_empty() {
+        let mut conn = mem();
+        save_paper_metadata(&mut conn, &meta("arxiv:clob", 1, "cs.LG", &[]), None).unwrap();
+        let key = Paper {
+            source_id: Some("arxiv:clob".into()),
+            ..Default::default()
+        };
+
+        // Nothing stored yet: an empty extract is written, marking it attempted.
+        let fresh = get(&conn, &key).unwrap().unwrap();
+        assert!(should_store_full_text(&fresh, ""));
+        assert!(should_store_full_text(&fresh, "some tex"));
+
+        set_full_text(&mut conn, "arxiv:clob", 1, "real body text").unwrap();
+        let indexed = get(&conn, &key).unwrap().unwrap();
+        // Now an empty extract is refused, but a real one still replaces it.
+        assert!(!should_store_full_text(&indexed, ""));
+        assert!(should_store_full_text(&indexed, "newer body text"));
+
+        // A paper stored as empty is not protected — retrying it is the point.
+        set_full_text(&mut conn, "arxiv:clob", 1, "").unwrap();
+        let blank = get(&conn, &key).unwrap().unwrap();
+        assert!(should_store_full_text(&blank, ""));
+    }
+
+    #[test]
+    fn backfill_candidates_lists_only_unfetched_papers() {
+        let mut conn = mem();
+        save_paper_metadata(&mut conn, &meta("arxiv:b1", 1, "cs.LG", &[]), None).unwrap();
+        save_paper_metadata(&mut conn, &meta("arxiv:b2", 1, "cs.LG", &[]), None).unwrap();
+        assert_eq!(full_text_backfill_candidates(&conn).unwrap().len(), 2);
+
+        // set_full_text flips DOWNLOADED_SOURCE, so b1 drops off the work list.
+        set_full_text(&mut conn, "arxiv:b1", 1, "indexed already").unwrap();
+        assert_eq!(
+            full_text_backfill_candidates(&conn).unwrap(),
+            vec!["arxiv:b2".to_string()]
+        );
+
+        // Storing an empty extract also counts as fetched — the list empties out
+        // instead of handing the same paper back on every run.
+        set_full_text(&mut conn, "arxiv:b2", 1, "").unwrap();
+        assert!(full_text_backfill_candidates(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn source_fetch_url_takes_arxiv_pdf_links_only() {
+        let mut conn = mem();
+        let fetch_url_of = |conn: &Connection, sid: &str| {
+            let p = get(
+                conn,
+                &Paper {
+                    source_id: Some(sid.into()),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .unwrap();
+            source_fetch_url(&p).map(str::to_string)
+        };
+
+        let mut ok = meta("arxiv:s1", 1, "cs.LG", &[]);
+        ok.url = Some("http://arxiv.org/pdf/2204.12985v4".into());
+        save_paper_metadata(&mut conn, &ok, None).unwrap();
+        assert_eq!(
+            fetch_url_of(&conn, "arxiv:s1").unwrap(),
+            "http://arxiv.org/pdf/2204.12985v4"
+        );
+
+        // An /abs/ link has no `/pdf/` segment to rewrite into `/src/`.
+        let mut abs_only = meta("arxiv:s2", 1, "cs.LG", &[]);
+        abs_only.url = Some("http://arxiv.org/abs/2204.12985v4".into());
+        save_paper_metadata(&mut conn, &abs_only, None).unwrap();
+        assert!(fetch_url_of(&conn, "arxiv:s2").is_err());
+
+        // A stored paper with no URL at all (locally imported PDF).
+        let mut no_url = meta("arxiv:s3", 1, "cs.LG", &[]);
+        no_url.url = None;
+        save_paper_metadata(&mut conn, &no_url, None).unwrap();
+        assert!(fetch_url_of(&conn, "arxiv:s3").is_err());
+
+        // Non-arXiv sources publish no source tarball, even at a /pdf/ URL.
+        let mut crossref = meta("doi:10.1/y", 1, "cs.LG", &[]);
+        crossref.source = Some("crossref".into());
+        crossref.url = Some("http://example.com/pdf/y".into());
+        save_paper_metadata(&mut conn, &crossref, None).unwrap();
+        assert!(fetch_url_of(&conn, "doi:10.1/y").is_err());
     }
 
     #[test]
