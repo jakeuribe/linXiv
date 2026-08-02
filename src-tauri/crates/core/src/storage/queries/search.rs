@@ -14,18 +14,21 @@ use crate::models::PaperDetails;
 /// notes_fts carries SOURCE_FK, joined back through PAPER_ROOTS to the same SOURCE_ID.
 /// init_db always creates both FTS tables, so Python's "table missing" guard is moot.
 ///
-/// The two FTS tables have different schemas, so a MATCH query using
-/// column-filter syntax valid on one (e.g. `full_text:foo`) throws on the
-/// other. Each branch runs as its own prepared statement and a prepare/query
-/// error from either is treated as "no matches from that branch" rather than
-/// aborting the whole search.
+/// `query` is the raw search box input; `match_expr` turns it into FTS5 syntax.
+/// Each branch runs as its own prepared statement, and a prepare/query error
+/// from either is treated as "no matches from that branch" rather than aborting
+/// the whole search. `match_expr` emits nothing schema-specific; the fallback
+/// stays as a backstop for an index that is missing or corrupt.
 pub fn search_full_text(conn: &Connection, query: &str, limit: i64) -> Result<Vec<PaperDetails>> {
     let limit = limit.clamp(0, 1000);
+    let Some(expr) = match_expr(query) else {
+        return Ok(Vec::new());
+    };
     let mut best: HashMap<String, f64> = HashMap::new();
     for (sid, score) in fts_matches(
         conn,
         "SELECT fts.paper_id, bm25(papers_fts) FROM papers_fts fts WHERE papers_fts MATCH ?1",
-        query,
+        &expr,
     )
     .into_iter()
     .chain(fts_matches(
@@ -33,7 +36,7 @@ pub fn search_full_text(conn: &Connection, query: &str, limit: i64) -> Result<Ve
         "SELECT r.SOURCE_ID, bm25(notes_fts) FROM notes_fts \
          JOIN PAPER_ROOTS r ON r.SOURCE_FK = notes_fts.source_fk \
          WHERE notes_fts MATCH ?1 AND r.STATUS = 'active'",
-        query,
+        &expr,
     )) {
         best.entry(sid)
             .and_modify(|s| {
@@ -71,9 +74,93 @@ pub fn search_full_text(conn: &Connection, query: &str, limit: i64) -> Result<Ve
         .collect())
 }
 
-/// Run one FTS MATCH query, returning (source_id, bm25 score) pairs. A
-/// prepare or execute error (e.g. column-filter syntax invalid for this
-/// table's schema) yields an empty result instead of propagating.
+/// Rewrite raw search box input into an FTS5 MATCH expression.
+///
+/// FTS5's query language reads `-` and `:` as column-filter syntax and rejects
+/// stray punctuation outright, so `encoder-decoder` parses as a filter on a
+/// column named `decoder` and `c++` is a syntax error near `+`. Both raise, and
+/// `fts_matches` reports a raise as "no rows" — so before this, a hyphenated
+/// query looked like a search that legitimately found nothing.
+///
+/// Each bare word becomes a quoted phrase, which FTS5 splits with the same
+/// tokenizer that split the document, so `encoder-decoder` matches the
+/// document's `encoder-decoder`. The syntax that already worked is preserved:
+/// double-quoted phrases, the AND/OR/NOT operators, and a trailing `*`.
+///
+/// `None` when nothing searchable is left — an empty MATCH is itself an error.
+///
+/// `ponytail: NEAR()/^ are not preserved (they'd need a real parser); they
+/// fall through to a literal term search.`
+fn match_expr(raw: &str) -> Option<String> {
+    // FTS5 reads its query as a C string; an embedded NUL truncates it before
+    // the closing quote is seen, so strip NUL up front.
+    let raw: String = raw.chars().filter(|&c| c != '\0').collect();
+    let mut out: Vec<String> = Vec::new();
+    let mut chars = raw.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c.is_whitespace() {
+            continue;
+        }
+        if c == '"' {
+            // A phrase the user quoted: take everything up to the closing quote,
+            // or to end of input if they never typed one.
+            let mut phrase = String::new();
+            for c in chars.by_ref() {
+                if c == '"' {
+                    break;
+                }
+                phrase.push(c);
+            }
+            let prefix = chars.next_if_eq(&'*').is_some();
+            push_term(&mut out, &phrase, prefix);
+            continue;
+        }
+        let mut tok = String::from(c);
+        while let Some(&next) = chars.peek() {
+            if next.is_whitespace() || next == '"' {
+                break;
+            }
+            tok.push(next);
+            chars.next();
+        }
+        let prefix = tok.ends_with('*');
+        let body = tok.strip_suffix('*').unwrap_or(&tok);
+        if !prefix && matches!(body, "AND" | "OR" | "NOT") {
+            // Two operators in a row (or a leading one) is a syntax error.
+            if !out.is_empty() && !is_operator(out.last()) {
+                out.push(body.to_string());
+            }
+        } else {
+            push_term(&mut out, body, prefix);
+        }
+    }
+    if is_operator(out.last()) {
+        out.pop();
+    }
+    (!out.is_empty()).then(|| out.join(" "))
+}
+
+fn is_operator(tok: Option<&String>) -> bool {
+    matches!(tok.map(String::as_str), Some("AND" | "OR" | "NOT"))
+}
+
+/// Push one term as a quoted FTS5 phrase.
+fn push_term(out: &mut Vec<String>, term: &str, prefix: bool) {
+    // FTS5 drops punctuation when tokenizing, so an all-punctuation term holds
+    // no token to match and would emit `""` — itself a syntax error.
+    if !term.chars().any(char::is_alphanumeric) {
+        return;
+    }
+    out.push(if prefix {
+        format!("\"{term}\"*")
+    } else {
+        format!("\"{term}\"")
+    });
+}
+
+/// Run one FTS MATCH query, returning (source_id, bm25 score) pairs. A prepare
+/// or execute error (a missing or corrupt index) yields an empty result instead
+/// of propagating, so one unusable index doesn't zero out the other's hits.
 fn fts_matches(conn: &Connection, sql: &str, query: &str) -> Vec<(String, f64)> {
     let mut out = Vec::new();
     let mut stmt = match conn.prepare(sql) {
@@ -216,8 +303,62 @@ mod tests {
         assert_eq!(hits[0].source_id, "arxiv:2204.12985");
     }
 
+    /// Punctuation FTS5 reads as syntax is searched for literally instead. Each
+    /// of these raised before, and a raise reads as "no matches" — so the search
+    /// silently returned nothing for terms that are all over a TeX corpus.
     #[test]
-    fn column_filter_syntax_valid_only_on_papers_fts_still_matches() {
+    fn punctuation_in_a_query_searches_instead_of_raising() {
+        let conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        seed(
+            &conn,
+            "arxiv:2204.12985",
+            "the encoder-decoder model is state-of-the-art for c++ at 50% recall",
+        );
+        seed(
+            &conn,
+            "arxiv:1111.00000",
+            "unrelated quantum chromodynamics",
+        );
+
+        for q in [
+            "encoder-decoder",
+            "state-of-the-art",
+            "c++",
+            "50%",
+            "-encoder",
+            "recall:",
+            "(encoder",
+            "encoder-decoder AND c++",
+            "encod*",
+        ] {
+            let hits = search_full_text(&conn, q, 20).unwrap();
+            assert_eq!(hits.len(), 1, "query {q:?} found {} papers", hits.len());
+            assert_eq!(hits[0].source_id, "arxiv:2204.12985", "query {q:?}");
+        }
+    }
+
+    /// A query with no searchable token can't become a MATCH expression (an
+    /// empty one raises), so it returns no results rather than erroring.
+    #[test]
+    fn a_query_with_nothing_to_search_returns_no_results() {
+        let conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        seed(&conn, "arxiv:2204.12985", "the manifold hypothesis");
+
+        for q in ["", "   ", "-", "%%%", "AND", "OR OR"] {
+            assert!(
+                search_full_text(&conn, q, 20).unwrap().is_empty(),
+                "query {q:?} should find nothing"
+            );
+        }
+    }
+
+    /// Column-filter syntax (`full_text:foo`) used to reach FTS5 and is now read
+    /// as literal text — the trade for making hyphens work. It finds papers
+    /// whose text holds those words, and nothing when it doesn't.
+    #[test]
+    fn column_filter_syntax_is_searched_as_text() {
         let conn = db::open_in_memory().unwrap();
         storage::init_db(&conn).unwrap();
         seed(
@@ -226,11 +367,139 @@ mod tests {
             "the manifold hypothesis in latent space",
         );
 
-        // `full_text:` is a papers_fts column; the same MATCH string throws
-        // "no such column" against notes_fts, which must not zero out the result.
-        let hits = search_full_text(&conn, "full_text:manifold", 20).unwrap();
+        assert!(search_full_text(&conn, "full_text:manifold", 20)
+            .unwrap()
+            .is_empty());
+        let hits = search_full_text(&conn, "manifold hypothesis", 20).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].source_id, "arxiv:2204.12985");
+    }
+
+    /// Quoted phrases stay phrases, so word order still narrows a search.
+    #[test]
+    fn quoted_phrase_requires_adjacency() {
+        let conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        seed(
+            &conn,
+            "arxiv:2204.12985",
+            "latent space and manifold learning",
+        );
+
+        assert_eq!(
+            search_full_text(&conn, "\"manifold learning\"", 20)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(search_full_text(&conn, "\"manifold space\"", 20)
+            .unwrap()
+            .is_empty());
+        // An unterminated quote runs to end of input instead of raising.
+        assert_eq!(
+            search_full_text(&conn, "\"manifold learning", 20)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    /// The invariant the rewrite rests on: whatever `match_expr` emits parses as
+    /// FTS5, for any input at all. An expression FTS5 rejects comes back through
+    /// `fts_matches` as "no rows", which is indistinguishable from a genuine
+    /// empty search, so a regression here would be invisible from the UI. Runs
+    /// MATCH directly and unwraps, going around that swallow.
+    #[test]
+    fn every_match_expr_output_parses_as_fts5() {
+        let conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+
+        // Every character FTS5 gives meaning to, plus the ones that broke it.
+        let atoms = [
+            "\"",
+            "-",
+            ":",
+            "(",
+            ")",
+            "*",
+            "^",
+            "%",
+            "+",
+            "&",
+            "|",
+            "{",
+            "}",
+            "[",
+            "]",
+            "AND",
+            "OR",
+            "NOT",
+            "NEAR",
+            "attention",
+            "a",
+            "\\",
+            "/",
+            "~",
+            "!",
+            ",",
+            "日本語",
+            "\0",
+            "0",
+            "'",
+        ];
+        let mut checked = 0;
+        for a in atoms {
+            for b in atoms {
+                for c in atoms {
+                    for raw in [format!("{a}{b}{c}"), format!("{a} {b} {c}")] {
+                        let Some(expr) = match_expr(&raw) else {
+                            continue;
+                        };
+                        conn.query_row(
+                            "SELECT count(*) FROM papers_fts WHERE papers_fts MATCH ?1",
+                            [&expr],
+                            |r| r.get::<_, i64>(0),
+                        )
+                        .unwrap_or_else(|e| panic!("{raw:?} -> {expr:?} rejected by FTS5: {e}"));
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked > 1000, "only {checked} expressions reached FTS5");
+    }
+
+    #[test]
+    fn match_expr_quotes_terms_and_keeps_operators() {
+        assert_eq!(
+            match_expr("encoder-decoder").unwrap(),
+            "\"encoder-decoder\""
+        );
+        assert_eq!(
+            match_expr("neural networks").unwrap(),
+            "\"neural\" \"networks\""
+        );
+        assert_eq!(match_expr("a OR b").unwrap(), "\"a\" OR \"b\"");
+        assert_eq!(match_expr("dot-product*").unwrap(), "\"dot-product\"*");
+        assert_eq!(match_expr("\"exact phrase\"").unwrap(), "\"exact phrase\"");
+        // A quote mid-query starts a fresh quoted-phrase term rather than being
+        // swallowed into the prior bare word.
+        assert_eq!(
+            match_expr("say \"hi\" now").unwrap(),
+            "\"say\" \"hi\" \"now\""
+        );
+        assert_eq!(
+            match_expr("\"scaled dot-product\"*").unwrap(),
+            "\"scaled dot-product\"*"
+        );
+        assert_eq!(match_expr("\"a b\" *").unwrap(), "\"a b\"");
+        // Dangling and doubled operators would each be a syntax error.
+        assert_eq!(match_expr("a AND").unwrap(), "\"a\"");
+        assert_eq!(match_expr("AND a").unwrap(), "\"a\"");
+        assert_eq!(match_expr("a AND OR b").unwrap(), "\"a\" AND \"b\"");
+        assert_eq!(match_expr(""), None);
+        assert_eq!(match_expr("  -%- "), None);
+        assert_eq!(match_expr("foo\0bar").unwrap(), "\"foobar\"");
     }
 
     #[test]
