@@ -177,6 +177,9 @@ pub async fn share_api(
         ("POST", ["api", "share", id, "revoke"]) => {
             return revoke_member(share.inner(), id, ctx.body).await
         }
+        ("POST", ["api", "share", id, "member", mid, "remove"]) => {
+            return remove_member(share.inner(), id, mid).await
+        }
         ("POST", ["api", "share", id, "pdf"]) => {
             return shared_pdf(state.inner(), share.inner(), id, ctx.body).await
         }
@@ -238,10 +241,7 @@ fn list_shared(state: &AppState, share: &ShareState) -> Result<Value, ApiError> 
         let fk = state.with_conn(|c| project_svc::find_by_share_id(c, &s.share_id))?;
         v["project_fk"] = json!(fk);
         v["e2ee"] = json!(true);
-        v["member_count"] = json!(load_members(dir, &s.share_id)
-            .iter()
-            .filter(|m| !m.revoked && m.role != "hoster")
-            .count());
+        v["member_count"] = json!(live_member_count(dir, &s.share_id));
         out.push(v);
     }
     Ok(json!({ "shared_projects": out }))
@@ -266,7 +266,39 @@ fn list_received(state: &AppState, share: &ShareState) -> Result<Value, ApiError
         v["e2ee"] = json!(true);
         out.push(v);
     }
+    out.extend(pending_received(dir, &out));
     Ok(json!({ "received": out }))
+}
+
+/// Mirrors under `e2ee/received` whose doc holds no content yet: `accept_invite`
+/// writes an empty placeholder when the host is unreachable, and an empty doc
+/// never hydrates, so the listing above drops it and the join vanishes from the
+/// UI. Surfaced as `pending` so a user can retry the sync (or leave) by hand.
+fn pending_received(dir: &Path, listed: &[Value]) -> Vec<Value> {
+    let synced: Vec<&str> = listed
+        .iter()
+        .filter_map(|v| v["share_id"].as_str())
+        .collect();
+    share_sync::doc_ids(&e2ee_received_dir(dir))
+        .into_iter()
+        .filter(|id| !synced.contains(&id.as_str()))
+        .map(|id| {
+            let paused = share_sync::load_settings(dir, &id).paused;
+            json!({
+                "share_id": id,
+                "name": "",
+                "paper_count": 0,
+                "note_count": 0,
+                "tag_count": 0,
+                // The placeholder's mtime is the join, not a sync — report none.
+                "synced_at": Value::Null,
+                "paused": paused,
+                "project_fk": Value::Null,
+                "e2ee": true,
+                "pending": true,
+            })
+        })
+        .collect()
 }
 
 /// `list_received` plus the reader's own capability (spec §7): each e2ee
@@ -285,7 +317,12 @@ async fn list_received_with_role(state: &AppState, share: &ShareState) -> Result
     let Some(list) = v.get_mut("received").and_then(Value::as_array_mut) else {
         return Ok(v);
     };
-    for entry in list.iter_mut().filter(|e| e["e2ee"] == json!(true)) {
+    // Pending mirrors are skipped: there is no content for a role to gate, and
+    // one unanswered query per pending share would stall the whole listing.
+    for entry in list
+        .iter_mut()
+        .filter(|e| e["e2ee"] == json!(true) && e["pending"] != json!(true))
+    {
         let Some(sid) = entry["share_id"].as_str().map(String::from) else {
             continue;
         };
@@ -370,6 +407,23 @@ pub(crate) struct MemberEntry {
     pub invited_at: String,
     #[serde(default)]
     pub revoked: bool,
+    /// The last invite string minted for this member, kept so the host can
+    /// re-send it without asking for the member code again. Absent on
+    /// pre-upgrade sidecars, and cleared whenever the grant changes (revoke /
+    /// role change) since the string that survives is then stale.
+    // ponytail: a bearer capability at rest in the share dir, beside the doc
+    // and key store it grants against; upgrade: store it in the key store.
+    #[serde(default)]
+    pub invite: Option<String>,
+}
+
+/// Non-revoked, non-hoster sidecar rows — "how many devices this share is
+/// currently granted to", for the hoster sync line.
+pub(crate) fn live_member_count(share_dir: &Path, share_id: &str) -> usize {
+    load_members(share_dir, share_id)
+        .iter()
+        .filter(|m| !m.revoked && m.role != "hoster")
+        .count()
 }
 
 fn members_path(share_dir: &Path, share_id: &str) -> PathBuf {
@@ -499,7 +553,10 @@ async fn unpublish(share: &ShareState, id: &str) -> Result<Value, ApiError> {
     Ok(json!({ "unpublished": true, "share_id": id, "e2ee": true }))
 }
 
-/// `POST /api/share/received/{id}/leave` — delete the mirror + ticket + settings.
+/// `POST /api/share/received/{id}/leave` — delete the mirror + ticket +
+/// settings, and drop the beelay registration behind an e2ee mirror so a later
+/// rejoin adopts from scratch. `forgotten: false` means the p2p node was down,
+/// so the registration survived: rejoining would reuse the old document.
 async fn leave(share: &ShareState, id: &str) -> Result<Value, ApiError> {
     if !valid_share_id(id) {
         return Err(ApiError::new(404, format!("share {id:?} not found")));
@@ -507,9 +564,8 @@ async fn leave(share: &ShareState, id: &str) -> Result<Value, ApiError> {
     let dir = share.share_dir();
     let _lock = share.lock_writes(id).await;
     let mirror = doc_path(&received_dir(dir), id);
-    // ponytail: an e2ee leave keeps its stale beelay registry entry until the
-    // host revokes us; interval sync skips it once the mirror file is gone.
     let e2ee_mirror = doc_path(&e2ee_received_dir(dir), id);
+    let was_e2ee = e2ee_mirror.is_file();
     let target = [&mirror, &e2ee_mirror].into_iter().find(|p| p.is_file());
     let Some(target) = target else {
         return Err(ApiError::new(
@@ -517,11 +573,25 @@ async fn leave(share: &ShareState, id: &str) -> Result<Value, ApiError> {
             format!("received share {id:?} not found"),
         ));
     };
+    // Beelay first: deleting the mirror while the registration survives is the
+    // half-state that makes a rejoin silently reuse the old doc.
+    let mut forgotten = !was_e2ee;
+    if was_e2ee {
+        match share.node().await {
+            Some(node) => {
+                e2ee_timeout(node.forget_e2ee(id), "leave share").await?;
+                forgotten = true;
+            }
+            // Not fatal: the user asked to leave, and the files below are what
+            // the interval loop reads. The response says the undo is partial.
+            None => eprintln!("share {id}: leaving with p2p offline; beelay entry survives"),
+        }
+    }
     std::fs::remove_file(target)
         .map_err(|e| ApiError::new(500, format!("could not leave share: {e}")))?;
     let _ = std::fs::remove_file(share_sync::ticket_path(dir, id));
     let _ = std::fs::remove_file(share_sync::settings_path(dir, id));
-    Ok(json!({ "left": true }))
+    Ok(json!({ "left": true, "forgotten": forgotten }))
 }
 
 /// `GET /api/share/received/{id}` — the full subgraph of one received mirror
@@ -820,6 +890,7 @@ async fn publish_secure(state: &AppState, share: &ShareState, id: &str) -> Resul
             role: "hoster".into(),
             invited_at: chrono::Utc::now().to_rfc3339(),
             revoked: false,
+            invite: None,
         });
         if let Err(e) = save_members(&dir, &sp.share_id, &list) {
             eprintln!(
@@ -890,6 +961,7 @@ async fn invite(
         m.role = role_s.into();
         m.name = name;
         m.revoked = false;
+        m.invite = Some(invite.clone());
     } else {
         list.push(MemberEntry {
             member_id_hex: hex,
@@ -897,6 +969,7 @@ async fn invite(
             role: role_s.into(),
             invited_at: chrono::Utc::now().to_rfc3339(),
             revoked: false,
+            invite: Some(invite.clone()),
         });
     }
     if let Err(e) = save_members(&dir, id, &list) {
@@ -943,6 +1016,8 @@ async fn members(share: &ShareState, id: &str) -> Result<Value, ApiError> {
             "invited_at": m.invited_at,
             "revoked": revoked,
             "verified": verified,
+            // Re-sendable while the grant stands; dropped once revoked.
+            "invite": if revoked { Value::Null } else { json!(m.invite) },
         }));
     }
     Ok(json!({ "members": out }))
@@ -1017,6 +1092,8 @@ async fn set_member_role(
     let mut list = load_members(&dir, id);
     for m in list.iter_mut().filter(|m| m.member_id_hex == canon_hex) {
         m.role = role_s.into();
+        // The regrant behind set_role invalidates the stored invite string.
+        m.invite = None;
     }
     if let Err(e) = save_members(&dir, id, &list) {
         eprintln!("share {id}: could not persist members sidecar: {e}");
@@ -1054,11 +1131,46 @@ async fn revoke_member(
     let mut list = load_members(&dir, id);
     for m in list.iter_mut().filter(|m| m.member_id_hex == canon_hex) {
         m.revoked = true;
+        m.invite = None;
     }
     if let Err(e) = save_members(&dir, id, &list) {
         eprintln!("share {id}: could not persist members sidecar: {e}");
     }
     Ok(json!({ "revoked": true }))
+}
+
+/// `POST /api/share/{id}/member/{mid}/remove` — revoke, then drop the sidecar
+/// row entirely, so a re-invite of the same device starts from a clean slate
+/// (a revoked row keeps its stale role and dead invite string around).
+/// Revoking first is what actually withdraws the capability; the row is
+/// bookkeeping. Already-revoked members skip straight to the row delete.
+async fn remove_member(share: &ShareState, id: &str, mid: &str) -> Result<Value, ApiError> {
+    let dir = share.share_dir().to_path_buf();
+    ensure_e2ee_hosted(&dir, id)?;
+    let member =
+        member_id_from_hex(mid).ok_or_else(|| ApiError::new(422, "malformed member id"))?;
+    let canon_hex = member_id_hex(&member);
+    let entry = load_members(&dir, id)
+        .into_iter()
+        .find(|m| m.member_id_hex == canon_hex)
+        .ok_or_else(|| ApiError::new(404, "member not found on this share"))?;
+    if entry.role == "hoster" {
+        return Err(ApiError::new(409, "cannot remove the host"));
+    }
+    let node = live_node(share).await?;
+    if node.self_member_id().map(|s| s == member).unwrap_or(false) {
+        return Err(ApiError::new(409, "cannot remove yourself as host"));
+    }
+    let _lock = share.lock_writes(id).await;
+    ensure_e2ee_hosted(&dir, id)?;
+    if !entry.revoked {
+        e2ee_timeout(node.revoke(id, member), "revoke").await?;
+    }
+    let mut list = load_members(&dir, id);
+    list.retain(|m| m.member_id_hex != canon_hex);
+    save_members(&dir, id, &list)
+        .map_err(|e| ApiError::new(500, format!("could not persist members sidecar: {e}")))?;
+    Ok(json!({ "removed": true, "member_id": canon_hex }))
 }
 
 /// `POST /api/share/{id}/pdf {source_id}` — fetch + decrypt a received e2ee
@@ -1274,6 +1386,26 @@ mod tests {
 
         let err = publish(&state, &share, "9999").await.unwrap_err();
         assert_eq!(err.status, 404);
+    }
+
+    /// A placeholder mirror from an offline join holds an empty doc that never
+    /// hydrates; it must still list, flagged pending, or the join is invisible.
+    #[test]
+    fn pending_mirror_is_listed() {
+        let (state, _pid) = seeded_state();
+        let dir = tempfile::tempdir().unwrap();
+        let share = ShareState::new(dir.path());
+        let id = "11111111-2222-4333-8444-555555555555";
+        let rec = e2ee_received_dir(dir.path());
+        std::fs::create_dir_all(&rec).unwrap();
+        std::fs::write(doc_path(&rec, id), automerge::AutoCommit::new().save()).unwrap();
+
+        let listed = list_received(&state, &share).unwrap();
+        let entries = listed["received"].as_array().unwrap();
+        assert_eq!(entries.len(), 1, "pending mirror must surface");
+        assert_eq!(entries[0]["share_id"], json!(id));
+        assert_eq!(entries[0]["pending"], json!(true));
+        assert_eq!(entries[0]["synced_at"], Value::Null);
     }
 
     // Needs one bound endpoint to resolve its own loopback addr; relays/discovery
@@ -1616,6 +1748,7 @@ mod tests {
                 role: "viewer".into(),
                 invited_at: chrono::Utc::now().to_rfc3339(),
                 revoked: false,
+                invite: None,
             }],
         )
         .unwrap();

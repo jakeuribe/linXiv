@@ -16,6 +16,7 @@ import {
   listShared,
   memberCode,
   publishSecure,
+  removeMember,
   revokeMember,
   setMemberRole,
   sharingAvailable,
@@ -75,15 +76,19 @@ function Stat({ value, label }: { value: number; label: string }) {
   );
 }
 
+/** "just now" / "5m ago" / "3d ago" from an ISO timestamp. */
+function relAgo(iso: string): string {
+  const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60_000);
+  if (!Number.isFinite(mins)) return "recently";
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  if (mins < 24 * 60) return `${Math.floor(mins / 60)}h ago`;
+  return `${Math.floor(mins / (24 * 60))}d ago`;
+}
+
 /** "Synced 5m ago" from the summary's ISO synced_at. */
 function syncedText(iso: string | null): string {
-  if (!iso) return "Never synced";
-  const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60_000);
-  if (!Number.isFinite(mins)) return "Synced";
-  if (mins < 1) return "Synced just now";
-  if (mins < 60) return `Synced ${mins}m ago`;
-  if (mins < 24 * 60) return `Synced ${Math.floor(mins / 60)}h ago`;
-  return `Synced ${Math.floor(mins / (24 * 60))}d ago`;
+  return iso ? `Synced ${relAgo(iso)}` : "Never synced";
 }
 
 const SYNC_REASON_LABELS: Record<string, string | undefined> = {
@@ -94,11 +99,24 @@ const SYNC_REASON_LABELS: Record<string, string | undefined> = {
   "paused": "Sync paused",
   "direction": "Skipped by sync direction",
   "revoked or awaiting key": "Access revoked or key not yet received",
+  "awaiting first sync": "The host has not answered yet — nothing to show",
+  "no key for any content":
+    "Content arrived but none of it decrypts — it was published before your invite, so the host must republish it",
 };
 
 function humanizeReason(code: string | undefined): string {
   if (!code) return "Sync failed";
   return SYNC_REASON_LABELS[code] ?? code;
+}
+
+/** The reader leg's raw counters, for pasting into a bug report. */
+function syncCounters(d: {
+  applied?: number;
+  no_key?: number;
+  failed?: number;
+}): string | null {
+  if (d.applied == null) return null;
+  return `applied ${d.applied} · no key ${d.no_key ?? 0} · failed ${d.failed ?? 0}`;
 }
 
 function ShareCard({
@@ -191,6 +209,14 @@ function ShareCard({
               style={{ color: "var(--color-muted)" }}
             />
           )}
+          {share.pending && (
+            <span
+              className="shrink-0 rounded-full border border-[var(--color-border)] bg-[var(--color-surface-2)] px-2 py-1 font-mono text-[10.5px] font-semibold leading-none"
+              style={{ color: "var(--color-muted)" }}
+            >
+              Pending
+            </span>
+          )}
           <RolePill role={role} />
         </div>
       </div>
@@ -202,7 +228,11 @@ function ShareCard({
           }}
         />
         <span className="truncate text-xs" style={{ color: "var(--color-muted)" }}>
-          {share.paused ? "Sync paused" : syncedText(share.synced_at)}
+          {share.paused
+            ? "Sync paused"
+            : share.pending
+              ? "Waiting for the host — nothing has arrived yet"
+              : syncedText(share.synced_at)}
           {" · "}
           {hosted ? "published from your library" : "read-only mirror"}
         </span>
@@ -254,8 +284,24 @@ function ShareCard({
         </Button>
       </div>
       {(sync.isError || sync.data?.synced === false || sync.data?.reason != null) && (
-        <p className="px-5 pb-3 text-xs" style={{ color: "var(--color-danger)" }}>
+        <p
+          className="px-5 pb-3 text-xs"
+          style={{
+            // "still waiting on the host" is a state, not a failure.
+            color: sync.data?.pending
+              ? "var(--color-muted)"
+              : "var(--color-danger)",
+          }}
+        >
           {sync.isError ? errText(sync.error) : humanizeReason(sync.data?.reason)}
+        </p>
+      )}
+      {sync.data && syncCounters(sync.data) && (
+        <p
+          className="px-5 pb-3 font-mono text-[10.5px]"
+          style={{ color: "var(--color-ink-3)" }}
+        >
+          {syncCounters(sync.data)}
         </p>
       )}
       {pdfs.isError && (
@@ -316,8 +362,11 @@ function MembersSection({ shareId }: { shareId: string }) {
   const [role, setRole] = useState<"editor" | "viewer">("viewer");
   const [name, setName] = useState("");
   const [invite, setInvite] = useState("");
-  const [copied, setCopied] = useState(false);
+  // Key of whatever was copied last: "new" for the freshly minted string, or a
+  // member id for a re-sent one.
+  const [copied, setCopied] = useState<string | null>(null);
   const [revoking, setRevoking] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<string | null>(null);
   const alive = useRef(true);
   useEffect(() => {
     alive.current = true;
@@ -343,7 +392,7 @@ function MembersSection({ shareId }: { shareId: string }) {
       }),
     onSuccess: (inv) => {
       setInvite(inv);
-      setCopied(false);
+      setCopied(null);
       setCode("");
       setName("");
       invalidateMembers();
@@ -353,6 +402,15 @@ function MembersSection({ shareId }: { shareId: string }) {
     mutationFn: (memberId: string) => revokeMember(shareId, memberId),
     onSuccess: () => {
       setRevoking(null);
+      invalidateMembers();
+    },
+  });
+  // The rollback arm: revoke + drop the row, so re-inviting the same device
+  // does not inherit a stale role or a dead invite string.
+  const removeM = useMutation({
+    mutationFn: (memberId: string) => removeMember(shareId, memberId),
+    onSuccess: () => {
+      setRemoving(null);
       invalidateMembers();
     },
   });
@@ -375,13 +433,13 @@ function MembersSection({ shareId }: { shareId: string }) {
     onSettled: () => invalidateMembers(),
   });
 
-  async function handleCopy() {
+  async function handleCopy(key: string, text: string) {
     try {
-      await navigator.clipboard.writeText(invite);
+      await navigator.clipboard.writeText(text);
       if (!alive.current) return;
-      setCopied(true);
+      setCopied(key);
       setTimeout(() => {
-        if (alive.current) setCopied(false);
+        if (alive.current) setCopied((c) => (c === key ? null : c));
       }, 1500);
     } catch {
       // Clipboard write denied.
@@ -399,64 +457,120 @@ function MembersSection({ shareId }: { shareId: string }) {
       </span>
       {membersQ.isLoading && <Spinner size={16} />}
       {members.map((m) => (
-        <div key={m.member_id || m.invited_at} className="flex items-center gap-2">
-          <span
-            className="flex-1 truncate text-[13px]"
-            style={{ color: m.revoked ? "var(--color-ink-3)" : "var(--color-text)" }}
-          >
-            {m.name ||
-              (m.role === "hoster"
-                ? "This device"
-                : m.member_id.slice(0, 8) || "unknown device")}
-          </span>
-          {!m.revoked && m.role !== "hoster" && m.verified && m.member_id ? (
-            // Viewer/Editor only — co-admin is keyhive-supported but
-            // app-deferred (spec §1.1); the route refuses admin targets.
-            <OptionSelect
-              aria-label={`Role for ${m.name || m.member_id.slice(0, 8)}`}
-              size="sm"
-              value={m.role as "editor" | "viewer"}
-              onChange={(r) => roleM.mutate({ memberId: m.member_id, role: r })}
-              disabled={roleM.isPending}
-              options={INVITE_ROLE_OPTIONS}
-            />
-          ) : (
+        <div key={m.member_id || m.invited_at} className="flex flex-col gap-1">
+          <div className="flex items-center gap-2">
             <span
-              className="shrink-0 rounded-full border border-[var(--color-border)] bg-[var(--color-surface-2)] px-2 py-0.5 font-mono text-[10px] font-semibold"
-              style={{ color: "var(--color-muted)" }}
+              className="flex-1 truncate text-[13px]"
+              style={{ color: m.revoked ? "var(--color-ink-3)" : "var(--color-text)" }}
             >
-              {m.revoked ? "revoked" : m.verified ? m.role : `${m.role} (unverified)`}
+              {m.name ||
+                (m.role === "hoster"
+                  ? "This device"
+                  : m.member_id.slice(0, 8) || "unknown device")}
             </span>
-          )}
-          {!m.revoked && m.role !== "hoster" && revoking === m.member_id && (
-            <Button
-              variant="muted"
-              size="sm"
-              disabled={revokeM.isPending}
-              onClick={() => setRevoking(null)}
-            >
-              Cancel
-            </Button>
-          )}
-          {!m.revoked && m.role !== "hoster" && (
-            <Button
-              variant={revoking === m.member_id ? "danger" : "ghost"}
-              size="sm"
-              disabled={revokeM.isPending}
-              onClick={() => {
-                if (revoking !== m.member_id) return setRevoking(m.member_id);
-                inviteM.reset();
-                revokeM.mutate(m.member_id);
-              }}
-            >
-              {revokeM.isPending && revoking === m.member_id ? (
-                <Spinner size={14} />
-              ) : revoking === m.member_id ? (
-                "Confirm revoke"
-              ) : (
-                "Revoke"
+            {!m.revoked && m.role !== "hoster" && m.verified && m.member_id ? (
+              // Viewer/Editor only — co-admin is keyhive-supported but
+              // app-deferred (spec §1.1); the route refuses admin targets.
+              <OptionSelect
+                aria-label={`Role for ${m.name || m.member_id.slice(0, 8)}`}
+                size="sm"
+                value={m.role as "editor" | "viewer"}
+                onChange={(r) => roleM.mutate({ memberId: m.member_id, role: r })}
+                disabled={roleM.isPending}
+                options={INVITE_ROLE_OPTIONS}
+              />
+            ) : (
+              <span
+                className="shrink-0 rounded-full border border-[var(--color-border)] bg-[var(--color-surface-2)] px-2 py-0.5 font-mono text-[10px] font-semibold"
+                style={{ color: "var(--color-muted)" }}
+              >
+                {m.revoked ? "revoked" : m.verified ? m.role : `${m.role} (unverified)`}
+              </span>
+            )}
+            {!m.revoked && m.role !== "hoster" && revoking === m.member_id && (
+              <Button
+                variant="muted"
+                size="sm"
+                disabled={revokeM.isPending}
+                onClick={() => setRevoking(null)}
+              >
+                Cancel
+              </Button>
+            )}
+            {!m.revoked && m.role !== "hoster" && (
+              <Button
+                variant={revoking === m.member_id ? "danger" : "ghost"}
+                size="sm"
+                disabled={revokeM.isPending}
+                onClick={() => {
+                  if (revoking !== m.member_id) return setRevoking(m.member_id);
+                  inviteM.reset();
+                  revokeM.mutate(m.member_id);
+                }}
+              >
+                {revokeM.isPending && revoking === m.member_id ? (
+                  <Spinner size={14} />
+                ) : revoking === m.member_id ? (
+                  "Confirm revoke"
+                ) : (
+                  "Revoke"
+                )}
+              </Button>
+            )}
+          </div>
+          {m.role !== "hoster" && (
+            // Outstanding-invite line: a member who never picks theirs up leaves
+            // no other trace on this end, and the string is otherwise shown once.
+            <div className="flex items-center gap-2">
+              <span className="text-[11px]" style={{ color: "var(--color-ink-3)" }}>
+                Invited {relAgo(m.invited_at)}
+                {m.revoked
+                  ? " · revoked"
+                  : m.verified
+                    ? ""
+                    : " · not confirmed by the key layer yet"}
+              </span>
+              <div className="flex-1" />
+              {!m.revoked && m.invite && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => handleCopy(m.member_id, m.invite as string)}
+                >
+                  {copied === m.member_id ? "Copied" : "Copy invite"}
+                </Button>
               )}
-            </Button>
+              {removing === m.member_id && (
+                <Button
+                  variant="muted"
+                  size="sm"
+                  disabled={removeM.isPending}
+                  onClick={() => setRemoving(null)}
+                >
+                  Cancel
+                </Button>
+              )}
+              {m.member_id && (
+                <Button
+                  variant={removing === m.member_id ? "danger" : "ghost"}
+                  size="sm"
+                  disabled={removeM.isPending}
+                  onClick={() => {
+                    if (removing !== m.member_id) return setRemoving(m.member_id);
+                    inviteM.reset();
+                    removeM.mutate(m.member_id);
+                  }}
+                >
+                  {removeM.isPending && removing === m.member_id ? (
+                    <Spinner size={14} />
+                  ) : removing === m.member_id ? (
+                    "Confirm remove"
+                  ) : (
+                    "Remove"
+                  )}
+                </Button>
+              )}
+            </div>
           )}
         </div>
       ))}
@@ -464,6 +578,12 @@ function MembersSection({ shareId }: { shareId: string }) {
         <p className="text-xs" style={{ color: "var(--color-muted)" }}>
           Stops receiving future updates. Content already synced stays on their
           device.
+        </p>
+      )}
+      {removing != null && (
+        <p className="text-xs" style={{ color: "var(--color-muted)" }}>
+          Revokes them and forgets the invite entirely, so re-inviting the same
+          device starts clean. They should also leave the share on their end.
         </p>
       )}
       <div className="flex items-center gap-2">
@@ -516,8 +636,8 @@ function MembersSection({ shareId }: { shareId: string }) {
             >
               Invite string — send it to them
             </span>
-            <Button variant="muted" size="sm" onClick={handleCopy}>
-              {copied ? "Copied" : "Copy"}
+            <Button variant="muted" size="sm" onClick={() => handleCopy("new", invite)}>
+              {copied === "new" ? "Copied" : "Copy"}
             </Button>
           </div>
           <Textarea
@@ -593,8 +713,11 @@ function ShareSettingsDialog({
   });
   const leaveM = useMutation({
     mutationFn: () => leaveShare(share.share_id),
-    onSuccess: () => {
+    onSuccess: (res) => {
       invalidateShares();
+      // A partial undo has to be said out loud: the mirror is gone but the p2p
+      // registration is not, so a rejoin would resurrect the same stuck doc.
+      if (res.forgotten === false) return;
       onClose();
     },
   });
@@ -614,7 +737,11 @@ function ShareSettingsDialog({
   const dangerPending = leaveM.isPending || unpublishM.isPending;
 
   return (
-    <Dialog open onClose={onClose} title={`Settings — ${share.name}`}>
+    <Dialog
+      open
+      onClose={onClose}
+      title={`Settings — ${share.name || "pending share"}`}
+    >
       <div className="flex flex-col gap-4">
         {share.e2ee && (
           <div
@@ -650,6 +777,12 @@ function ShareSettingsDialog({
             <span className="truncate text-[13px]" style={{ color: "var(--color-muted)" }}>
               {hosterProject?.name ?? "—"}
             </span>
+          ) : share.pending ? (
+            // Nothing has arrived to import yet; "Sync now" on the card is the
+            // only useful action until the host answers.
+            <span className="truncate text-[13px]" style={{ color: "var(--color-muted)" }}>
+              Waiting for the first sync
+            </span>
           ) : share.project_fk == null ? (
             <Button
               variant="primary"
@@ -670,6 +803,13 @@ function ShareSettingsDialog({
             {errText(err)}
           </p>
         )}
+        {leaveM.data?.forgotten === false && (
+          <p className="text-xs" style={{ color: "var(--color-danger)" }}>
+            The mirror is gone, but the peer-to-peer node was offline so its
+            registration survived — rejoining now would reuse the same document.
+            Start the app with networking available and leave again.
+          </p>
+        )}
         {hosted && share.e2ee && <MembersSection shareId={share.share_id} />}
         <div className="flex items-center justify-between border-t border-[var(--color-border)] pt-4">
           <span className="text-xs" style={{ color: "var(--color-muted)" }}>
@@ -677,7 +817,9 @@ function ShareSettingsDialog({
               ? share.e2ee
                 ? "Revokes all members and stops serving the share. Your project stays."
                 : "Stops serving the share. Your project stays."
-              : "Removes the mirror. Imported data stays."}
+              : share.e2ee
+                ? "Removes the mirror and forgets the share, so a rejoin starts fresh. Imported data stays."
+                : "Removes the mirror. Imported data stays."}
           </span>
           <div className="flex items-center gap-2">
             {confirming && (

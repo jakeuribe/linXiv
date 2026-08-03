@@ -671,6 +671,23 @@ impl ShareNode {
         Ok(outcome)
     }
 
+    /// Undo a join: drop the beelay registration, its cached doc and any parked
+    /// invite, so a later re-accept of the same invite adopts from scratch
+    /// instead of reusing a doc whose commits never decrypted. Returns whether
+    /// beelay had it registered. The caller deletes the on-disk mirror.
+    #[cfg(feature = "sync-beelay")]
+    pub async fn forget_e2ee(&self, share_id: &str) -> Result<bool> {
+        if !valid_share_id(share_id) {
+            return Err(ShareError::NotFound(share_id.to_string()));
+        }
+        if super::doc_path(&e2ee_dir(&self.share_dir), share_id).is_file() {
+            return Err(net(format!(
+                "forget_e2ee on hosted share {share_id}: unpublish it instead"
+            )));
+        }
+        self.beelay()?.forget_project(share_id).await.map_err(net)
+    }
+
     /// Summaries of locally-published e2ee shares (`share_dir/e2ee`).
     pub fn list_e2ee(share_dir: &Path) -> Result<Vec<crate::SharedSummary>> {
         crate::list_shared(&e2ee_dir(share_dir))

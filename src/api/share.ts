@@ -44,6 +44,9 @@ export interface SharedSummary {
    * list time). Absent offline / on plain mirrors → treated as editable; the
    * write boundary is enforced server+crypto side, this drives UX only. */
   role?: MemberRole;
+  /** Joined, but no content has arrived yet (host was unreachable, or its key
+   * has not been received). Name and counts are empty until the first sync. */
+  pending?: boolean;
 }
 
 export interface ShareMember {
@@ -56,6 +59,9 @@ export interface ShareMember {
   revoked: boolean;
   /** Per-member truth check against keyhive (the sidecar is names-only). */
   verified: boolean;
+  /** The invite string last minted for them, kept so it can be re-sent. Null
+   * once revoked, after a role change, or on pre-upgrade member sidecars. */
+  invite: string | null;
 }
 
 export type ShareDirection = "two_way" | "shared_to_local" | "local_to_shared";
@@ -67,7 +73,9 @@ export type SyncReason =
   | "no ticket"
   | "bad ticket"
   | "p2p offline"
-  | "revoked or awaiting key";
+  | "revoked or awaiting key"
+  | "awaiting first sync"
+  | "no key for any content";
 
 export type ShareRole = "hoster" | "reader";
 
@@ -97,8 +105,8 @@ export async function createShareTicket(projectId: number): Promise<string> {
 
 /** Outcome of {@link joinShare}. `pending` means the invite was accepted but
  *  its host was unreachable: it is saved and finishes syncing on a later pass,
- *  so there is no name or counts yet. Such a share also stays out of
- *  {@link listReceived} until that first sync lands. */
+ *  so there is no name or counts yet. {@link listReceived} lists it with
+ *  `pending` set until that first sync lands. */
 export type JoinResult =
   | ({ pending?: false } & Omit<SharedSummary, "synced_at" | "paused">)
   | { pending: true; share_id: string; e2ee: true; reason: string };
@@ -145,13 +153,30 @@ export async function syncShare(
   /** Notes/annotations skipped because their key is revoked or not yet received. */
   undecryptable?: number;
   e2ee?: boolean;
+  /** The sync ran but the mirror is still empty — the host has not answered. */
+  pending?: boolean;
+  /** Reader leg: commits decrypted and applied this pass. */
+  applied?: number;
+  /** Reader leg: commits fetched with no key for their epoch. `no_key > 0` with
+   *  nothing applied means content sealed to an epoch this device never joined
+   *  — typically published before the invite; retrying cannot re-key it. */
+  no_key?: number;
+  /** Reader leg: commits that failed to decrypt for any other reason. */
+  failed?: number;
+  /** Hoster leg: devices this share is currently granted to. */
+  members?: number;
 }> {
   return shareApi("POST", `/api/share/${shareId}/sync`);
 }
 
-/** Drop a received mirror (+ ticket + settings). The linked local project,
- *  if imported, stays untouched. */
-export async function leaveShare(shareId: string): Promise<{ left: boolean }> {
+/** Drop a received mirror (+ ticket + settings) and forget the p2p
+ *  registration behind it, so a rejoin adopts from scratch instead of reusing
+ *  the old document. The linked local project, if imported, stays untouched.
+ *  `forgotten: false` means the node was offline and the registration
+ *  survived — a rejoin would reuse the old doc. */
+export async function leaveShare(
+  shareId: string
+): Promise<{ left: boolean; forgotten: boolean }> {
   return shareApi("POST", `/api/share/received/${shareId}/leave`);
 }
 
@@ -211,6 +236,16 @@ export async function setMemberRole(
   return shareApi("POST", `/api/share/${shareId}/member/${memberId}/role`, {
     role,
   });
+}
+
+/** Revoke a member and drop their row entirely, so re-inviting the same device
+ *  starts clean. Use over {@link revokeMember} when the invite is being redone
+ *  rather than withdrawn. */
+export async function removeMember(
+  shareId: string,
+  memberId: string
+): Promise<{ removed: boolean; member_id: string }> {
+  return shareApi("POST", `/api/share/${shareId}/member/${memberId}/remove`);
 }
 
 /** Revoke a member: stops receiving future updates; content already synced
