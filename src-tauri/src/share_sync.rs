@@ -404,15 +404,16 @@ pub async fn sync_share(
         let undecryptable = outcome.no_key + outcome.failed;
         if undecryptable > 0 {
             v["undecryptable"] = json!(undecryptable);
-            // Commits arrived but none decrypted and nothing is here yet: the
-            // usual cause is content published BEFORE the invite (keyhive #136)
-            // — those commits are sealed to an epoch this device never joined,
-            // and no amount of retrying re-keys them.
-            v["reason"] = json!(if pending && outcome.no_key > 0 {
-                "no key for any content"
-            } else {
-                "revoked or awaiting key"
-            });
+            // A re-keyed share leaves its pre-grant commits behind forever, so
+            // undecryptable alone is not a fault — only report one when nothing
+            // came through. Nothing at all, and the usual cause is content
+            // sealed BEFORE this device's invite (keyhive #136): those commits
+            // belong to an epoch it never joined, and only a host re-key helps.
+            if pending && outcome.no_key > 0 {
+                v["reason"] = json!("no key for any content");
+            } else if pending {
+                v["reason"] = json!("revoked or awaiting key");
+            }
         }
         return Ok(v);
     }
@@ -637,7 +638,11 @@ mod tests {
         let v = slow(sync_share(&state_a, &share_a, E2EE_SID))
             .await
             .unwrap();
-        assert_eq!(v, json!({ "synced": true, "role": "hoster", "e2ee": true }));
+        // members=0: B is invited below, so nothing is granted yet.
+        assert_eq!(
+            v,
+            json!({ "synced": true, "role": "hoster", "e2ee": true, "members": 0 })
+        );
 
         // Invite B and link its mirror to a local project.
         let node_b = share_b.node().await.unwrap();

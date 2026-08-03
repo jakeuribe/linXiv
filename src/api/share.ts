@@ -230,6 +230,16 @@ export async function setMemberRole(
   });
 }
 
+/** Re-encrypt a hosted encrypted share's whole history (and its PDF blobs)
+ *  under the current key, then republish. Repairs members who joined after the
+ *  content was already encrypted and so can decrypt none of it — the symptom is
+ *  their sync reporting `no_key > 0` with `applied` stuck at 0. */
+export async function rekeyShare(
+  shareId: string
+): Promise<{ rekeyed: boolean; members: number }> {
+  return shareApi("POST", `/api/share/${shareId}/rekey`);
+}
+
 /** Revoke a member and drop their row entirely, so re-inviting the same device
  *  starts clean. Use over {@link revokeMember} when the invite is being redone
  *  rather than withdrawn. */
