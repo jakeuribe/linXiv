@@ -1,46 +1,48 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { getSettings, updateSettings } from "../../api/settings";
 import { Toggle } from "../ui/toggle";
 import { SettingGroup, SettingGroupLabel, SettingRow } from "./SettingRow";
 
 export function FullTextSection() {
-  const qc = useQueryClient();
   const { data: settings } = useQuery({
     queryKey: ["settings"],
     queryFn: getSettings,
   });
 
-  const enabled =
-    (settings as Record<string, unknown> | undefined)?.full_text_worker_enabled === true;
+  const toggleMutation = useMutation({
+    mutationFn: (next: boolean) => updateSettings({ full_text_worker_enabled: next }),
+  });
 
-  function handleToggle(next: boolean) {
-    updateSettings({ full_text_worker_enabled: next })
-      .then(() => qc.invalidateQueries({ queryKey: ["settings"] }))
-      .catch(console.error);
-  }
+  const enabled = settings?.full_text_worker_enabled === true;
 
   return (
     <div>
       <SettingGroupLabel>Full-text indexing</SettingGroupLabel>
       <p className="mb-2.5 text-xs text-muted">
-        Downloads the arXiv TeX source of papers that aren&rsquo;t indexed yet, one
-        at a time, so full-text search covers your whole library. It respects
+        Downloads the TeX source of arXiv papers that aren&rsquo;t indexed yet, one
+        at a time, so full-text search reaches inside them. It respects
         arXiv&rsquo;s rate limits, so a large library takes hours — it just keeps
-        working in the background until it&rsquo;s done. Papers it can&rsquo;t fetch
-        (non-arXiv, or a failed download) are retried after a restart.
+        working in the background until it&rsquo;s done. Papers from other sources
+        have no source to fetch and are skipped; ones that fail are retried later.
       </p>
       <SettingGroup>
         <SettingRow
           label="Index full text in the background"
-          description="Off by default: each paper is a multi-megabyte download"
+          description="Off by default: each paper is a multi-megabyte download, stored in your library database"
         >
           <Toggle
             checked={enabled}
-            onChange={handleToggle}
+            onChange={(next) => toggleMutation.mutate(next)}
+            disabled={toggleMutation.isPending}
             aria-label="Index full text in the background"
           />
         </SettingRow>
       </SettingGroup>
+      {toggleMutation.isError && (
+        <p className="mt-2 text-xs text-danger">
+          Could not save the setting. Check that the data directory is writable.
+        </p>
+      )}
     </div>
   );
 }
