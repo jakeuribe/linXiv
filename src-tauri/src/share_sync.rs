@@ -329,7 +329,21 @@ pub async fn sync_share(
         .await
         .map_err(|_| ApiError::new(504, "share sync publish timed out"))??;
         touch(&e2ee_hoster_doc);
-        return Ok(json!({ "synced": true, "role": "hoster", "e2ee": true }));
+        // Host-side counterpart of the reader line below: what this device just
+        // republished, and to how many live members.
+        let members = crate::route::share::live_member_count(&dir, share_id);
+        println!(
+            "share sync {share_id}: hoster republished papers={} notes={} annotations={} members={members}",
+            sp.papers.len(),
+            sp.notes.len(),
+            sp.annotations.len(),
+        );
+        return Ok(json!({
+            "synced": true,
+            "role": "hoster",
+            "e2ee": true,
+            "members": members,
+        }));
     }
 
     if e2ee_reader_doc.is_file() {
@@ -349,26 +363,56 @@ pub async fn sync_share(
         )
         .await
         .map_err(|_| ApiError::new(504, "share sync timed out"))??;
-        if state
+        let linked = state
             .with_conn(|c| project_svc::find_by_share_id(c, share_id))?
-            .is_some()
-        {
-            // A mirror still empty after the sync (host asleep, or no key yet)
-            // has nothing to import; the outcome below reports why.
-            match ShareNode::e2ee_received(&dir, share_id) {
-                Ok(sp) => {
-                    state.with_conn(|c| import_shared_project(c, &sp))?;
-                }
-                Err(linxiv_share::ShareError::NotFound(_)) => {}
-                Err(e) => return Err(e.into()),
-            }
+            .is_some();
+        // A mirror still empty after the sync (host asleep, or no key yet) has
+        // nothing to import — and a manual retry needs told that, or it reads
+        // as a silent success that changed nothing.
+        let mut pending = false;
+        match ShareNode::e2ee_received(&dir, share_id) {
+            Ok(sp) if linked => state
+                .with_conn(|c| import_shared_project(c, &sp))
+                .map(|_| ())?,
+            Ok(_) => {}
+            Err(linxiv_share::ShareError::NotFound(_)) => pending = true,
+            Err(e) => return Err(e.into()),
         }
         touch(&e2ee_reader_doc);
-        let mut v = json!({ "synced": true, "role": "reader", "e2ee": true });
+        // One line per reader sync, on stdout, so a terminal-launched app shows
+        // what a stuck share is actually doing.
+        println!(
+            "share sync {share_id}: reader applied={} no_key={} failed={} mirror={} linked={linked}",
+            outcome.applied,
+            outcome.no_key,
+            outcome.failed,
+            if pending { "empty" } else { "populated" },
+        );
+        let mut v = json!({
+            "synced": true,
+            "role": "reader",
+            "e2ee": true,
+            "applied": outcome.applied,
+            "no_key": outcome.no_key,
+            "failed": outcome.failed,
+        });
+        if pending {
+            v["pending"] = json!(true);
+            v["reason"] = json!("awaiting first sync");
+        }
+        // The more specific key diagnosis wins over the generic pending line.
         let undecryptable = outcome.no_key + outcome.failed;
         if undecryptable > 0 {
             v["undecryptable"] = json!(undecryptable);
-            v["reason"] = json!("revoked or awaiting key");
+            // Commits arrived but none decrypted and nothing is here yet: the
+            // usual cause is content published BEFORE the invite (keyhive #136)
+            // — those commits are sealed to an epoch this device never joined,
+            // and no amount of retrying re-keys them.
+            v["reason"] = json!(if pending && outcome.no_key > 0 {
+                "no key for any content"
+            } else {
+                "revoked or awaiting key"
+            });
         }
         return Ok(v);
     }

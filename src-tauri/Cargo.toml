@@ -99,6 +99,9 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 [dev-dependencies]
 # Share-dispatcher test injects a tempdir share dir (never the real data dir).
 wiremock = "0.6"
+# Mints the empty placeholder doc an offline join leaves behind; same version
+# linxiv-share builds against.
+automerge = "0.10.0"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
