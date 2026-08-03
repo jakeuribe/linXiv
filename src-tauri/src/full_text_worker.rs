@@ -84,8 +84,25 @@ pub fn spawn(app: tauri::AppHandle) {
     });
 }
 
-/// The loop itself. Reads the setting every pass, so toggling it in Settings
-/// takes effect without a restart.
+/// Sleep, but in `OFF_POLL` steps, giving up the rest as soon as the setting is
+/// switched off. The post-failure backoff runs to `MAX_BACKOFF`, so a single
+/// `sleep` would leave the toggle looking dead for up to an hour after a night
+/// offline.
+async fn nap(total: Duration) {
+    let mut slept = Duration::ZERO;
+    while slept < total {
+        let step = OFF_POLL.min(total - slept);
+        tokio::time::sleep(step).await;
+        if !enabled() {
+            return;
+        }
+        slept += step;
+    }
+}
+
+/// The loop itself. Reads the setting at the top of each pass and during long
+/// waits, so switching it off takes effect within `OFF_POLL` and switching it on
+/// within `OFF_POLL` of the current wait ending.
 async fn run(app: tauri::AppHandle) {
     // A failed fetch leaves DOWNLOADED_SOURCE unset, so without parking the loop
     // would retry the head of the list forever and never reach the rest.
@@ -110,7 +127,7 @@ async fn run(app: tauri::AppHandle) {
             take_next(conn, &mut queue, &parked, now)
         });
         let Some(paper) = next else {
-            tokio::time::sleep(idle_wait(&parked, Instant::now())).await;
+            nap(idle_wait(&parked, Instant::now())).await;
             continue;
         };
         // The work-list query selects only papers source_fetch_url accepts, so
@@ -119,6 +136,9 @@ async fn run(app: tauri::AppHandle) {
         if let Err(e) = svc_paper::source_fetch_url(&paper) {
             eprintln!("[full-text] {} parked: {e}", paper.source_id);
             parked.insert(paper.source_id, Park::PERMANENT);
+            // Nothing else on this path awaits, and it runs once per paper the
+            // two rules disagree about.
+            tokio::task::yield_now().await;
             continue;
         }
         let sid = paper.source_id.clone();
@@ -137,7 +157,7 @@ async fn run(app: tauri::AppHandle) {
                     Some(_) => parked.remove(&sid),
                     None => parked.insert(sid, Park::PERMANENT),
                 };
-                tokio::time::sleep(GAP).await;
+                nap(GAP).await;
             }
             Err(e) => {
                 eprintln!("[full-text] {sid} failed: {} {}", e.status, e.detail);
@@ -148,7 +168,7 @@ async fn run(app: tauri::AppHandle) {
                 let park = park_after_failure(parked.get(&sid), Instant::now(), isolated);
                 parked.insert(sid, park);
                 consecutive_failures = consecutive_failures.saturating_add(1);
-                tokio::time::sleep(backoff(consecutive_failures)).await;
+                nap(backoff(consecutive_failures)).await;
             }
         }
     }

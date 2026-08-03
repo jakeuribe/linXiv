@@ -38,11 +38,17 @@ pub fn open_in_memory() -> Result<Connection> {
 /// Run `f` inside a transaction, committing on `Ok` and rolling back on `Err`.
 /// Mirrors Python's `with _connect() as conn:` (commit on clean exit, rollback
 /// on exception) — the rusqlite `Transaction` rolls back on drop if not committed.
+///
+/// IMMEDIATE, not the rusqlite default DEFERRED: a deferred transaction takes a
+/// read lock first and promotes on the first write, and SQLite does NOT invoke
+/// the busy handler for that promotion — it returns SQLITE_BUSY at once. Taking
+/// the write lock up front is what lets `busy_timeout` cover a writer in another
+/// process (the app, the CLI and the MCP server all open the same file).
 pub fn transaction<T>(
     conn: &mut Connection,
     f: impl FnOnce(&Transaction) -> Result<T>,
 ) -> Result<T> {
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let out = f(&tx)?;
     tx.commit()?;
     Ok(out)

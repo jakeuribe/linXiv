@@ -967,6 +967,23 @@ mod tests {
             search_full_text(&conn, "zephyranthes", 10).unwrap().len(),
             1
         );
+
+        // …and the rebuild after a delete has to find that older body too. It
+        // would be unrecoverable otherwise: a forced re-fetch of v2 extracts
+        // empty again and so stores nothing to rebuild from.
+        let key = Paper {
+            source_id: Some("arxiv:ft".into()),
+            ..Default::default()
+        };
+        delete(&mut conn, &key).unwrap();
+        assert!(search_full_text(&conn, "zephyranthes", 10)
+            .unwrap()
+            .is_empty());
+        restore(&mut conn, &key).unwrap();
+        assert_eq!(
+            search_full_text(&conn, "zephyranthes", 10).unwrap().len(),
+            1
+        );
     }
 
     /// A re-fetch that extracts nothing must not wipe a body that already
