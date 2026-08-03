@@ -7,6 +7,11 @@
 //! made here goes through `sources::http`, which serialises requests behind the
 //! shared 7 s spacing and the 429 cool-down; `GAP` is an additional wait this
 //! module imposes between papers.
+//!
+//! `ponytail: no cap on how much TeX this stores. A body averages ~150 KB and is
+//! capped at MAX_TEX_BYTES (16 MiB) per paper, so a 3000-paper library lands
+//! around half a gigabyte across PAPER_META.FULL_TEXT and papers_fts. Add a
+//! full_text_save_limit_mb setting, like pdf_save_limit_mb, if that bites.`
 
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
@@ -24,8 +29,8 @@ use crate::state::AppState;
 
 const SETTING: &str = "full_text_worker_enabled";
 /// Poll cadence while the worker is switched off — a small JSON file read.
-const OFF_POLL: Duration = Duration::from_secs(20);
-/// Wait before rebuilding the work list when nothing is currently eligible.
+const OFF_POLL: Duration = Duration::from_secs(60);
+/// Ceiling on the wait before rebuilding the work list when nothing is eligible.
 /// Longer than `OFF_POLL` because this one costs a DB scan under the shared
 /// connection lock, and it is the steady state once a library is fully indexed.
 const IDLE: Duration = Duration::from_secs(300);
@@ -34,68 +39,106 @@ const IDLE: Duration = Duration::from_secs(300);
 const GAP: Duration = Duration::from_secs(15);
 /// How long a paper that failed to index is left alone before another attempt.
 const RETRY_AFTER: Duration = Duration::from_secs(600);
+/// Failures after which a paper is left alone until the app restarts.
+const MAX_ATTEMPTS: u32 = 5;
+/// Ceiling on the consecutive-failure backoff.
+const MAX_BACKOFF: Duration = Duration::from_secs(3600);
+/// Wait before restarting the loop after it panics.
+const RESTART_DELAY: Duration = Duration::from_secs(60);
 
-/// When a parked paper may be tried again; `None` means never (this session).
-type ParkedUntil = Option<Instant>;
+/// A paper the loop is holding off on. `until: None` means "not again this
+/// session" — either there is no arXiv source to fetch, or it has failed
+/// `MAX_ATTEMPTS` times.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Park {
+    attempts: u32,
+    until: Option<Instant>,
+}
 
-/// Spawn the worker for the life of the app. Reads the setting every pass, so
-/// toggling it in Settings takes effect without a restart.
+impl Park {
+    const PERMANENT: Park = Park {
+        attempts: MAX_ATTEMPTS,
+        until: None,
+    };
+}
+
+/// Spawn the worker for the life of the app, restarting it if it panics.
+/// `with_conn` panics on a poisoned DB mutex, which any other route arm can
+/// cause; without this the feature would end silently with the toggle still on.
 pub fn spawn(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
-        // A failed fetch leaves DOWNLOADED_SOURCE unset, so without parking the
-        // loop would retry the head of the list forever and never reach the
-        // rest. Papers with no arXiv source to fetch are parked for the session;
-        // everything else (offline, 429, corrupt tarball) comes back after
-        // RETRY_AFTER, so an evening with no network doesn't turn the whole
-        // backlog into a permanent skip list.
-        let mut parked: HashMap<String, ParkedUntil> = HashMap::new();
-        let mut queue: VecDeque<String> = VecDeque::new();
         loop {
-            if !enabled() {
-                tokio::time::sleep(OFF_POLL).await;
-                continue;
+            let task = tauri::async_runtime::spawn(run(app.clone()));
+            match task.await {
+                Ok(()) => return,
+                Err(e) => eprintln!("[full-text] worker stopped: {e}; restarting shortly"),
             }
-            let state = app.state::<AppState>();
-            let next = state.with_conn(|conn| {
-                if queue.is_empty() {
-                    refill(conn, &mut queue, &mut parked, Instant::now());
-                }
-                take_next(conn, &mut queue, &parked)
-            });
-            let Some(paper) = next else {
-                tokio::time::sleep(IDLE).await;
-                continue;
-            };
-            // Non-arXiv papers never leave the work list, and the check is
-            // free — do it before spending GAP or a request on them.
-            if let Err(e) = svc_paper::source_fetch_url(&paper) {
-                eprintln!("[full-text] {} parked: {e}", paper.source_id);
-                parked.insert(paper.source_id, None);
-                continue;
-            }
-            let retry_at = Instant::now() + RETRY_AFTER;
-            match ingest_full_text(&state, &paper).await {
-                Ok(Some(0)) => eprintln!(
-                    "[full-text] {} — tarball held no TeX, indexed empty",
-                    paper.source_id
-                ),
-                Ok(Some(chars)) => eprintln!("[full-text] {} — {chars} chars", paper.source_id),
-                // Nothing was written, so the paper is still on the work list.
-                // Parking it keeps the loop off a re-download treadmill.
-                Ok(None) => {
-                    parked.insert(paper.source_id, Some(retry_at));
-                }
-                Err(e) => {
-                    eprintln!(
-                        "[full-text] {} failed, retrying later: {} {}",
-                        paper.source_id, e.status, e.detail
-                    );
-                    parked.insert(paper.source_id, Some(retry_at));
-                }
-            }
-            tokio::time::sleep(GAP).await;
+            tokio::time::sleep(RESTART_DELAY).await;
         }
     });
+}
+
+/// The loop itself. Reads the setting every pass, so toggling it in Settings
+/// takes effect without a restart.
+async fn run(app: tauri::AppHandle) {
+    // A failed fetch leaves DOWNLOADED_SOURCE unset, so without parking the loop
+    // would retry the head of the list forever and never reach the rest.
+    let mut parked: HashMap<String, Park> = HashMap::new();
+    let mut queue: VecDeque<String> = VecDeque::new();
+    // Failures in a row across different papers. A global condition (offline,
+    // arXiv rate-limiting the whole IP) fails every paper it touches, so backing
+    // off on this rather than per-paper is what stops the loop from spending all
+    // day making doomed requests.
+    let mut consecutive_failures: u32 = 0;
+    loop {
+        if !enabled() {
+            tokio::time::sleep(OFF_POLL).await;
+            continue;
+        }
+        let state = app.state::<AppState>();
+        let now = Instant::now();
+        let next = state.with_conn(|conn| {
+            if queue.is_empty() {
+                refill(conn, &mut queue);
+            }
+            take_next(conn, &mut queue, &parked, now)
+        });
+        let Some(paper) = next else {
+            tokio::time::sleep(idle_wait(&parked, Instant::now())).await;
+            continue;
+        };
+        // source_fetch_url is pure, so non-arXiv papers cost no request.
+        if let Err(e) = svc_paper::source_fetch_url(&paper) {
+            eprintln!("[full-text] {} parked: {e}", paper.source_id);
+            parked.insert(paper.source_id, Park::PERMANENT);
+            // The branch is otherwise await-free, and a library can hold
+            // thousands of non-arXiv papers in a row.
+            tokio::task::yield_now().await;
+            continue;
+        }
+        let sid = paper.source_id.clone();
+        match ingest_full_text(&state, &paper).await {
+            Ok(indexed) => {
+                match indexed {
+                    Some(0) => eprintln!("[full-text] {sid} — tarball held no TeX, indexed empty"),
+                    Some(chars) => eprintln!("[full-text] {sid} — {chars} chars"),
+                    // should_store_full_text refused the write to protect an
+                    // already-stored body; the paper stays on the work list.
+                    None => eprintln!("[full-text] {sid} — empty re-fetch, kept the stored text"),
+                }
+                consecutive_failures = 0;
+                parked.remove(&sid);
+                tokio::time::sleep(GAP).await;
+            }
+            Err(e) => {
+                eprintln!("[full-text] {sid} failed: {} {}", e.status, e.detail);
+                let park = park_after_failure(parked.get(&sid), Instant::now());
+                parked.insert(sid, park);
+                consecutive_failures = consecutive_failures.saturating_add(1);
+                tokio::time::sleep(backoff(consecutive_failures)).await;
+            }
+        }
+    }
 }
 
 /// Whether the setting is on. Loaded from disk each call (the settings file is
@@ -111,37 +154,67 @@ fn enabled() -> bool {
     }
 }
 
-/// Rebuild the work list, dropping park entries whose retry time has passed so
-/// those papers become eligible again.
-fn refill(
-    conn: &Connection,
-    queue: &mut VecDeque<String>,
-    parked: &mut HashMap<String, ParkedUntil>,
-    now: Instant,
-) {
-    parked.retain(|_, until| until.is_none_or(|t| t > now));
+/// Park state after one more failure: another try in `RETRY_AFTER`, until the
+/// paper has burned `MAX_ATTEMPTS` — a `/src/` URL that 404s (withdrawn
+/// submissions) would otherwise be re-fetched every 10 minutes forever.
+fn park_after_failure(prev: Option<&Park>, now: Instant) -> Park {
+    let attempts = prev.map_or(0, |p| p.attempts).saturating_add(1);
+    Park {
+        attempts,
+        until: (attempts < MAX_ATTEMPTS).then(|| now + RETRY_AFTER),
+    }
+}
+
+/// Wait after `n` failures in a row: `GAP` doubled per failure, capped.
+fn backoff(n: u32) -> Duration {
+    GAP.saturating_mul(1u32 << n.min(8)).min(MAX_BACKOFF)
+}
+
+/// Wait before rebuilding the work list: no longer than the nearest park expiry,
+/// so a paper due back in 10 s isn't held for the full `IDLE`.
+fn idle_wait(parked: &HashMap<String, Park>, now: Instant) -> Duration {
+    parked
+        .values()
+        .filter_map(|p| p.until)
+        .map(|t| t.saturating_duration_since(now))
+        .min()
+        .unwrap_or(IDLE)
+        .min(IDLE)
+}
+
+/// Rebuild the work list. Park entries survive: they carry the attempt count,
+/// and expiry is applied when a paper is taken, not here.
+fn refill(conn: &Connection, queue: &mut VecDeque<String>) {
     match svc_paper::full_text_backfill_candidates(conn) {
         Ok(ids) => queue.extend(ids),
         Err(e) => eprintln!("[full-text] work list unavailable: {e}"),
     }
 }
 
-/// Pop ids until one is un-parked and still resolves to a paper. Ids that fail
-/// either check are consumed, so the caller's next pass moves on.
+/// Pop ids until one is due and still resolves to a paper. Ids that fail either
+/// check are consumed; the next `refill` puts them back.
 fn take_next(
     conn: &Connection,
     queue: &mut VecDeque<String>,
-    parked: &HashMap<String, ParkedUntil>,
+    parked: &HashMap<String, Park>,
+    now: Instant,
 ) -> Option<PaperDetails> {
     while let Some(id) = queue.pop_front() {
-        if parked.contains_key(&id) {
+        if !is_due(parked.get(&id), now) {
             continue;
         }
-        if let Some(paper) = svc_paper::get(conn, &sid_key(&id)).ok().flatten() {
-            return Some(paper);
+        match svc_paper::get(conn, &sid_key(&id)) {
+            Ok(Some(paper)) => return Some(paper),
+            Ok(None) => {} // deleted between building the list and reaching it
+            Err(e) => eprintln!("[full-text] {id} unreadable: {e}"),
         }
     }
     None
+}
+
+/// Whether a paper may be tried now: never parked, or past its retry time.
+fn is_due(park: Option<&Park>, now: Instant) -> bool {
+    park.is_none_or(|p| p.until.is_some_and(|t| t <= now))
 }
 
 #[cfg(test)]
@@ -168,15 +241,11 @@ mod tests {
     }
 
     /// Drain the whole work list once, from a fresh queue.
-    fn drain(
-        conn: &Connection,
-        parked: &mut HashMap<String, ParkedUntil>,
-        now: Instant,
-    ) -> Vec<String> {
+    fn drain(conn: &Connection, parked: &HashMap<String, Park>, now: Instant) -> Vec<String> {
         let mut queue = VecDeque::new();
-        refill(conn, &mut queue, parked, now);
+        refill(conn, &mut queue);
         let mut seen = Vec::new();
-        while let Some(p) = take_next(conn, &mut queue, parked) {
+        while let Some(p) = take_next(conn, &mut queue, parked, now) {
             seen.push(p.source_id);
         }
         seen
@@ -191,14 +260,14 @@ mod tests {
         let now = Instant::now();
 
         let mut parked = HashMap::new();
-        assert_eq!(drain(&conn, &mut parked, now), ["arxiv:a", "arxiv:b"]);
+        assert_eq!(drain(&conn, &parked, now), ["arxiv:a", "arxiv:b"]);
 
-        parked.insert("arxiv:a".to_string(), None);
-        assert_eq!(drain(&conn, &mut parked, now), ["arxiv:b"]);
+        parked.insert("arxiv:a".to_string(), Park::PERMANENT);
+        assert_eq!(drain(&conn, &parked, now), ["arxiv:b"]);
 
         // set_full_text flips DOWNLOADED_SOURCE, so b leaves the work list too.
         svc_paper::set_full_text(&mut conn, "arxiv:b", 1, "body").unwrap();
-        assert!(drain(&conn, &mut parked, now).is_empty());
+        assert!(drain(&conn, &parked, now).is_empty());
     }
 
     #[test]
@@ -209,15 +278,68 @@ mod tests {
         paper(&mut conn, "arxiv:notarxiv");
         let now = Instant::now();
 
-        let mut parked = HashMap::from([
-            ("arxiv:offline".to_string(), Some(now + RETRY_AFTER)),
-            ("arxiv:notarxiv".to_string(), None),
+        let parked = HashMap::from([
+            ("arxiv:offline".to_string(), park_after_failure(None, now)),
+            ("arxiv:notarxiv".to_string(), Park::PERMANENT),
         ]);
-        assert!(drain(&conn, &mut parked, now).is_empty());
+        assert!(drain(&conn, &parked, now).is_empty());
 
-        // Past the retry time, only the transiently parked paper comes back —
-        // the one with nothing to fetch stays parked for the session.
+        // Past the retry time, only the transiently parked paper comes back.
         let later = now + RETRY_AFTER + Duration::from_secs(1);
-        assert_eq!(drain(&conn, &mut parked, later), ["arxiv:offline"]);
+        assert_eq!(drain(&conn, &parked, later), ["arxiv:offline"]);
+    }
+
+    #[test]
+    fn a_paper_that_keeps_failing_is_given_up_on() {
+        let now = Instant::now();
+        let mut park = park_after_failure(None, now);
+        for _ in 1..MAX_ATTEMPTS {
+            assert!(
+                park.until.is_some(),
+                "still retrying at {} attempts",
+                park.attempts
+            );
+            park = park_after_failure(Some(&park), now);
+        }
+        assert_eq!(park.attempts, MAX_ATTEMPTS);
+        assert_eq!(park.until, None);
+        // Past its would-be retry time it is still not due.
+        assert!(!is_due(Some(&park), now + RETRY_AFTER * 100));
+    }
+
+    #[test]
+    fn consecutive_failures_back_off_up_to_a_cap() {
+        assert_eq!(backoff(1), GAP * 2);
+        assert_eq!(backoff(4), GAP * 16);
+        // An outage that fails every paper stops hammering within an hour-long wait.
+        assert_eq!(backoff(20), MAX_BACKOFF);
+    }
+
+    #[test]
+    fn idle_wait_tracks_the_nearest_retry() {
+        let now = Instant::now();
+        assert_eq!(idle_wait(&HashMap::new(), now), IDLE);
+
+        let soon = Duration::from_secs(10);
+        let parked = HashMap::from([
+            ("a".to_string(), Park::PERMANENT),
+            (
+                "b".to_string(),
+                Park {
+                    attempts: 1,
+                    until: Some(now + soon),
+                },
+            ),
+        ]);
+        assert_eq!(idle_wait(&parked, now), soon);
+        // Never longer than IDLE, even with every retry far out.
+        let far = HashMap::from([(
+            "c".to_string(),
+            Park {
+                attempts: 1,
+                until: Some(now + IDLE * 10),
+            },
+        )]);
+        assert_eq!(idle_wait(&far, now), IDLE);
     }
 }
