@@ -79,6 +79,19 @@ pub fn get_paper(
     }
 }
 
+/// The `papers`/`latest_papers` column list with FULL_TEXT blanked out — every
+/// column `row_to_paper` reads, so callers are unchanged.
+///
+/// Multi-row reads use this instead of `SELECT *`. Nothing outside
+/// `should_store_full_text` (which reads one paper at a time via `get_paper`)
+/// looks at the body, and `PaperDetails.full_text` is not serialized; with the
+/// background indexer filling the column for a whole library, `SELECT *` would
+/// make every list call haul the entire corpus into memory under the connection
+/// lock and drop it again.
+pub const PAPER_COLUMNS_NO_TEXT: &str = "paper_id, source_id, source_fk, version, title, url, \
+     published, updated, category, categories, doi, journal_ref, comment, summary, authors, tags, \
+     has_pdf, source, pdf_path, NULL AS full_text, downloaded_source, created_at, updated_at";
+
 /// Shared SQL + bind params for the list-papers filter/order/pagination, used by
 /// `list_papers` here and the CLI's raw-row `cmd_list`.
 pub fn list_papers_sql(
@@ -87,11 +100,12 @@ pub fn list_papers_sql(
     offset: i64,
     category: Option<&str>,
 ) -> (String, Vec<Value>) {
-    let mut sql = if latest_only {
-        "SELECT * FROM latest_papers".to_string()
+    let view = if latest_only {
+        "latest_papers"
     } else {
-        "SELECT * FROM papers".to_string()
+        "papers"
     };
+    let mut sql = format!("SELECT {PAPER_COLUMNS_NO_TEXT} FROM {view}");
     let mut params: Vec<Value> = Vec::new();
     if let Some(cat) = category {
         sql.push_str(" WHERE category = ?");
@@ -650,19 +664,30 @@ pub fn mark_pdf_saved(
     })
 }
 
-/// Rows the backfill works on: latest-version active arXiv papers whose TeX
-/// source has not been fetched. Only arXiv publishes source tarballs, so other
-/// providers would sit on the list forever and never leave it.
-const BACKFILL_WHERE: &str = "FROM latest_papers \
-     WHERE COALESCE(downloaded_source, 0) = 0 AND source = 'arxiv'";
+/// Rows the backfill works on: latest-version active papers with no TeX source
+/// yet that `service::paper::source_fetch_url` would accept — arXiv, carrying a
+/// `/pdf/` link to derive the tarball URL from. Rows it would reject never leave
+/// the list, so listing them makes the backlog readout plateau above zero and
+/// puts them in front of the worker on every rebuild.
+///
+/// GLOB, not LIKE: LIKE is ASCII-case-insensitive in SQLite, while the Rust-side
+/// rule is a case-sensitive `contains("/pdf/")`.
+macro_rules! backfill_where {
+    () => {
+        "FROM latest_papers WHERE COALESCE(downloaded_source, 0) = 0 \
+         AND source = 'arxiv' AND url GLOB '*/pdf/*'"
+    };
+}
 
-/// SOURCE_IDs of `BACKFILL_WHERE`, oldest-published first. Returns ids ONLY:
-/// `list_papers` would carry every row's FULL_TEXT along with it, so a backfill
-/// scan over an already-indexed library would pull every stored body into memory
-/// just to filter it out. The caller loads each paper individually instead.
+/// SOURCE_IDs of those rows, oldest-published first. Returns ids ONLY:
+/// `list_papers` would build a `PaperDetails` per row, so a backfill scan over a
+/// large library would materialise the whole library just to filter it out. The
+/// caller loads each paper individually instead.
 pub fn full_text_backfill_candidates(conn: &Connection) -> Result<Vec<String>> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT source_id {BACKFILL_WHERE} ORDER BY published ASC, source_id ASC"
+    let mut stmt = conn.prepare(concat!(
+        "SELECT source_id ",
+        backfill_where!(),
+        " ORDER BY published ASC, source_id ASC"
     ))?;
     let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -672,7 +697,7 @@ pub fn full_text_backfill_candidates(conn: &Connection) -> Result<Vec<String>> {
 /// materialising an id per row — the backlog readout polls this.
 pub fn full_text_backfill_count(conn: &Connection) -> Result<i64> {
     Ok(
-        conn.query_row(&format!("SELECT COUNT(*) {BACKFILL_WHERE}"), [], |r| {
+        conn.query_row(concat!("SELECT COUNT(*) ", backfill_where!()), [], |r| {
             r.get(0)
         })?,
     )
@@ -680,6 +705,13 @@ pub fn full_text_backfill_count(conn: &Connection) -> Result<i64> {
 
 /// `set_full_text` — store extracted TeX, mark DOWNLOADED_SOURCE, refresh the FTS
 /// index (DELETE then INSERT). No-op if the version does not exist.
+///
+/// Empty text still marks the version fetched, but leaves the FTS row alone. The
+/// row is keyed by SOURCE_ID, not version, and every new version starts with a
+/// NULL body — so `should_store_full_text`, which only sees the version it was
+/// handed, cannot tell that an earlier version's text is indexed. Rewriting the
+/// row with "" here would drop the paper out of search the first time a version
+/// bump's tarball came back empty.
 pub fn set_full_text(
     conn: &mut Connection,
     source_id: &str,
@@ -699,6 +731,9 @@ pub fn set_full_text(
             "UPDATE PAPER_META SET FULL_TEXT = ?, DOWNLOADED_SOURCE = 1 WHERE PAPER_ID = ?",
             params![full_text, pid],
         )?;
+        if full_text.is_none_or(str::is_empty) {
+            return Ok(());
+        }
         tx.execute("DELETE FROM papers_fts WHERE paper_id = ?", [source_id])?;
         tx.execute(
             "INSERT INTO papers_fts(paper_id, full_text) VALUES (?, ?)",
@@ -796,7 +831,9 @@ pub fn is_paper_deleted(conn: &Connection, source_id: &str) -> Result<bool> {
 
 /// `get_all_versions` — every stored (active) version, oldest-first.
 pub fn get_all_versions(conn: &Connection, source_id: &str) -> Result<Vec<PaperDetails>> {
-    let mut stmt = conn.prepare("SELECT * FROM papers WHERE source_id = ? ORDER BY version ASC")?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {PAPER_COLUMNS_NO_TEXT} FROM papers WHERE source_id = ? ORDER BY version ASC"
+    ))?;
     let mut rows = stmt.query([source_id])?;
     let mut out = Vec::new();
     while let Some(row) = rows.next()? {
