@@ -648,6 +648,13 @@ impl ShareNode {
             .doc(share_id)
             .await
             .ok_or_else(|| net("synced doc missing from beelay registry"))?;
+        // Nothing decrypted into the doc yet — the host was asleep at join time,
+        // or every commit came back no-key (revoked / not yet keyed). There is
+        // nothing to hydrate or mirror; the outcome carries the counts, and a
+        // later pass fills it in. Same empty-doc guard as accept_invite.
+        if doc.get_heads().is_empty() {
+            return Ok(outcome);
+        }
         let sp: SharedProject = autosurgeon::hydrate(&doc).map_err(super::crdt)?;
         // The doc-internal share_id is host-controlled; same check as fetch().
         if sp.share_id != share_id {

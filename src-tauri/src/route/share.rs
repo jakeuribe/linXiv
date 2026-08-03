@@ -714,7 +714,20 @@ async fn join_invite(
         }));
     }
     let share_id = accepted.share_id;
-    let sp = ShareNode::e2ee_received(share.share_dir(), &share_id)?;
+    let sp = match ShareNode::e2ee_received(share.share_dir(), &share_id) {
+        Ok(sp) => sp,
+        // Dialled the host, but nothing decrypted into the mirror yet (no key
+        // for our epoch). Same shape as the asleep-host case: adopted, pending.
+        Err(ShareError::NotFound(_)) => {
+            return Ok(json!({
+                "share_id": share_id,
+                "e2ee": true,
+                "pending": true,
+                "reason": "joined, but no content has decrypted yet; it will finish syncing shortly",
+            }))
+        }
+        Err(e) => return Err(e.into()),
+    };
     Ok(json!({
         "share_id": sp.share_id,
         "name": sp.name,
