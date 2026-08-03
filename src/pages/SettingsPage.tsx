@@ -7,6 +7,7 @@ import { CrossRefSection } from "../components/settings/CrossRefSection";
 import { OpenAlexSection } from "../components/settings/OpenAlexSection";
 import { OrcidBackfillSection } from "../components/settings/OrcidBackfillSection";
 import { SearchSection } from "../components/settings/SearchSection";
+import { FullTextSection } from "../components/settings/FullTextSection";
 import { HomeFeedSection } from "../components/settings/HomeFeedSection";
 import { SidebarSection } from "../components/settings/SidebarSection";
 import { ExportSection } from "../components/settings/ExportSection";
@@ -41,6 +42,7 @@ const GROUPS: SettingsGroup[] = [
       <div className="flex flex-col gap-8">
         <HomeFeedSection />
         <SearchSection />
+        <FullTextSection />
         <SidebarSection />
         <VersionMonitorSection />
         <ExportSection />

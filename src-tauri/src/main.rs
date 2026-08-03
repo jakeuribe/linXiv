@@ -156,6 +156,9 @@ fn main() {
             // reaches linxiv-core through the `api` invoke command + the linxiv://
             // scheme — no Python sidecar, no HTTP hop, nothing to spawn or reap.
             app.manage(AppState::new().map_err(|e| e.to_string())?);
+            // Background TeX full-text indexing, one paper at a time. Idles
+            // unless `full_text_worker_enabled` is on (Settings → Library).
+            linxiv_app::full_text_worker::spawn(app.handle().clone());
             // Quarantined CRDT "shared projects" store, managed beside AppState
             // (never a field of it). Reached only via the `share_api` command.
             // The iroh node binds async (the Endpoint bind is async); block on it

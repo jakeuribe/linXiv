@@ -35,7 +35,7 @@ mod feed;
 mod graph;
 mod notes;
 mod orcid;
-mod papers;
+pub(crate) mod papers; // ingest_full_text reused by the background full-text worker
 pub(crate) mod pdfs; // resolve_local_pdf reused by the linxiv:// protocol handler
 mod projects;
 mod search;
