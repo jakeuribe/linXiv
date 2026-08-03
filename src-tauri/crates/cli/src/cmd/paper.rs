@@ -343,8 +343,9 @@ async fn index_sources_result(ctx: &mut Ctx, limit: usize) -> serde_json::Value 
         let Ok(Some(paper)) = svc_paper::get(&ctx.conn, &paper(source_id)) else {
             continue; // deleted between building the list and reaching it
         };
-        // Papers from non-arXiv sources stay on the list forever; count them so
-        // the summary explains why `pending` doesn't shrink to zero.
+        // The work-list query selects only papers this accepts, so `unfetchable`
+        // should stay 0; it reports anything the two rules disagree about rather
+        // than spending a request on it.
         if svc_paper::source_fetch_url(&paper).is_err() {
             unfetchable += 1;
             continue;
@@ -424,7 +425,7 @@ mod tests {
             .unwrap();
         assert_eq!(unchanged.full_text.as_deref(), Some("already have this"));
 
-        // (b) an arXiv paper with no /pdf/ URL is unfetchable, not a candidate.
+        // (b) an arXiv paper with no /pdf/ URL has no tarball URL to derive.
         svc_paper::save_paper_metadata(
             &mut ctx.conn,
             &arxiv_meta("arxiv:nopdf", "http://arxiv.org/abs/2v1"),
@@ -432,13 +433,13 @@ mod tests {
         )
         .unwrap();
 
-        // skip1 is already fetched so it is off the work list; nopdf is on it but
-        // unfetchable, so nothing is attempted and no network call happens.
+        // skip1 is already fetched and nopdf has nothing to fetch, so both are
+        // off the work list: nothing is attempted and no network call happens.
         let v = index_sources_result(&mut ctx, 10).await;
-        assert_eq!(v["pending"], 1);
+        assert_eq!(v["pending"], 0);
         assert_eq!(v["attempted"], 0);
         assert_eq!(v["indexed"], 0);
-        assert_eq!(v["unfetchable"], 1);
+        assert_eq!(v["unfetchable"], 0);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

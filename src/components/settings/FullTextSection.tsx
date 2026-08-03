@@ -47,7 +47,7 @@ export function FullTextSection() {
             aria-label="Index full text in the background"
           />
         </SettingRow>
-        {backlog !== undefined && (
+        {enabled && backlog !== undefined && (
           <p className="py-2 text-sm text-muted">
             {backlog.pending === 0
               ? "Every paper is indexed."

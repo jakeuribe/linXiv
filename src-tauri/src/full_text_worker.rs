@@ -113,13 +113,12 @@ async fn run(app: tauri::AppHandle) {
             tokio::time::sleep(idle_wait(&parked, Instant::now())).await;
             continue;
         };
-        // source_fetch_url is pure, so non-arXiv papers cost no request.
+        // The work-list query selects only papers source_fetch_url accepts, so
+        // this rejects little; it is what keeps a query change from turning into
+        // a request per unfetchable paper.
         if let Err(e) = svc_paper::source_fetch_url(&paper) {
             eprintln!("[full-text] {} parked: {e}", paper.source_id);
             parked.insert(paper.source_id, Park::PERMANENT);
-            // The branch is otherwise await-free, and a library can hold
-            // thousands of non-arXiv papers in a row.
-            tokio::task::yield_now().await;
             continue;
         }
         let sid = paper.source_id.clone();
@@ -128,11 +127,9 @@ async fn run(app: tauri::AppHandle) {
                 match indexed {
                     Some(0) => eprintln!("[full-text] {sid} — tarball held no TeX, indexed empty"),
                     Some(chars) => eprintln!("[full-text] {sid} — {chars} chars"),
-                    // should_store_full_text refused the write to protect an
-                    // already-stored body, so DOWNLOADED_SOURCE is still unset
-                    // and the paper stays a candidate. Reachable only for rows
-                    // migrated from the Python era (text stored, flag unset);
-                    // parking is what keeps it off a re-download treadmill.
+                    // Nothing was written, so DOWNLOADED_SOURCE is still unset
+                    // and the paper is still a candidate — park it rather than
+                    // fetch the same tarball again next pass.
                     None => eprintln!("[full-text] {sid} — empty re-fetch, kept the stored text"),
                 }
                 consecutive_failures = 0;
@@ -144,7 +141,11 @@ async fn run(app: tauri::AppHandle) {
             }
             Err(e) => {
                 eprintln!("[full-text] {sid} failed: {} {}", e.status, e.detail);
-                let park = park_after_failure(parked.get(&sid), Instant::now());
+                // Only a failure that stands alone counts against this paper.
+                // During an outage every paper fails, and burning one attempt
+                // each would drop healthy papers for the rest of the session.
+                let isolated = consecutive_failures == 0;
+                let park = park_after_failure(parked.get(&sid), Instant::now(), isolated);
                 parked.insert(sid, park);
                 consecutive_failures = consecutive_failures.saturating_add(1);
                 tokio::time::sleep(backoff(consecutive_failures)).await;
@@ -166,11 +167,18 @@ fn enabled() -> bool {
     }
 }
 
-/// Park state after one more failure: another try in `RETRY_AFTER`, until the
-/// paper has burned `MAX_ATTEMPTS` — a `/src/` URL that 404s (withdrawn
-/// submissions) would otherwise be re-fetched every 10 minutes forever.
-fn park_after_failure(prev: Option<&Park>, now: Instant) -> Park {
-    let attempts = prev.map_or(0, |p| p.attempts).saturating_add(1);
+/// Park state after another failure: try again in `RETRY_AFTER`, until the paper
+/// has burned `MAX_ATTEMPTS` — a `/src/` URL that 404s (withdrawn submissions)
+/// would otherwise be re-fetched every 10 minutes forever. `isolated` is false
+/// when other papers are failing too, which counts against the run rather than
+/// against this paper.
+fn park_after_failure(prev: Option<&Park>, now: Instant, isolated: bool) -> Park {
+    let prev_attempts = prev.map_or(0, |p| p.attempts);
+    let attempts = if isolated {
+        prev_attempts.saturating_add(1)
+    } else {
+        prev_attempts
+    };
     Park {
         attempts,
         until: (attempts < MAX_ATTEMPTS).then(|| now + RETRY_AFTER),
@@ -209,8 +217,12 @@ fn refill(conn: &Connection, queue: &mut VecDeque<String>) {
     }
 }
 
-/// Pop ids until one is due and still resolves to a paper. Ids that fail either
-/// check are consumed; the next `refill` puts them back.
+/// Pop ids until one is due and still resolves to an unindexed paper. Ids that
+/// fail a check are consumed; the next `refill` puts back any that still qualify.
+///
+/// The queue is rebuilt only when it empties, which for a large library is hours
+/// away, so `downloaded_source` is re-read here: the manual button, the MCP tool
+/// and the CLI all index papers this list already holds.
 fn take_next(
     conn: &Connection,
     queue: &mut VecDeque<String>,
@@ -222,8 +234,8 @@ fn take_next(
             continue;
         }
         match svc_paper::get(conn, &sid_key(&id)) {
-            Ok(Some(paper)) => return Some(paper),
-            Ok(None) => {} // deleted between building the list and reaching it
+            Ok(Some(paper)) if !paper.downloaded_source => return Some(paper),
+            Ok(_) => {} // deleted, or indexed by another path since the rebuild
             Err(e) => eprintln!("[full-text] {id} unreadable: {e}"),
         }
     }
@@ -297,7 +309,10 @@ mod tests {
         let now = Instant::now();
 
         let parked = HashMap::from([
-            ("arxiv:offline".to_string(), park_after_failure(None, now)),
+            (
+                "arxiv:offline".to_string(),
+                park_after_failure(None, now, true),
+            ),
             ("arxiv:notarxiv".to_string(), Park::PERMANENT),
         ]);
         assert!(drain(&conn, &parked, now).is_empty());
@@ -310,19 +325,50 @@ mod tests {
     #[test]
     fn a_paper_that_keeps_failing_is_given_up_on() {
         let now = Instant::now();
-        let mut park = park_after_failure(None, now);
+        let mut park = park_after_failure(None, now, true);
         for _ in 1..MAX_ATTEMPTS {
             assert!(
                 park.until.is_some(),
                 "still retrying at {} attempts",
                 park.attempts
             );
-            park = park_after_failure(Some(&park), now);
+            park = park_after_failure(Some(&park), now, true);
         }
         assert_eq!(park.attempts, MAX_ATTEMPTS);
         assert_eq!(park.until, None);
         // Past its would-be retry time it is still not due.
         assert!(!is_due(Some(&park), now + RETRY_AFTER * 100));
+    }
+
+    #[test]
+    fn an_outage_does_not_spend_a_papers_attempts() {
+        // Every paper fails while the network is down. If those counted, a night
+        // offline would retire the whole library until the app restarts.
+        let now = Instant::now();
+        let mut park = park_after_failure(None, now, false);
+        for _ in 0..50 {
+            park = park_after_failure(Some(&park), now, false);
+        }
+        assert_eq!(park.attempts, 0);
+        assert_eq!(park.until, Some(now + RETRY_AFTER));
+        assert!(is_due(Some(&park), now + RETRY_AFTER));
+    }
+
+    #[test]
+    fn an_indexed_paper_left_on_a_stale_queue_is_skipped() {
+        let mut conn = storage::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        paper(&mut conn, "arxiv:a");
+        paper(&mut conn, "arxiv:b");
+        let mut queue = VecDeque::new();
+        refill(&conn, &mut queue);
+
+        // The manual button / MCP / CLI indexes a paper the queue already holds.
+        svc_paper::set_full_text(&mut conn, "arxiv:a", 1, "indexed elsewhere").unwrap();
+
+        let parked = HashMap::new();
+        let taken = take_next(&conn, &mut queue, &parked, Instant::now());
+        assert_eq!(taken.unwrap().source_id, "arxiv:b");
     }
 
     #[test]
