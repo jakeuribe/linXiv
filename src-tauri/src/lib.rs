@@ -3,6 +3,7 @@
 //! CLI/MCP-integration commands. Consumed by two binaries — the Tauri app
 //! (`src/main.rs`) and the dev-only HTTP shim (`src/bin/dev_server.rs`, D32).
 
+pub mod full_text_worker;
 pub mod integrations;
 pub mod protocol;
 pub mod route;

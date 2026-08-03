@@ -151,8 +151,8 @@ fn search(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
 ///
 /// Not automatic on save: arXiv paces requests ~7s apart and a tarball runs to
 /// megabytes, which is too much to spend on every paper the user stores without
-/// being asked. `ponytail: explicit per-paper trigger; make it opt-in-automatic
-/// behind a setting if users end up calling it on everything anyway.`
+/// being asked. The opt-in automatic path is `full_text_worker`, which chews
+/// through the same backlog in the background while its setting is on.
 async fn fetch_full_text(
     state: &AppState,
     source_id: &str,
@@ -169,30 +169,42 @@ async fn fetch_full_text(
             "reason": "source already indexed; pass force=true to re-fetch",
         }));
     }
-    // Resolve the URL (and drop the connection) before the await — with_conn's
-    // guard must never span it.
-    let url = svc_paper::source_fetch_url(&paper)?.to_string();
-    let text = arxiv_downloads::fetch_source_text(&url, &config::data_dir()).await?;
-    let store = svc_paper::should_store_full_text(&paper, &text);
-    let (sid, version) = (paper.source_id, paper.version);
-    let chars = text.chars().count();
-    if !store {
-        return Ok(json!({
+    let (sid, version) = (paper.source_id.clone(), paper.version);
+    match ingest_full_text(state, &paper).await? {
+        Some(chars) => Ok(json!({
+            "source_id": sid,
+            "version": version,
+            "indexed": true,
+            "chars": chars,
+        })),
+        None => Ok(json!({
             "source_id": sid,
             "version": version,
             "indexed": false,
             "reason": "re-fetch produced no TeX; kept the text already indexed",
-        }));
+        })),
+    }
+}
+
+/// Download + extract + store one paper's TeX, returning the stored char count.
+/// `Ok(None)` means the extract came back empty and a body is already indexed,
+/// so nothing was written. Shared by the route above and `full_text_worker`.
+pub(crate) async fn ingest_full_text(
+    state: &AppState,
+    paper: &linxiv_core::models::PaperDetails,
+) -> Result<Option<usize>, ApiError> {
+    // Resolve the URL (and drop the connection) before the await — with_conn's
+    // guard must never span it.
+    let url = svc_paper::source_fetch_url(paper)?.to_string();
+    let text = arxiv_downloads::fetch_source_text(&url, &config::data_dir()).await?;
+    if !svc_paper::should_store_full_text(paper, &text) {
+        return Ok(None);
     }
     // arXiv serves PDF-only submissions from the same `/src/` path, so an empty
     // extract still marks the paper DOWNLOADED_SOURCE; `force` fetches again.
-    state.with_conn(|conn| svc_paper::set_full_text(conn, &sid, version, &text))?;
-    Ok(json!({
-        "source_id": sid,
-        "version": version,
-        "indexed": true,
-        "chars": chars,
-    }))
+    state
+        .with_conn(|conn| svc_paper::set_full_text(conn, &paper.source_id, paper.version, &text))?;
+    Ok(Some(text.chars().count()))
 }
 
 /// `GET /api/papers/{source_id}` — `api_get_paper`. Bare `to_dict()`.
