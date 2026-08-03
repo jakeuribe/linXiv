@@ -13,11 +13,12 @@ export function FullTextSection() {
   const enabled = settings?.full_text_worker_enabled === true;
 
   // While the worker runs, the backlog is the only signal that it is making
-  // progress, so poll it; idle otherwise.
+  // progress, so poll it. Not fetched at all while the toggle is off.
   const { data: backlog } = useQuery({
     queryKey: ["papers", "full-text-pending"],
     queryFn: fullTextPending,
-    refetchInterval: enabled ? 30_000 : false,
+    enabled,
+    refetchInterval: 30_000,
   });
 
   const toggleMutation = useMutation({
@@ -32,7 +33,7 @@ export function FullTextSection() {
         at a time, so full-text search reaches inside them. It respects
         arXiv&rsquo;s rate limits, so a large library takes hours — it just keeps
         working in the background until it&rsquo;s done. Papers from other sources
-        have no source to fetch and are skipped; ones that fail are retried later.
+        publish no TeX and aren&rsquo;t counted; ones that fail are retried later.
       </p>
       <SettingGroup>
         <SettingRow

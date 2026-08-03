@@ -18,9 +18,13 @@ use crate::error::{CoreError, Result};
 /// NON-NEGOTIABLE: this PRAGMA is per-connection and SQLite defaults it OFF.
 /// Without it every `ON DELETE CASCADE` in the schema silently no-ops, orphaning
 /// rows on delete. It must run on EVERY connection — never factor it out of here.
+///
+/// `busy_timeout` waits for a writer in another process (the app, the CLI and
+/// the MCP server all open the same file) instead of failing the call outright
+/// with "database is locked".
 pub fn open(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
-    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+    conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")?;
     Ok(conn)
 }
 

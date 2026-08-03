@@ -476,10 +476,17 @@ pub fn should_store_full_text(paper: &PaperDetails, extracted: &str) -> bool {
     !extracted.is_empty() || paper.full_text.as_deref().unwrap_or_default().is_empty()
 }
 
-/// SOURCE_IDs of stored papers with no TeX source yet, oldest-published first —
-/// the backfill work list. Ids only; the caller loads each paper as it goes.
+/// SOURCE_IDs of stored arXiv papers with no TeX source yet, oldest-published
+/// first — the backfill work list. Ids only; the caller loads each paper as it
+/// goes. An arXiv paper saved without a `/pdf/` URL is still listed here and
+/// refused later by `source_fetch_url`.
 pub fn full_text_backfill_candidates(conn: &Connection) -> Result<Vec<String>> {
     store::full_text_backfill_candidates(conn)
+}
+
+/// Length of `full_text_backfill_candidates` without building the ids.
+pub fn full_text_backfill_count(conn: &Connection) -> Result<i64> {
+    store::full_text_backfill_count(conn)
 }
 
 #[cfg(test)]
