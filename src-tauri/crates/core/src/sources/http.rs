@@ -205,16 +205,25 @@ fn record_ratelimit(data_dir: &Path) -> Result<()> {
 }
 
 /// Block until at least `MIN_SPACING` has elapsed since the previous arXiv GET.
+///
+/// Callers claim their slot (advancing `NEXT`) while still holding the lock, so
+/// concurrent callers queue at 7 s intervals instead of all reading the same
+/// previous timestamp, sleeping the same amount, and firing together.
 async fn enforce_spacing() {
-    static LAST: Mutex<Option<Instant>> = Mutex::new(None);
-    let wait = {
-        let guard = LAST.lock().unwrap();
-        guard.and_then(|prev| MIN_SPACING.checked_sub(prev.elapsed()))
-    };
-    if let Some(w) = wait {
+    static NEXT: Mutex<Option<Instant>> = Mutex::new(None);
+    let now = Instant::now();
+    let slot = claim_slot(&mut NEXT.lock().unwrap(), now);
+    if let Some(w) = slot.checked_duration_since(now) {
         tokio::time::sleep(w).await;
     }
-    *LAST.lock().unwrap() = Some(Instant::now());
+}
+
+/// Take the next free slot and reserve the one after it. Pure (state + clock
+/// injected) so the queueing is testable without sleeping.
+fn claim_slot(next: &mut Option<Instant>, now: Instant) -> Instant {
+    let slot = next.filter(|&t| t > now).unwrap_or(now);
+    *next = Some(slot + MIN_SPACING);
+    slot
 }
 
 /// arXiv GET: honour the `.arxiv_ratelimit` cool-down file + inter-request
@@ -284,6 +293,22 @@ mod tests {
         let out = substitute_domain("https://arxiv.org/pdf/2204.12985v4?v=2", "export.arxiv.org")
             .unwrap();
         assert_eq!(out, "https://export.arxiv.org/pdf/2204.12985v4?v=2");
+    }
+
+    #[test]
+    fn concurrent_claims_queue_instead_of_converging() {
+        // Three callers arriving at the same instant — the shape a background
+        // worker fetching alongside a user action produces.
+        let mut next = None;
+        let now = Instant::now();
+        let slots: Vec<Instant> = (0..3).map(|_| claim_slot(&mut next, now)).collect();
+        assert_eq!(slots[0], now);
+        assert_eq!(slots[1], now + MIN_SPACING);
+        assert_eq!(slots[2], now + MIN_SPACING * 2);
+
+        // A caller arriving after the queue has drained waits for nobody.
+        let later = now + MIN_SPACING * 5;
+        assert_eq!(claim_slot(&mut next, later), later);
     }
 
     #[test]

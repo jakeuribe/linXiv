@@ -114,6 +114,7 @@ export interface Settings {
   search_history_enabled?: boolean;
   search_history_max?: number;
   tex_rendering_enabled?: boolean;
+  full_text_worker_enabled?: boolean;
   home_feed_url?: string;
   rss_cache_retention_days?: number;
   update_check_frequency?: string;
