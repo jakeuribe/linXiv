@@ -188,14 +188,10 @@ async fn fetch_full_text(
     }
 }
 
-/// `GET /api/papers/full-text-pending` — how many stored papers have no TeX
-/// source yet, i.e. how much work `full_text_worker` still has. The count
-/// includes papers with nothing to fetch (non-arXiv), which is why it can stop
-/// falling before it reaches zero.
+/// `GET /api/papers/full-text-pending` — how many stored arXiv papers have no
+/// TeX source yet, i.e. how much work `full_text_worker` still has.
 fn full_text_pending(state: &AppState) -> Result<Value, ApiError> {
-    let pending = state
-        .with_conn(|conn| svc_paper::full_text_backfill_candidates(conn))?
-        .len();
+    let pending = state.with_conn(|conn| svc_paper::full_text_backfill_count(conn))?;
     Ok(json!({ "pending": pending }))
 }
 

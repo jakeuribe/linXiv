@@ -650,18 +650,32 @@ pub fn mark_pdf_saved(
     })
 }
 
-/// SOURCE_IDs of latest-version active papers whose TeX source has not been
-/// fetched, oldest-published first. Returns ids ONLY: `list_papers` would carry
-/// every row's FULL_TEXT along with it, so a backfill scan over an
-/// already-indexed library would pull every stored body into memory just to
-/// filter it out. The caller loads each paper individually instead.
+/// Rows the backfill works on: latest-version active arXiv papers whose TeX
+/// source has not been fetched. Only arXiv publishes source tarballs, so other
+/// providers would sit on the list forever and never leave it.
+const BACKFILL_WHERE: &str = "FROM latest_papers \
+     WHERE COALESCE(downloaded_source, 0) = 0 AND source = 'arxiv'";
+
+/// SOURCE_IDs of `BACKFILL_WHERE`, oldest-published first. Returns ids ONLY:
+/// `list_papers` would carry every row's FULL_TEXT along with it, so a backfill
+/// scan over an already-indexed library would pull every stored body into memory
+/// just to filter it out. The caller loads each paper individually instead.
 pub fn full_text_backfill_candidates(conn: &Connection) -> Result<Vec<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT source_id FROM latest_papers \
-         WHERE COALESCE(downloaded_source, 0) = 0 ORDER BY published ASC, source_id ASC",
-    )?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT source_id {BACKFILL_WHERE} ORDER BY published ASC, source_id ASC"
+    ))?;
     let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// How many papers `full_text_backfill_candidates` would return, without
+/// materialising an id per row — the backlog readout polls this.
+pub fn full_text_backfill_count(conn: &Connection) -> Result<i64> {
+    Ok(
+        conn.query_row(&format!("SELECT COUNT(*) {BACKFILL_WHERE}"), [], |r| {
+            r.get(0)
+        })?,
+    )
 }
 
 /// `set_full_text` — store extracted TeX, mark DOWNLOADED_SOURCE, refresh the FTS
