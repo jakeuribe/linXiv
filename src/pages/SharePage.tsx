@@ -16,6 +16,7 @@ import {
   listShared,
   memberCode,
   publishSecure,
+  rekeyShare,
   removeMember,
   revokeMember,
   setMemberRole,
@@ -405,6 +406,10 @@ function MembersSection({ shareId }: { shareId: string }) {
       invalidateMembers();
     },
   });
+  const rekeyM = useMutation({
+    mutationFn: () => rekeyShare(shareId),
+    onSuccess: invalidateMembers,
+  });
   // The rollback arm: revoke + drop the row, so re-inviting the same device
   // does not inherit a stale role or a dead invite string.
   const removeM = useMutation({
@@ -456,6 +461,28 @@ function MembersSection({ shareId }: { shareId: string }) {
         Members
       </span>
       {membersQ.isLoading && <Spinner size={16} />}
+      {members.some((m) => m.role !== "hoster" && !m.revoked) && (
+        <div className="flex items-center gap-2">
+          <span className="flex-1 text-[11px]" style={{ color: "var(--color-ink-3)" }}>
+            {rekeyM.isSuccess
+              ? `Re-keyed for ${rekeyM.data.members} member${rekeyM.data.members === 1 ? "" : "s"}. They should sync again.`
+              : "If a member syncs but stays empty, re-key: their invite came after this content was encrypted."}
+          </span>
+          <Button
+            variant="muted"
+            size="sm"
+            onClick={() => rekeyM.mutate()}
+            disabled={rekeyM.isPending}
+          >
+            {rekeyM.isPending ? <Spinner size={14} /> : "Re-key"}
+          </Button>
+        </div>
+      )}
+      {rekeyM.isError && (
+        <p className="text-xs" style={{ color: "var(--color-danger)" }}>
+          {errText(rekeyM.error)}
+        </p>
+      )}
       {members.map((m) => (
         <div key={m.member_id || m.invited_at} className="flex flex-col gap-1">
           <div className="flex items-center gap-2">

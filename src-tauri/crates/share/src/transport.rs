@@ -671,6 +671,20 @@ impl ShareNode {
         Ok(outcome)
     }
 
+    /// Re-encrypt a hosted e2ee share's whole history under the current epoch.
+    /// Invites do this on their own; this repairs shares invited before that,
+    /// whose members fetch every commit and can decrypt none.
+    #[cfg(feature = "sync-beelay")]
+    pub async fn rekey_e2ee(&self, share_id: &str) -> Result<()> {
+        if !valid_share_id(share_id) {
+            return Err(ShareError::NotFound(share_id.to_string()));
+        }
+        if !super::doc_path(&e2ee_dir(&self.share_dir), share_id).is_file() {
+            return Err(ShareError::NotFound(share_id.to_string()));
+        }
+        self.beelay()?.reseal_project(share_id).await.map_err(net)
+    }
+
     /// Undo a join: drop the beelay registration, its cached doc and any parked
     /// invite, so a later re-accept of the same invite adopts from scratch
     /// instead of reusing a doc whose commits never decrypted. Returns whether
