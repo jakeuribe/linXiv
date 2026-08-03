@@ -32,8 +32,10 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
         ("DELETE", ["api", "papers", "sfk", fk, "projects"]) => {
             Some(remove_from_projects(state, fk))
         }
-        // `search` must precede the generic `{source_id}` arm (both 3 segments).
+        // `search` and `full-text-pending` must precede the generic
+        // `{source_id}` arm (all 3 segments).
         ("GET", ["api", "papers", "search"]) => Some(search(state, ctx)),
+        ("GET", ["api", "papers", "full-text-pending"]) => Some(full_text_pending(state)),
         ("POST", ["api", "papers", id, "full-text"]) => Some(fetch_full_text(state, id, ctx).await),
         ("GET", ["api", "papers", id]) => Some(get_one(state, id)),
         ("DELETE", ["api", "papers", id]) => Some(delete(state, id)),
@@ -184,6 +186,17 @@ async fn fetch_full_text(
             "reason": "re-fetch produced no TeX; kept the text already indexed",
         })),
     }
+}
+
+/// `GET /api/papers/full-text-pending` — how many stored papers have no TeX
+/// source yet, i.e. how much work `full_text_worker` still has. The count
+/// includes papers with nothing to fetch (non-arXiv), which is why it can stop
+/// falling before it reaches zero.
+fn full_text_pending(state: &AppState) -> Result<Value, ApiError> {
+    let pending = state
+        .with_conn(|conn| svc_paper::full_text_backfill_candidates(conn))?
+        .len();
+    Ok(json!({ "pending": pending }))
 }
 
 /// Download + extract + store one paper's TeX, returning the stored char count.
