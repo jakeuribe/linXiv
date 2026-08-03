@@ -117,6 +117,10 @@ pub async fn list(args: ListArgs, ctx: &mut Ctx) -> anyhow::Result<()> {
 /// the categories/authors/tags JSON-TEXT columns stay as raw strings, created_at/
 /// updated_at are included, NULLs serialize to null, and columns keep view order
 /// (preserve_order). Same filter/order as `db.list_papers(latest_only=True)`.
+///
+/// One exception: `full_text` always reports null. `list_papers_sql` selects it
+/// as NULL so a multi-row read doesn't haul every indexed TeX body into memory;
+/// `paper get` still returns the real value.
 fn list_papers_raw(
     conn: &rusqlite::Connection,
     limit: Option<i64>,

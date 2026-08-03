@@ -33,7 +33,9 @@ export function FullTextSection() {
         at a time, so full-text search reaches inside them. It respects
         arXiv&rsquo;s rate limits, so a large library takes hours — it just keeps
         working in the background until it&rsquo;s done. Papers from other sources
-        publish no TeX and aren&rsquo;t counted; ones that fail are retried later.
+        publish no TeX and aren&rsquo;t counted. One that fails is retried a few
+        times, then left until linXiv is restarted — so the count can settle
+        above zero if some papers can&rsquo;t be fetched at all.
       </p>
       <SettingGroup>
         <SettingRow

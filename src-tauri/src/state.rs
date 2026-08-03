@@ -49,8 +49,14 @@ impl AppState {
     /// The one accessor every router arm uses to reach the DB. Locks the shared
     /// connection for the duration of `f`. Never hold the guard across an `.await`:
     /// `f` runs to completion and releases the lock before the caller awaits.
+    ///
+    /// A poisoned mutex is recovered rather than propagated. Poisoning means some
+    /// other arm panicked while holding the connection; a `Connection` has no
+    /// broken invariant to protect (an unfinished transaction rolls back when its
+    /// guard drops), and refusing the lock forever would take every DB-touching
+    /// route and the background indexer down with it for the rest of the process.
     pub fn with_conn<T>(&self, f: impl FnOnce(&mut Connection) -> T) -> T {
-        let mut guard = self.conn.lock().expect("db connection mutex poisoned");
+        let mut guard = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         f(&mut guard)
     }
 }

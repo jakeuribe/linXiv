@@ -80,7 +80,9 @@ pub fn get_paper(
 }
 
 /// The `papers`/`latest_papers` column list with FULL_TEXT blanked out — every
-/// column `row_to_paper` reads, so callers are unchanged.
+/// column `row_to_paper` reads, in the view's order. `PaperDetails` callers see
+/// no difference; the CLI's raw-row `linxiv library list`, which dumps whatever
+/// columns come back, now reports `full_text` as null instead of the body.
 ///
 /// Multi-row reads use this instead of `SELECT *`. Nothing outside
 /// `should_store_full_text` (which reads one paper at a time via `get_paper`)
@@ -555,23 +557,10 @@ pub fn repair_paper(conn: &mut Connection, source_fk: i64, meta: &PaperMetadata)
         let Some((pid, ver)) = row else { return Ok(()) };
 
         if renamed {
-            // FTS5 has no UPDATE: move the latest version's full_text entry from
-            // old id to new id (paper_id column holds the SOURCE_ID string).
-            let full_text: Option<String> = tx
-                .query_row(
-                    "SELECT FULL_TEXT FROM PAPER_META WHERE PAPER_ID = ?",
-                    [pid],
-                    |r| r.get::<_, Option<String>>(0),
-                )
-                .optional()?
-                .flatten();
+            // The FTS row's key IS the source_id, so a rename is a delete under
+            // the old id plus a rebuild under the new one.
             tx.execute("DELETE FROM papers_fts WHERE paper_id = ?", [&old_id])?;
-            if let Some(ft) = full_text.filter(|s| !s.is_empty()) {
-                tx.execute(
-                    "INSERT INTO papers_fts(paper_id, full_text) VALUES (?, ?)",
-                    params![new_id, ft],
-                )?;
-            }
+            refresh_fts(tx, new_id)?;
         }
 
         tx.execute(
@@ -703,15 +692,46 @@ pub fn full_text_backfill_count(conn: &Connection) -> Result<i64> {
     )
 }
 
-/// `set_full_text` — store extracted TeX, mark DOWNLOADED_SOURCE, refresh the FTS
-/// index (DELETE then INSERT). No-op if the version does not exist.
+/// Newest stored body for a paper that has any text in it, across all versions.
 ///
-/// Empty text still marks the version fetched, but leaves the FTS row alone. The
-/// row is keyed by SOURCE_ID, not version, and every new version starts with a
-/// NULL body — so `should_store_full_text`, which only sees the version it was
-/// handed, cannot tell that an earlier version's text is indexed. Rewriting the
-/// row with "" here would drop the paper out of search the first time a version
-/// bump's tarball came back empty.
+/// The `papers_fts` row is keyed by SOURCE_ID while `FULL_TEXT` is per version,
+/// and a new version starts with a NULL body — so "the latest version's text" is
+/// not the same thing as "the text this paper is searchable by". Every writer of
+/// the FTS row resolves it through here so they cannot disagree.
+fn newest_indexed_text(tx: &Transaction, source_id: &str) -> Result<Option<String>> {
+    Ok(tx
+        .query_row(
+            "SELECT m.FULL_TEXT FROM PAPER p JOIN PAPER_META m USING (PAPER_ID) \
+             WHERE p.SOURCE_ID = ? AND COALESCE(m.FULL_TEXT, '') != '' \
+             ORDER BY p.VERSION DESC LIMIT 1",
+            [source_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten())
+}
+
+/// Point the FTS row at `newest_indexed_text`, dropping it when no version holds
+/// any text. FTS5 has no UPDATE, hence DELETE then INSERT.
+fn refresh_fts(tx: &Transaction, source_id: &str) -> Result<()> {
+    tx.execute("DELETE FROM papers_fts WHERE paper_id = ?", [source_id])?;
+    if let Some(text) = newest_indexed_text(tx, source_id)? {
+        tx.execute(
+            "INSERT INTO papers_fts(paper_id, full_text) VALUES (?, ?)",
+            params![source_id, text],
+        )?;
+    }
+    Ok(())
+}
+
+/// `set_full_text` — store extracted TeX, mark DOWNLOADED_SOURCE, refresh the FTS
+/// index. No-op if the version does not exist.
+///
+/// Empty text marks the version fetched without taking the paper out of search:
+/// `refresh_fts` falls back to whatever older version still holds a body. A
+/// version bump whose tarball extracts empty (PDF-only or corrupt) is the common
+/// way this happens, and `should_store_full_text` cannot see it — it is handed
+/// one version.
 pub fn set_full_text(
     conn: &mut Connection,
     source_id: &str,
@@ -731,15 +751,7 @@ pub fn set_full_text(
             "UPDATE PAPER_META SET FULL_TEXT = ?, DOWNLOADED_SOURCE = 1 WHERE PAPER_ID = ?",
             params![full_text, pid],
         )?;
-        if full_text.is_none_or(str::is_empty) {
-            return Ok(());
-        }
-        tx.execute("DELETE FROM papers_fts WHERE paper_id = ?", [source_id])?;
-        tx.execute(
-            "INSERT INTO papers_fts(paper_id, full_text) VALUES (?, ?)",
-            params![source_id, full_text],
-        )?;
-        Ok(())
+        refresh_fts(tx, source_id)
     })
 }
 
@@ -772,16 +784,16 @@ pub fn soft_delete_paper(conn: &mut Connection, source_id: &str) -> Result<Optio
     })
 }
 
-/// `restore_paper` — STATUS='active', and if the latest version has full_text,
-/// rebuild its FTS entry. Returns the stored PDF_PATH (the file may be gone).
+/// `restore_paper` — STATUS='active', and rebuild the FTS entry that
+/// `soft_delete_paper` dropped. Returns the stored PDF_PATH (the file may be gone).
 pub fn restore_paper(conn: &mut Connection, source_id: &str) -> Result<Option<String>> {
     transaction(conn, |tx| {
-        let row: Option<(Option<String>, Option<String>)> = tx
+        let path: Option<Option<String>> = tx
             .query_row(
-                "SELECT PDF_PATH, FULL_TEXT FROM PAPER_META WHERE PAPER_ID IN \
+                "SELECT PDF_PATH FROM PAPER_META WHERE PAPER_ID IN \
                  (SELECT PAPER_ID FROM PAPER WHERE SOURCE_ID = ? ORDER BY VERSION DESC LIMIT 1)",
                 [source_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| r.get(0),
             )
             .optional()?;
         tx.execute(
@@ -789,18 +801,8 @@ pub fn restore_paper(conn: &mut Connection, source_id: &str) -> Result<Option<St
              UPDATED_AT = datetime('now') WHERE SOURCE_ID = ?",
             [source_id],
         )?;
-        let mut path = None;
-        if let Some((p, ft)) = row {
-            path = p;
-            if let Some(ft) = ft.filter(|s| !s.is_empty()) {
-                tx.execute("DELETE FROM papers_fts WHERE paper_id = ?", [source_id])?;
-                tx.execute(
-                    "INSERT INTO papers_fts(paper_id, full_text) VALUES (?, ?)",
-                    params![source_id, ft],
-                )?;
-            }
-        }
-        Ok(path)
+        refresh_fts(tx, source_id)?;
+        Ok(path.flatten())
     })
 }
 
