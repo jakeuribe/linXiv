@@ -957,6 +957,16 @@ mod tests {
         let hits = search_full_text(&conn, "zephyranthes", 10).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].source_id, "arxiv:ft");
+
+        // The FTS row is keyed by SOURCE_ID, so a later version indexing empty
+        // (corrupt tarball, PDF-only submission) must not take the paper out of
+        // search — should_store_full_text only ever sees one version's body.
+        save_paper_metadata(&mut conn, &meta("arxiv:ft", 2, "cs.LG", &[]), None).unwrap();
+        set_full_text(&mut conn, "arxiv:ft", 2, "").unwrap();
+        assert_eq!(
+            search_full_text(&conn, "zephyranthes", 10).unwrap().len(),
+            1
+        );
     }
 
     /// A re-fetch that extracts nothing must not wipe a body that already
@@ -990,9 +1000,14 @@ mod tests {
     #[test]
     fn backfill_candidates_lists_only_unfetched_papers() {
         let mut conn = mem();
-        save_paper_metadata(&mut conn, &meta("arxiv:b1", 1, "cs.LG", &[]), None).unwrap();
-        save_paper_metadata(&mut conn, &meta("arxiv:b2", 1, "cs.LG", &[]), None).unwrap();
+        let fetchable = |sid: &str| PaperMetadata {
+            url: Some(format!("http://arxiv.org/pdf/{sid}v1")),
+            ..meta(sid, 1, "cs.LG", &[])
+        };
+        save_paper_metadata(&mut conn, &fetchable("arxiv:b1"), None).unwrap();
+        save_paper_metadata(&mut conn, &fetchable("arxiv:b2"), None).unwrap();
         assert_eq!(full_text_backfill_candidates(&conn).unwrap().len(), 2);
+        assert_eq!(full_text_backfill_count(&conn).unwrap(), 2);
 
         // set_full_text flips DOWNLOADED_SOURCE, so b1 drops off the work list.
         set_full_text(&mut conn, "arxiv:b1", 1, "indexed already").unwrap();
@@ -1005,6 +1020,37 @@ mod tests {
         // instead of handing the same paper back on every run.
         set_full_text(&mut conn, "arxiv:b2", 1, "").unwrap();
         assert!(full_text_backfill_candidates(&conn).unwrap().is_empty());
+        assert_eq!(full_text_backfill_count(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn backfill_candidates_skip_papers_with_no_tex_source_to_fetch() {
+        // Everything source_fetch_url would refuse has to stay off the list:
+        // the backfill would hand each one to the fetcher on every rebuild, and
+        // the count backing the UI's progress line would never reach zero.
+        let mut conn = mem();
+        let other_provider = PaperMetadata {
+            url: Some("http://arxiv.org/pdf/1234v1".into()),
+            source: Some("openalex".into()),
+            ..meta("openalex:x", 1, "cs.LG", &[])
+        };
+        let abs_url_only = PaperMetadata {
+            url: Some("http://arxiv.org/abs/2345v1".into()),
+            ..meta("arxiv:noPdfLink", 1, "cs.LG", &[])
+        };
+        save_paper_metadata(&mut conn, &other_provider, None).unwrap();
+        save_paper_metadata(&mut conn, &abs_url_only, None).unwrap();
+
+        for sid in ["openalex:x", "arxiv:noPdfLink"] {
+            let key = Paper {
+                source_id: Some(sid.into()),
+                ..Default::default()
+            };
+            let paper = get(&conn, &key).unwrap().unwrap();
+            assert!(source_fetch_url(&paper).is_err());
+        }
+        assert!(full_text_backfill_candidates(&conn).unwrap().is_empty());
+        assert_eq!(full_text_backfill_count(&conn).unwrap(), 0);
     }
 
     #[test]

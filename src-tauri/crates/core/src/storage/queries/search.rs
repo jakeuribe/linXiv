@@ -55,7 +55,8 @@ pub fn search_full_text(conn: &Connection, query: &str, limit: i64) -> Result<Ve
     }
 
     let sql = format!(
-        "SELECT p.* FROM latest_papers p WHERE p.source_id IN ({})",
+        "SELECT {} FROM latest_papers WHERE source_id IN ({})",
+        super::paper::PAPER_COLUMNS_NO_TEXT,
         vec!["?"; scored.len()].join(", ")
     );
     let mut stmt = conn.prepare(&sql)?;
