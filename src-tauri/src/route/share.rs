@@ -180,6 +180,9 @@ pub async fn share_api(
         ("POST", ["api", "share", id, "member", mid, "remove"]) => {
             return remove_member(share.inner(), id, mid).await
         }
+        ("POST", ["api", "share", id, "rekey"]) => {
+            return rekey(state.inner(), share.inner(), id).await
+        }
         ("POST", ["api", "share", id, "pdf"]) => {
             return shared_pdf(state.inner(), share.inner(), id, ctx.body).await
         }
@@ -1137,6 +1140,37 @@ async fn revoke_member(
         eprintln!("share {id}: could not persist members sidecar: {e}");
     }
     Ok(json!({ "revoked": true }))
+}
+
+/// `POST /api/share/{id}/rekey` — re-encrypt a hosted e2ee share's history
+/// under the current epoch, then republish it (and re-key its PDF blobs) so
+/// every current member can read everything.
+///
+/// Invites re-seal on their own; this repairs shares whose members were invited
+/// after the content was already sealed, which leaves them fetching commits
+/// they hold no key for (keyhive #136) with no way out but this.
+async fn rekey(state: &AppState, share: &ShareState, id: &str) -> Result<Value, ApiError> {
+    let dir = share.share_dir().to_path_buf();
+    ensure_e2ee_hosted(&dir, id)?;
+    let node = live_node(share).await?;
+    let _lock = share.lock_writes(id).await;
+    ensure_e2ee_hosted(&dir, id)?;
+    e2ee_timeout(node.rekey_e2ee(id), "re-key").await?;
+    // Blobs are sealed per epoch too, so a doc-only re-key would leave every
+    // shared PDF unreadable to the same members.
+    let mut sp = linxiv_share::load(&e2ee_dir(&dir), id).map_err(fetch_error)?;
+    if sp.papers.iter().any(|p| p.pdf_blob.is_some()) {
+        share_sync::populate_pdf_blobs(state, &node, &dir, &mut sp, true)
+            .await
+            .map_err(fetch_error)?;
+    }
+    e2ee_timeout(node.publish_secure(&sp), "secure publish").await?;
+    println!(
+        "share {id}: re-keyed and republished papers={} members={}",
+        sp.papers.len(),
+        live_member_count(&dir, id),
+    );
+    Ok(json!({ "rekeyed": true, "members": live_member_count(&dir, id) }))
 }
 
 /// `POST /api/share/{id}/member/{mid}/remove` — revoke, then drop the sidecar
