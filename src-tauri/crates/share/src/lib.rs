@@ -529,7 +529,7 @@ pub fn save(share_dir: &Path, sp: &SharedProject) -> Result<()> {
 }
 
 /// Load `<share_id>.automerge` and hydrate it back into a `SharedProject`.
-/// Missing file → `ShareError::NotFound`.
+/// Missing file, or a doc with no content yet → `ShareError::NotFound`.
 pub fn load(share_dir: &Path, share_id: &str) -> Result<SharedProject> {
     let bytes = match std::fs::read(doc_path(share_dir, share_id)) {
         Ok(b) => b,
@@ -538,7 +538,13 @@ pub fn load(share_dir: &Path, share_id: &str) -> Result<SharedProject> {
         }
         Err(e) => return Err(e.into()),
     };
-    let doc = AutoCommit::load(&bytes).map_err(crdt)?;
+    let mut doc = AutoCommit::load(&bytes).map_err(crdt)?;
+    // An empty doc has none of the keys hydrate requires, so hydrating it fails
+    // with "unexpected None". E2ee mirrors are written as empty placeholders
+    // before the first sync lands; that is "nothing here yet", not a CRDT fault.
+    if doc.get_heads().is_empty() {
+        return Err(ShareError::NotFound(share_id.to_string()));
+    }
     autosurgeon::hydrate(&doc).map_err(crdt)
 }
 
@@ -883,6 +889,19 @@ mod tests {
         let (conn, _pid) = seed();
         match build_shared_project(&conn, 9999) {
             Err(ShareError::NotFound(id)) => assert_eq!(id, "9999"),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    /// An e2ee mirror written before its first sync holds an empty doc; loading
+    /// it must be NotFound, not a "crdt error: unexpected None" 500.
+    #[test]
+    fn empty_doc_is_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = "11111111-2222-4333-8444-555555555555";
+        std::fs::write(doc_path(dir.path(), id), AutoCommit::new().save()).unwrap();
+        match load(dir.path(), id) {
+            Err(ShareError::NotFound(got)) => assert_eq!(got, id),
             other => panic!("expected NotFound, got {other:?}"),
         }
     }

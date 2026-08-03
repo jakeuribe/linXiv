@@ -353,8 +353,15 @@ pub async fn sync_share(
             .with_conn(|c| project_svc::find_by_share_id(c, share_id))?
             .is_some()
         {
-            let sp = ShareNode::e2ee_received(&dir, share_id)?;
-            state.with_conn(|c| import_shared_project(c, &sp))?;
+            // A mirror still empty after the sync (host asleep, or no key yet)
+            // has nothing to import; the outcome below reports why.
+            match ShareNode::e2ee_received(&dir, share_id) {
+                Ok(sp) => {
+                    state.with_conn(|c| import_shared_project(c, &sp))?;
+                }
+                Err(linxiv_share::ShareError::NotFound(_)) => {}
+                Err(e) => return Err(e.into()),
+            }
         }
         touch(&e2ee_reader_doc);
         let mut v = json!({ "synced": true, "role": "reader", "e2ee": true });
