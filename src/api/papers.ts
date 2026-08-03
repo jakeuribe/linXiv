@@ -104,6 +104,15 @@ export async function fetchFullText(
 }
 
 /**
+ * How many stored papers still have no indexed TeX source — the backlog the
+ * background full-text worker is working through. Counts papers with nothing to
+ * fetch (non-arXiv) too, so it can plateau above zero.
+ */
+export async function fullTextPending(): Promise<{ pending: number }> {
+  return apiFetch<{ pending: number }>("/api/papers/full-text-pending");
+}
+
+/**
  * Returns the URL to stream/download the PDF for a paper. In Tauri this hits
  * the backend directly; in browser dev it goes through the Vite proxy.
  */
