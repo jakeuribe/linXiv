@@ -9,9 +9,10 @@
 //! module imposes between papers.
 //!
 //! `ponytail: no cap on how much TeX this stores. A body averages ~150 KB and is
-//! capped at MAX_TEX_BYTES (16 MiB) per paper, so a 3000-paper library lands
-//! around half a gigabyte across PAPER_META.FULL_TEXT and papers_fts. Add a
-//! full_text_save_limit_mb setting, like pdf_save_limit_mb, if that bites.`
+//! capped at MAX_TEX_BYTES (16 MiB) per paper. papers_fts is a plain fts5 table,
+//! so it keeps its own copy plus an index: budget ~3x the raw text, i.e. north of
+//! a gigabyte for a 3000-paper library. Add a full_text_save_limit_mb setting,
+//! like pdf_save_limit_mb, if that bites.`
 
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
@@ -43,8 +44,9 @@ const RETRY_AFTER: Duration = Duration::from_secs(600);
 const MAX_ATTEMPTS: u32 = 5;
 /// Ceiling on the consecutive-failure backoff.
 const MAX_BACKOFF: Duration = Duration::from_secs(3600);
-/// Wait before restarting the loop after it panics.
+/// Wait before restarting the loop after it panics, and how often to try.
 const RESTART_DELAY: Duration = Duration::from_secs(60);
+const MAX_RESTARTS: u32 = 5;
 
 /// A paper the loop is holding off on. `until: None` means "not again this
 /// session" — either there is no arXiv source to fetch, or it has failed
@@ -62,19 +64,23 @@ impl Park {
     };
 }
 
-/// Spawn the worker for the life of the app, restarting it if it panics.
-/// `with_conn` panics on a poisoned DB mutex, which any other route arm can
-/// cause; without this the feature would end silently with the toggle still on.
+/// Spawn the worker for the life of the app, restarting it if it panics —
+/// otherwise the feature would end silently with the toggle still reading "on".
+///
+/// Bounded, because the likeliest panic is `with_conn` on a poisoned DB mutex,
+/// which stays poisoned for the process: restarting into it forever would just
+/// print a panic a minute.
 pub fn spawn(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
-        loop {
+        for attempt in 1..=MAX_RESTARTS {
             let task = tauri::async_runtime::spawn(run(app.clone()));
             match task.await {
                 Ok(()) => return,
-                Err(e) => eprintln!("[full-text] worker stopped: {e}; restarting shortly"),
+                Err(e) => eprintln!("[full-text] worker stopped ({attempt}/{MAX_RESTARTS}): {e}"),
             }
             tokio::time::sleep(RESTART_DELAY).await;
         }
+        eprintln!("[full-text] worker kept failing; not restarting again this session");
     });
 }
 
@@ -123,11 +129,17 @@ async fn run(app: tauri::AppHandle) {
                     Some(0) => eprintln!("[full-text] {sid} — tarball held no TeX, indexed empty"),
                     Some(chars) => eprintln!("[full-text] {sid} — {chars} chars"),
                     // should_store_full_text refused the write to protect an
-                    // already-stored body; the paper stays on the work list.
+                    // already-stored body, so DOWNLOADED_SOURCE is still unset
+                    // and the paper stays a candidate. Reachable only for rows
+                    // migrated from the Python era (text stored, flag unset);
+                    // parking is what keeps it off a re-download treadmill.
                     None => eprintln!("[full-text] {sid} — empty re-fetch, kept the stored text"),
                 }
                 consecutive_failures = 0;
-                parked.remove(&sid);
+                match indexed {
+                    Some(_) => parked.remove(&sid),
+                    None => parked.insert(sid, Park::PERMANENT),
+                };
                 tokio::time::sleep(GAP).await;
             }
             Err(e) => {
@@ -172,10 +184,16 @@ fn backoff(n: u32) -> Duration {
 
 /// Wait before rebuilding the work list: no longer than the nearest park expiry,
 /// so a paper due back in 10 s isn't held for the full `IDLE`.
+///
+/// Deadlines already past are ignored. A park entry outlives its paper — the
+/// user can index it by hand, or delete it — and `saturating_duration_since`
+/// reports such a deadline as zero, which would spin the idle path into a scan
+/// loop with no sleep in it.
 fn idle_wait(parked: &HashMap<String, Park>, now: Instant) -> Duration {
     parked
         .values()
         .filter_map(|p| p.until)
+        .filter(|&t| t > now)
         .map(|t| t.saturating_duration_since(now))
         .min()
         .unwrap_or(IDLE)
@@ -332,6 +350,16 @@ mod tests {
             ),
         ]);
         assert_eq!(idle_wait(&parked, now), soon);
+        // A deadline in the past belongs to a paper that left the work list.
+        // Counting it would mean sleeping zero and rescanning the DB flat out.
+        let stale = HashMap::from([(
+            "d".to_string(),
+            Park {
+                attempts: 1,
+                until: Some(now - Duration::from_secs(1)),
+            },
+        )]);
+        assert_eq!(idle_wait(&stale, now), IDLE);
         // Never longer than IDLE, even with every retry far out.
         let far = HashMap::from([(
             "c".to_string(),
