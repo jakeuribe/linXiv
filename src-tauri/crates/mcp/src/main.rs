@@ -1,7 +1,8 @@
 //! linXiv MCP server — exposes the linXiv library tools over stdio JSON-RPC.
-//! Rust port of `linxiv_mcp.py`. The ~60 tools are split across four cluster
-//! modules (`papers`, `projects_tags`, `notes_pdf_trash`, `io_authors_misc`),
-//! each contributing one `#[tool_router]` impl block that is merged here.
+//! Rust port of `linxiv_mcp.py`. The 75 tools are split across five cluster
+//! modules (`papers`, `projects_tags`, `notes_pdf_trash`, `annotations`,
+//! `io_authors_misc`), each contributing one `#[tool_router]` impl block that is
+//! merged here.
 
 mod annotations;
 mod io_authors_misc;
@@ -24,7 +25,7 @@ use linxiv_core::{config, storage};
 
 /// Shared MCP server state. Holds the single SQLite connection (guarded by a
 /// `Mutex`, opened once at startup) plus the managed PDF root, and the
-/// merged tool router built from the four cluster impls.
+/// merged tool router built from the five cluster impls.
 #[derive(Clone)]
 pub struct Server {
     conn: Arc<Mutex<Connection>>,
@@ -58,6 +59,14 @@ impl Server {
     pub fn with_conn<T>(&self, f: impl FnOnce(&mut Connection) -> T) -> T {
         let mut guard = self.conn.lock().expect("db connection mutex poisoned");
         f(&mut guard)
+    }
+
+    /// The shared handle, for work that must run off the async runtime. `with_conn`
+    /// blocks a tokio worker for as long as `f` runs, which is fine for millisecond
+    /// statements and not for whole-database file I/O — those go through
+    /// `spawn_blocking` with this.
+    pub fn conn_handle(&self) -> Arc<Mutex<Connection>> {
+        Arc::clone(&self.conn)
     }
 }
 

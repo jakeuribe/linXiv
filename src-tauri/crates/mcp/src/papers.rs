@@ -1,5 +1,5 @@
 //! Paper tools cluster. Owned by the `papers` Fill agent — do not edit other
-//! cluster files. Each `#[tool]` method below has a `todo!()` body to replace.
+//! cluster files.
 //!
 //! Every body reaches the DB via `self.with_conn(|conn| ...)` and calls into
 //! `linxiv_core::service::paper` (and `::tag` for full-text/categories as the
@@ -105,6 +105,13 @@ pub struct FetchFullTextParams {
     /// Re-fetch even when the source was already indexed.
     #[serde(default)]
     pub force: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct FullTextPendingParams {
+    /// Maximum number of candidate ids to return (default: all).
+    #[serde(default)]
+    pub limit: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -314,6 +321,58 @@ impl Server {
             "version": version,
             "indexed": true,
             "chars": chars,
+        }))
+    }
+
+    #[tool(
+        description = "List stored arXiv papers whose TeX source has not been indexed yet — the \
+                       backlog fetch_full_text still has to work through. Read-only."
+    )]
+    pub async fn full_text_pending(
+        &self,
+        Parameters(FullTextPendingParams { limit }): Parameters<FullTextPendingParams>,
+    ) -> Result<String, ErrorData> {
+        let (pending, mut candidates) = self
+            .with_conn(|conn| {
+                Ok::<_, CoreError>((
+                    svc_paper::full_text_backfill_count(conn)?,
+                    svc_paper::full_text_backfill_candidates(conn)?,
+                ))
+            })
+            .map_err(core_err)?;
+        // `pending` stays the whole backlog; `limit` only trims the returned ids.
+        if let Some(n) = limit {
+            candidates.truncate(n.max(0) as usize);
+        }
+        json_ok(&serde_json::json!({
+            "pending": pending,
+            "candidates": candidates,
+        }))
+    }
+
+    #[tool(
+        description = "Find other papers sharing this paper's DOI — likely the same work resolved \
+                       from a different source."
+    )]
+    pub async fn find_doi_candidates(
+        &self,
+        Parameters(PaperIdParams { paper_id }): Parameters<PaperIdParams>,
+    ) -> Result<String, ErrorData> {
+        // Keyed by the stable paper root, as the sfk route is.
+        let candidates = self.with_conn(|conn| {
+            let root = store_paper::get_paper_root(conn, &paper_id)
+                .map_err(core_err)?
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "Paper {} not found in database.",
+                        crate::util::pyrepr(&paper_id)
+                    ))
+                })?;
+            svc_paper::find_doi_version_candidates(conn, root.source_fk).map_err(core_err)
+        })?;
+        json_ok(&serde_json::json!({
+            "paper_id": paper_id,
+            "candidates": candidates,
         }))
     }
 
@@ -530,6 +589,64 @@ mod tests {
             "unexpected message: {}",
             err.message
         );
+    }
+
+    /// The backlog is every stored arXiv paper with a `/pdf/` url and no TeX
+    /// yet; `limit` trims the returned ids without changing `pending`.
+    #[tokio::test]
+    async fn full_text_pending_reports_the_backlog() {
+        let srv = server();
+        for sid in ["arxiv:p1", "arxiv:p2"] {
+            let url = format!("http://arxiv.org/pdf/{sid}v1");
+            srv.with_conn(|conn| {
+                svc_paper::save_paper_metadata(conn, &meta(sid, Some("arxiv"), Some(&url)), None)
+            })
+            .unwrap();
+        }
+        let all = srv
+            .full_text_pending(Parameters(FullTextPendingParams { limit: None }))
+            .await
+            .unwrap();
+        let all: Value = serde_json::from_str(&all).unwrap();
+        assert_eq!(all["pending"], serde_json::json!(2));
+        assert_eq!(all["candidates"].as_array().unwrap().len(), 2);
+
+        let one = srv
+            .full_text_pending(Parameters(FullTextPendingParams { limit: Some(1) }))
+            .await
+            .unwrap();
+        let one: Value = serde_json::from_str(&one).unwrap();
+        assert_eq!(one["pending"], serde_json::json!(2));
+        assert_eq!(one["candidates"].as_array().unwrap().len(), 1);
+    }
+
+    /// An unknown id is refused; a paper with no DOI twin lists no candidates.
+    #[tokio::test]
+    async fn doi_candidates_rejects_unknown_papers() {
+        let srv = server();
+        let err = srv
+            .find_doi_candidates(Parameters(PaperIdParams {
+                paper_id: "arxiv:nope".to_string(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.message.as_ref(),
+            "Paper 'arxiv:nope' not found in database."
+        );
+
+        srv.with_conn(|conn| {
+            svc_paper::save_paper_metadata(conn, &meta("arxiv:9", Some("arxiv"), None), None)
+        })
+        .unwrap();
+        let out = srv
+            .find_doi_candidates(Parameters(PaperIdParams {
+                paper_id: "arxiv:9".to_string(),
+            }))
+            .await
+            .unwrap();
+        let out: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(out["candidates"], serde_json::json!([]));
     }
 
     /// An already-indexed paper short-circuits without `force`; `force=true`

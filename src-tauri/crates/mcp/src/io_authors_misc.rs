@@ -2,7 +2,7 @@
 //! Owned by the `io_authors_misc` Fill agent.
 //!
 //! Bodies use `self.with_conn(|conn| ...)`; export tools also use
-//! `self.vault_root`. Call `linxiv_core::service::{export_import, author, paper,
+//! `self.pdf_dir`. Call `linxiv_core::service::{export_import, author, paper,
 //! tag}`, `::sources` for DOI resolution, and `linxiv_core::config::UserSettings`
 //! for the settings tools. `import_bibtex` delegates to `linxiv_core::formats`.
 //! Replicate the Python dict shapes EXACTLY, e.g. export returns
@@ -11,7 +11,7 @@
 //! returns `{"source_id", "version", "title"}`. Map `ValueError` to
 //! `Err(ErrorData::invalid_params(msg, None))` with the exact message.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_router, ErrorData};
@@ -26,6 +26,7 @@ use linxiv_core::service::export_import::{self as svc_ei, OnConflict};
 use linxiv_core::service::project::{self as svc_project, Project};
 use linxiv_core::service::{paper as svc_paper, tag as svc_tag};
 use linxiv_core::sources::doi_resolve;
+use linxiv_core::storage;
 
 use crate::Server;
 
@@ -39,7 +40,7 @@ fn map_core(e: CoreError) -> ErrorData {
     }
 }
 
-use crate::util::json_ok;
+use crate::util::{blocking, json_ok};
 
 /// Resolve a project to its papers, erroring with the Python message when the
 /// project is missing. Empty `source_fks` yields no papers without a query.
@@ -69,6 +70,41 @@ fn project_papers(
 }
 
 use linxiv_core::formats::with_default_ext;
+
+/// Canonicalize a path's parent, keeping the filename, so a not-yet-existing
+/// destination still compares against the live DB. Port of `route/storage.rs`.
+fn canon_or_raw(path: &Path) -> PathBuf {
+    path.parent()
+        .and_then(|p| p.canonicalize().ok())
+        .zip(path.file_name())
+        .map(|(canon_parent, fname)| canon_parent.join(fname))
+        .unwrap_or_else(|| path.to_path_buf())
+}
+
+/// Guard from `route/storage.rs::reject_live_db`: refuse a relative path, or one
+/// that resolves to the live database file itself.
+fn reject_live_db(path: &Path, field: &str, role: &str) -> Result<(), ErrorData> {
+    if !path.is_absolute() {
+        return Err(ErrorData::invalid_params(
+            format!("{field} must be absolute"),
+            None,
+        ));
+    }
+    let (a, b) = (canon_or_raw(path), canon_or_raw(&config::db_path()));
+    // Case-insensitive comparison only on case-insensitive filesystems.
+    let same = if cfg!(windows) || cfg!(target_os = "macos") {
+        a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
+    } else {
+        a == b
+    };
+    if same {
+        return Err(ErrorData::invalid_params(
+            format!("{role} is the live database itself — choose another file"),
+            None,
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ExportProjectParams {
@@ -151,6 +187,18 @@ pub struct ImportBibtexParams {
     /// Optionally link all imported papers to this project.
     #[serde(default)]
     pub project_id: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct BackupDatabaseParams {
+    /// Absolute destination path for the snapshot. Must not already exist.
+    pub dest: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RestoreDatabaseParams {
+    /// Absolute path to the backup snapshot to restore from.
+    pub src: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -415,6 +463,104 @@ impl Server {
         json_ok(&json!({ "canonical_id": canonical_id, "merged_ids": merged }))
     }
 
+    #[tool(
+        description = "Find likely duplicate authors — other authors sharing this author's ORCID. \
+                       Feed the result to merge_authors."
+    )]
+    pub async fn author_merge_candidates(
+        &self,
+        params: Parameters<AuthorIdParams>,
+    ) -> Result<String, ErrorData> {
+        let author_id = params.0.author_id;
+        let candidates = self.with_conn(|conn| -> Result<_, ErrorData> {
+            if svc_author::get(
+                conn,
+                &Author {
+                    author_id: Some(author_id),
+                    ..Default::default()
+                },
+            )
+            .map_err(map_core)?
+            .is_none()
+            {
+                return Err(ErrorData::invalid_params(
+                    format!("Author {author_id} not found."),
+                    None,
+                ));
+            }
+            svc_author::orcid_merge_candidates(conn, author_id).map_err(map_core)
+        })?;
+        json_ok(&json!({ "author_id": author_id, "candidates": candidates }))
+    }
+
+    #[tool(
+        description = "Snapshot the database to a backup file. `dest` must be an absolute path \
+                       that does not already exist."
+    )]
+    pub async fn backup_database(
+        &self,
+        params: Parameters<BackupDatabaseParams>,
+    ) -> Result<String, ErrorData> {
+        let dest = PathBuf::from(params.0.dest);
+        reject_live_db(&dest, "dest", "destination")?;
+        // spawn_blocking: VACUUM INTO of a large library runs for seconds to minutes,
+        // and with_conn would hold a tokio worker (and the shared mutex) for all of it.
+        let conn = self.conn_handle();
+        let info = blocking(move || {
+            let guard = conn.lock().expect("db connection mutex poisoned");
+            storage::backup(&guard, &dest).map_err(map_core)
+        })
+        .await??;
+        json_ok(&info)
+    }
+
+    #[tool(
+        description = "Restore the database from a backup snapshot, replacing the current library. \
+                       Refused while another process holds the database open."
+    )]
+    pub async fn restore_database(
+        &self,
+        params: Parameters<RestoreDatabaseParams>,
+    ) -> Result<String, ErrorData> {
+        let src = PathBuf::from(params.0.src);
+        reject_live_db(&src, "src", "source")?;
+        let db_path = config::db_path();
+        // Validate the snapshot before parking the live connection.
+        storage::validate_backup_source(&src).map_err(map_core)?;
+        // spawn_blocking for the same reason as backup_database: this holds the
+        // mutex across two full-file copies and a rename.
+        let handle = self.conn_handle();
+        blocking(move || -> Result<String, ErrorData> {
+            let mut guard = handle.lock().expect("db connection mutex poisoned");
+            let conn = &mut *guard;
+            // Park this server's handle on an in-memory DB so core's
+            // `ensure_no_live_connections` only has to refuse OTHER processes.
+            let parked = storage::open_in_memory().map_err(map_core)?;
+            let live = std::mem::replace(conn, parked);
+            if let Err((returned, e)) = live.close() {
+                *conn = returned;
+                return Err(ErrorData::internal_error(
+                    format!("could not close the live database: {e}"),
+                    None,
+                ));
+            }
+            let result = storage::restore(&src, &db_path).map_err(map_core);
+            // Reopen whatever now sits at db_path — the server needs a working
+            // handle even when the restore itself was refused.
+            *conn = storage::open(&db_path)
+                .and_then(|fresh| storage::init_db(&fresh).map(|()| fresh))
+                .map_err(|e| {
+                    ErrorData::internal_error(
+                        format!("could not reopen the database — restart linXiv: {e}"),
+                        None,
+                    )
+                })?;
+            result?;
+            json_ok(&json!({ "ok": true, "restored": db_path.to_string_lossy() }))
+        })
+        .await?
+    }
+
     #[tool(description = "Bulk-import papers from a BibTeX (.bib) file into the library.")]
     pub async fn import_bibtex(
         &self,
@@ -513,5 +659,69 @@ impl Server {
             .set(key.clone(), parsed.clone())
             .map_err(map_core)?;
         json_ok(&json!({ key: parsed }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+
+    /// Mirrors `papers.rs`'s test `server()`: an in-memory DB, tool methods
+    /// called directly rather than dispatched through `tool_router`.
+    fn server() -> Server {
+        let conn = storage::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        Server {
+            conn: Arc::new(Mutex::new(conn)),
+            pdf_dir: std::env::temp_dir(),
+            tool_router: Server::tools_io_authors_misc(),
+        }
+    }
+
+    fn scratch_dest() -> PathBuf {
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("linxiv_mcp_backup_{n}.db"))
+    }
+
+    /// A relative destination is refused before core is reached; an absolute one
+    /// writes a snapshot. Restore is not exercised: it would overwrite the real
+    /// `config::db_path()`.
+    #[tokio::test]
+    async fn backup_rejects_relative_paths_and_writes_a_snapshot() {
+        let srv = server();
+        let err = srv
+            .backup_database(Parameters(BackupDatabaseParams {
+                dest: "backup.db".to_string(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.message.as_ref(), "dest must be absolute");
+
+        let dest = scratch_dest();
+        let out = srv
+            .backup_database(Parameters(BackupDatabaseParams {
+                dest: dest.to_string_lossy().into_owned(),
+            }))
+            .await
+            .unwrap();
+        let out: Value = serde_json::from_str(&out).unwrap();
+        assert!(dest.exists());
+        assert!(out["bytes"].as_u64().unwrap() > 0);
+        std::fs::remove_file(&dest).ok();
+    }
+
+    /// The existence check runs before the candidate query.
+    #[tokio::test]
+    async fn merge_candidates_rejects_unknown_authors() {
+        let err = server()
+            .author_merge_candidates(Parameters(AuthorIdParams { author_id: 999 }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.message.as_ref(), "Author 999 not found.");
     }
 }

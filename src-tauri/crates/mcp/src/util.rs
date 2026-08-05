@@ -19,3 +19,15 @@ pub(crate) fn core_err(e: CoreError) -> ErrorData {
 pub(crate) fn json_ok<T: serde::Serialize>(v: &T) -> Result<String, ErrorData> {
     serde_json::to_string(v).map_err(|e| ErrorData::internal_error(e.to_string(), None))
 }
+
+/// Run blocking DB/file work off the async runtime. A panic inside `f` poisons the
+/// shared connection mutex, so the join error is surfaced rather than unwrapped.
+pub(crate) async fn blocking<T, F>(f: F) -> Result<T, ErrorData>
+where
+    F: FnOnce() -> T + Send + 'static,
+    T: Send + 'static,
+{
+    tokio::task::spawn_blocking(f)
+        .await
+        .map_err(|e| ErrorData::internal_error(format!("background task failed: {e}"), None))
+}
