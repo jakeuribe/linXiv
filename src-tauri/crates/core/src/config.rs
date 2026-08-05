@@ -67,8 +67,24 @@ pub fn vault_dir() -> PathBuf {
 
 /// OpenAlex polite-pool address (`OPENALEX_MAILTO`); CR/LF are stripped downstream
 /// in `openalex::user_agent`, matching `OpenAlexSource`.
+///
+/// The env var wins; a user-settings override is the fallback. Only the app sets the
+/// env var (`PATCH /api/env`), and it sets it on its own process — so without this
+/// fallback the CLI and MCP server, which run as separate processes, read the value
+/// as empty no matter what was configured, and `settings update OPENALEX_MAILTO`
+/// wrote a key nothing ever read.
 pub fn openalex_mailto() -> String {
-    std::env::var("OPENALEX_MAILTO").unwrap_or_default()
+    match std::env::var("OPENALEX_MAILTO") {
+        Ok(v) if !v.is_empty() => v,
+        _ => UserSettings::load()
+            .ok()
+            .and_then(|s| {
+                s.get("OPENALEX_MAILTO")
+                    .and_then(Value::as_str)
+                    .map(String::from)
+            })
+            .unwrap_or_default(),
+    }
 }
 
 /// User settings: bundled defaults overlaid by the user's overrides (shallow merge), mirroring
@@ -211,6 +227,21 @@ mod tests {
         assert_eq!(s.get("pdf_save_limit_mb").unwrap().as_i64().unwrap(), 42);
         // Untouched default still resolves through the merge.
         assert_eq!(s.all()["tex_rendering_enabled"].as_bool().unwrap(), true);
+
+        // openalex_mailto: unset env falls back to the settings override, so the CLI
+        // and MCP processes see what `settings update` wrote; a set env var wins.
+        env::remove_var("OPENALEX_MAILTO");
+        assert_eq!(openalex_mailto(), "");
+        let mut s = s;
+        s.set("OPENALEX_MAILTO", Value::from("settings@example.org"))
+            .unwrap();
+        assert_eq!(openalex_mailto(), "settings@example.org");
+        env::set_var("OPENALEX_MAILTO", "env@example.org");
+        assert_eq!(openalex_mailto(), "env@example.org");
+        // Empty env var is treated as unset, not as an override of the settings value.
+        env::set_var("OPENALEX_MAILTO", "");
+        assert_eq!(openalex_mailto(), "settings@example.org");
+        env::remove_var("OPENALEX_MAILTO");
 
         let _ = std::fs::remove_dir_all(&scratch);
         env::remove_var(ENV_DATA_DIR);
