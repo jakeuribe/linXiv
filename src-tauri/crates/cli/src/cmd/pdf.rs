@@ -96,7 +96,17 @@ pub async fn run(cmd: PdfCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         } => {
             let source_id = as_source_id(&source_id, "arxiv");
             let paper = super::paper::resolve_paper_or_exit(ctx, &source_id);
-            let version = version.filter(|&v| v != 0).unwrap_or(paper.version);
+            // An explicit --version must name a stored version. mark_pdf_saved below
+            // updates no rows otherwise, and refusing after the download would leave
+            // an orphan file in the managed dir that no command can see or remove.
+            let version = match version.filter(|&v| v != 0) {
+                Some(v) if !stored_versions(ctx, &source_id).contains(&v) => fail(format!(
+                    "Paper {} has no version {v} in DB",
+                    pyrepr(&source_id)
+                )),
+                Some(v) => v,
+                None => paper.version,
+            };
             let max_pdf_bytes = ctx.settings.pdf_save_limit_bytes();
             let path = svc_files::download_pdf(
                 &ctx.pdf_dir,
@@ -110,6 +120,14 @@ pub async fn run(cmd: PdfCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                 eprintln!("[pdf] {e}");
                 fail(e)
             });
+            // Record the file like the MCP `download_pdf` tool does; without this the
+            // paper stays has_pdf=0 and the PDF is invisible to `pdf list` and GET /api/pdfs.
+            svc_paper::mark_pdf_saved(
+                &mut ctx.conn,
+                &paper.source_id,
+                &path.to_string_lossy(),
+                version,
+            )?;
             output(&PdfLocation {
                 source_id: paper.source_id,
                 version,
@@ -223,4 +241,20 @@ pub async fn run(cmd: PdfCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Stored VERSIONs for a paper, empty when the root is absent. Used to reject an
+/// explicit `--version` before anything is written to disk.
+fn stored_versions(ctx: &Ctx, source_id: &str) -> Vec<i64> {
+    svc_paper::get_all(
+        &ctx.conn,
+        &svc_paper::Paper {
+            source_id: Some(source_id.to_string()),
+            ..Default::default()
+        },
+    )
+    .ok()
+    .flatten()
+    .map(|all| all.versions.iter().map(|v| v.version).collect())
+    .unwrap_or_default()
 }
