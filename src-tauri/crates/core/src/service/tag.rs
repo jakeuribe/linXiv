@@ -100,7 +100,7 @@ pub fn upsert(conn: &mut Connection, tag: &TagIn) -> Result<i64> {
 }
 
 /// `service/tag.py::delete` — delete by tag_id; no-op when tag_id is absent.
-pub fn delete(conn: &Connection, tag: &Tag) -> Result<()> {
+pub fn delete(conn: &mut Connection, tag: &Tag) -> Result<()> {
     if let Some(id) = tag.tag_id {
         q::delete_tag(conn, id)?;
     }
@@ -238,7 +238,7 @@ mod tests {
         let mut conn = seeded();
         let id = q::create_tag(&mut conn, "Doomed").unwrap();
         delete(
-            &conn,
+            &mut conn,
             &Tag {
                 tag_id: Some(id),
                 ..Default::default()
@@ -247,7 +247,7 @@ mod tests {
         .unwrap();
         assert!(q::get_tag(&conn, id).unwrap().is_none());
         // no tag_id -> no-op, no error
-        delete(&conn, &Tag::default()).unwrap();
+        delete(&mut conn, &Tag::default()).unwrap();
     }
 
     #[test]
