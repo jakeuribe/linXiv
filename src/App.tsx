@@ -1,5 +1,6 @@
 import { lazy } from "react";
-import { createBrowserRouter, RouterProvider, useParams } from "react-router-dom";
+import { createBrowserRouter, useParams } from "react-router";
+import { RouterProvider } from "react-router/dom";
 import AppShell from "./components/layout/AppShell";
 import TermsGate from "./components/TermsGate";
 

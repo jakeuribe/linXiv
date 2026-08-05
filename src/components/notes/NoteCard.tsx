@@ -1,5 +1,5 @@
 import { useRef } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import type { Note, Project } from "../../types/api";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";

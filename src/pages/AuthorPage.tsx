@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { useParams, useNavigate, Link } from "react-router-dom";
+import { useParams, useNavigate, Link } from "react-router";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { listAuthors, getAuthor, updateAuthor, deleteAuthor, mergeAuthors, getMergeCandidates } from "../api/authors";
 import type { AuthorUpdateBody } from "../api/authors";

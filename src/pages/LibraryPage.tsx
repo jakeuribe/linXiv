@@ -1,5 +1,5 @@
 import { useState, useRef, useMemo, useDeferredValue, useCallback } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Upload, FileText, SearchX, FilterX } from "lucide-react";
