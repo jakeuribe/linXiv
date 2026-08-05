@@ -60,6 +60,7 @@ export async function saveDoi(
 
 export interface OpenAlexSearchResponse {
   results: SearchResult[];
+  saved_source_ids: string[];
 }
 
 export type OpenAlexSort = "relevance" | "newest" | "oldest" | "citations";

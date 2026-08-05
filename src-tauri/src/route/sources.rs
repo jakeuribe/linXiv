@@ -26,7 +26,7 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
     match (ctx.method, ctx.segs) {
         ("POST", ["api", "arxiv", "search"]) => Some(arxiv_search(state, ctx).await),
         ("POST", ["api", "arxiv", "fetch"]) => Some(arxiv_fetch(state, ctx).await),
-        ("POST", ["api", "openalex", "search"]) => Some(openalex_search(ctx).await),
+        ("POST", ["api", "openalex", "search"]) => Some(openalex_search(state, ctx).await),
         ("POST", ["api", "openalex", "save"]) => Some(openalex_save(state, ctx).await),
         ("POST", ["api", "doi", "resolve"]) => Some(doi_resolve_route(ctx).await),
         ("POST", ["api", "doi", "save"]) => Some(doi_save_route(state, ctx).await),
@@ -82,8 +82,33 @@ fn default_true() -> bool {
     true
 }
 
-/// `POST /api/arxiv/search` (740–758). `502` on any source error; `save` swallows
-/// an IntegrityError (returns results with `saved_source_ids=[]`, as Python does).
+/// Optionally save every result, then report which of them the library already
+/// holds — so the GUI can check off results that are in the library rather than
+/// offering to save them again. Stripped ids, matching the wire `source_id`.
+fn saved_ids(
+    state: &AppState,
+    results: &[PaperMetadata],
+    save: bool,
+) -> Result<Vec<String>, ApiError> {
+    if results.is_empty() {
+        return Ok(Vec::new());
+    }
+    state.with_conn(|conn| -> Result<Vec<String>, ApiError> {
+        if save {
+            for m in results {
+                svc_paper::save_paper_metadata(conn, m, None)?;
+            }
+        }
+        let ids: Vec<String> = results.iter().map(|m| m.source_id.clone()).collect();
+        Ok(svc_paper::existing_source_ids(conn, &ids)?
+            .iter()
+            .map(|s| strip_namespace(s))
+            .collect())
+    })
+}
+
+/// `POST /api/arxiv/search` (740–758). `502` on any source error. `save` bulk-saves
+/// every result; `saved_source_ids` reports library membership either way.
 async fn arxiv_search(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     #[derive(Deserialize)]
     struct Body {
@@ -112,18 +137,7 @@ async fn arxiv_search(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiEr
     .await
     .map_err(upstream_502)?;
 
-    let saved = if b.save && !results.is_empty() {
-        state.with_conn(|conn| -> Result<Vec<String>, ApiError> {
-            let mut out = Vec::new();
-            for m in &results {
-                let (sid, _) = svc_paper::save_paper_metadata(conn, m, None)?;
-                out.push(strip_namespace(&sid));
-            }
-            Ok(out)
-        })?
-    } else {
-        Vec::new()
-    };
+    let saved = saved_ids(state, &results, b.save)?;
 
     let results: Vec<SearchResultOut> = results.into_iter().map(SearchResultOut::from).collect();
     Ok(json!({ "results": results, "saved_source_ids": saved }))
@@ -158,8 +172,9 @@ async fn arxiv_fetch(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiErr
     Ok(json!({ "paper": paper, "saved": b.save, "source_id": source_id }))
 }
 
-/// `POST /api/openalex/search` (1177–1187). `502` on any source error.
-async fn openalex_search(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
+/// `POST /api/openalex/search` (1177–1187). `502` on any source error. Never
+/// saves; `saved_source_ids` reports what the library already holds.
+async fn openalex_search(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     #[derive(Deserialize)]
     struct Body {
         query: String,
@@ -184,8 +199,9 @@ async fn openalex_search(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     )
     .await
     .map_err(upstream_502)?;
+    let saved = saved_ids(state, &results, false)?;
     let results: Vec<SearchResultOut> = results.into_iter().map(SearchResultOut::from).collect();
-    Ok(json!({ "results": results }))
+    Ok(json!({ "results": results, "saved_source_ids": saved }))
 }
 
 /// `POST /api/openalex/save` (1475–1489). `404`/`400`/`502` on fetch. The save is
@@ -349,6 +365,27 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(err.status, 422);
+    }
+
+    #[test]
+    fn saved_ids_reports_library_hits_as_stripped_ids() {
+        let st = state();
+        let results = vec![meta("2024-01-15", json!("http://x"), json!("cs.LG"))];
+
+        // Nothing stored yet -> nothing checked off.
+        assert!(saved_ids(&st, &results, false).unwrap().is_empty());
+
+        // save=true stores it; the same call reports it back.
+        assert_eq!(
+            saved_ids(&st, &results, true).unwrap(),
+            vec!["2204.12985".to_string()]
+        );
+        // Already in the library -> reported without saving again.
+        assert_eq!(
+            saved_ids(&st, &results, false).unwrap(),
+            vec!["2204.12985".to_string()]
+        );
+        assert!(saved_ids(&st, &[], false).unwrap().is_empty());
     }
 
     #[tokio::test]

@@ -59,10 +59,12 @@ export function ResultRow({ result, saved, onSave, onViewPdf }: ResultRowProps) 
           ) : (
             <input
               type="checkbox"
-              className="w-4 h-4 accent-[var(--color-accent)] cursor-pointer"
+              className="w-4 h-4 accent-[var(--color-accent)] cursor-pointer disabled:cursor-default"
               checked={isSaved}
+              disabled={isSaved}
               onChange={handleCheck}
-              aria-label="Save paper"
+              title={isSaved ? "Already in library" : "Save paper"}
+              aria-label={isSaved ? "Already in library" : "Save paper"}
             />
           )}
         </div>
