@@ -1,9 +1,10 @@
 import { useState, useRef, useMemo, useDeferredValue, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Upload, FileText, SearchX, FilterX } from "lucide-react";
 import { listPapers, deletePaper, searchLibrary } from "../api/papers";
+import type { PaperSort } from "../api/papers";
 import { listProjects, addPapersToProject, createProject } from "../api/projects";
 import { useSelectionStore } from "../stores/selection";
 import { useLibraryStore } from "../stores/library";
@@ -12,6 +13,7 @@ import type { Paper } from "../types/api";
 import { normalizeAuthors } from "../lib/papers";
 import { Spinner } from "../components/ui/spinner";
 import { Input } from "../components/ui/input";
+import { OptionSelect } from "../components/ui/select";
 import { formSubmitOnCtrlEnter } from "../lib/submitShortcut";
 import { Button } from "../components/ui/button";
 import { Dialog } from "../components/ui/dialog";
@@ -30,6 +32,15 @@ const FILTER_LABELS: { mode: FilterMode; label: string }[] = [
   { mode: "all", label: "All" },
   { mode: "has_pdf", label: "Has PDF" },
   { mode: "no_pdf", label: "No PDF" },
+];
+
+const SORT_OPTIONS: { value: PaperSort; label: string }[] = [
+  { value: "published_desc", label: "Newest first" },
+  { value: "published_asc", label: "Oldest first" },
+  { value: "added_desc", label: "Recently added" },
+  { value: "added_asc", label: "First added" },
+  { value: "title_asc", label: "Title A–Z" },
+  { value: "title_desc", label: "Title Z–A" },
 ];
 
 function matchesPaper(paper: Paper, query: string): boolean {
@@ -52,6 +63,8 @@ export default function LibraryPage() {
   const ftsEnabled = trimmedSearch.length >= 3;
   const filterMode = useLibraryStore((s) => s.filterMode);
   const setFilterMode = useLibraryStore((s) => s.setFilterMode);
+  const sort = useLibraryStore((s) => s.sort);
+  const setSort = useLibraryStore((s) => s.setSort);
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [projectPickerError, setProjectPickerError] = useState<string | null>(null);
   const [newProjectName, setNewProjectName] = useState("");
@@ -67,10 +80,14 @@ export default function LibraryPage() {
   const {
     data: papersData,
     isLoading,
+    isFetching: papersFetching,
     error,
   } = useQuery({
-    queryKey: ["papers"],
-    queryFn: () => listPapers(PAPER_FETCH_LIMIT, 0),
+    queryKey: ["papers", "list", sort],
+    queryFn: () => listPapers(PAPER_FETCH_LIMIT, 0, sort),
+    // The previous order stays on screen while the re-sorted page loads — so the
+    // header spinner is the only cue the list is being refetched.
+    placeholderData: keepPreviousData,
   });
 
   const {
@@ -223,6 +240,17 @@ export default function LibraryPage() {
     [navigate]
   );
 
+  // Re-sorting keeps the row count identical, so the browser never clamps
+  // scrollTop — without this the user stays at row 800 of a list that now holds
+  // entirely different papers there.
+  const handleSortChange = useCallback(
+    (next: PaperSort) => {
+      setSort(next);
+      scrollRef.current?.scrollTo({ top: 0 });
+    },
+    [setSort]
+  );
+
   function handleDeleteRequest() {
     if (deleteMutation.isPending) return;
     const visibleIds = new Set(filtered.map((p) => p.source_id));
@@ -293,7 +321,7 @@ export default function LibraryPage() {
           </div>
           <div className="flex-1" />
           <span className="flex items-center gap-1.5 text-muted text-sm shrink-0">
-            {ftsEnabled && ftsFetching && <Spinner size={12} />}
+            {((ftsEnabled && ftsFetching) || papersFetching) && <Spinner size={12} />}
           </span>
           <Input
             placeholder="Search by title, abstract, full text, or notes…"
@@ -327,6 +355,14 @@ export default function LibraryPage() {
               {label}
             </button>
           ))}
+          <div className="flex-1" />
+          <OptionSelect
+            aria-label="Sort papers by"
+            size="sm"
+            value={sort}
+            onChange={handleSortChange}
+            options={SORT_OPTIONS}
+          />
         </div>
       </div>
 
