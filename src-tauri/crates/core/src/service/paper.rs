@@ -322,6 +322,11 @@ pub fn list_deleted(conn: &Connection) -> Result<Vec<DeletedPaperDetails>> {
     Ok(out)
 }
 
+/// Which of `source_ids` (namespaced) are already in the library.
+pub fn existing_source_ids(conn: &Connection, source_ids: &[String]) -> Result<Vec<String>> {
+    store::existing_source_ids(conn, source_ids)
+}
+
 /// True if the paper exists in soft-deleted state.
 pub fn is_paper_deleted(conn: &Connection, source_id: &str) -> Result<bool> {
     store::is_paper_deleted(conn, source_id)

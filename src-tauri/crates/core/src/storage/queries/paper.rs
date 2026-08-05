@@ -819,6 +819,20 @@ pub fn hard_delete_paper(conn: &mut Connection, source_id: &str) -> Result<Optio
     })
 }
 
+/// Which of `source_ids` are stored and active. Ids are namespaced
+/// (`arxiv:2204.12985`); unknown ids are simply absent from the result.
+pub fn existing_source_ids(conn: &Connection, source_ids: &[String]) -> Result<Vec<String>> {
+    if source_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = vec!["?"; source_ids.len()].join(",");
+    let mut stmt = conn.prepare(&format!(
+        "SELECT DISTINCT source_id FROM papers WHERE source_id IN ({placeholders})"
+    ))?;
+    let rows = stmt.query_map(params_from_iter(source_ids), |r| r.get(0))?;
+    Ok(rows.collect::<std::result::Result<Vec<String>, _>>()?)
+}
+
 /// `is_paper_deleted` — true if a PAPER_ROOTS row exists with STATUS='deleted'.
 pub fn is_paper_deleted(conn: &Connection, source_id: &str) -> Result<bool> {
     let row: Option<i64> = conn
@@ -1484,5 +1498,27 @@ mod tests {
         assert!(find_doi_version_candidates(&conn, no_doi_fk)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn existing_source_ids_reports_only_active_stored_papers() {
+        let mut conn = open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        save_paper_metadata(&mut conn, &meta("arxiv:2204.12985", 1), None).unwrap();
+        save_paper_metadata(&mut conn, &meta("arxiv:2204.12985", 2), None).unwrap();
+        save_paper_metadata(&mut conn, &meta("openalex:W123", 1), None).unwrap();
+        soft_delete_paper(&mut conn, "openalex:W123").unwrap();
+
+        let found = existing_source_ids(
+            &conn,
+            &[
+                "arxiv:2204.12985".into(), // stored, two versions -> reported once
+                "openalex:W123".into(),    // trashed -> absent
+                "arxiv:1111.00001".into(), // never saved -> absent
+            ],
+        )
+        .unwrap();
+        assert_eq!(found, vec!["arxiv:2204.12985".to_string()]);
+        assert!(existing_source_ids(&conn, &[]).unwrap().is_empty());
     }
 }
