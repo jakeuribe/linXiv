@@ -92,6 +92,12 @@ pub enum ProjectCmd {
     HardDelete { project_id: i64 },
     /// Add a paper to a project
     AddPaper { project_id: i64, source_id: String },
+    /// Add several papers to a project in one call
+    AddPapers {
+        project_id: i64,
+        #[arg(required = true, num_args = 1..)]
+        source_ids: Vec<String>,
+    },
     /// Remove a paper from a project
     RemovePaper { project_id: i64, source_id: String },
     /// Export a project to a .lxproj archive
@@ -315,6 +321,37 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                 fail(format!("Paper {source_id} not found in database"));
             }
             output(&json!({ "project_id": project_id, "source_id": source_id }));
+        }
+
+        // POST /api/projects/{id}/papers/bulk: partial success — `failed` holds the
+        // ids that resolved to no paper root, the rest are linked and reported added.
+        ProjectCmd::AddPapers {
+            project_id,
+            source_ids,
+        } => {
+            // `failed` comes back deduped, so dedup here too — otherwise a repeated
+            // id is reported added twice and won't reconcile against paper_count.
+            let mut seen = std::collections::HashSet::new();
+            let source_ids: Vec<String> = source_ids
+                .iter()
+                .map(|s| as_source_id(s, "arxiv"))
+                .filter(|s| seen.insert(s.clone()))
+                .collect();
+            let failed = match project::add_papers(&ctx.conn, project_id, &source_ids) {
+                Ok(failed) => failed,
+                Err(linxiv_core::error::CoreError::ProjectNotFound) => {
+                    fail(format!("Project {project_id} not found"))
+                }
+                Err(e @ linxiv_core::error::CoreError::ProjectDeleted(_)) => fail(e),
+                Err(e) => return Err(e.into()),
+            };
+            let added: Vec<&String> = source_ids.iter().filter(|s| !failed.contains(s)).collect();
+            output(&json!({
+                "project_id": project_id,
+                "ok": failed.is_empty(),
+                "added": added,
+                "failed": failed,
+            }));
         }
 
         ProjectCmd::RemovePaper {
