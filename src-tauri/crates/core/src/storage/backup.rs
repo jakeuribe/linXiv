@@ -121,6 +121,23 @@ pub fn validate_backup_source(src: &Path) -> Result<()> {
     Ok(())
 }
 
+/// First unused `<db>.pre-restore`, then `.pre-restore.1`, `.2`, … Restores are
+/// rare, and clobbering the snapshot would make a second restore erase the only
+/// copy of the library the first one replaced.
+fn free_pre_restore_path(db_path: &Path) -> PathBuf {
+    let base = db_path.with_extension("pre-restore");
+    if !base.exists() {
+        return base;
+    }
+    for n in 1u32.. {
+        let candidate = db_path.with_extension(format!("pre-restore.{n}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    unreachable!("u32 range is exhausted only if every snapshot slot is taken")
+}
+
 /// Replace the DB at `db_path` with the snapshot at `src`, after checking `src`
 /// is a readable SQLite DB. Refuses (`Conflict`) while another SQLite handle
 /// holds the DB — see `ensure_no_live_connections` for what the probe can and
@@ -137,13 +154,7 @@ pub fn restore(src: &Path, db_path: &Path) -> Result<()> {
     // rollback-journal-mode DB stays crash-consistent even if the later rename
     // fails. Snapshot failure aborts the restore — the user keeps a fallback.
     if db_path.exists() {
-        let pre_restore = db_path.with_extension("pre-restore");
-        if pre_restore.exists() {
-            tracing::warn!(
-                "overwriting previous pre-restore snapshot at {}",
-                pre_restore.display()
-            );
-        }
+        let pre_restore = free_pre_restore_path(db_path);
         std::fs::copy(db_path, &pre_restore).map_err(|e| {
             CoreError::Internal(format!(
                 "could not snapshot the existing database before restore \
@@ -213,6 +224,41 @@ mod tests {
         let junk = dir.join("junk.db");
         std::fs::write(&junk, b"not a database").unwrap();
         assert!(restore(&junk, &dest).is_err());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // Two restores in a row must not destroy the library the first one replaced:
+    // the second snapshot goes to a fresh slot rather than over the first.
+    #[test]
+    fn repeated_restore_keeps_every_pre_restore_snapshot() {
+        let dir = std::env::temp_dir().join(format!("linxiv-prerestore-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let live = dir.join("papers.db");
+        let donor = dir.join("donor.db");
+        make_linxiv_like_db(&live);
+        make_linxiv_like_db(&donor);
+        // Mark the original so we can prove it survives both restores.
+        Connection::open(&live)
+            .unwrap()
+            .execute("INSERT INTO PAPER (id) VALUES (4242)", [])
+            .unwrap();
+
+        restore(&donor, &live).unwrap();
+        restore(&donor, &live).unwrap();
+
+        let first = dir.join("papers.pre-restore");
+        let second = dir.join("papers.pre-restore.1");
+        assert!(first.exists() && second.exists(), "both snapshots kept");
+        let n: i64 = Connection::open(&first)
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM PAPER WHERE id = 4242", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(n, 1, "the original library is still recoverable");
 
         std::fs::remove_dir_all(&dir).ok();
     }
