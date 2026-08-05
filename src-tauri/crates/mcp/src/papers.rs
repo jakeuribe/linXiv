@@ -17,7 +17,7 @@ use serde_json::Value;
 
 use linxiv_core::error::CoreError;
 use linxiv_core::models::PaperMetadata;
-use linxiv_core::service::paper as svc_paper;
+use linxiv_core::service::paper::{self as svc_paper, PaperSort};
 use linxiv_core::sources::arxiv_downloads;
 use linxiv_core::sources::fetch as svc_fetch;
 use linxiv_core::storage::queries::paper as store_paper;
@@ -80,6 +80,34 @@ pub struct ListPapersParams {
     /// Filter by arXiv primary category (e.g. "cs.LG").
     #[serde(default)]
     pub category: Option<String>,
+    /// Sort metric: publication date (default), when the paper was added
+    /// locally, or title.
+    #[serde(default)]
+    pub sort: Option<SortKey>,
+    /// Descending order. Defaults per metric: newest first for dates, A–Z for
+    /// titles.
+    #[serde(default)]
+    pub desc: Option<bool>,
+}
+
+/// The `PaperSort` metrics, as a schema enum so the tool advertises the valid
+/// values instead of silently coercing a typo to the default.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SortKey {
+    Published,
+    Added,
+    Title,
+}
+
+impl From<SortKey> for PaperSort {
+    fn from(k: SortKey) -> Self {
+        match k {
+            SortKey::Published => PaperSort::Published,
+            SortKey::Added => PaperSort::Added,
+            SortKey::Title => PaperSort::Title,
+        }
+    }
 }
 
 /// Tools that take only a paper source id.
@@ -174,19 +202,34 @@ impl Server {
         json_ok(&meta)
     }
 
-    #[tool(description = "List papers stored in the local database.")]
+    #[tool(
+        description = "List papers stored in the local database, optionally sorted by publication \
+                       date, date added, or title."
+    )]
     pub async fn list_papers(
         &self,
         Parameters(ListPapersParams {
             limit,
             offset,
             category,
+            sort,
+            desc,
         }): Parameters<ListPapersParams>,
     ) -> Result<String, ErrorData> {
+        let sort: PaperSort = sort.map(Into::into).unwrap_or_default();
+        let desc = desc.unwrap_or_else(|| sort.default_desc());
         // `list_paper_details` defaults latest_only=True.
         let papers = self
             .with_conn(|conn| {
-                svc_paper::list_papers(conn, true, limit, offset, category.as_deref())
+                svc_paper::list_papers_sorted(
+                    conn,
+                    true,
+                    limit,
+                    offset,
+                    category.as_deref(),
+                    sort,
+                    desc,
+                )
             })
             .map_err(core_err)?;
         json_ok(&papers)

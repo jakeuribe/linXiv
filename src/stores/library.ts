@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import type { PaperSort } from "../api/papers";
 
 export type LibraryFilterMode = "all" | "has_pdf" | "no_pdf";
 
@@ -7,6 +8,8 @@ interface LibraryState {
   setSearch: (search: string) => void;
   filterMode: LibraryFilterMode;
   setFilterMode: (mode: LibraryFilterMode) => void;
+  sort: PaperSort;
+  setSort: (sort: PaperSort) => void;
 }
 
 // Session-scoped (not persisted): the Library toolbar state survives navigating
@@ -14,6 +17,7 @@ interface LibraryState {
 export const useLibraryStore = create<LibraryState>((set) => ({
   search: "",
   filterMode: "all",
+  sort: "published_desc",
 
   setSearch(search) {
     set({ search });
@@ -21,5 +25,9 @@ export const useLibraryStore = create<LibraryState>((set) => ({
 
   setFilterMode(mode) {
     set({ filterMode: mode });
+  },
+
+  setSort(sort) {
+    set({ sort });
   },
 }));

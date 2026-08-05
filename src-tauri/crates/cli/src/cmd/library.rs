@@ -4,7 +4,7 @@
 use clap::{Args, ValueEnum};
 
 use linxiv_core::config;
-use linxiv_core::service::paper as svc_paper;
+use linxiv_core::service::paper::{self as svc_paper, PaperSort};
 use linxiv_core::sources::fetch as svc_fetch;
 
 use crate::ctx::Ctx;
@@ -39,6 +39,14 @@ pub struct FetchArgs {
     pub source: Source,
 }
 
+/// Library sort metrics — the variant names are the `PaperSort` wire keys.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum SortKey {
+    Published,
+    Added,
+    Title,
+}
+
 #[derive(Args)]
 pub struct ListArgs {
     /// Max papers to return
@@ -50,6 +58,18 @@ pub struct ListArgs {
     /// Filter by category
     #[arg(long)]
     pub category: Option<String>,
+    /// Sort metric
+    #[arg(long, value_enum, default_value_t = SortKey::Published)]
+    pub sort: SortKey,
+    /// Sort direction (default: newest first for dates, A–Z for titles)
+    #[arg(long, value_enum)]
+    pub dir: Option<Dir>,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum Dir {
+    Asc,
+    Desc,
 }
 
 // cmd_search: search the source, dump the metadata list. The `[search] {e}`
@@ -106,7 +126,20 @@ pub async fn fetch(args: FetchArgs, ctx: &mut Ctx) -> anyhow::Result<()> {
 // cmd_list: latest-version rows, optional category/limit/offset filter.
 // Python dumps the RAW `latest_papers` view rows, not curated structs.
 pub async fn list(args: ListArgs, ctx: &mut Ctx) -> anyhow::Result<()> {
-    let papers = list_papers_raw(&ctx.conn, args.limit, args.offset, args.category.as_deref())?;
+    let sort = PaperSort::from_key(args.sort.to_possible_value().unwrap().get_name());
+    let desc = match args.dir {
+        Some(Dir::Desc) => true,
+        Some(Dir::Asc) => false,
+        None => sort.default_desc(),
+    };
+    let papers = list_papers_raw(
+        &ctx.conn,
+        args.limit,
+        args.offset,
+        args.category.as_deref(),
+        sort,
+        desc,
+    )?;
     output(&papers);
     Ok(())
 }
@@ -126,11 +159,14 @@ fn list_papers_raw(
     limit: Option<i64>,
     offset: i64,
     category: Option<&str>,
+    sort: PaperSort,
+    desc: bool,
 ) -> rusqlite::Result<Vec<serde_json::Value>> {
     use rusqlite::types::ValueRef;
 
-    let (sql, params) =
-        linxiv_core::storage::queries::paper::list_papers_sql(true, limit, offset, category);
+    let (sql, params) = linxiv_core::storage::queries::paper::list_papers_sql(
+        true, limit, offset, category, sort, desc,
+    );
 
     let mut stmt = conn.prepare(&sql)?;
     let cols: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
