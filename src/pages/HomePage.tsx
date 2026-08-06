@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import { getSettings, getStats } from "../api/settings";
 import { dismissFeedEntry, getFeed } from "../api/feed";
 import { fetchArxiv } from "../api/search";

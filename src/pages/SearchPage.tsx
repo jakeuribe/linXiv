@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import { Spinner } from "../components/ui/spinner";
 import { QueryBuilder, makeClause } from "../components/search/QueryBuilder";
 import { ResultRow } from "../components/search/ResultRow";

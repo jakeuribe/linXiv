@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { useParams, useNavigate, useLocation } from "react-router-dom";
+import { useParams, useNavigate, useLocation } from "react-router";
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { Document, Page } from "react-pdf";
 import type { PDFDocumentProxy } from "pdfjs-dist";
@@ -1005,7 +1005,7 @@ interface PdfPaneProps {
   onPreview: () => void;
   savePdfMutation: Mutation<string>;
   linkPdfMutation: Mutation<{ sourceId: string; file: File }>;
-  linkPdfInputRef: React.RefObject<HTMLInputElement>;
+  linkPdfInputRef: React.RefObject<HTMLInputElement | null>;
   showPdfPreview: boolean;
   previewNumPages: number;
   setPreviewNumPages: (n: number) => void;
