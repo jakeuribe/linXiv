@@ -30,7 +30,7 @@ jobs:
             args: ${{ contains(github.ref_name, '-') && '--bundles nsis' || '' }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # crates/p2p is a git submodule; ci.yml already does this.
           submodules: recursive
@@ -102,7 +102,7 @@ jobs:
             librsvg2-dev \
             patchelf
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: "npm"
