@@ -14,7 +14,7 @@ jobs:
     name: Rust (cargo test + fmt)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
@@ -46,11 +46,13 @@ jobs:
     name: Frontend (tsc + test)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           # npm test uses --experimental-transform-types, which needs Node 22+.
           node-version: "22"
       - run: npm ci
-      - run: npx tsc --noEmit
+      # `npm run build` is `tsc && vite build`; the bundle step catches module
+      # resolution a --noEmit typecheck passes over (subpath exports, dep majors).
+      - run: npm run build
       - run: npm test
