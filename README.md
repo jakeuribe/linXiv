@@ -43,6 +43,16 @@ Prebuilt installers for Linux, macOS, and Windows are on the [releases page](htt
 
 The macOS and Windows builds are unsigned. On macOS, right-click the app → **Open** to get past Gatekeeper the first time. On Windows, click **More info** → **Run anyway** on the SmartScreen prompt.
 
+### Installing via pip install
+
+You can install linxiv via pip! It ships with a small API to programatically control your database in python and can be installedi as such
+
+```sh
+pip install linxiv          # everything below
+pip install "linxiv[app]"   # same, extras are opt-in markers only
+pip install "linxiv[cli]"
+```
+
 To build from source instead, start at [Clone](#clone).
 
 ## Clone
