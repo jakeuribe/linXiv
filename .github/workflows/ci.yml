@@ -52,5 +52,7 @@ jobs:
           # npm test uses --experimental-transform-types, which needs Node 22+.
           node-version: "22"
       - run: npm ci
-      - run: npx tsc --noEmit
+      # `npm run build` is `tsc && vite build`; the bundle step catches module
+      # resolution a --noEmit typecheck passes over (subpath exports, dep majors).
+      - run: npm run build
       - run: npm test
