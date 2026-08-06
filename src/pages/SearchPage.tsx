@@ -226,10 +226,9 @@ const { data: settings } = useQuery({ queryKey: ["settings"], queryFn: getSettin
       openAlexSearch.mutate({ query, sort: prefs.openAlexSort }, {
         onSuccess: (data) => {
           const merged = mode === "append" ? mergeResults(base, data.results) : data.results;
-          const newIds = new Set(data.results.map((r) => r.source_id));
           const mergedSaved = mode === "append"
-            ? new Set(baseSaved)
-            : new Set([...baseSaved].filter((id) => newIds.has(id)));
+            ? new Set([...baseSaved, ...data.saved_source_ids])
+            : new Set(data.saved_source_ids);
           setResults(merged);
           setSavedIds(mergedSaved);
           persistState(query, source, maxResults, merged, [...mergedSaved], prefs);

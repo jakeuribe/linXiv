@@ -18,6 +18,7 @@
 
 use crate::error::{CoreError, Result};
 use crate::models::{PaperDetails, PaperDetailsAll, PaperIn, PaperMetadata};
+pub use crate::storage::queries::paper::PaperSort;
 use crate::storage::queries::{paper as store, project as proj_store};
 use chrono::{NaiveDate, NaiveDateTime};
 use rusqlite::Connection;
@@ -322,6 +323,11 @@ pub fn list_deleted(conn: &Connection) -> Result<Vec<DeletedPaperDetails>> {
     Ok(out)
 }
 
+/// Which of `source_ids` (namespaced) are already in the library.
+pub fn existing_source_ids(conn: &Connection, source_ids: &[String]) -> Result<Vec<String>> {
+    store::existing_source_ids(conn, source_ids)
+}
+
 /// True if the paper exists in soft-deleted state.
 pub fn is_paper_deleted(conn: &Connection, source_id: &str) -> Result<bool> {
     store::is_paper_deleted(conn, source_id)
@@ -340,6 +346,19 @@ pub fn list_papers(
     category: Option<&str>,
 ) -> Result<Vec<PaperDetails>> {
     store::list_papers(conn, latest_only, limit, offset, category)
+}
+
+/// `list_papers` under a caller-chosen ordering (the Library page's sort).
+pub fn list_papers_sorted(
+    conn: &Connection,
+    latest_only: bool,
+    limit: Option<i64>,
+    offset: i64,
+    category: Option<&str>,
+    sort: PaperSort,
+    desc: bool,
+) -> Result<Vec<PaperDetails>> {
+    store::list_papers_sorted(conn, latest_only, limit, offset, category, sort, desc)
 }
 
 /// Sorted distinct primary categories across latest papers (`db.get_categories`).

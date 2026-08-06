@@ -13,12 +13,24 @@ function linxivUrl(path: string): string {
   return `${base}/${path}`;
 }
 
+// `{metric}_{dir}`; the server sorts (and indexes) by metric, so the ordering
+// holds across the whole library, not just the fetched window.
+export type PaperSort =
+  | "published_desc"
+  | "published_asc"
+  | "added_desc"
+  | "added_asc"
+  | "title_asc"
+  | "title_desc";
+
 export async function listPapers(
   limit = 200,
-  offset = 0
+  offset = 0,
+  sort?: PaperSort
 ): Promise<{ papers: Paper[] }> {
+  const order = sort ? `&sort=${sort.split("_")[0]}&dir=${sort.split("_")[1]}` : "";
   return apiFetch<{ papers: Paper[] }>(
-    `/api/papers?limit=${limit}&offset=${offset}`
+    `/api/papers?limit=${limit}&offset=${offset}${order}`
   );
 }
 

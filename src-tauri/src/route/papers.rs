@@ -43,12 +43,21 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
     }
 }
 
-/// `GET /api/papers?limit=&offset=` — `api_list_papers`.
+/// `GET /api/papers?limit=&offset=&sort=&dir=` — `api_list_papers`.
+/// `sort` is one of `published` (default) / `added` / `title`; `dir` is
+/// `asc`/`desc`, defaulting per metric (newest first, titles A–Z).
 fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let limit = ctx.q_i64("limit").unwrap_or(200).clamp(1, 5000);
     let offset = ctx.q_i64("offset").unwrap_or(0).max(0);
-    let papers =
-        state.with_conn(|conn| svc_paper::list_papers(conn, true, Some(limit), offset, None))?;
+    let sort = svc_paper::PaperSort::from_key(ctx.q("sort").unwrap_or_default());
+    let desc = match ctx.q("dir") {
+        Some("asc") => false,
+        Some("desc") => true,
+        _ => sort.default_desc(),
+    };
+    let papers = state.with_conn(|conn| {
+        svc_paper::list_papers_sorted(conn, true, Some(limit), offset, None, sort, desc)
+    })?;
     Ok(json!({ "papers": papers }))
 }
 
