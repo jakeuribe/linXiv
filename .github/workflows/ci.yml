@@ -9,6 +9,9 @@ on:
       - main
       - dev
 
+permissions:
+  contents: read
+
 jobs:
   rust:
     name: Rust (cargo test + fmt)
