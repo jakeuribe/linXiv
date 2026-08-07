@@ -53,7 +53,7 @@ pub async fn run(cmd: AuthorCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             result["papers"] = serde_json::to_value(&previews)?;
             output(&result);
         }
-        // cmd_author_update: 404 first, then require at least one field, then partial update.
+        // cmd_author_update: update_fields owns the "exists" + "at least one field" guards.
         AuthorCmd::Update {
             author_id,
             full_name,
@@ -61,13 +61,6 @@ pub async fn run(cmd: AuthorCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             last_name,
             orcid,
         } => {
-            if svc_author::get(&ctx.conn, &by_id(author_id))?.is_none() {
-                fail(format!("Author {author_id} not found"));
-            }
-            if full_name.is_none() && first_name.is_none() && last_name.is_none() && orcid.is_none()
-            {
-                fail("at least one of --full-name, --first-name, --last-name, or --orcid must be provided");
-            }
             svc_author::update_fields(
                 &ctx.conn,
                 author_id,
@@ -75,18 +68,13 @@ pub async fn run(cmd: AuthorCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                 first_name.as_deref(),
                 last_name.as_deref(),
                 orcid.as_deref(),
-            )?;
+            )
+            .unwrap_or_else(|e| fail(e));
             output(&json!({ "updated_author_id": author_id }));
         }
-        // cmd_author_delete: blocked while linked to any paper.
+        // cmd_author_delete: svc_author::delete owns the "exists" + "still linked" guards.
         AuthorCmd::Delete { author_id } => {
-            let link_count = svc_author::count_paper_links(&ctx.conn, author_id)?;
-            if link_count > 0 {
-                fail(format!(
-                    "Author {author_id} is linked to {link_count} paper(s); unlink first"
-                ));
-            }
-            svc_author::delete(&mut ctx.conn, &by_id(author_id))?;
+            svc_author::delete(&ctx.conn, &by_id(author_id)).unwrap_or_else(|e| fail(e));
             output(&json!({ "deleted_author_id": author_id }));
         }
     }

@@ -3,7 +3,6 @@
 use clap::Subcommand;
 use serde_json::json;
 
-use linxiv_core::models::Status;
 use linxiv_core::service::paper::{self as svc_paper, Paper};
 use linxiv_core::service::project::{self as svc_project, Project};
 
@@ -35,12 +34,7 @@ pub async fn run(cmd: TrashCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         // cmd_trash_restore -> _do_paper_restore
         TrashCmd::Restore { source_id } => {
             let source_id = as_source_id(&source_id, "arxiv");
-            if !svc_paper::is_paper_deleted(&ctx.conn, &source_id)? {
-                fail(format!(
-                    "Paper {} not found in trash",
-                    crate::output::pyrepr(&source_id)
-                ));
-            }
+            svc_paper::require_trashed(&ctx.conn, &source_id).unwrap_or_else(|e| fail(e));
             let (pdf_path, project_fks) = svc_paper::restore(
                 &mut ctx.conn,
                 &Paper {
@@ -54,15 +48,10 @@ pub async fn run(cmd: TrashCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                 "project_fks": project_fks,
             }));
         }
-        // cmd_trash_hard_delete -> is_paper_deleted guard then _do_paper_hard_delete
+        // cmd_trash_hard_delete -> require_trashed guard then _do_paper_hard_delete
         TrashCmd::HardDelete { source_id } => {
             let source_id = as_source_id(&source_id, "arxiv");
-            if !svc_paper::is_paper_deleted(&ctx.conn, &source_id)? {
-                fail(format!(
-                    "Paper {} not found in trash",
-                    crate::output::pyrepr(&source_id)
-                ));
-            }
+            svc_paper::require_trashed(&ctx.conn, &source_id).unwrap_or_else(|e| fail(e));
             // _do_paper_hard_delete: get_paper_root None -> not found; here unreachable
             // after the guard, but mirror the message off hard_delete's None return.
             if svc_paper::hard_delete(
@@ -83,10 +72,7 @@ pub async fn run(cmd: TrashCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         }
         // cmd_trash_restore_project
         TrashCmd::RestoreProject { project_id } => {
-            let details = resolve_project_or_exit(ctx, project_id)?;
-            if details.status != Status::Deleted {
-                fail(format!("Project {project_id} is not in trash"));
-            }
+            svc_project::require_trashed(&ctx.conn, project_id).unwrap_or_else(|e| fail(e));
             svc_project::restore(
                 &ctx.conn,
                 &Project {
@@ -97,10 +83,7 @@ pub async fn run(cmd: TrashCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         }
         // cmd_trash_hard_delete_project
         TrashCmd::HardDeleteProject { project_id } => {
-            let details = resolve_project_or_exit(ctx, project_id)?;
-            if details.status != Status::Deleted {
-                fail(format!("Project {project_id} is not in trash"));
-            }
+            svc_project::require_trashed(&ctx.conn, project_id).unwrap_or_else(|e| fail(e));
             svc_project::hard_delete(
                 &mut ctx.conn,
                 &Project {

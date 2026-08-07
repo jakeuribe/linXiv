@@ -29,6 +29,21 @@ pub fn strip_namespace(source_id: &str) -> String {
         .to_string()
 }
 
+/// The namespace every arXiv `source_id` carries. Identity, not provenance:
+/// `PAPER_META.PROVIDER` is blank on some import paths and defaults to `'arxiv'`
+/// for rows predating the column, so it cannot answer "is this an arXiv paper".
+pub const ARXIV_ID_PREFIX: &str = "arxiv:";
+
+/// The path segment an arXiv PDF link carries; the TeX tarball URL is derived
+/// by swapping it for `/src/`.
+pub const ARXIV_PDF_MARKER: &str = "/pdf/";
+
+/// Whether `source_id` names a paper arXiv hosts. The one home for the test —
+/// SQL callers build their pattern from [`ARXIV_ID_PREFIX`].
+pub fn is_arxiv_source_id(source_id: &str) -> bool {
+    source_id.starts_with(ARXIV_ID_PREFIX)
+}
+
 /// The `date.min` sentinel (`0001-01-01`) used to mark "no published date".
 pub(crate) fn date_min() -> NaiveDate {
     NaiveDate::from_ymd_opt(1, 1, 1).expect("0001-01-01 is a valid date")

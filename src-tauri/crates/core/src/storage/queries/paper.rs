@@ -4,7 +4,7 @@ use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row, Tra
 use serde::Serialize;
 
 use crate::error::{CoreError, Result};
-use crate::models::{PaperDetails, PaperMetadata};
+use crate::models::{PaperDetails, PaperMetadata, ARXIV_ID_PREFIX, ARXIV_PDF_MARKER};
 use crate::storage::db::{
     bool_from_sql, date_from_sql, date_to_sql, list_from_sql, list_to_sql, timestamp_from_sql,
     transaction,
@@ -739,18 +739,19 @@ pub fn mark_pdf_saved(
 }
 
 /// Rows the backfill works on: latest-version active papers with no TeX source
-/// yet that `service::paper::source_fetch_url` would accept — arXiv, carrying a
-/// `/pdf/` link to derive the tarball URL from. Rows it would reject never leave
-/// the list, so listing them makes the backlog readout plateau above zero and
-/// puts them in front of the worker on every rebuild.
+/// yet that `service::paper::source_fetch_url` would accept — an `arxiv:`
+/// source_id carrying a `/pdf/` link to derive the tarball URL from. Rows it
+/// would reject never leave the list, so listing them makes the backlog readout
+/// plateau above zero and puts them in front of the worker on every rebuild.
 ///
-/// GLOB, not LIKE: LIKE is ASCII-case-insensitive in SQLite, while the Rust-side
-/// rule is a case-sensitive `contains("/pdf/")`.
-macro_rules! backfill_where {
-    () => {
+/// Both patterns are built from the constants `source_fetch_url` matches on, so
+/// the two rules cannot drift apart. GLOB, not LIKE: LIKE is ASCII-case-
+/// insensitive in SQLite, while the Rust-side rule is case-sensitive.
+fn backfill_where() -> String {
+    format!(
         "FROM latest_papers WHERE COALESCE(downloaded_source, 0) = 0 \
-         AND source = 'arxiv' AND url GLOB '*/pdf/*'"
-    };
+         AND source_id GLOB '{ARXIV_ID_PREFIX}*' AND url GLOB '*{ARXIV_PDF_MARKER}*'"
+    )
 }
 
 /// SOURCE_IDs of those rows, oldest-published first. Returns ids ONLY:
@@ -758,10 +759,9 @@ macro_rules! backfill_where {
 /// large library would materialise the whole library just to filter it out. The
 /// caller loads each paper individually instead.
 pub fn full_text_backfill_candidates(conn: &Connection) -> Result<Vec<String>> {
-    let mut stmt = conn.prepare(concat!(
-        "SELECT source_id ",
-        backfill_where!(),
-        " ORDER BY published ASC, source_id ASC"
+    let mut stmt = conn.prepare(&format!(
+        "SELECT source_id {} ORDER BY published ASC, source_id ASC",
+        backfill_where()
     ))?;
     let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -771,7 +771,7 @@ pub fn full_text_backfill_candidates(conn: &Connection) -> Result<Vec<String>> {
 /// materialising an id per row — the backlog readout polls this.
 pub fn full_text_backfill_count(conn: &Connection) -> Result<i64> {
     Ok(
-        conn.query_row(concat!("SELECT COUNT(*) ", backfill_where!()), [], |r| {
+        conn.query_row(&format!("SELECT COUNT(*) {}", backfill_where()), [], |r| {
             r.get(0)
         })?,
     )

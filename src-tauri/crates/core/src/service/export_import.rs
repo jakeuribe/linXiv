@@ -535,7 +535,9 @@ fn commit_body(
                     )?;
                 }
                 if on_conflict == OnConflict::Overwrite {
-                    paper::repair_paper(conn, root.source_fk, &pe.to_metadata())?;
+                    // Storage-level: an archive replays already-stored metadata, so it
+                    // is not held to the Paper Repair input rules the front doors apply.
+                    paperq::repair_paper(conn, root.source_fk, &pe.to_metadata())?;
                 }
                 // UNION the archive paper's tags onto the existing paper (Python
                 // `_paper.add_paper_tags`) so a merge-import never discards them.

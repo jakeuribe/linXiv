@@ -9,7 +9,6 @@ use linxiv_core::models::{NoteIn, NoteUpdateIn};
 use linxiv_core::service::editor_project as svc_editor;
 use linxiv_core::service::note::{self as svc_note, Note, Notes};
 use linxiv_core::service::paper as svc_paper;
-use linxiv_core::service::vault as svc_vault;
 use linxiv_core::storage::queries::paper as store_paper;
 
 use crate::route::{path_i64, ApiError, ReqCtx};
@@ -69,7 +68,7 @@ fn get(state: &AppState, id: &str) -> Result<Value, ApiError> {
     })
 }
 
-/// `POST /api/notes` — `api_note_create`. Ensures the paper root, inserts the note.
+/// `POST /api/notes` — `api_note_create`. 404 if the paper is not in the library.
 fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     #[derive(Deserialize)]
     struct Body {
@@ -83,13 +82,12 @@ fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     }
     let b: Body = ctx.parse_body()?;
     // Pydantic NoteCreate.source_id is Field(min_length=1): an empty source_id is a
-    // 422 before the handler. Without this, ensure_paper_root("") would create a
-    // junk PAPER_ROOTS row keyed on "". (Checked pre-trim, like pydantic.)
+    // 422 before the handler, not a 404. (Checked pre-trim, like pydantic.)
     if b.source_id.is_empty() {
         return Err(ApiError::new(422, "source_id must not be empty"));
     }
     state.with_conn(|conn| {
-        let source_fk = svc_paper::ensure_paper_root(conn, b.source_id.trim())?;
+        let source_fk = svc_paper::resolve_source_fk(conn, &b.source_id)?;
         let note_id = svc_note::create(
             conn,
             &NoteIn {
@@ -129,27 +127,15 @@ fn update(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     })
 }
 
-/// `DELETE /api/notes/{id}` — `api_note_delete`. Resolve the editor-project flag
-/// BEFORE the delete (the frontmatter must still be readable), then drop the vault.
+/// `DELETE /api/notes/{id}` — `api_note_delete`. Row + vault tree drop together.
 fn delete(state: &AppState, id: &str) -> Result<Value, ApiError> {
     let note_id = path_i64(id)?;
-    let is_editor_project = state.with_conn(|conn| -> Result<bool, ApiError> {
-        let is_editor = svc_editor::get_meta(conn, note_id)?.is_some();
-        if !svc_note::delete(
-            conn,
-            &Note {
-                note_id: Some(note_id),
-            },
-        )? {
+    state.with_conn(|conn| {
+        if !svc_editor::delete_note(conn, &state.vault_root, note_id)? {
             return Err(ApiError::new(404, "Note not found"));
         }
-        Ok(is_editor)
-    })?;
-    if is_editor_project {
-        // Vault dir layout mirrors core's private `vault_root`: `<vault>/note_<id>`.
-        svc_vault::delete_vault(&state.vault_root.join(format!("note_{note_id}")));
-    }
-    Ok(json!({ "ok": true }))
+        Ok(json!({ "ok": true }))
+    })
 }
 
 #[cfg(test)]
@@ -181,6 +167,12 @@ mod tests {
         .await
     }
 
+    /// Notes attach to a paper already in the library, so tests seed its root.
+    fn seed_paper(st: &AppState, source_id: &str) {
+        st.with_conn(|conn| svc_paper::ensure_paper_root(conn, source_id))
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn list_unknown_paper_returns_empty_not_404() {
         let v = req(&state(), "GET", "/api/notes?source_id=arxiv:404", None)
@@ -198,6 +190,7 @@ mod tests {
     #[tokio::test]
     async fn create_then_list_roundtrip() {
         let st = state();
+        seed_paper(&st, "arxiv:1");
         let created = req(
             &st,
             "POST",
@@ -216,6 +209,7 @@ mod tests {
     #[tokio::test]
     async fn get_returns_note_then_404_for_missing() {
         let st = state();
+        seed_paper(&st, "arxiv:1");
         req(
             &st,
             "POST",
@@ -229,6 +223,26 @@ mod tests {
         assert_eq!(got["note"]["content"], "c");
         let err = req(&st, "GET", "/api/notes/999", None).await.unwrap_err();
         assert_eq!(err.status, 404);
+    }
+
+    /// Parity with `linxiv note create` / MCP `create_note`: an unknown paper is
+    /// rejected, never conjured into a metadata-less PAPER_ROOTS row.
+    #[tokio::test]
+    async fn create_on_unknown_paper_is_404_and_creates_no_root() {
+        let st = state();
+        let err = req(
+            &st,
+            "POST",
+            "/api/notes",
+            Some(json!({ "source_id": "arxiv:404", "title": "t", "content": "c" })),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status, 404);
+        assert!(st
+            .with_conn(|conn| store_paper::get_paper_root(conn, "arxiv:404"))
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

@@ -422,6 +422,29 @@ pub fn archive(conn: &Connection, project: &Project) -> Result<()> {
     set_status(conn, project, Status::Archived)
 }
 
+/// Guard for trash-only operations (restore-from-trash, hard delete): the project
+/// must exist and be soft-deleted. `restore`/`hard_delete` themselves stay
+/// unguarded — `restore` also serves un-archive, which starts from `Archived`.
+pub fn require_trashed(conn: &Connection, project_fk: i64) -> Result<()> {
+    let Some(d) = get(
+        conn,
+        &Project {
+            project_fk: Some(project_fk),
+        },
+    )?
+    else {
+        return Err(CoreError::NotFound(format!(
+            "Project {project_fk} not found."
+        )));
+    };
+    if d.status != Status::Deleted {
+        return Err(CoreError::BadRequest(format!(
+            "Project {project_fk} is not in trash."
+        )));
+    }
+    Ok(())
+}
+
 /// `service/project.py::hard_delete` — permanent removal (+ associations). No-op if
 /// project_fk is unset; the storage fn no-ops cleanly on an absent project.
 pub fn hard_delete(conn: &mut Connection, project: &Project) -> Result<()> {
