@@ -4,7 +4,6 @@ import { Input, Textarea } from "../ui/input";
 import { Button } from "../ui/button";
 import type { Paper } from "../../types/api";
 import { repairPaper } from "../../api/papers";
-import { normalizeAuthors } from "../../lib/papers";
 import { formSubmitOnCtrlEnter } from "../../lib/submitShortcut";
 
 interface PaperMetadataEditorProps {
@@ -21,7 +20,7 @@ export function PaperMetadataEditor({
   // Lazy initializers seed from paper at mount time. Conditional mount in the
   // parent ensures a fresh instance (and fresh values) each time the editor opens.
   const [title, setTitle] = useState(() => paper.title ?? "");
-  const [authors, setAuthors] = useState(() => normalizeAuthors(paper.authors ?? []).join("; "));
+  const [authors, setAuthors] = useState(() => paper.authors.join("; "));
   const [published, setPublished] = useState(() => paper.published ? paper.published.split("T")[0] : "");
   const [category, setCategory] = useState(() => paper.category ?? "");
   const [doi, setDoi] = useState(() => paper.doi ?? "");

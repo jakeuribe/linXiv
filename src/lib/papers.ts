@@ -1,11 +1,5 @@
 import type { Paper } from "../types/api";
 
-export function normalizeAuthors(authors: string | string[]): string[] {
-  // Split on semicolons to avoid corrupting "Last, First" name format.
-  const raw = Array.isArray(authors) ? authors : authors.split(";");
-  return raw.map((a) => a.trim()).filter(Boolean);
-}
-
 // Source ids may already carry a "arxiv:"/"openalex:"/"doi:" prefix, so strip it
 // before re-prefixing to avoid "arXiv:arxiv:..." double labels.
 export function labelForSource(paper: Paper): string | null {

@@ -229,10 +229,11 @@ fn delete(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
 fn repair(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let source_fk = path_i64(fk)?;
     let b: RepairBody = ctx.parse_body()?;
-    let published = svc_paper::parse_published(&b.published)?;
     state.with_conn(|conn| -> Result<Value, ApiError> {
         let paper = svc_paper::get(conn, &sfk_key(source_fk))?
             .ok_or_else(|| ApiError::new(404, "Paper not found"))?;
+        // Date validated after the existence check, matching MCP and Python.
+        let published = svc_paper::parse_published(&b.published)?;
         let meta = PaperMetadata {
             source_id: paper.source_id, // identity key; not changeable here (ADR-0008)
             version: paper.version,
@@ -643,8 +644,17 @@ mod tests {
 
     #[tokio::test]
     async fn repair_bad_date_is_422() {
+        let st = state();
+        // The date is parsed after the existence check, so the paper must exist
+        // to reach it — an absent one answers 404 first (repair_missing_paper_is_404).
+        st.with_conn(|conn| svc_paper::save_paper_metadata(conn, &meta("arxiv:8", None), None))
+            .unwrap();
+        let fk = st
+            .with_conn(|conn| svc_paper::ensure_paper_root(conn, "arxiv:8"))
+            .unwrap();
+
         let body = json!({"title":"T","authors":["A"],"published":"not-a-date","summary":"s"});
-        let err = req(&state(), "PUT", "/api/papers/sfk/1", Some(body))
+        let err = req(&st, "PUT", &format!("/api/papers/sfk/{fk}"), Some(body))
             .await
             .unwrap_err();
         assert_eq!(err.status, 422);

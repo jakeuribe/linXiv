@@ -28,7 +28,7 @@ import { Card, MonoLabel } from "../components/ui/card";
 import { NoteCard } from "../components/notes/NoteCard";
 import { NoteEditor } from "../components/notes/NoteEditor";
 import { PaperMetadataEditor } from "../components/papers/PaperMetadataEditor";
-import { normalizeAuthors, labelForSource } from "../lib/papers";
+import { labelForSource } from "../lib/papers";
 import { MathText } from "../lib/tex";
 import { formatDate } from "../lib/date";
 import { TagBadge } from "../components/tags/TagBadge";
@@ -397,7 +397,7 @@ export default function PaperDetailPage() {
     );
   }
 
-  const authors = normalizeAuthors(paper.authors ?? []);
+  const authors = paper.authors;
   const notes = notesData?.notes ?? [];
   const annotations = annotationsData?.annotations ?? [];
   const editingNote =
