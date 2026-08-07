@@ -3,12 +3,14 @@
 use clap::Subcommand;
 use serde::Serialize;
 
+use linxiv_core::config;
 use linxiv_core::models::{NoteIn, NoteUpdateIn};
+use linxiv_core::service::editor_project as svc_editor;
 use linxiv_core::service::note as svc_note;
-use linxiv_core::service::note::{Note, Notes};
+use linxiv_core::service::note::Note;
+use linxiv_core::service::paper as svc_paper;
 use linxiv_core::service::project as svc_project;
 use linxiv_core::service::project::Project;
-use linxiv_core::storage::queries::paper as paper_q;
 
 use crate::ctx::Ctx;
 use crate::output::{as_source_id, fail, output};
@@ -94,10 +96,7 @@ pub async fn run(cmd: NoteCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                 }
             }
             let source_id = as_source_id(&source_id, "arxiv");
-            let source_fk = match paper_q::get_paper_root(conn, &source_id)? {
-                Some(root) => root.source_fk,
-                None => fail(format!("Paper {source_id} not found in DB")),
-            };
+            let source_fk = svc_paper::resolve_source_fk(conn, &source_id)?;
             let note_id = svc_note::create(
                 conn,
                 &NoteIn {
@@ -132,19 +131,7 @@ pub async fn run(cmd: NoteCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             project_id,
         } => {
             let source_fk = crate::output::resolve_source_fk(conn, source_id)?;
-            let notes = if source_fk.is_none() && project_id.is_none() {
-                svc_note::list_all(conn)?
-            } else {
-                svc_note::get_many(
-                    conn,
-                    &Notes {
-                        source_fk,
-                        project_fk: project_id,
-                        ..Default::default()
-                    },
-                )?
-            };
-            output(&notes);
+            output(&svc_note::list_filtered(conn, source_fk, project_id)?);
         }
         NoteCmd::Update {
             note_id,
@@ -178,12 +165,7 @@ pub async fn run(cmd: NoteCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             });
         }
         NoteCmd::Delete { note_id } => {
-            if !svc_note::delete(
-                conn,
-                &Note {
-                    note_id: Some(note_id),
-                },
-            )? {
+            if !svc_editor::delete_note(conn, &config::vault_dir(), note_id)? {
                 fail(format!("Note {note_id} not found"));
             }
             output(&DeletedNote {

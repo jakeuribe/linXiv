@@ -8,7 +8,6 @@
 //! `Err(ErrorData::invalid_params(msg, None))` with the EXACT message string
 //! (mind Python `{x!r}` quoting, e.g. `format!("Paper {paper_id:?} not found in database.")`).
 
-use chrono::NaiveDate;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_router, ErrorData};
 use schemars::JsonSchema;
@@ -21,7 +20,6 @@ use linxiv_core::service::paper::{self as svc_paper, PaperSort};
 use linxiv_core::sources::arxiv_downloads;
 use linxiv_core::sources::fetch as svc_fetch;
 use linxiv_core::storage::queries::paper as store_paper;
-use linxiv_core::storage::queries::search::search_full_text;
 use linxiv_core::{config, service::project as svc_project};
 
 use crate::Server;
@@ -279,14 +277,14 @@ impl Server {
         json_ok(&all_ver)
     }
 
-    #[tool(description = "Full-text search over downloaded TeX source content.")]
+    #[tool(description = "Full-text search over downloaded TeX source and note content.")]
     pub async fn search_full_text(
         &self,
         Parameters(SearchFullTextParams { query, limit }): Parameters<SearchFullTextParams>,
     ) -> Result<String, ErrorData> {
         // Python swallows FTS errors and returns []. It logs the error to STDOUT —
         // a bug that corrupts JSON-RPC here; route the diagnostic to STDERR instead.
-        match self.with_conn(|conn| search_full_text(conn, &query, limit)) {
+        match self.with_conn(|conn| svc_paper::search_library(conn, &query, limit)) {
             Ok(results) => json_ok(&results),
             Err(exc) => {
                 tracing::warn!(%query, error = %exc, "search_full_text failed");
@@ -387,17 +385,9 @@ impl Server {
                 )));
             };
             // Date validated after the existence check, matching Python ordering.
-            let published_date = match NaiveDate::parse_from_str(&published, "%Y-%m-%d") {
+            let published_date = match svc_paper::parse_published(&published) {
                 Ok(d) => d,
-                Err(_) => {
-                    return Ok(Err(ErrorData::invalid_params(
-                        format!(
-                            "Invalid date {}; use YYYY-MM-DD.",
-                            crate::util::pyrepr(&published)
-                        ),
-                        None,
-                    )))
-                }
+                Err(e) => return Ok(Err(ErrorData::invalid_params(e.to_string(), None))),
             };
             // Python `existing.version if existing else 1`.
             let version = svc_paper::get(conn, &paper_key(&paper_id))?
@@ -422,7 +412,13 @@ impl Server {
                 source: None,
                 author_orcids: None,
             };
-            svc_paper::repair_paper(conn, root.source_fk, &meta)?;
+            // Validation lives in the service so every front door refuses the same input.
+            if let Err(e) = svc_paper::repair_paper(conn, root.source_fk, &meta) {
+                return match e {
+                    CoreError::Validation(m) => Ok(Err(invalid(m))),
+                    other => Err(other),
+                };
+            }
             Ok(Ok(()))
         })
         .map_err(core_err)??;
@@ -436,14 +432,8 @@ impl Server {
     ) -> Result<String, ErrorData> {
         let (pdf_path, project_fks) = self
             .with_conn(|conn| {
-                if !svc_paper::is_paper_deleted(conn, &paper_id)? {
-                    return Ok(Err(ErrorData::invalid_params(
-                        format!(
-                            "Paper {} not found in trash.",
-                            crate::util::pyrepr(&paper_id)
-                        ),
-                        None,
-                    )));
+                if let Err(e) = svc_paper::require_trashed(conn, &paper_id) {
+                    return Ok(Err(crate::util::guard_err(e)));
                 }
                 Ok(Ok(svc_paper::restore(conn, &paper_key(&paper_id))?))
             })
@@ -558,7 +548,7 @@ mod tests {
         .unwrap();
         let err = fetch(&srv, "doi:10.1/z", false).await.unwrap_err();
         assert!(
-            err.message.contains("comes from crossref"),
+            err.message.contains("is not an arXiv paper"),
             "unexpected message: {}",
             err.message
         );

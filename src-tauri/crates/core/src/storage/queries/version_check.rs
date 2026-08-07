@@ -6,6 +6,7 @@ use rusqlite::{params, Connection};
 use serde::Serialize;
 
 use crate::error::Result;
+use crate::models::ARXIV_ID_PREFIX;
 
 pub const MAX_VERSION_CHECK_BATCH: i64 = 100;
 
@@ -29,18 +30,22 @@ pub struct NewVersion {
 /// The stalest `limit` active arXiv roots: never-checked first, then oldest
 /// LAST_CHECKED_AT. Roots with no stored version (nothing to compare) and
 /// non-arXiv/deleted roots are excluded.
+///
+/// The arXiv pattern is built from `models::ARXIV_ID_PREFIX`, the same constant
+/// `service::paper::source_fetch_url` tests. GLOB, not LIKE: LIKE is
+/// ASCII-case-insensitive in SQLite.
 pub fn stale_candidates(conn: &Connection, limit: i64) -> Result<Vec<Candidate>> {
     let limit = limit.clamp(1, MAX_VERSION_CHECK_BATCH);
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare(&format!(
         "SELECT r.SOURCE_FK, r.SOURCE_ID, MAX(p.VERSION)
          FROM PAPER_ROOTS r
          JOIN PAPER p ON p.SOURCE_FK = r.SOURCE_FK
          LEFT JOIN VERSION_CHECK v ON v.SOURCE_FK = r.SOURCE_FK
-         WHERE r.STATUS = 'active' AND r.SOURCE_ID LIKE 'arxiv:%'
+         WHERE r.STATUS = 'active' AND r.SOURCE_ID GLOB '{ARXIV_ID_PREFIX}*'
          GROUP BY r.SOURCE_FK
          ORDER BY (v.LAST_CHECKED_AT IS NOT NULL), v.LAST_CHECKED_AT ASC, r.SOURCE_FK ASC
-         LIMIT ?1",
-    )?;
+         LIMIT ?1"
+    ))?;
     let rows = stmt.query_map([limit], |r| {
         Ok(Candidate {
             source_fk: r.get(0)?,

@@ -302,6 +302,25 @@ pub fn get_doc(
     }))
 }
 
+/// Delete a note and, if it is an editor project, its vault tree. The frontmatter
+/// is read first — after the row is gone the vault can no longer be identified.
+/// `false` if no note matched (nothing deleted).
+pub fn delete_note(conn: &rusqlite::Connection, vault_dir: &Path, note_id: i64) -> Result<bool> {
+    let is_editor_project = get_meta(conn, note_id)?.is_some();
+    if !note::delete(
+        conn,
+        &Note {
+            note_id: Some(note_id),
+        },
+    )? {
+        return Ok(false);
+    }
+    if is_editor_project {
+        vault::delete_vault(&vault_root(vault_dir, note_id));
+    }
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -409,6 +428,44 @@ mod tests {
         let scoped = list_projects(&conn, Some(5)).unwrap();
         assert_eq!(scoped.len(), 1);
         assert_eq!(scoped[0].project_name, "Draft B");
+    }
+
+    /// The vault step is the reason every consumer deletes notes through here:
+    /// dropping the row alone leaves `note_<id>/` on disk forever.
+    #[test]
+    fn delete_note_removes_the_vault_tree() {
+        let mut conn = db();
+        let vault = tempfile::tempdir().unwrap();
+        let created =
+            create_project(&mut conn, vault.path(), "Draft", "main.tex", None, None).unwrap();
+        let root = vault.path().join(format!("note_{}", created.note_id));
+        assert!(root.is_dir());
+
+        assert!(delete_note(&conn, vault.path(), created.note_id).unwrap());
+        assert!(!root.exists());
+        assert!(get_meta(&conn, created.note_id).unwrap().is_none());
+        // Second delete finds no row.
+        assert!(!delete_note(&conn, vault.path(), created.note_id).unwrap());
+    }
+
+    /// A plain note owns no vault, so the delete must not touch the vault dir.
+    #[test]
+    fn delete_note_leaves_non_editor_vault_alone() {
+        let conn = db();
+        let vault = tempfile::tempdir().unwrap();
+        seed_notes(&conn);
+        let plain_id = note::list_all(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|n| n.title == "plain")
+            .unwrap()
+            .note_id
+            .unwrap();
+        let stray = vault.path().join(format!("note_{plain_id}"));
+        std::fs::create_dir_all(&stray).unwrap();
+
+        assert!(delete_note(&conn, vault.path(), plain_id).unwrap());
+        assert!(stray.is_dir());
     }
 
     #[test]
