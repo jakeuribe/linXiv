@@ -99,23 +99,10 @@ fn merge(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError
 }
 
 /// `DELETE /api/authors/{id}` — `api_author_delete`. 404 if absent, 409 if still
-/// linked to papers (message byte-matches app.py).
+/// linked to papers; both guards live in `svc_author::delete`.
 fn delete(state: &AppState, id: &str) -> Result<Value, ApiError> {
     let author_id = path_i64(id)?;
-    state.with_conn(|conn| -> Result<(), ApiError> {
-        if svc_author::get(conn, &author_ref(author_id))?.is_none() {
-            return Err(ApiError::new(404, "Author not found"));
-        }
-        let links = svc_author::count_paper_links(conn, author_id)?;
-        if links > 0 {
-            return Err(ApiError::new(
-                409,
-                format!("Author is linked to {links} paper(s); unlink before deleting."),
-            ));
-        }
-        svc_author::delete(conn, &author_ref(author_id))?;
-        Ok(())
-    })?;
+    state.with_conn(|conn| svc_author::delete(conn, &author_ref(author_id)))?;
     Ok(json!({ "ok": true }))
 }
 
@@ -383,5 +370,30 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.status, 404);
+    }
+
+    #[tokio::test]
+    async fn delete_linked_author_is_409() {
+        let st = state();
+        let (canonical, ..) = st.with_conn(seed_two_authors_with_papers);
+        let err = req(&st, "DELETE", &format!("/api/authors/{canonical}"), None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, 409);
+    }
+
+    #[tokio::test]
+    async fn update_with_no_fields_is_422() {
+        let st = state();
+        let (canonical, ..) = st.with_conn(seed_two_authors_with_papers);
+        let err = req(
+            &st,
+            "PATCH",
+            &format!("/api/authors/{canonical}"),
+            Some(json!({})),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status, 422);
     }
 }

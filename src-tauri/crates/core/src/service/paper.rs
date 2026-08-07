@@ -17,12 +17,18 @@
 //! rather than adding raw SQL to the service.
 
 use crate::error::{CoreError, Result};
-use crate::models::{PaperDetails, PaperDetailsAll, PaperIn, PaperMetadata};
+use crate::formats::pyrepr;
+use crate::models::{
+    is_arxiv_source_id, PaperDetails, PaperDetailsAll, PaperIn, PaperMetadata, ARXIV_PDF_MARKER,
+};
 pub use crate::storage::queries::paper::PaperSort;
-use crate::storage::queries::{paper as store, project as proj_store};
+use crate::storage::queries::{
+    note as note_store, paper as store, project as proj_store, search as search_store,
+};
 use chrono::{NaiveDate, NaiveDateTime};
 use rusqlite::Connection;
 use serde::Serialize;
+use std::collections::HashSet;
 
 pub use store::DoiVersionCandidate;
 
@@ -252,8 +258,83 @@ pub fn add_paper_tags(
 }
 
 /// Re-write a paper's metadata in-place (migrating SOURCE_ID if it changed).
+/// Normalizes and validates first, so every Paper Repair front door (route, CLI,
+/// MCP) rejects the same input. Archive import bypasses this via `store::repair_paper`.
 pub fn repair_paper(conn: &mut Connection, source_fk: i64, meta: &PaperMetadata) -> Result<()> {
-    store::repair_paper(conn, source_fk, meta)
+    store::repair_paper(conn, source_fk, &validate_repair(meta)?)
+}
+
+/// Parse a user-supplied `published` date for Paper Repair.
+pub fn parse_published(s: &str) -> Result<NaiveDate> {
+    NaiveDate::parse_from_str(s, "%Y-%m-%d")
+        .map_err(|_| CoreError::Validation(format!("Invalid date {}; use YYYY-MM-DD", pyrepr(s))))
+}
+
+/// Trim title/summary, dedup non-blank authors/tags (empty tag list → None), and
+/// reject what Paper Repair must never persist: blank title, no authors, empty DOI.
+fn validate_repair(meta: &PaperMetadata) -> Result<PaperMetadata> {
+    let title = meta.title.trim().to_string();
+    if title.is_empty() {
+        return Err(CoreError::Validation("title must not be blank".into()));
+    }
+    let authors = dedup_nonblank(&meta.authors);
+    if authors.is_empty() {
+        return Err(CoreError::Validation(
+            "at least one author is required".into(),
+        ));
+    }
+    if matches!(meta.doi.as_deref(), Some("")) {
+        return Err(CoreError::Validation(
+            "doi must have at least 1 character".into(),
+        ));
+    }
+    Ok(PaperMetadata {
+        title,
+        authors,
+        summary: meta.summary.trim().to_string(),
+        tags: meta
+            .tags
+            .as_ref()
+            .map(|ts| dedup_nonblank(ts))
+            .filter(|v| !v.is_empty()),
+        ..meta.clone()
+    })
+}
+
+/// Trim each entry, drop blanks, dedup preserving first-seen order.
+fn dedup_nonblank(items: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    items
+        .iter()
+        .filter_map(|s| {
+            let t = s.trim();
+            (!t.is_empty() && seen.insert(t.to_string())).then(|| t.to_string())
+        })
+        .collect()
+}
+
+/// Library search: FTS hits (TeX source + note index) merged with the LIKE scan
+/// over note text, deduped by source_id, FTS rows first then note-recency order.
+pub fn search_library(conn: &Connection, query: &str, limit: i64) -> Result<Vec<PaperDetails>> {
+    // A missing or corrupt FTS index yields no rows rather than failing the whole
+    // search, so note hits still populate.
+    let mut papers = search_store::search_full_text(conn, query, limit).unwrap_or_default();
+    let mut seen: HashSet<String> = papers.iter().map(|p| p.source_id.clone()).collect();
+    for sfk in note_store::search_notes_source_fks(conn, query, limit)? {
+        if let Some(p) = get(
+            conn,
+            &Paper {
+                source_fk: Some(sfk),
+                ..Default::default()
+            },
+        )? {
+            if seen.insert(p.source_id.clone()) {
+                papers.push(p);
+            }
+        }
+    }
+    papers.truncate(limit.max(0) as usize);
+    Ok(papers)
 }
 
 // ── soft / hard delete ───────────────────────────────────────────────────────
@@ -293,6 +374,19 @@ pub fn restore(conn: &mut Connection, paper: &Paper) -> Result<(Option<String>, 
         None => Vec::new(),
     };
     Ok((pdf_path, project_fks))
+}
+
+/// Guard for trash-only operations (restore-from-trash, hard delete): the paper
+/// must be soft-deleted. `restore`/`hard_delete` stay unguarded — project import
+/// checks the root's status itself, and `paper hard-delete` deletes at any status.
+pub fn require_trashed(conn: &Connection, source_id: &str) -> Result<()> {
+    if !store::is_paper_deleted(conn, source_id)? {
+        return Err(CoreError::NotFound(format!(
+            "Paper {} not found in trash",
+            crate::formats::pyrepr(source_id)
+        )));
+    }
+    Ok(())
 }
 
 /// Permanently remove a paper (children cascade off the FK).
@@ -393,6 +487,17 @@ pub fn ensure_paper_root(conn: &mut Connection, source_id: &str) -> Result<i64> 
     store::ensure_paper_root(conn, source_id)
 }
 
+/// SOURCE_FK for an existing paper root — the fail-if-absent counterpart to
+/// [`ensure_paper_root`]. `NotFound` (404) when the paper is not in the library.
+pub fn resolve_source_fk(conn: &Connection, source_id: &str) -> Result<i64> {
+    let sid = source_id.trim();
+    store::get_paper_root(conn, sid)?
+        .map(|root| root.source_fk)
+        .ok_or_else(|| {
+            CoreError::NotFound(format!("Paper {} not found", crate::formats::pyrepr(sid)))
+        })
+}
+
 /// SOURCE_ID for a SOURCE_FK, or None.
 pub fn get_source_id(conn: &Connection, source_fk: i64) -> Result<Option<String>> {
     store::get_source_id(conn, source_fk)
@@ -462,19 +567,18 @@ pub fn set_full_text(
 /// Only arXiv publishes source tarballs — OpenAlex/CrossRef/DOI and locally
 /// imported PDFs are metadata-only, so they are refused here rather than each
 /// caller re-deriving that.
+///
+/// The arXiv test is the `source_id` namespace, not `PAPER_META.PROVIDER`: the
+/// provider column records provenance and arrives blank on some import paths.
 pub fn source_fetch_url(paper: &PaperDetails) -> Result<&str> {
-    // An unset source reaches here as `Some("")` on some import paths, so blank
-    // and absent are folded together rather than printing "comes from ".
-    let source = paper.source.as_deref().filter(|s| !s.is_empty());
-    if source != Some("arxiv") {
+    if !is_arxiv_source_id(&paper.source_id) {
         return Err(CoreError::BadRequest(format!(
-            "TeX source is only published by arXiv; {} comes from {}",
-            paper.source_id,
-            source.unwrap_or("an unknown source")
+            "TeX source is only published by arXiv; {} is not an arXiv paper",
+            paper.source_id
         )));
     }
     let url = paper.url.as_deref().unwrap_or_default();
-    if !url.contains("/pdf/") {
+    if !url.contains(ARXIV_PDF_MARKER) {
         return Err(CoreError::BadRequest(format!(
             "{} has no arXiv PDF URL to derive a source tarball from",
             paper.source_id
@@ -497,8 +601,8 @@ pub fn should_store_full_text(paper: &PaperDetails, extracted: &str) -> bool {
 
 /// SOURCE_IDs of stored arXiv papers with no TeX source yet, oldest-published
 /// first — the backfill work list. Ids only; the caller loads each paper as it
-/// goes. An arXiv paper saved without a `/pdf/` URL is still listed here and
-/// refused later by `source_fetch_url`.
+/// goes. The query matches on the same `arxiv:` / `/pdf/` constants
+/// `source_fetch_url` does, so a listed paper is one it accepts.
 pub fn full_text_backfill_candidates(conn: &Connection) -> Result<Vec<String>> {
     store::full_text_backfill_candidates(conn)
 }
@@ -538,6 +642,20 @@ mod tests {
         let conn = open_in_memory().unwrap();
         init_db(&conn).unwrap();
         conn
+    }
+
+    /// The fail-if-absent half of the pair every Note/Annotation consumer shares:
+    /// resolving an unknown paper errors instead of creating a root.
+    #[test]
+    fn resolve_source_fk_fails_without_creating_a_root() {
+        let mut conn = mem();
+        let err = resolve_source_fk(&conn, "arxiv:404").unwrap_err();
+        assert_eq!(err.http_status(), 404);
+        assert!(store::get_paper_root(&conn, "arxiv:404").unwrap().is_none());
+
+        let fk = ensure_paper_root(&mut conn, "arxiv:1").unwrap();
+        // The id is trimmed before lookup, like the route's ensure call site.
+        assert_eq!(resolve_source_fk(&conn, " arxiv:1 ").unwrap(), fk);
     }
 
     // Two versions of one paper. Returns (source_fk, paper_id_v1, paper_id_v2).
@@ -1090,6 +1208,65 @@ mod tests {
     }
 
     #[test]
+    fn backfill_work_list_agrees_with_source_fetch_url() {
+        // The work-list SQL and source_fetch_url must answer "is this arXiv"
+        // identically on rows where the id namespace and the PROVIDER column
+        // disagree — otherwise backfill queues papers the fetcher then skips.
+        let mut conn = mem();
+        let row = |sid: &str, provider: &str, url: &str| PaperMetadata {
+            url: Some(url.into()),
+            source: Some(provider.into()),
+            ..meta(sid, 1, "cs.LG", &[])
+        };
+        let cases = [
+            // arxiv: id, PROVIDER blank as some import paths leave it.
+            (row("arxiv:blank", "", "http://arxiv.org/pdf/1v1"), true),
+            // arxiv: id with no /pdf/ link to derive the tarball URL from.
+            (
+                row("arxiv:absonly", "arxiv", "http://arxiv.org/abs/2v1"),
+                false,
+            ),
+            // Local PDF import: PROVIDER says "pdf", and no arXiv id.
+            (row("local:deadbeef", "pdf", "file:///x/pdf/y.pdf"), false),
+            (row("openalex:W1", "openalex", "http://x.org/pdf/w1"), false),
+            // Legacy row: migration 02 defaults PROVIDER to 'arxiv' for every
+            // pre-existing paper, including imports arXiv never hosted.
+            (
+                row("local:legacy", "arxiv", "http://x.org/pdf/legacy"),
+                false,
+            ),
+        ];
+        for (m, _) in &cases {
+            save_paper_metadata(&mut conn, m, None).unwrap();
+        }
+
+        let work_list = full_text_backfill_candidates(&conn).unwrap();
+        assert_eq!(
+            work_list.len() as i64,
+            full_text_backfill_count(&conn).unwrap()
+        );
+        for (m, fetchable) in &cases {
+            let key = Paper {
+                source_id: Some(m.source_id.clone()),
+                ..Default::default()
+            };
+            let paper = get(&conn, &key).unwrap().unwrap();
+            assert_eq!(
+                source_fetch_url(&paper).is_ok(),
+                *fetchable,
+                "source_fetch_url disagrees on {}",
+                m.source_id
+            );
+            assert_eq!(
+                work_list.contains(&m.source_id),
+                *fetchable,
+                "work list disagrees on {}",
+                m.source_id
+            );
+        }
+    }
+
+    #[test]
     fn source_fetch_url_takes_arxiv_pdf_links_only() {
         let mut conn = mem();
         let fetch_url_of = |conn: &Connection, sid: &str| {
@@ -1145,6 +1322,90 @@ mod tests {
         assert_eq!(
             sfks_to_source_ids(&conn, &[fk, 9_999]).unwrap(),
             vec!["arxiv:v".to_string()]
+        );
+    }
+
+    // Every front door goes through search_library, so a note-only hit that FTS
+    // tokenization misses (substring) must still come back.
+    #[test]
+    fn search_library_merges_note_substring_hits() {
+        let mut conn = mem();
+        save_paper_metadata(&mut conn, &meta("arxiv:N", 1, "cs.LG", &[]), None).unwrap();
+        ensure_paper_root(&mut conn, "arxiv:N").unwrap();
+        conn.execute(
+            "INSERT INTO NOTE (SOURCE_FK, TITLE, NOTE) \
+             SELECT SOURCE_FK, 'n', 'on zephyranthes morphology' \
+             FROM PAPER_ROOTS WHERE SOURCE_ID = ?1",
+            ["arxiv:N"],
+        )
+        .unwrap();
+
+        // notes_fts tokenizes to whole words, so a substring only the LIKE scan
+        // in search_notes_source_fks can reach.
+        assert!(search_store::search_full_text(&conn, "orpholog", 10)
+            .unwrap()
+            .is_empty());
+        let hits = search_library(&conn, "orpholog", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].source_id, "arxiv:N");
+    }
+
+    // Repair input rules live behind the service seam, not in one caller.
+    #[test]
+    fn repair_paper_validates_and_normalizes() {
+        let mut conn = mem();
+        save_paper_metadata(&mut conn, &meta("arxiv:R", 1, "cs.LG", &[]), None).unwrap();
+        let fk = ensure_paper_root(&mut conn, "arxiv:R").unwrap();
+
+        let blank = PaperMetadata {
+            title: "   ".into(),
+            ..meta("arxiv:R", 1, "cs.LG", &[])
+        };
+        assert!(matches!(
+            repair_paper(&mut conn, fk, &blank),
+            Err(CoreError::Validation(_))
+        ));
+
+        let no_authors = PaperMetadata {
+            authors: vec!["".into(), "  ".into()],
+            ..meta("arxiv:R", 1, "cs.LG", &[])
+        };
+        assert!(matches!(
+            repair_paper(&mut conn, fk, &no_authors),
+            Err(CoreError::Validation(_))
+        ));
+
+        let empty_doi = PaperMetadata {
+            doi: Some(String::new()),
+            ..meta("arxiv:R", 1, "cs.LG", &[])
+        };
+        assert!(matches!(
+            repair_paper(&mut conn, fk, &empty_doi),
+            Err(CoreError::Validation(_))
+        ));
+
+        let dupes = PaperMetadata {
+            title: "  Fixed  ".into(),
+            authors: vec!["Ada".into(), " Ada ".into(), "".into(), "Bo".into()],
+            ..meta("arxiv:R", 1, "cs.LG", &[])
+        };
+        repair_paper(&mut conn, fk, &dupes).unwrap();
+        let got = get(
+            &conn,
+            &Paper {
+                source_fk: Some(fk),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(got.title, "Fixed");
+        assert_eq!(got.authors, vec!["Ada".to_string(), "Bo".to_string()]);
+
+        assert!(parse_published("2024-13-01").is_err());
+        assert_eq!(
+            parse_published("2024-01-02").unwrap(),
+            NaiveDate::from_ymd_opt(2024, 1, 2).unwrap()
         );
     }
 

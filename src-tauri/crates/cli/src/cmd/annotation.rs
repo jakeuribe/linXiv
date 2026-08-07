@@ -5,8 +5,7 @@ use serde_json::json;
 
 use linxiv_core::models::{AnnotationIn, AnnotationUpdateIn};
 use linxiv_core::service::annotation as svc_ann;
-use linxiv_core::service::annotation::Annotations;
-use linxiv_core::storage::queries::paper as paper_q;
+use linxiv_core::service::paper as svc_paper;
 
 use crate::ctx::Ctx;
 use crate::output::{as_source_id, fail, output};
@@ -56,10 +55,7 @@ pub async fn run(cmd: AnnotationCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             project_id,
         } => {
             let source_id = as_source_id(&source_id, "arxiv");
-            let source_fk = match paper_q::get_paper_root(conn, &source_id)? {
-                Some(root) => root.source_fk,
-                None => fail(format!("Paper {source_id} not found in DB")),
-            };
+            let source_fk = svc_paper::resolve_source_fk(conn, &source_id)?;
             let id = svc_ann::create(
                 conn,
                 &AnnotationIn {
@@ -81,19 +77,7 @@ pub async fn run(cmd: AnnotationCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             project_id,
         } => {
             let source_fk = crate::output::resolve_source_fk(conn, source_id)?;
-            let annotations = if source_fk.is_none() && project_id.is_none() {
-                svc_ann::list_all(conn)?
-            } else {
-                svc_ann::get_many(
-                    conn,
-                    &Annotations {
-                        source_fk,
-                        project_fk: project_id,
-                        all_projects: source_fk.is_some() && project_id.is_none(),
-                    },
-                )?
-            };
-            output(&annotations);
+            output(&svc_ann::list_filtered(conn, source_fk, project_id)?);
         }
         AnnotationCmd::Update {
             annotation_id,

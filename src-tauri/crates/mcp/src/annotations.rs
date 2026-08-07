@@ -11,9 +11,9 @@ use serde_json::json;
 use linxiv_core::error::CoreError;
 use linxiv_core::models::{AnnotationIn, AnnotationUpdateIn};
 use linxiv_core::service::annotation as svc_ann;
-use linxiv_core::storage::queries::paper as store_paper;
+use linxiv_core::service::paper as svc_paper;
 
-use crate::util::{core_err, invalid, json_ok};
+use crate::util::{core_err, guard_err, invalid, json_ok};
 use crate::Server;
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -64,15 +64,11 @@ impl Server {
         Parameters(p): Parameters<CreateAnnotationParams>,
     ) -> Result<String, ErrorData> {
         self.with_conn(|conn| {
-            let source_fk = store_paper::get_paper_root(conn, &p.paper_id)
-                .map_err(core_err)?
-                .ok_or_else(|| {
-                    invalid(format!(
-                        "Paper {} not found. Run fetch_paper first.",
-                        crate::util::pyrepr(&p.paper_id)
-                    ))
-                })?
-                .source_fk;
+            let source_fk =
+                svc_paper::resolve_source_fk(conn, &p.paper_id).map_err(|e| match e {
+                    CoreError::NotFound(m) => invalid(format!("{m}. Run fetch_paper first.")),
+                    other => core_err(other),
+                })?;
             let id = svc_ann::create(
                 conn,
                 &AnnotationIn {
@@ -108,33 +104,12 @@ impl Server {
         Parameters(p): Parameters<ListAnnotationsParams>,
     ) -> Result<String, ErrorData> {
         self.with_conn(|conn| {
-            let annotations = if p.paper_id.is_none() && p.project_id.is_none() {
-                svc_ann::list_all(conn).map_err(core_err)?
-            } else {
-                let source_fk = match &p.paper_id {
-                    Some(pid) => Some(
-                        store_paper::get_paper_root(conn, pid)
-                            .map_err(core_err)?
-                            .ok_or_else(|| {
-                                invalid(format!(
-                                    "Paper {} not found in database.",
-                                    crate::util::pyrepr(pid)
-                                ))
-                            })?
-                            .source_fk,
-                    ),
-                    None => None,
-                };
-                svc_ann::get_many(
-                    conn,
-                    &svc_ann::Annotations {
-                        source_fk,
-                        project_fk: p.project_id,
-                        all_projects: p.paper_id.is_some() && p.project_id.is_none(),
-                    },
-                )
-                .map_err(core_err)?
+            let source_fk = match &p.paper_id {
+                Some(pid) => Some(svc_paper::resolve_source_fk(conn, pid).map_err(guard_err)?),
+                None => None,
             };
+            let annotations =
+                svc_ann::list_filtered(conn, source_fk, p.project_id).map_err(core_err)?;
             json_ok(&annotations)
         })
     }

@@ -9,7 +9,7 @@
 //! `get_authors` wrappers that just re-shaped the same query are dropped — they
 //! forwarded to the same storage reads with a narrower signature.
 
-use crate::error::Result;
+use crate::error::{CoreError, Result};
 use crate::models::{AuthorIn, AuthorPaperPreview, AuthorWithCount, BasicAuthorDetails};
 use crate::storage::queries::author as store;
 use rusqlite::Connection;
@@ -106,7 +106,8 @@ pub fn create(conn: &Connection, author: &AuthorIn) -> Result<i64> {
 
 /// `service/author.py::update_fields` — the load-bearing partial-update primitive
 /// (the CLI/MCP/API callers use it): `None` leaves a field unchanged. Storage also
-/// skips empty strings.
+/// skips empty strings. Errors if the author is absent or every field is `None`,
+/// so all consumers get the same answer.
 pub fn update_fields(
     conn: &Connection,
     author_id: i64,
@@ -115,6 +116,14 @@ pub fn update_fields(
     last_name: Option<&str>,
     orcid: Option<&str>,
 ) -> Result<()> {
+    if store::get_author(conn, author_id)?.is_none() {
+        return Err(CoreError::NotFound(format!("Author {author_id} not found")));
+    }
+    if full_name.is_none() && first_name.is_none() && last_name.is_none() && orcid.is_none() {
+        return Err(CoreError::Validation(
+            "at least one of full_name, first_name, last_name, or orcid must be provided".into(),
+        ));
+    }
     store::update_author(conn, author_id, full_name, first_name, last_name, orcid)
 }
 
@@ -138,14 +147,21 @@ pub fn merge(conn: &mut Connection, canonical_id: i64, duplicate_ids: &[i64]) ->
     store::merge_authors(conn, canonical_id, duplicate_ids)
 }
 
-/// Delete by lookup key. No-op when the key carries no `author_id` (matching
-/// Python's `if author.author_id:`). Fails if the author is still linked to a
-/// paper — callers must unlink (or merge) first.
+/// Delete by lookup key. Errors if the key resolves to no author (404) or if the
+/// author is still linked to a paper (409) — callers must unlink (or merge) first.
+/// The link count is the whole safety check: `PAPER_META.AUTHORS` is a free-text
+/// read cache that holds names, not AUTHOR_FKs, so it cannot dangle on a delete.
 pub fn delete(conn: &Connection, author: &Author) -> Result<()> {
-    if let Some(id) = author.author_id {
-        store::delete_author(conn, id)?;
+    let id = get(conn, author)?
+        .ok_or_else(|| CoreError::NotFound("Author not found".into()))?
+        .author_id;
+    let links = store::count_paper_links(conn, id)?;
+    if links > 0 {
+        return Err(CoreError::Conflict(format!(
+            "Author is linked to {links} paper(s); unlink before deleting."
+        )));
     }
-    Ok(())
+    store::delete_author(conn, id)
 }
 
 // ── PAPER_TO_AUTHOR links ───────────────────────────────────────────────────
@@ -432,8 +448,8 @@ mod tests {
         );
         assert_eq!(a.orcid.as_deref(), Some("0000-9"));
 
-        // delete with no id is a no-op; with id removes the row
-        delete(&mut conn, &Author::default()).unwrap();
+        // a key that resolves to no author errors; with id it removes the row
+        assert!(delete(&mut conn, &Author::default()).is_err());
         assert!(get(
             &conn,
             &Author {
@@ -539,5 +555,40 @@ mod tests {
         unlink_author_from_paper(&conn, bob, pid).unwrap();
         assert_eq!(count_paper_links(&conn, bob).unwrap(), 0);
         assert_eq!(get_paper_authors(&conn, pid).unwrap().len(), 1);
+    }
+
+    fn by_id(id: i64) -> Author {
+        Author {
+            author_id: Some(id),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn delete_rejects_missing_and_still_linked_authors() {
+        let conn = mem();
+        let (pid, bob, _alice) = seed(&conn);
+
+        assert_eq!(
+            delete(&conn, &by_id(99_999)).unwrap_err().http_status(),
+            404
+        );
+        assert_eq!(delete(&conn, &by_id(bob)).unwrap_err().http_status(), 409);
+        assert!(get(&conn, &by_id(bob)).unwrap().is_some());
+
+        unlink_author_from_paper(&conn, bob, pid).unwrap();
+        delete(&conn, &by_id(bob)).unwrap();
+        assert!(get(&conn, &by_id(bob)).unwrap().is_none());
+    }
+
+    #[test]
+    fn update_fields_rejects_missing_author_and_empty_patch() {
+        let conn = mem();
+        let (_pid, bob, _alice) = seed(&conn);
+
+        let e = update_fields(&conn, 99_999, Some("X"), None, None, None).unwrap_err();
+        assert_eq!(e.http_status(), 404);
+        let e = update_fields(&conn, bob, None, None, None, None).unwrap_err();
+        assert_eq!(e.http_status(), 422);
     }
 }
