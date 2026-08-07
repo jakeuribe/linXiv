@@ -5,12 +5,16 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { Upload, FileText, SearchX, FilterX } from "lucide-react";
 import { listPapers, deletePaper, searchLibrary } from "../api/papers";
 import type { PaperSort } from "../api/papers";
-import { listProjects, addPapersToProject, createProject } from "../api/projects";
+import { listProjects, addPapers, createProjectWithPapers } from "../api/projects";
+import {
+  invalidatePaperQueries,
+  invalidateProjectMembershipQueries,
+  partialFailureMessage,
+} from "../lib/paperMutations";
 import { useSelectionStore } from "../stores/selection";
 import { useLibraryStore } from "../stores/library";
 import type { LibraryFilterMode as FilterMode } from "../stores/library";
 import type { Paper } from "../types/api";
-import { normalizeAuthors } from "../lib/papers";
 import { Spinner } from "../components/ui/spinner";
 import { Input } from "../components/ui/input";
 import { OptionSelect } from "../components/ui/select";
@@ -48,7 +52,7 @@ function matchesPaper(paper: Paper, query: string): boolean {
   const q = query.toLowerCase();
   if (paper.title.toLowerCase().includes(q)) return true;
   if (paper.summary?.toLowerCase().includes(q)) return true;
-  const authors = normalizeAuthors(paper.authors ?? []);
+  const authors = paper.authors;
   return authors.some((a) => a.toLowerCase().includes(q));
 }
 
@@ -74,6 +78,7 @@ export default function LibraryPage() {
 
   const selectedIds = useSelectionStore((s) => s.selectedIds);
   const clear = useSelectionStore((s) => s.clear);
+  const selectAll = useSelectionStore((s) => s.selectAll);
 
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -120,8 +125,7 @@ export default function LibraryPage() {
       setDeleteError(null);
     },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ["papers"] });
-      queryClient.invalidateQueries({ queryKey: ["stats"] });
+      invalidatePaperQueries(queryClient);
     },
     onSuccess: () => {
       clear();
@@ -134,24 +138,20 @@ export default function LibraryPage() {
   });
 
   const addToProjectMutation = useMutation({
-    mutationFn: async ({
-      projectId,
-      sourceIds,
-    }: {
-      projectId: number;
-      sourceIds: string[];
-    }) => {
-      const { failed } = await addPapersToProject(projectId, sourceIds);
-      if (failed.length > 0) {
-        throw new Error(
-          `Failed to add ${failed.length} paper${failed.length !== 1 ? "s" : ""} to project`
-        );
-      }
+    mutationFn: addPapers,
+    onMutate: () => {
+      setProjectPickerError(null);
     },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ["projects"] });
+      invalidateProjectMembershipQueries(queryClient);
     },
-    onSuccess: () => {
+    onSuccess: (failedIds, { sourceIds }) => {
+      if (failedIds.length > 0) {
+        // Re-select only the failures so a retry can't re-add the rest.
+        selectAll(failedIds);
+        setProjectPickerError(partialFailureMessage(failedIds.length, sourceIds.length));
+        return;
+      }
       setProjectPickerOpen(false);
       setProjectPickerError(null);
       clear();
@@ -164,29 +164,20 @@ export default function LibraryPage() {
   });
 
   const createProjectMutation = useMutation({
-    mutationFn: async ({ name, sourceIds }: { name: string; sourceIds: string[] }) => {
-      const result = await createProject({ name });
-      try {
-        const { failed } = await addPapersToProject(result.project.id, sourceIds);
-        return failed.length;
-      } catch {
-        // The project was created; route through onSuccess so the name is
-        // cleared and a retry can't create a duplicate.
-        return sourceIds.length;
-      }
-    },
+    mutationFn: createProjectWithPapers,
     // Invalidate in onSettled, not onSuccess: the project may have been
     // created even when the mutation rejects (e.g. a paper-add request fails).
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ["projects"] });
+      invalidateProjectMembershipQueries(queryClient);
     },
-    onSuccess: (failedCount) => {
+    onSuccess: (failedIds) => {
       // The project exists either way — clear the name so a retry can't
       // create a duplicate.
       setNewProjectName("");
-      if (failedCount > 0) {
+      if (failedIds.length > 0) {
+        selectAll(failedIds);
         setProjectPickerError(
-          `Project created, but ${failedCount} paper${failedCount !== 1 ? "s" : ""} could not be added`
+          `Project created, but ${failedIds.length} paper${failedIds.length !== 1 ? "s" : ""} could not be added`
         );
         return;
       }

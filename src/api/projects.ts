@@ -101,3 +101,36 @@ export async function removePaperFromProject(
     { method: "DELETE" }
   );
 }
+
+export interface AddPapersVars {
+  projectId: number;
+  sourceIds: string[];
+}
+
+/** Resolves with the source_ids that could not be added rather than throwing,
+ *  so callers can re-select exactly those and a retry can't re-add the rest. */
+export async function addPapers({ projectId, sourceIds }: AddPapersVars): Promise<string[]> {
+  const { failed } = await addPapersToProject(projectId, sourceIds);
+  return failed;
+}
+
+export interface CreateProjectWithPapersVars {
+  name: string;
+  sourceIds: string[];
+}
+
+/** Same contract as addPapers: resolves with the failed ids. The project may
+ *  exist even when the paper-add rejects, so that path resolves too. */
+export async function createProjectWithPapers({
+  name,
+  sourceIds,
+}: CreateProjectWithPapersVars): Promise<string[]> {
+  const result = await createProject({ name });
+  try {
+    return await addPapers({ projectId: result.project.id, sourceIds });
+  } catch {
+    // The project was created; resolve so onSuccess still clears the name and
+    // a retry can't create a duplicate.
+    return sourceIds;
+  }
+}

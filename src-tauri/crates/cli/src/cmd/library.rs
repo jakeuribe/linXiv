@@ -144,12 +144,19 @@ pub async fn list(args: ListArgs, ctx: &mut Ctx) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Columns stored as JSON TEXT by `storage::db::list_to_sql`.
+const LIST_COLUMNS: [&str; 3] = ["categories", "authors", "tags"];
+
 /// `cmd_list` body: `[{k: row[k] for k in row.keys()} for row in rows]` over the
 /// RAW `latest_papers` view rows — NOT `PaperDetails`. Each column stays as its
 /// raw SQLite value: integers (incl. has_pdf/downloaded_source 0/1) stay integers,
-/// the categories/authors/tags JSON-TEXT columns stay as raw strings, created_at/
-/// updated_at are included, NULLs serialize to null, and columns keep view order
-/// (preserve_order). Same filter/order as `db.list_papers(latest_only=True)`.
+/// created_at/updated_at are included, non-LIST NULLs serialize to null, and
+/// columns keep view order (preserve_order). Same filter/order as
+/// `db.list_papers(latest_only=True)`.
+///
+/// The LIST columns (categories/authors/tags) are decoded from their JSON-TEXT
+/// storage form so they cross the wire as arrays, matching `row_to_paper`; a
+/// NULL list column reads as `[]`, not null.
 ///
 /// One exception: `full_text` always reports null. `list_papers_sql` selects it
 /// as NULL so a multi-row read doesn't haul every indexed TeX body into memory;
@@ -161,7 +168,8 @@ fn list_papers_raw(
     category: Option<&str>,
     sort: PaperSort,
     desc: bool,
-) -> rusqlite::Result<Vec<serde_json::Value>> {
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    use linxiv_core::storage::db::list_from_sql;
     use rusqlite::types::ValueRef;
 
     let (sql, params) = linxiv_core::storage::queries::paper::list_papers_sql(
@@ -175,12 +183,21 @@ fn list_papers_raw(
     while let Some(row) = rows.next()? {
         let mut obj = serde_json::Map::new();
         for (i, name) in cols.iter().enumerate() {
+            // LIST columns decode to an array; a NULL one reads as `[]`. Both
+            // are the mappings `row_to_paper`'s `list` closure applies.
+            let is_list = LIST_COLUMNS.contains(&name.as_str());
             let val = match row.get_ref(i)? {
+                ValueRef::Null if is_list => serde_json::Value::Array(Vec::new()),
                 ValueRef::Null => serde_json::Value::Null,
                 ValueRef::Integer(n) => serde_json::Value::from(n),
                 ValueRef::Real(f) => serde_json::Value::from(f),
                 ValueRef::Text(t) => {
-                    serde_json::Value::from(String::from_utf8_lossy(t).into_owned())
+                    let s = String::from_utf8_lossy(t).into_owned();
+                    if is_list {
+                        serde_json::Value::from(list_from_sql(&s)?)
+                    } else {
+                        serde_json::Value::from(s)
+                    }
                 }
                 ValueRef::Blob(b) => {
                     serde_json::Value::from(String::from_utf8_lossy(b).into_owned())
@@ -191,4 +208,38 @@ fn list_papers_raw(
         out.push(serde_json::Value::Object(obj));
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use linxiv_core::models::PaperMetadata;
+    use linxiv_core::storage;
+    use serde_json::json;
+
+    #[test]
+    fn list_papers_raw_emits_list_columns_as_arrays() {
+        let mut conn = storage::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        let meta: PaperMetadata = serde_json::from_value(json!({
+            "source_id": "arxiv:1234.5678",
+            "version": 1,
+            "title": "T",
+            "authors": ["Ada Lovelace", "Alan Turing"],
+            "published": "2024-01-01",
+            "summary": "s",
+            "category": "cs.LG",
+            "categories": ["cs.LG", "stat.ML"],
+            "source": "arxiv",
+        }))
+        .unwrap();
+        svc_paper::save_paper_metadata(&mut conn, &meta, None).unwrap();
+
+        let rows = list_papers_raw(&conn, None, 0, None, PaperSort::Published, true).unwrap();
+        assert_eq!(rows[0]["authors"], json!(["Ada Lovelace", "Alan Turing"]));
+        assert_eq!(rows[0]["categories"], json!(["cs.LG", "stat.ML"]));
+        // No tags were supplied, so the column is SQL NULL. It must still read
+        // as [] here, the way `row_to_paper` renders it for every other door.
+        assert_eq!(rows[0]["tags"], json!([]));
+    }
 }

@@ -11,6 +11,7 @@ import {
 } from "../../api/trash";
 import { removeFromAllProjects } from "../../api/papers";
 import { useReadingStatusStore } from "../../stores/readingStatus";
+import { invalidatePaperQueries, forgetPurgedPapers } from "../../lib/paperMutations";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
 import { Dialog } from "../ui/dialog";
@@ -221,8 +222,7 @@ export function TrashSection() {
     setActionError(null);
     try {
       const result = await restorePaper(paper.source_id);
-      await qc.invalidateQueries({ queryKey: ["trash"] });
-      await qc.invalidateQueries({ queryKey: ["papers"] });
+      await invalidatePaperQueries(qc);
       const projectFks = result.project_fks ?? [];
       if (projectFks.length > 0) {
         setProjectPrompt({
@@ -263,9 +263,8 @@ export function TrashSection() {
       await hardDeletePaper(sourceId);
       // Drop the persisted reading status so a re-saved paper reusing this
       // source_id starts fresh. Soft delete keeps it: trash+restore round-trips.
-      useReadingStatusStore.getState().remove(sourceId);
-      await qc.invalidateQueries({ queryKey: ["trash"] });
-      await qc.invalidateQueries({ queryKey: ["papers"] });
+      forgetPurgedPapers([sourceId], useReadingStatusStore.getState());
+      await invalidatePaperQueries(qc);
     } catch (e) {
       console.error(e);
       setActionError("Failed to permanently delete the paper.");

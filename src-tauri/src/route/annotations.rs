@@ -62,7 +62,9 @@ fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
         comment: String,
     }
     let b: Body = ctx.parse_body()?;
-    if b.source_id.trim().is_empty() {
+    // Pre-trim, like pydantic's min_length=1; notes.rs and sources.rs run the
+    // same check. A whitespace-only id falls through to resolve_source_fk.
+    if b.source_id.is_empty() {
         return Err(ApiError::new(422, "source_id must not be empty"));
     }
     state.with_conn(|conn| {

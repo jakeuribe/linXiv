@@ -16,7 +16,7 @@ import { getSearchState, saveSearchState } from "../api/searchState";
 import { getSettings } from "../api/settings";
 import { listPapers } from "../api/papers";
 import type { Clause, SearchResult, Paper } from "../types/api";
-import { isArxivId, normalizeAuthors } from "../lib/papers";
+import { isArxivId } from "../lib/papers";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -25,7 +25,7 @@ function paperMatchesText(paper: Paper, query: string): boolean {
   if (!q) return false;
   const title = paper.title.toLowerCase();
   const summary = (paper.summary ?? "").toLowerCase();
-  const authors = normalizeAuthors(paper.authors).join(" ").toLowerCase();
+  const authors = paper.authors.join(" ").toLowerCase();
   return title.includes(q) || summary.includes(q) || authors.includes(q);
 }
 
@@ -37,7 +37,7 @@ function paperToSearchResult(paper: Paper): SearchResult {
     version: paper.version,
     title: paper.title,
     summary: paper.summary ?? "",
-    authors: normalizeAuthors(paper.authors),
+    authors: paper.authors,
     published: paper.published ?? "",
     paper_url: paper.url ?? "",
     primary_category: paper.category ?? "",
