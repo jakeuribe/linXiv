@@ -1,0 +1,79 @@
+# CodeQL advanced setup.
+#
+# This replaces GitHub's default ("automatic") setup, which cannot be kept for
+# some languages while others move to advanced setup — the two are mutually
+# exclusive per repository, so all three languages live here.
+#
+# Why we left default setup: its checkout hardcodes `submodules: false`, and
+# src-tauri/crates/p2p is both a git submodule and a `[workspace] members` entry.
+# `cargo metadata` therefore failed instantly ("failed to load manifest for
+# dependency `linxiv-p2p`"), the Rust extractor fell back to parsing each file in
+# isolation, and all 110 files were extracted with no semantic information —
+# 13% call-target resolution against a 50% threshold, macro expansion skipped.
+# Since the Tauri command surface is macro-generated, that left the actual
+# untrusted-input handlers invisible to the scan.
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main, dev]
+  schedule:
+    # Weekly, matching the cadence default setup was configured with.
+    - cron: "23 1 * * 1"
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: actions
+            submodules: "false"
+          - language: javascript-typescript
+            submodules: "false"
+          - language: rust
+            # Required: crates/p2p is a workspace member living in a submodule.
+            submodules: "recursive"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: ${{ matrix.submodules }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: matrix.language == 'rust'
+
+      - uses: Swatinem/rust-cache@v2
+        if: matrix.language == 'rust'
+        with:
+          workspaces: src-tauri
+
+      # Secondary to the submodule fix, but still load-bearing: the extractor
+      # resolves the workspace with `cargo metadata`, which walks the full
+      # dependency graph. Populating ~/.cargo up front keeps that resolution off
+      # the network and well inside the extractor's patience.
+      - name: cargo fetch
+        if: matrix.language == 'rust'
+        working-directory: src-tauri
+        run: cargo fetch --locked
+
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          # No compilation: `build-mode: none` matches what default setup used,
+          # which is why the Tauri system deps and pdfium that ci.yml installs
+          # are not needed here.
+          build-mode: none
+          # `queries` is deliberately unset to keep default setup's "default"
+          # query suite; the threat model likewise defaults to "remote".
+
+      - uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
