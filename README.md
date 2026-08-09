@@ -5,6 +5,7 @@
   <a href="https://github.com/linxiv-dev/linXiv/releases"><img alt="Release" src="https://img.shields.io/github/v/release/linxiv-dev/linXiv?include_prereleases"></a>
   <a href="LICENSE"><img alt="License: GPL v3" src="https://img.shields.io/badge/License-GPLv3-blue.svg"></a>
   <a href="https://tauri.app"><img alt="Tauri" src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=fff"></a>
+  <img alt="Discord" src="https://img.shields.io/discord/1524508942410190918">
 </p>
 
 <p align="center">
@@ -104,11 +105,11 @@ linXiv is a Tauri v2 app. The frontend is React 18 + TypeScript (Vite); the back
 
 ### Prerequisites
 
-- [Rust toolchain](https://rustup.rs/) (stable) — builds the backend, CLI, MCP server, and Tauri shell
-- [Node.js](https://nodejs.org/) 20.16+ (or 22.3+) — frontend / Tauri tooling; `pdfjs-dist` requires at least this
-- System Tauri dependencies — follow the [Tauri v2 prerequisites guide](https://tauri.app/start/prerequisites/) for your OS (WebKit2GTK on Linux, Xcode Command Line Tools on macOS, Microsoft C++ Build Tools on Windows)
+- [Rust toolchain](https://rustup.rs/) (stable, 1.85+) — builds the backend, CLI, MCP server, and Tauri shell
+- [Node.js](https://nodejs.org/) 20.16+ (22+ recommended) — frontend / Tauri tooling
+- System libraries — GTK 3, WebKit2GTK 4.1, and GLib on Linux; Xcode Command Line Tools on macOS; Microsoft C++ Build Tools on Windows
 
-> The build pulls the `tauri-plugin-texbrain` crate as a git dependency (`github.com/linxiv-dev/tex-brain-linxiv-plugin`, pinned in `Cargo.lock`) — no extra checkout needed.
+**See [docs/requirements.md](docs/requirements.md) for the copy-pasteable install commands per OS**, exact version reasoning, and what to do when `pkg-config` reports `gdk-3.0` missing.
 
 ### Install dependencies
 
