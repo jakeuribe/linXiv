@@ -5,9 +5,11 @@
   <a href="https://github.com/linxiv-dev/linXiv/releases"><img alt="Release" src="https://img.shields.io/github/v/release/linxiv-dev/linXiv?include_prereleases"></a>
   <a href="LICENSE"><img alt="License: GPL v3" src="https://img.shields.io/badge/License-GPLv3-blue.svg"></a>
   <a href="https://tauri.app"><img alt="Tauri" src="https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=fff"></a>
-  <img alt="Discord" src="https://img.shields.io/discord/1524508942410190918">
 </p>
 
+<p align="center">
+  <a href="https://discord.gg/RfbuxuGt5"><img src="https://dcbadge.limes.pink/api/server/RfbuxuGt5" alt="" /></a>
+</p>
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
