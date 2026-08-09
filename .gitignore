@@ -39,6 +39,7 @@ docs/cli_ref/*
 !docs/cli_ref/**
 !docs/architecture.md
 !docs/build.md
+!docs/requirements.md
 # Node / Frontend
 node_modules/
 dist/
