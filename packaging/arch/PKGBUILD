@@ -1,0 +1,43 @@
+# Maintainer: linXiv contributors
+pkgname=linxiv
+pkgver=0.3.1
+pkgrel=1
+pkgdesc='Local-first desktop application for managing academic papers'
+arch=('x86_64')
+url='https://github.com/linxiv-dev/linXiv'
+license=('GPL-3.0-only')
+depends=(
+  'gtk3'
+  'libappindicator'
+  'openssl'
+  'webkit2gtk-4.1'
+)
+makedepends=('curl' 'git' 'nodejs' 'npm' 'rustup')
+options=('!strip')
+source=()
+sha256sums=()
+
+package() {
+  local repo_root
+  repo_root="$(cd "$startdir/../.." && pwd)"
+
+  install -Dm755 "$repo_root/src-tauri/target/release/linxiv-app" \
+    "$pkgdir/usr/bin/linxiv-app"
+  install -Dm755 "$repo_root/src-tauri/target/release/linxiv-cli" \
+    "$pkgdir/usr/bin/linxiv"
+  install -Dm755 "$repo_root/src-tauri/target/release/linxiv-mcp" \
+    "$pkgdir/usr/bin/linxiv-mcp"
+  install -Dm755 "$repo_root/src-tauri/vendor/pdfium/lib/libpdfium.so" \
+    "$pkgdir/usr/lib/linXiv/pdfium/libpdfium.so"
+
+  install -Dm644 "$startdir/linxiv.desktop" \
+    "$pkgdir/usr/share/applications/linxiv.desktop"
+  install -Dm644 "$repo_root/src-tauri/icons/32x32.png" \
+    "$pkgdir/usr/share/icons/hicolor/32x32/apps/linxiv-app.png"
+  install -Dm644 "$repo_root/src-tauri/icons/128x128.png" \
+    "$pkgdir/usr/share/icons/hicolor/128x128/apps/linxiv-app.png"
+  install -Dm644 "$repo_root/src-tauri/icons/128x128@2x.png" \
+    "$pkgdir/usr/share/icons/hicolor/256x256@2/apps/linxiv-app.png"
+  install -Dm644 "$repo_root/LICENSE" \
+    "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
