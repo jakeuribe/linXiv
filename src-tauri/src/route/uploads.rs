@@ -370,7 +370,9 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(ok, json!({ "ok": true }));
-        assert!(pdf_dir.join(pdf_on_disk_name("arxiv:2204.99998", 1)).is_file());
+        assert!(pdf_dir
+            .join(pdf_on_disk_name("arxiv:2204.99998", 1))
+            .is_file());
     }
 
     #[tokio::test]
