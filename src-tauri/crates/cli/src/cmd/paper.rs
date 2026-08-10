@@ -168,43 +168,40 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             let version = svc_paper::get(&ctx.conn, &paper(&source_id))?
                 .map(|e| e.version)
                 .unwrap_or(1);
-            // Build via serde so the `published` string is parsed/validated as a
-            // NaiveDate without naming chrono (not a cli dep). All other fields are
-            // well-typed, so the only deserialize failure is a bad date string —
-            // matching Python's `datetime.date.fromisoformat` ValueError guard.
-            // `args.summary or ""` is already the clap default; `args.tags or None`
-            // collapses an empty list to None.
-            let meta: PaperMetadata = match serde_json::from_value(json!({
-                "source_id": &source_id,
-                "version": version,
-                "title": title,
-                "authors": authors,
-                "published": &published,
-                "summary": summary,
-                "category": category,
-                "doi": doi,
-                "url": url,
-                "tags": tags.filter(|t| !t.is_empty()),
-            })) {
-                Ok(m) => m,
-                Err(_) => fail(format!(
-                    "Invalid date {}; use YYYY-MM-DD",
-                    crate::output::pyrepr(&published)
-                )),
+            let meta = PaperMetadata {
+                source_id: source_id.clone(),
+                version,
+                title,
+                authors,
+                published: match svc_paper::parse_published(&published) {
+                    Ok(d) => d,
+                    Err(e) => fail(e.to_string()),
+                },
+                updated: None,
+                summary,
+                category,
+                categories: None,
+                doi,
+                journal_ref: None,
+                comment: None,
+                url,
+                tags,
+                source: None,
+                author_orcids: None,
             };
-            svc_paper::repair_paper(&mut ctx.conn, root.source_fk, &meta)?;
+            // repair_paper normalizes and validates (blank title, no authors, empty DOI).
+            match svc_paper::repair_paper(&mut ctx.conn, root.source_fk, &meta) {
+                Ok(()) => {}
+                Err(e @ linxiv_core::error::CoreError::Validation(_)) => fail(e.to_string()),
+                Err(e) => return Err(e.into()),
+            }
             output(&json!({ "repaired": source_id }));
         }
 
         // cmd_paper_restore: only valid from trash; returns pdf path + project links.
         PaperCmd::Restore { source_id } => {
             let source_id = as_source_id(&source_id, "arxiv");
-            if !svc_paper::is_paper_deleted(&ctx.conn, &source_id)? {
-                fail(format!(
-                    "Paper {} not found in trash",
-                    crate::output::pyrepr(&source_id)
-                ));
-            }
+            svc_paper::require_trashed(&ctx.conn, &source_id).unwrap_or_else(|e| fail(e));
             let (pdf_path, project_fks) = svc_paper::restore(&mut ctx.conn, &paper(&source_id))?;
             output(&json!({
                 "restored": source_id,
@@ -226,39 +223,10 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             output(&json!({ "hard_deleted": source_id }));
         }
 
-        // cmd_paper_search: `svc_paper.search_papers` — FTS over TeX source merged
-        // with note-content (LIKE) hits. Python swallows FTS5 syntax errors and
-        // returns [] for the FTS path so note hits still populate. FTS rows first;
-        // then the latest active paper per note SOURCE_FK (in note-recency order),
-        // deduped by source_id, capped at limit.
+        // cmd_paper_search: `svc_paper.search_papers` — the shared FTS + note-content
+        // merge, so CLI, route and MCP return the same set.
         PaperCmd::Search { query, limit } => {
-            let mut results =
-                storage::search_full_text(&ctx.conn, &query, limit).unwrap_or_default();
-            let mut seen: std::collections::HashSet<String> =
-                results.iter().map(|r| r.source_id.clone()).collect();
-
-            let notes_sfks =
-                storage::queries::note::search_notes_source_fks(&ctx.conn, &query, limit)?;
-            if !notes_sfks.is_empty() {
-                // Latest active paper per SOURCE_FK (== Python db.get_papers_by_source_fks);
-                // re-ordered by notes_sfks rank since get_many returns published DESC.
-                let note_papers = svc_paper::get_many(
-                    &ctx.conn,
-                    &svc_paper::Papers {
-                        source_fks: Some(notes_sfks.clone()),
-                        ..Default::default()
-                    },
-                )?;
-                for sfk in &notes_sfks {
-                    if let Some(p) = note_papers.iter().find(|p| p.source_fk == Some(*sfk)) {
-                        if seen.insert(p.source_id.clone()) {
-                            results.push(p.clone());
-                        }
-                    }
-                }
-            }
-            results.truncate(limit as usize);
-            output(&results);
+            output(&svc_paper::search_library(&ctx.conn, &query, limit)?);
         }
 
         // cmd_paper_remove_from_all: drop the paper from every project it's in.

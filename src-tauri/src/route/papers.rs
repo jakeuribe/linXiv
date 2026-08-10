@@ -6,8 +6,6 @@
 //! `/pdf-path` subtrees belong to the `pdfs` group (tried first in `mod.rs`).
 //! `POST {source_id}/full-text` is the one 4-segment arm this group owns.
 
-use std::collections::HashSet;
-
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -16,7 +14,6 @@ use linxiv_core::models::PaperMetadata;
 use linxiv_core::service::paper::{self as svc_paper, Paper};
 use linxiv_core::service::project as svc_project;
 use linxiv_core::sources::arxiv_downloads;
-use linxiv_core::storage::queries::{note as store_note, search as store_search};
 
 use crate::route::{path_i64, ApiError, ReqCtx};
 use crate::state::AppState;
@@ -43,12 +40,21 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
     }
 }
 
-/// `GET /api/papers?limit=&offset=` — `api_list_papers`.
+/// `GET /api/papers?limit=&offset=&sort=&dir=` — `api_list_papers`.
+/// `sort` is one of `published` (default) / `added` / `title`; `dir` is
+/// `asc`/`desc`, defaulting per metric (newest first, titles A–Z).
 fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let limit = ctx.q_i64("limit").unwrap_or(200).clamp(1, 5000);
     let offset = ctx.q_i64("offset").unwrap_or(0).max(0);
-    let papers =
-        state.with_conn(|conn| svc_paper::list_papers(conn, true, Some(limit), offset, None))?;
+    let sort = svc_paper::PaperSort::from_key(ctx.q("sort").unwrap_or_default());
+    let desc = match ctx.q("dir") {
+        Some("asc") => false,
+        Some("desc") => true,
+        _ => sort.default_desc(),
+    };
+    let papers = state.with_conn(|conn| {
+        svc_paper::list_papers_sorted(conn, true, Some(limit), offset, None, sort, desc)
+    })?;
     Ok(json!({ "papers": papers }))
 }
 
@@ -125,24 +131,7 @@ fn search(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
         ));
     }
     let limit = ctx.q_i64("limit").unwrap_or(50).clamp(1, 100);
-    let papers = state.with_conn(|conn| -> Result<Vec<_>, ApiError> {
-        // Recompose Python's FTS+notes merge here (FTS first, then note-linked
-        // papers, dedup, cap). search_full_text rewrites the query via match_expr
-        // before FTS5 sees it; unwrap_or_default still guards a missing/corrupt
-        // index (fts_matches also swallows any invalid MATCH syntax into an empty
-        // result, so a match_expr bug would not raise here either).
-        let mut papers = store_search::search_full_text(conn, &q, limit).unwrap_or_default();
-        let mut seen: HashSet<String> = papers.iter().map(|p| p.source_id.clone()).collect();
-        for sfk in store_note::search_notes_source_fks(conn, &q, limit)? {
-            if let Some(p) = svc_paper::get(conn, &sfk_key(sfk))? {
-                if seen.insert(p.source_id.clone()) {
-                    papers.push(p);
-                }
-            }
-        }
-        papers.truncate(limit as usize);
-        Ok(papers)
-    })?;
+    let papers = state.with_conn(|conn| svc_paper::search_library(conn, &q, limit))?;
     Ok(json!({ "papers": papers }))
 }
 
@@ -240,45 +229,26 @@ fn delete(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
 fn repair(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let source_fk = path_i64(fk)?;
     let b: RepairBody = ctx.parse_body()?;
-    // Mirror PaperRepairBody's pydantic validators (app.py 382-426) — these run
-    // before the handler in FastAPI, so they shape both the accepted-input set and
-    // what gets persisted. 422 on violation (status matches; detail is our plain
-    // string per the router-wide convention).
-    let title = b.title.trim().to_string();
-    if title.is_empty() {
-        return Err(ApiError::new(422, "title must not be blank"));
-    }
-    let authors = dedup_nonblank(&b.authors);
-    if authors.is_empty() {
-        return Err(ApiError::new(422, "at least one author is required"));
-    }
-    if matches!(b.doi.as_deref(), Some("")) {
-        return Err(ApiError::new(422, "doi must have at least 1 character"));
-    }
-    let summary = b.summary.trim().to_string();
-    let tags = b
-        .tags
-        .as_ref()
-        .map(|ts| dedup_nonblank(ts))
-        .filter(|v| !v.is_empty());
     state.with_conn(|conn| -> Result<Value, ApiError> {
         let paper = svc_paper::get(conn, &sfk_key(source_fk))?
             .ok_or_else(|| ApiError::new(404, "Paper not found"))?;
+        // Date validated after the existence check, matching MCP and Python.
+        let published = svc_paper::parse_published(&b.published)?;
         let meta = PaperMetadata {
             source_id: paper.source_id, // identity key; not changeable here (ADR-0008)
             version: paper.version,
-            title,
-            authors,
-            published: b.published,
+            title: b.title,
+            authors: b.authors,
+            published,
             updated: None,
-            summary,
+            summary: b.summary,
             category: b.category,
             categories: None,
             doi: b.doi,
             journal_ref: None,
             comment: None,
             url: b.url,
-            tags,
+            tags: b.tags,
             source: paper.source,
             author_orcids: None,
         };
@@ -300,32 +270,19 @@ fn remove_from_projects(state: &AppState, fk: &str) -> Result<Value, ApiError> {
     Ok(json!({ "ok": true, "removed_from": removed }))
 }
 
-/// `PaperRepairBody` (`src/api/papers.ts`). `published` binds as a `NaiveDate`
-/// (FastAPI `datetime.date`); a malformed date 422s via `parse_body`.
+/// `PaperRepairBody` (`src/api/papers.ts`). `published` stays a `String` so the
+/// date is parsed by `svc_paper::parse_published`, shared with the CLI and MCP.
 #[derive(Deserialize)]
 struct RepairBody {
     title: String,
     authors: Vec<String>,
-    published: chrono::NaiveDate,
+    published: String,
     #[serde(default)]
     summary: String,
     category: Option<String>,
     doi: Option<String>,
     url: Option<String>,
     tags: Option<Vec<String>>,
-}
-
-/// Trim each entry, drop blanks, dedup preserving first-seen order — the shared
-/// normalization of PaperRepairBody's `authors` / `tags` validators.
-fn dedup_nonblank(items: &[String]) -> Vec<String> {
-    let mut seen = HashSet::new();
-    items
-        .iter()
-        .filter_map(|s| {
-            let t = s.trim();
-            (!t.is_empty() && seen.insert(t.to_string())).then(|| t.to_string())
-        })
-        .collect()
 }
 
 fn sfk_key(source_fk: i64) -> Paper {
@@ -442,8 +399,10 @@ mod tests {
             err.detail
         );
 
-        // A non-arXiv paper is refused on the source, and names it rather than
-        // leaving a blank where the source should be.
+        // A non-arXiv paper is refused on its source_id namespace, and the
+        // message names the paper rather than leaving a blank. The PROVIDER
+        // column is deliberately not consulted — it arrives blank on some
+        // import paths and defaults to 'arxiv' for pre-migration rows.
         let mut crossref = meta("doi:10.1/z", None);
         crossref.source = Some("crossref".into());
         st.with_conn(|conn| svc_paper::save_paper_metadata(conn, &crossref, None))
@@ -453,7 +412,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.status, 400);
         assert!(
-            err.detail.contains("comes from crossref"),
+            err.detail.contains("doi:10.1/z is not an arXiv paper"),
             "unexpected detail: {}",
             err.detail
         );
@@ -685,8 +644,17 @@ mod tests {
 
     #[tokio::test]
     async fn repair_bad_date_is_422() {
+        let st = state();
+        // The date is parsed after the existence check, so the paper must exist
+        // to reach it — an absent one answers 404 first (repair_missing_paper_is_404).
+        st.with_conn(|conn| svc_paper::save_paper_metadata(conn, &meta("arxiv:8", None), None))
+            .unwrap();
+        let fk = st
+            .with_conn(|conn| svc_paper::ensure_paper_root(conn, "arxiv:8"))
+            .unwrap();
+
         let body = json!({"title":"T","authors":["A"],"published":"not-a-date","summary":"s"});
-        let err = req(&state(), "PUT", "/api/papers/sfk/1", Some(body))
+        let err = req(&st, "PUT", &format!("/api/papers/sfk/{fk}"), Some(body))
             .await
             .unwrap_err();
         assert_eq!(err.status, 422);
@@ -695,10 +663,17 @@ mod tests {
     #[tokio::test]
     async fn repair_validators_reject_blank_title_empty_authors_and_empty_doi() {
         let st = state();
-        // validators run before the paper lookup, so these 422 even with no paper.
+        // svc_paper::repair_paper validates, so the paper must exist to reach it.
+        st.with_conn(|conn| svc_paper::save_paper_metadata(conn, &meta("arxiv:7", None), None))
+            .unwrap();
+        let fk = st
+            .with_conn(|conn| svc_paper::ensure_paper_root(conn, "arxiv:7"))
+            .unwrap();
+        let path = format!("/api/papers/sfk/{fk}");
+
         let blank_title = json!({"title":"   ","authors":["A"],"published":"2024-01-01"});
         assert_eq!(
-            req(&st, "PUT", "/api/papers/sfk/1", Some(blank_title))
+            req(&st, "PUT", &path, Some(blank_title))
                 .await
                 .unwrap_err()
                 .status,
@@ -706,7 +681,7 @@ mod tests {
         );
         let no_authors = json!({"title":"T","authors":["  ",""],"published":"2024-01-01"});
         assert_eq!(
-            req(&st, "PUT", "/api/papers/sfk/1", Some(no_authors))
+            req(&st, "PUT", &path, Some(no_authors))
                 .await
                 .unwrap_err()
                 .status,
@@ -714,19 +689,11 @@ mod tests {
         );
         let empty_doi = json!({"title":"T","authors":["A"],"published":"2024-01-01","doi":""});
         assert_eq!(
-            req(&st, "PUT", "/api/papers/sfk/1", Some(empty_doi))
+            req(&st, "PUT", &path, Some(empty_doi))
                 .await
                 .unwrap_err()
                 .status,
             422
-        );
-    }
-
-    #[test]
-    fn dedup_nonblank_trims_drops_blanks_and_dedups_in_order() {
-        assert_eq!(
-            dedup_nonblank(&[" b ".into(), "a".into(), "".into(), "b".into(), "  ".into()]),
-            vec!["b".to_string(), "a".to_string()]
         );
     }
 

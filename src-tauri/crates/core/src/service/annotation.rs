@@ -51,6 +51,26 @@ pub fn get_many(conn: &Connection, anns: &Annotations) -> Result<Vec<AnnotationD
     }
 }
 
+/// Annotations for an optional paper and/or project — same scoping rule as
+/// [`crate::service::note::list_filtered`].
+pub fn list_filtered(
+    conn: &Connection,
+    source_fk: Option<i64>,
+    project_fk: Option<i64>,
+) -> Result<Vec<AnnotationDetails>> {
+    if source_fk.is_none() && project_fk.is_none() {
+        return list_all(conn);
+    }
+    get_many(
+        conn,
+        &Annotations {
+            source_fk,
+            project_fk,
+            all_projects: source_fk.is_some() && project_fk.is_none(),
+        },
+    )
+}
+
 /// Insert a new annotation. Returns ANNOTATION_SK. `Validation` if the anchor
 /// is invalid, `ProjectNotFound` if `project_fk` is set and does not exist.
 pub fn create(conn: &Connection, ann: &AnnotationIn) -> Result<i64> {

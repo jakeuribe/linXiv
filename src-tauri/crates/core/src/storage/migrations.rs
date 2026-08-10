@@ -36,6 +36,7 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     annotation_uuid(conn)?;
     rss_feed_tables(conn)?;
     rss_cache_entry_table(conn)?;
+    paper_sort_indexes(conn)?;
     Ok(())
 }
 
@@ -384,6 +385,24 @@ fn rss_feed_tables(conn: &Connection) -> Result<()> {
 /// Added after the initial schema, same pattern as `rss_feed_tables` above.
 fn rss_cache_entry_table(conn: &Connection) -> Result<()> {
     conn.execute_batch(include_str!("../../sql/tables/RSS_CACHE_ENTRY.sql"))?;
+    Ok(())
+}
+
+// ── 18. Library sort indexes (PAPER.TITLE/CREATED_AT, PAPER_META.PUBLISHED) ──
+
+/// The `PaperSort` orderings. These live here rather than in the table DDL
+/// because TABLE_DDL runs *before* the column-adding migrations, so an index
+/// there can reference a column a legacy DB doesn't have yet.
+/// CREATE INDEX IF NOT EXISTS is itself idempotent, so the only guard is on the
+/// column existing: indexing a column a stripped-down legacy PAPER_META lacks is
+/// a hard error, and such a DB can't serve the `papers` view either — skipping
+/// the (purely-for-speed) indexes is the harmless branch.
+fn paper_sort_indexes(conn: &Connection) -> Result<()> {
+    if has_column(conn, "PAPER_META", "PUBLISHED")? {
+        conn.execute_batch(include_str!(
+            "../../sql/migrations/18_paper_sort_indexes.sql"
+        ))?;
+    }
     Ok(())
 }
 

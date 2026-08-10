@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useLocation } from "react-router-dom";
+import { useLocation } from "react-router";
 import { useQuery } from "@tanstack/react-query";
 import { isTauri } from "../../api/client";
 import { getSettings, updateSettings } from "../../api/settings";

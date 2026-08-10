@@ -50,7 +50,7 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     })
 }
 
-/// `POST /api/annotations`. Ensures the paper root, inserts the annotation.
+/// `POST /api/annotations`. 404 if the paper is not in the library.
 fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     #[derive(Deserialize)]
     struct Body {
@@ -62,11 +62,13 @@ fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
         comment: String,
     }
     let b: Body = ctx.parse_body()?;
-    if b.source_id.trim().is_empty() {
+    // Pre-trim, like pydantic's min_length=1; notes.rs and sources.rs run the
+    // same check. A whitespace-only id falls through to resolve_source_fk.
+    if b.source_id.is_empty() {
         return Err(ApiError::new(422, "source_id must not be empty"));
     }
     state.with_conn(|conn| {
-        let source_fk = svc_paper::ensure_paper_root(conn, b.source_id.trim())?;
+        let source_fk = svc_paper::resolve_source_fk(conn, &b.source_id)?;
         let id = svc_ann::create(
             conn,
             &AnnotationIn {
@@ -145,6 +147,8 @@ mod tests {
     #[tokio::test]
     async fn create_list_update_delete_roundtrip() {
         let st = state();
+        st.with_conn(|conn| svc_paper::ensure_paper_root(conn, "arxiv:1"))
+            .unwrap();
         let created = req(
             &st,
             "POST",
@@ -195,6 +199,20 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(err.status, 422);
+    }
+
+    /// Parity with `linxiv annotation create` / MCP `create_annotation`.
+    #[tokio::test]
+    async fn create_on_unknown_paper_is_404() {
+        let err = req(
+            &state(),
+            "POST",
+            "/api/annotations",
+            Some(json!({ "source_id": "arxiv:404", "anchor": ANCHOR })),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status, 404);
     }
 
     #[tokio::test]

@@ -46,19 +46,17 @@ pub fn as_source_id(raw: &str, source: &str) -> String {
     }
 }
 
-/// Resolve an optional CLI paper id to its SOURCE_FK, failing like the Python CLI on a miss.
+/// Resolve an optional CLI paper id to its SOURCE_FK; `Err(NotFound)` on a miss
+/// (`main` routes it through `fail`, same `{"error": ...}` body).
 pub fn resolve_source_fk(
     conn: &rusqlite::Connection,
     raw: Option<String>,
 ) -> anyhow::Result<Option<i64>> {
     Ok(match raw {
-        Some(raw) => {
-            let sid = as_source_id(&raw, "arxiv");
-            match linxiv_core::storage::queries::paper::get_paper_root(conn, &sid)? {
-                Some(root) => Some(root.source_fk),
-                None => fail(format!("Paper {} not found in DB", pyrepr(&sid))),
-            }
-        }
+        Some(raw) => Some(linxiv_core::service::paper::resolve_source_fk(
+            conn,
+            &as_source_id(&raw, "arxiv"),
+        )?),
         None => None,
     })
 }

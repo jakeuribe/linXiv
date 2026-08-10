@@ -8,6 +8,9 @@
 </p>
 
 <p align="center">
+  <a href="https://discord.gg/RfbuxuGt5"><img src="https://dcbadge.limes.pink/api/server/RfbuxuGt5" alt="" /></a>
+</p>
+<p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
     <source media="(prefers-color-scheme: light)" srcset="assets/logo-light.svg">
@@ -42,6 +45,16 @@ Prebuilt installers for Linux, macOS, and Windows are on the [releases page](htt
 | Windows | `.exe` (NSIS) or `.msi` |
 
 The macOS and Windows builds are unsigned. On macOS, right-click the app → **Open** to get past Gatekeeper the first time. On Windows, click **More info** → **Run anyway** on the SmartScreen prompt.
+
+### Installing via pip install
+
+You can install linxiv via pip! It ships with a small API to programatically control your database in python and can be installedi as such
+
+```sh
+pip install linxiv          # everything below
+pip install "linxiv[app]"   # same, extras are opt-in markers only
+pip install "linxiv[cli]"
+```
 
 To build from source instead, start at [Clone](#clone).
 
@@ -94,11 +107,11 @@ linXiv is a Tauri v2 app. The frontend is React 18 + TypeScript (Vite); the back
 
 ### Prerequisites
 
-- [Rust toolchain](https://rustup.rs/) (stable) — builds the backend, CLI, MCP server, and Tauri shell
-- [Node.js](https://nodejs.org/) 20.16+ (or 22.3+) — frontend / Tauri tooling; `pdfjs-dist` requires at least this
-- System Tauri dependencies — follow the [Tauri v2 prerequisites guide](https://tauri.app/start/prerequisites/) for your OS (WebKit2GTK on Linux, Xcode Command Line Tools on macOS, Microsoft C++ Build Tools on Windows)
+- [Rust toolchain](https://rustup.rs/) (stable, 1.85+) — builds the backend, CLI, MCP server, and Tauri shell
+- [Node.js](https://nodejs.org/) 20.16+ (22+ recommended) — frontend / Tauri tooling
+- System libraries — GTK 3, WebKit2GTK 4.1, and GLib on Linux; Xcode Command Line Tools on macOS; Microsoft C++ Build Tools on Windows
 
-> The build pulls the `tauri-plugin-texbrain` crate as a git dependency (`github.com/linxiv-dev/tex-brain-linxiv-plugin`, pinned in `Cargo.lock`) — no extra checkout needed.
+**See [docs/requirements.md](docs/requirements.md) for the copy-pasteable install commands per OS**, exact version reasoning, and what to do when `pkg-config` reports `gdk-3.0` missing.
 
 ### Install dependencies
 

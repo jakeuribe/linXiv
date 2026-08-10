@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect, useMemo } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import { Spinner } from "../components/ui/spinner";
 import { QueryBuilder, makeClause } from "../components/search/QueryBuilder";
 import { ResultRow } from "../components/search/ResultRow";
@@ -16,7 +16,7 @@ import { getSearchState, saveSearchState } from "../api/searchState";
 import { getSettings } from "../api/settings";
 import { listPapers } from "../api/papers";
 import type { Clause, SearchResult, Paper } from "../types/api";
-import { isArxivId, normalizeAuthors } from "../lib/papers";
+import { isArxivId } from "../lib/papers";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -25,7 +25,7 @@ function paperMatchesText(paper: Paper, query: string): boolean {
   if (!q) return false;
   const title = paper.title.toLowerCase();
   const summary = (paper.summary ?? "").toLowerCase();
-  const authors = normalizeAuthors(paper.authors).join(" ").toLowerCase();
+  const authors = paper.authors.join(" ").toLowerCase();
   return title.includes(q) || summary.includes(q) || authors.includes(q);
 }
 
@@ -37,7 +37,7 @@ function paperToSearchResult(paper: Paper): SearchResult {
     version: paper.version,
     title: paper.title,
     summary: paper.summary ?? "",
-    authors: normalizeAuthors(paper.authors),
+    authors: paper.authors,
     published: paper.published ?? "",
     paper_url: paper.url ?? "",
     primary_category: paper.category ?? "",
@@ -226,10 +226,9 @@ const { data: settings } = useQuery({ queryKey: ["settings"], queryFn: getSettin
       openAlexSearch.mutate({ query, sort: prefs.openAlexSort }, {
         onSuccess: (data) => {
           const merged = mode === "append" ? mergeResults(base, data.results) : data.results;
-          const newIds = new Set(data.results.map((r) => r.source_id));
           const mergedSaved = mode === "append"
-            ? new Set(baseSaved)
-            : new Set([...baseSaved].filter((id) => newIds.has(id)));
+            ? new Set([...baseSaved, ...data.saved_source_ids])
+            : new Set(data.saved_source_ids);
           setResults(merged);
           setSavedIds(mergedSaved);
           persistState(query, source, maxResults, merged, [...mergedSaved], prefs);

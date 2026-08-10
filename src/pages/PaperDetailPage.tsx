@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { useParams, useNavigate, useLocation } from "react-router-dom";
+import { useParams, useNavigate, useLocation } from "react-router";
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { Document, Page } from "react-pdf";
 import type { PDFDocumentProxy } from "pdfjs-dist";
@@ -28,7 +28,7 @@ import { Card, MonoLabel } from "../components/ui/card";
 import { NoteCard } from "../components/notes/NoteCard";
 import { NoteEditor } from "../components/notes/NoteEditor";
 import { PaperMetadataEditor } from "../components/papers/PaperMetadataEditor";
-import { normalizeAuthors, labelForSource } from "../lib/papers";
+import { labelForSource } from "../lib/papers";
 import { MathText } from "../lib/tex";
 import { formatDate } from "../lib/date";
 import { TagBadge } from "../components/tags/TagBadge";
@@ -397,7 +397,7 @@ export default function PaperDetailPage() {
     );
   }
 
-  const authors = normalizeAuthors(paper.authors ?? []);
+  const authors = paper.authors;
   const notes = notesData?.notes ?? [];
   const annotations = annotationsData?.annotations ?? [];
   const editingNote =
@@ -1005,7 +1005,7 @@ interface PdfPaneProps {
   onPreview: () => void;
   savePdfMutation: Mutation<string>;
   linkPdfMutation: Mutation<{ sourceId: string; file: File }>;
-  linkPdfInputRef: React.RefObject<HTMLInputElement>;
+  linkPdfInputRef: React.RefObject<HTMLInputElement | null>;
   showPdfPreview: boolean;
   previewNumPages: number;
   setPreviewNumPages: (n: number) => void;

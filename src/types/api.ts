@@ -14,7 +14,7 @@ export interface Paper {
   version: number;
   title: string;
   summary: string | null;
-  authors: string | string[];
+  authors: string[];
   published: string | null;
   updated: string | null;
   url: string | null;

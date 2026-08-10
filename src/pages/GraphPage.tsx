@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useThemeStore } from "../stores/theme";
 import { useUiStore } from "../stores/ui";
 import { getColors } from "../lib/theme";
-import { listProjects, addPapersToProject, createProject } from "../api/projects";
+import { listProjects, addPapers, createProjectWithPapers } from "../api/projects";
+import { invalidateProjectMembershipQueries, partialFailureMessage } from "../lib/paperMutations";
 import { getStats } from "../api/settings";
 import { Spinner } from "../components/ui/spinner";
 import { Button } from "../components/ui/button";
@@ -65,22 +66,18 @@ export default function GraphPage() {
   });
 
   const addToProjectMutation = useMutation({
-    mutationFn: async ({ projectId, sourceIds }: { projectId: number; sourceIds: string[] }) => {
-      const { failed } = await addPapersToProject(projectId, sourceIds);
-      return failed;
-    },
+    mutationFn: addPapers,
     onMutate: () => {
       setProjectPickerError(null);
     },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ["projects"] });
+      invalidateProjectMembershipQueries(queryClient);
     },
     onSuccess: (failedIds, { sourceIds }) => {
       if (failedIds.length > 0) {
+        // Re-select only the failures so a retry can't re-add the rest.
         setSelectedSourceIds(failedIds);
-        setProjectPickerError(
-          `${failedIds.length} of ${sourceIds.length} paper${sourceIds.length !== 1 ? "s" : ""} could not be added`
-        );
+        setProjectPickerError(partialFailureMessage(failedIds.length, sourceIds.length));
       } else {
         setProjectPickerOpen(false);
         setProjectPickerError(null);
@@ -94,29 +91,20 @@ export default function GraphPage() {
   });
 
   const createProjectMutation = useMutation({
-    mutationFn: async ({ name, sourceIds }: { name: string; sourceIds: string[] }) => {
-      const result = await createProject({ name });
-      try {
-        const { failed } = await addPapersToProject(result.project.id, sourceIds);
-        return failed.length;
-      } catch {
-        // The project was created; route through onSuccess so the name is
-        // cleared and a retry can't create a duplicate.
-        return sourceIds.length;
-      }
-    },
+    mutationFn: createProjectWithPapers,
     // Invalidate in onSettled, not onSuccess: the project may have been
     // created even when the mutation rejects (e.g. a paper-add request fails).
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ["projects"] });
+      invalidateProjectMembershipQueries(queryClient);
     },
-    onSuccess: (failedCount) => {
+    onSuccess: (failedIds) => {
       // The project exists either way — clear the name so a retry can't
       // create a duplicate.
       setNewProjectName("");
-      if (failedCount > 0) {
+      if (failedIds.length > 0) {
+        setSelectedSourceIds(failedIds);
         setProjectPickerError(
-          `Project created, but ${failedCount} paper${failedCount !== 1 ? "s" : ""} could not be added`
+          `Project created, but ${failedIds.length} paper${failedIds.length !== 1 ? "s" : ""} could not be added`
         );
         return;
       }

@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { listProjects, createProject } from "../api/projects";
 import { ProjectCard } from "../components/projects/ProjectCard";

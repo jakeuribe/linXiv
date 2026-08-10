@@ -369,29 +369,8 @@ impl Server {
             last_name,
             orcid,
         } = params.0;
+        // update_fields owns the "exists" + "at least one field" guards (core).
         self.with_conn(|conn| -> Result<(), ErrorData> {
-            if svc_author::get(
-                conn,
-                &Author {
-                    author_id: Some(author_id),
-                    ..Default::default()
-                },
-            )
-            .map_err(map_core)?
-            .is_none()
-            {
-                return Err(ErrorData::invalid_params(
-                    format!("Author {author_id} not found."),
-                    None,
-                ));
-            }
-            if full_name.is_none() && first_name.is_none() && last_name.is_none() && orcid.is_none()
-            {
-                return Err(ErrorData::invalid_params(
-                    "At least one of full_name, first_name, last_name, or orcid must be provided.",
-                    None,
-                ));
-            }
             svc_author::update_fields(
                 conn,
                 author_id,
@@ -400,7 +379,7 @@ impl Server {
                 last_name.as_deref(),
                 orcid.as_deref(),
             )
-            .map_err(map_core)
+            .map_err(guard_err)
         })?;
         json_ok(&json!({ "updated_author_id": author_id }))
     }
@@ -411,14 +390,8 @@ impl Server {
         params: Parameters<AuthorIdParams>,
     ) -> Result<String, ErrorData> {
         let author_id = params.0.author_id;
+        // svc_author::delete owns the "exists" + "still linked" guards (core).
         self.with_conn(|conn| -> Result<(), ErrorData> {
-            let link_count = svc_author::count_paper_links(conn, author_id).map_err(map_core)?;
-            if link_count > 0 {
-                return Err(ErrorData::invalid_params(
-                    format!("Author {author_id} is linked to {link_count} paper(s); unlink first."),
-                    None,
-                ));
-            }
             svc_author::delete(
                 conn,
                 &Author {
@@ -426,7 +399,7 @@ impl Server {
                     ..Default::default()
                 },
             )
-            .map_err(map_core)
+            .map_err(guard_err)
         })?;
         json_ok(&json!({ "deleted_author_id": author_id }))
     }

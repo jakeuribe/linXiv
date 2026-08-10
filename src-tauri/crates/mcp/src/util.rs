@@ -15,6 +15,15 @@ pub(crate) fn core_err(e: CoreError) -> ErrorData {
     ErrorData::internal_error(e.to_string(), None)
 }
 
+/// Service-layer guard failures (absent row, still-linked conflict, empty patch)
+/// are the Python `ValueError`s → invalid-params; DB/FS failures stay internal.
+pub(crate) fn guard_err(e: CoreError) -> ErrorData {
+    match e {
+        CoreError::Internal(m) => ErrorData::internal_error(m, None),
+        other => invalid(other.to_string()),
+    }
+}
+
 /// Serialize a core value to the tool's text result (compact JSON string).
 pub(crate) fn json_ok<T: serde::Serialize>(v: &T) -> Result<String, ErrorData> {
     serde_json::to_string(v).map_err(|e| ErrorData::internal_error(e.to_string(), None))

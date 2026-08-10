@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useParams, useNavigate, useNavigationType, Link } from "react-router-dom";
+import { useParams, useNavigate, useNavigationType, useLocation, Link } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Download, FolderOpen, GitFork, Upload } from "lucide-react";
 import { useUiStore, type ExportFormatKey } from "../stores/ui";
@@ -7,7 +7,7 @@ import {
   getProject,
   updateProject,
   createProject,
-  addPapersToProject,
+  addPapers,
   removePaperFromProject,
   archiveProject,
   restoreProject,
@@ -31,10 +31,10 @@ import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/input";
 import { Spinner } from "../components/ui/spinner";
 import { EmptyState } from "../components/ui/empty-state";
-import { normalizeAuthors } from "../lib/papers";
 import { MathText } from "../lib/tex";
 import { READING_LIST_TAG, isReadingListProject } from "../lib/readingStatus";
 import { useReadingStatusStore } from "../stores/readingStatus";
+import { invalidateProjectMembershipQueries, partialFailureMessage } from "../lib/paperMutations";
 import { StatusButton } from "../components/reading/StatusButton";
 
 // ---------------------------------------------------------------------------
@@ -277,12 +277,13 @@ function AddPapersDialog({
     setSubmitting(true);
     setError(null);
     try {
-      const { failed } = await addPapersToProject(projectId, [...selectedIds]);
-      await queryClient.invalidateQueries({ queryKey: ["project", String(projectId)] });
-      // The ["projects"] list query backs the note scope picker / badges.
-      await queryClient.invalidateQueries({ queryKey: ["projects"] });
+      const ids = [...selectedIds];
+      const failed = await addPapers({ projectId, sourceIds: ids });
+      // Also covers ["projects"], which backs the note scope picker / badges.
+      await invalidateProjectMembershipQueries(queryClient);
       if (failed.length > 0) {
-        setError(`Failed to add ${failed.length} paper${failed.length !== 1 ? "s" : ""}`);
+        setSelectedIds(new Set(failed));
+        setError(partialFailureMessage(failed.length, ids.length));
       } else {
         onClose();
       }
@@ -346,7 +347,7 @@ function AddPapersDialog({
                     style={{ color: "var(--color-muted)" }}
                     title={paper.source_id}
                   >
-                    {normalizeAuthors(paper.authors).join(", ") || paper.source_id}
+                    {paper.authors.join(", ") || paper.source_id}
                   </span>
                 </div>
               </label>
@@ -399,9 +400,7 @@ interface PaperRowProps {
 
 function PaperRow({ paper, checked, onToggle, projectId, project, selectable }: PaperRowProps) {
   const navigate = useNavigate();
-  const authors = Array.isArray(paper.authors)
-    ? paper.authors.slice(0, 3).join(", ")
-    : paper.authors;
+  const authors = paper.authors.slice(0, 3).join(", ");
 
   return (
     <div
@@ -600,6 +599,24 @@ export default function ProjectDetailPage() {
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
 
+  // The route element isn't keyed by :id, so a param change reuses this
+  // instance and its banners would outlive the project that raised them.
+  // Declared before the notice effect below, which re-sets on the same render.
+  useEffect(() => {
+    setStatusError(null);
+    setRemoveError(null);
+  }, [id]);
+
+  const location = useLocation();
+  const arrivalNotice = (location.state as { notice?: string } | null)?.notice;
+  useEffect(() => {
+    // Returns when absent: stripping the notice re-runs this with none left,
+    // and assigning null there would clear the banner just set.
+    if (!arrivalNotice) return;
+    setStatusError(arrivalNotice);
+    navigate(location.pathname, { replace: true, state: null });
+  }, [arrivalNotice, location.pathname, navigate]);
+
   const projectId = id && /^\d+$/.test(id) ? parseInt(id, 10) : NaN;
 
   const {
@@ -648,9 +665,25 @@ export default function ProjectDetailPage() {
       });
       // ponytail: copies project metadata + paper links; notes/annotations are
       // library-global in linXiv, so they need no per-project copy.
-      await addPapersToProject(created.id, project.source_ids);
-      await queryClient.invalidateQueries({ queryKey: ["projects"] });
-      navigate(`/projects/${created.id}`);
+      // As in createProjectWithPapers: the project exists even when the add
+      // rejects, so a reject counts as every id failing rather than escaping.
+      let failed: string[] = [];
+      let addError: string | null = null;
+      try {
+        failed = await addPapers({ projectId: created.id, sourceIds: project.source_ids });
+      } catch (err) {
+        // A transport/server reject is not the same as unresolvable ids, so it
+        // carries its own message rather than a per-paper count.
+        failed = project.source_ids;
+        addError = err instanceof Error ? err.message : "Failed to add papers to the fork";
+      }
+      await invalidateProjectMembershipQueries(queryClient);
+      const notice =
+        addError ??
+        (failed.length > 0
+          ? partialFailureMessage(failed.length, project.source_ids.length)
+          : null);
+      navigate(`/projects/${created.id}`, { state: notice ? { notice } : null });
     } catch (err) {
       setStatusError(err instanceof Error ? err.message : "Failed to fork project");
     } finally {

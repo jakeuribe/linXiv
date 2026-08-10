@@ -1,17 +1,23 @@
 import { useState, useRef, useMemo, useDeferredValue, useCallback } from "react";
-import { useNavigate } from "react-router-dom";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "react-router";
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Upload, FileText, SearchX, FilterX } from "lucide-react";
 import { listPapers, deletePaper, searchLibrary } from "../api/papers";
-import { listProjects, addPapersToProject, createProject } from "../api/projects";
+import type { PaperSort } from "../api/papers";
+import { listProjects, addPapers, createProjectWithPapers } from "../api/projects";
+import {
+  invalidatePaperQueries,
+  invalidateProjectMembershipQueries,
+  partialFailureMessage,
+} from "../lib/paperMutations";
 import { useSelectionStore } from "../stores/selection";
 import { useLibraryStore } from "../stores/library";
 import type { LibraryFilterMode as FilterMode } from "../stores/library";
 import type { Paper } from "../types/api";
-import { normalizeAuthors } from "../lib/papers";
 import { Spinner } from "../components/ui/spinner";
 import { Input } from "../components/ui/input";
+import { OptionSelect } from "../components/ui/select";
 import { formSubmitOnCtrlEnter } from "../lib/submitShortcut";
 import { Button } from "../components/ui/button";
 import { Dialog } from "../components/ui/dialog";
@@ -32,12 +38,21 @@ const FILTER_LABELS: { mode: FilterMode; label: string }[] = [
   { mode: "no_pdf", label: "No PDF" },
 ];
 
+const SORT_OPTIONS: { value: PaperSort; label: string }[] = [
+  { value: "published_desc", label: "Newest first" },
+  { value: "published_asc", label: "Oldest first" },
+  { value: "added_desc", label: "Recently added" },
+  { value: "added_asc", label: "First added" },
+  { value: "title_asc", label: "Title A–Z" },
+  { value: "title_desc", label: "Title Z–A" },
+];
+
 function matchesPaper(paper: Paper, query: string): boolean {
   if (!query.trim()) return true;
   const q = query.toLowerCase();
   if (paper.title.toLowerCase().includes(q)) return true;
   if (paper.summary?.toLowerCase().includes(q)) return true;
-  const authors = normalizeAuthors(paper.authors ?? []);
+  const authors = paper.authors;
   return authors.some((a) => a.toLowerCase().includes(q));
 }
 
@@ -52,6 +67,8 @@ export default function LibraryPage() {
   const ftsEnabled = trimmedSearch.length >= 3;
   const filterMode = useLibraryStore((s) => s.filterMode);
   const setFilterMode = useLibraryStore((s) => s.setFilterMode);
+  const sort = useLibraryStore((s) => s.sort);
+  const setSort = useLibraryStore((s) => s.setSort);
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [projectPickerError, setProjectPickerError] = useState<string | null>(null);
   const [newProjectName, setNewProjectName] = useState("");
@@ -61,16 +78,21 @@ export default function LibraryPage() {
 
   const selectedIds = useSelectionStore((s) => s.selectedIds);
   const clear = useSelectionStore((s) => s.clear);
+  const selectAll = useSelectionStore((s) => s.selectAll);
 
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const {
     data: papersData,
     isLoading,
+    isFetching: papersFetching,
     error,
   } = useQuery({
-    queryKey: ["papers"],
-    queryFn: () => listPapers(PAPER_FETCH_LIMIT, 0),
+    queryKey: ["papers", "list", sort],
+    queryFn: () => listPapers(PAPER_FETCH_LIMIT, 0, sort),
+    // The previous order stays on screen while the re-sorted page loads — so the
+    // header spinner is the only cue the list is being refetched.
+    placeholderData: keepPreviousData,
   });
 
   const {
@@ -103,8 +125,7 @@ export default function LibraryPage() {
       setDeleteError(null);
     },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ["papers"] });
-      queryClient.invalidateQueries({ queryKey: ["stats"] });
+      invalidatePaperQueries(queryClient);
     },
     onSuccess: () => {
       clear();
@@ -117,24 +138,20 @@ export default function LibraryPage() {
   });
 
   const addToProjectMutation = useMutation({
-    mutationFn: async ({
-      projectId,
-      sourceIds,
-    }: {
-      projectId: number;
-      sourceIds: string[];
-    }) => {
-      const { failed } = await addPapersToProject(projectId, sourceIds);
-      if (failed.length > 0) {
-        throw new Error(
-          `Failed to add ${failed.length} paper${failed.length !== 1 ? "s" : ""} to project`
-        );
-      }
+    mutationFn: addPapers,
+    onMutate: () => {
+      setProjectPickerError(null);
     },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ["projects"] });
+      invalidateProjectMembershipQueries(queryClient);
     },
-    onSuccess: () => {
+    onSuccess: (failedIds, { sourceIds }) => {
+      if (failedIds.length > 0) {
+        // Re-select only the failures so a retry can't re-add the rest.
+        selectAll(failedIds);
+        setProjectPickerError(partialFailureMessage(failedIds.length, sourceIds.length));
+        return;
+      }
       setProjectPickerOpen(false);
       setProjectPickerError(null);
       clear();
@@ -147,29 +164,20 @@ export default function LibraryPage() {
   });
 
   const createProjectMutation = useMutation({
-    mutationFn: async ({ name, sourceIds }: { name: string; sourceIds: string[] }) => {
-      const result = await createProject({ name });
-      try {
-        const { failed } = await addPapersToProject(result.project.id, sourceIds);
-        return failed.length;
-      } catch {
-        // The project was created; route through onSuccess so the name is
-        // cleared and a retry can't create a duplicate.
-        return sourceIds.length;
-      }
-    },
+    mutationFn: createProjectWithPapers,
     // Invalidate in onSettled, not onSuccess: the project may have been
     // created even when the mutation rejects (e.g. a paper-add request fails).
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ["projects"] });
+      invalidateProjectMembershipQueries(queryClient);
     },
-    onSuccess: (failedCount) => {
+    onSuccess: (failedIds) => {
       // The project exists either way — clear the name so a retry can't
       // create a duplicate.
       setNewProjectName("");
-      if (failedCount > 0) {
+      if (failedIds.length > 0) {
+        selectAll(failedIds);
         setProjectPickerError(
-          `Project created, but ${failedCount} paper${failedCount !== 1 ? "s" : ""} could not be added`
+          `Project created, but ${failedIds.length} paper${failedIds.length !== 1 ? "s" : ""} could not be added`
         );
         return;
       }
@@ -221,6 +229,17 @@ export default function LibraryPage() {
   const handleNavigate = useCallback(
     (sfk: number) => navigate(`/library/${sfk}`),
     [navigate]
+  );
+
+  // Re-sorting keeps the row count identical, so the browser never clamps
+  // scrollTop — without this the user stays at row 800 of a list that now holds
+  // entirely different papers there.
+  const handleSortChange = useCallback(
+    (next: PaperSort) => {
+      setSort(next);
+      scrollRef.current?.scrollTo({ top: 0 });
+    },
+    [setSort]
   );
 
   function handleDeleteRequest() {
@@ -293,7 +312,7 @@ export default function LibraryPage() {
           </div>
           <div className="flex-1" />
           <span className="flex items-center gap-1.5 text-muted text-sm shrink-0">
-            {ftsEnabled && ftsFetching && <Spinner size={12} />}
+            {((ftsEnabled && ftsFetching) || papersFetching) && <Spinner size={12} />}
           </span>
           <Input
             placeholder="Search by title, abstract, full text, or notes…"
@@ -327,6 +346,14 @@ export default function LibraryPage() {
               {label}
             </button>
           ))}
+          <div className="flex-1" />
+          <OptionSelect
+            aria-label="Sort papers by"
+            size="sm"
+            value={sort}
+            onChange={handleSortChange}
+            options={SORT_OPTIONS}
+          />
         </div>
       </div>
 

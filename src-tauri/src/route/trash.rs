@@ -73,62 +73,70 @@ fn list(state: &AppState) -> Result<Value, ApiError> {
     })
 }
 
-/// `POST /api/trash/{source_id:path}/restore` — `api_trash_restore`. Idempotent:
-/// an unknown source_id (e.g. `2204.99999`) restores nothing and returns
-/// `{ok, pdf_path:null, project_fks:[]}`, exactly as Python does.
+/// `POST /api/trash/{source_id:path}/restore` — `api_trash_restore`. 404 unless the
+/// paper is actually in the trash (`svc_paper::require_trashed`).
 fn restore(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
-    let (pdf_path, project_fks) = state.with_conn(|conn| {
-        svc_paper::restore(
-            conn,
-            &Paper {
-                source_id: Some(source_id.to_string()),
-                ..Default::default()
-            },
-        )
-    })?;
+    let (pdf_path, project_fks) =
+        state.with_conn(|conn| -> Result<(Option<String>, Vec<i64>), ApiError> {
+            svc_paper::require_trashed(conn, source_id)?;
+            Ok(svc_paper::restore(
+                conn,
+                &Paper {
+                    source_id: Some(source_id.to_string()),
+                    ..Default::default()
+                },
+            )?)
+        })?;
     Ok(json!({ "ok": true, "pdf_path": pdf_path, "project_fks": project_fks }))
 }
 
-/// `DELETE /api/trash/{source_id:path}` — `api_trash_hard_delete`. Idempotent on
-/// an unknown source_id (200 no-op), matching Python.
+/// `DELETE /api/trash/{source_id:path}` — `api_trash_hard_delete`. Permanent, so it
+/// 404s unless the paper is in the trash; use `DELETE /api/papers/{id}` to trash one.
 fn hard_delete(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
-    state.with_conn(|conn| {
+    state.with_conn(|conn| -> Result<(), ApiError> {
+        svc_paper::require_trashed(conn, source_id)?;
         svc_paper::hard_delete(
             conn,
             &Paper {
                 source_id: Some(source_id.to_string()),
                 ..Default::default()
             },
-        )
+        )?;
+        Ok(())
     })?;
     Ok(json!({ "ok": true }))
 }
 
-/// `POST /api/trash/projects/{id}/restore` — un-trash a project. 422 on a non-integer id.
+/// `POST /api/trash/projects/{id}/restore` — un-trash a project. 422 on a non-integer
+/// id, 404 if absent, 400 if the project is active or archived rather than trashed.
 fn restore_project(state: &AppState, id: &str) -> Result<Value, ApiError> {
     let project_fk = crate::route::path_i64(id)?;
-    state.with_conn(|conn| {
+    state.with_conn(|conn| -> Result<(), ApiError> {
+        svc_project::require_trashed(conn, project_fk)?;
         svc_project::restore(
             conn,
             &svc_project::Project {
                 project_fk: Some(project_fk),
             },
-        )
+        )?;
+        Ok(())
     })?;
     Ok(json!({ "ok": true }))
 }
 
-/// `DELETE /api/trash/projects/{id}` — permanently delete a trashed project. 422 on
-/// a non-integer id. No-op if the project does not exist (matches svc_project).
+/// `DELETE /api/trash/projects/{id}` — permanently delete a trashed project. 422 on a
+/// non-integer id, 404 if absent, 400 if it is not in the trash.
 fn hard_delete_project(state: &AppState, id: &str) -> Result<Value, ApiError> {
     let project_fk = crate::route::path_i64(id)?;
-    state.with_conn(|conn| {
+    state.with_conn(|conn| -> Result<(), ApiError> {
+        svc_project::require_trashed(conn, project_fk)?;
         svc_project::hard_delete(
             conn,
             &svc_project::Project {
                 project_fk: Some(project_fk),
             },
-        )
+        )?;
+        Ok(())
     })?;
     Ok(json!({ "ok": true }))
 }
@@ -154,11 +162,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hard_delete_unknown_source_is_idempotent_ok() {
-        let v = req(&state(), "DELETE", "/api/trash/2204.00001")
-            .await
-            .unwrap();
-        assert_eq!(v, json!({ "ok": true }));
+    async fn hard_delete_unknown_source_is_404() {
+        for method in ["DELETE", "POST"] {
+            let path = match method {
+                "POST" => "/api/trash/2204.00001/restore",
+                _ => "/api/trash/2204.00001",
+            };
+            let err = req(&state(), method, path).await.unwrap_err();
+            assert_eq!(err.status, 404);
+        }
     }
 
     use linxiv_core::models::{ProjectIn, Status};
@@ -223,6 +235,43 @@ mod tests {
             .unwrap();
         assert_eq!(v, json!({ "ok": true }));
         assert_eq!(get_status(&st, id), Some(Status::Active));
+    }
+
+    /// The permanent-loss guard: an active (never-trashed) project must survive
+    /// both trash endpoints.
+    #[tokio::test]
+    async fn active_project_is_rejected_by_both_trash_endpoints() {
+        let st = state();
+        let id = st.with_conn(|conn| {
+            svc_project::create(
+                conn,
+                &ProjectIn {
+                    name: "Active".into(),
+                    description: String::new(),
+                    color: None,
+                    tags: vec![],
+                    source_fks: vec![],
+                },
+            )
+            .unwrap()
+        });
+
+        for (method, path) in [
+            ("DELETE", format!("/api/trash/projects/{id}")),
+            ("POST", format!("/api/trash/projects/{id}/restore")),
+        ] {
+            let err = req(&st, method, &path).await.unwrap_err();
+            assert_eq!(err.status, 400);
+        }
+        assert_eq!(get_status(&st, id), Some(Status::Active));
+    }
+
+    #[tokio::test]
+    async fn missing_project_is_404() {
+        let err = req(&state(), "DELETE", "/api/trash/projects/999")
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, 404);
     }
 
     #[tokio::test]

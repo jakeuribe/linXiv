@@ -1,7 +1,7 @@
 import { memo } from "react";
 import type { Paper } from "../../types/api";
 import { useSelectionStore } from "../../stores/selection";
-import { normalizeAuthors, labelForSource } from "../../lib/papers";
+import { labelForSource } from "../../lib/papers";
 import { MathText } from "../../lib/tex";
 
 const MAX_AUTHORS_DISPLAY = 3;
@@ -21,7 +21,7 @@ export const PaperCard = memo(function PaperCard({
   const isSelected = useSelectionStore((s) => s.selectedIds.has(paper.source_id));
   const toggle = useSelectionStore((s) => s.toggle);
 
-  const authors = normalizeAuthors(paper.authors ?? []);
+  const authors = paper.authors;
   const displayAuthors = authors.slice(0, MAX_AUTHORS_DISPLAY);
   const hasMoreAuthors = authors.length > MAX_AUTHORS_DISPLAY;
 

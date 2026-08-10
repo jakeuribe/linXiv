@@ -77,6 +77,28 @@ pub fn get_many(conn: &Connection, notes: &Notes) -> Result<Vec<NoteDetails>> {
     }
 }
 
+/// Notes for an optional paper and/or project — the CLI/MCP `list` scoping rule.
+/// A paper with no project filter spans the library and every project
+/// (`all_projects`); neither filter set lists everything.
+pub fn list_filtered(
+    conn: &Connection,
+    source_fk: Option<i64>,
+    project_fk: Option<i64>,
+) -> Result<Vec<NoteDetails>> {
+    if source_fk.is_none() && project_fk.is_none() {
+        return list_all(conn);
+    }
+    get_many(
+        conn,
+        &Notes {
+            source_fk,
+            project_fk,
+            all_projects: source_fk.is_some() && project_fk.is_none(),
+            ..Default::default()
+        },
+    )
+}
+
 /// Insert a new note. Returns NOTE_SK.
 pub fn create(conn: &Connection, note: &NoteIn) -> Result<i64> {
     let uuid: Option<String> = match &note.uuid {
@@ -447,5 +469,54 @@ mod tests {
         let got3 = get(&conn, &Note { note_id: Some(id3) }).unwrap().unwrap();
         assert_ne!(got3.uuid.to_lowercase(), fixed_uuid);
         assert!(!got3.uuid.is_empty());
+    }
+
+    /// `note list` and `annotation list` are sibling commands: the same
+    /// (paper, project) pair must scope both the same way.
+    #[test]
+    fn list_filtered_scopes_notes_and_annotations_alike() {
+        use crate::models::AnnotationIn;
+        use crate::service::annotation as ann;
+
+        const ANCHOR: &str = r##"{"v":1,"version":1,"page":1,"color":"#ffd400","quote":"q","rects":[{"x":0,"y":0,"w":0.5,"h":0.1}]}"##;
+        let conn = setup();
+        for project_fk in [None, Some(10)] {
+            create(
+                &conn,
+                &NoteIn {
+                    source_fk: 1,
+                    title: "n".into(),
+                    content: "c".into(),
+                    paper_id: None,
+                    project_fk,
+                    uuid: None,
+                },
+            )
+            .unwrap();
+            ann::create(
+                &conn,
+                &AnnotationIn {
+                    source_fk: 1,
+                    anchor: ANCHOR.into(),
+                    comment: String::new(),
+                    project_fk,
+                    uuid: None,
+                },
+            )
+            .unwrap();
+        }
+
+        // Paper with no project filter spans library + every project.
+        assert_eq!(list_filtered(&conn, Some(1), None).unwrap().len(), 2);
+        assert_eq!(ann::list_filtered(&conn, Some(1), None).unwrap().len(), 2);
+        // Paper + project narrows to that project on both.
+        assert_eq!(list_filtered(&conn, Some(1), Some(10)).unwrap().len(), 1);
+        assert_eq!(
+            ann::list_filtered(&conn, Some(1), Some(10)).unwrap().len(),
+            1
+        );
+        // Neither filter lists everything.
+        assert_eq!(list_filtered(&conn, None, None).unwrap().len(), 2);
+        assert_eq!(ann::list_filtered(&conn, None, None).unwrap().len(), 2);
     }
 }

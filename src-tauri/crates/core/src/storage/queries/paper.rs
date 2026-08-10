@@ -4,7 +4,7 @@ use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row, Tra
 use serde::Serialize;
 
 use crate::error::{CoreError, Result};
-use crate::models::{PaperDetails, PaperMetadata};
+use crate::models::{PaperDetails, PaperMetadata, ARXIV_ID_PREFIX, ARXIV_PDF_MARKER};
 use crate::storage::db::{
     bool_from_sql, date_from_sql, date_to_sql, list_from_sql, list_to_sql, timestamp_from_sql,
     transaction,
@@ -94,6 +94,68 @@ pub const PAPER_COLUMNS_NO_TEXT: &str = "paper_id, source_id, source_fk, version
      published, updated, category, categories, doi, journal_ref, comment, summary, authors, tags, \
      has_pdf, source, pdf_path, NULL AS full_text, downloaded_source, created_at, updated_at";
 
+/// What the library list is ordered by. Each arm's column is indexed (migration
+/// 18), so the ORDER BY drives its scan off the index instead of sorting the
+/// whole library in a temp b-tree.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PaperSort {
+    /// Publication date — the historical default.
+    #[default]
+    Published,
+    /// When the paper entered the library. Keyed on `source_fk`, the root row's
+    /// AUTOINCREMENT id — ids are handed out in insertion order, so fk order is
+    /// add order without `created_at`'s one-second ties. NOT the per-version
+    /// `created_at`, which jumps forward on every new version. Re-adding a
+    /// trashed paper reactivates its root, so it returns to its old position.
+    Added,
+    /// Title, case-insensitively.
+    Title,
+}
+
+/// `models::date_min` as stored by `date_to_sql` — the "no published date"
+/// sentinel. It is the smallest representable date, so it sinks on its own under
+/// DESC but would otherwise head the list under ASC.
+const NO_PUBLISHED_DATE: &str = "0001-01-01";
+
+impl PaperSort {
+    /// Wire key (`?sort=`); anything unrecognised falls back to the default.
+    /// Parsing here is what keeps the ORDER BY free of caller-supplied text.
+    pub fn from_key(key: &str) -> Self {
+        match key {
+            "added" => Self::Added,
+            "title" => Self::Title,
+            _ => Self::Published,
+        }
+    }
+
+    /// The direction to use when the caller names no explicit one: newest first
+    /// for dates, A–Z for titles.
+    pub fn default_desc(self) -> bool {
+        self != Self::Title
+    }
+
+    /// `paper_id` breaks ties so paging is stable — shared publish dates and
+    /// same-title papers are both common.
+    ///
+    /// Oldest-first leads with an extra term so undated papers sink instead of
+    /// heading the list. `idx_paper_meta_published_dated` indexes that exact
+    /// expression, in this column order and direction — change one and the other
+    /// must follow, or the ordering falls back to sorting the whole library.
+    fn order_by(self, desc: bool) -> String {
+        let dir = if desc { "DESC" } else { "ASC" };
+        let col = match self {
+            Self::Published => "published",
+            Self::Added => "source_fk",
+            Self::Title => "title COLLATE NOCASE",
+        };
+        let undated_last = match (self, desc) {
+            (Self::Published, false) => format!("(published > '{NO_PUBLISHED_DATE}') DESC, "),
+            _ => String::new(),
+        };
+        format!(" ORDER BY {undated_last}{col} {dir}, paper_id {dir}")
+    }
+}
+
 /// Shared SQL + bind params for the list-papers filter/order/pagination, used by
 /// `list_papers` here and the CLI's raw-row `cmd_list`.
 pub fn list_papers_sql(
@@ -101,6 +163,8 @@ pub fn list_papers_sql(
     limit: Option<i64>,
     offset: i64,
     category: Option<&str>,
+    sort: PaperSort,
+    desc: bool,
 ) -> (String, Vec<Value>) {
     let view = if latest_only {
         "latest_papers"
@@ -113,7 +177,7 @@ pub fn list_papers_sql(
         sql.push_str(" WHERE category = ?");
         params.push(Value::Text(cat.to_string()));
     }
-    sql.push_str(" ORDER BY published DESC");
+    sql.push_str(&sort.order_by(desc));
     match limit {
         Some(l) => {
             sql.push_str(" LIMIT ? OFFSET ?");
@@ -139,7 +203,28 @@ pub fn list_papers(
     offset: i64,
     category: Option<&str>,
 ) -> Result<Vec<PaperDetails>> {
-    let (sql, params) = list_papers_sql(latest_only, limit, offset, category);
+    list_papers_sorted(
+        conn,
+        latest_only,
+        limit,
+        offset,
+        category,
+        PaperSort::default(),
+        true,
+    )
+}
+
+/// `list_papers` under a caller-chosen ordering.
+pub fn list_papers_sorted(
+    conn: &Connection,
+    latest_only: bool,
+    limit: Option<i64>,
+    offset: i64,
+    category: Option<&str>,
+    sort: PaperSort,
+    desc: bool,
+) -> Result<Vec<PaperDetails>> {
+    let (sql, params) = list_papers_sql(latest_only, limit, offset, category, sort, desc);
     let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query(params_from_iter(&params))?;
     let mut out = Vec::new();
@@ -654,18 +739,19 @@ pub fn mark_pdf_saved(
 }
 
 /// Rows the backfill works on: latest-version active papers with no TeX source
-/// yet that `service::paper::source_fetch_url` would accept — arXiv, carrying a
-/// `/pdf/` link to derive the tarball URL from. Rows it would reject never leave
-/// the list, so listing them makes the backlog readout plateau above zero and
-/// puts them in front of the worker on every rebuild.
+/// yet that `service::paper::source_fetch_url` would accept — an `arxiv:`
+/// source_id carrying a `/pdf/` link to derive the tarball URL from. Rows it
+/// would reject never leave the list, so listing them makes the backlog readout
+/// plateau above zero and puts them in front of the worker on every rebuild.
 ///
-/// GLOB, not LIKE: LIKE is ASCII-case-insensitive in SQLite, while the Rust-side
-/// rule is a case-sensitive `contains("/pdf/")`.
-macro_rules! backfill_where {
-    () => {
+/// Both patterns are built from the constants `source_fetch_url` matches on, so
+/// the two rules cannot drift apart. GLOB, not LIKE: LIKE is ASCII-case-
+/// insensitive in SQLite, while the Rust-side rule is case-sensitive.
+fn backfill_where() -> String {
+    format!(
         "FROM latest_papers WHERE COALESCE(downloaded_source, 0) = 0 \
-         AND source = 'arxiv' AND url GLOB '*/pdf/*'"
-    };
+         AND source_id GLOB '{ARXIV_ID_PREFIX}*' AND url GLOB '*{ARXIV_PDF_MARKER}*'"
+    )
 }
 
 /// SOURCE_IDs of those rows, oldest-published first. Returns ids ONLY:
@@ -673,10 +759,9 @@ macro_rules! backfill_where {
 /// large library would materialise the whole library just to filter it out. The
 /// caller loads each paper individually instead.
 pub fn full_text_backfill_candidates(conn: &Connection) -> Result<Vec<String>> {
-    let mut stmt = conn.prepare(concat!(
-        "SELECT source_id ",
-        backfill_where!(),
-        " ORDER BY published ASC, source_id ASC"
+    let mut stmt = conn.prepare(&format!(
+        "SELECT source_id {} ORDER BY published ASC, source_id ASC",
+        backfill_where()
     ))?;
     let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -686,7 +771,7 @@ pub fn full_text_backfill_candidates(conn: &Connection) -> Result<Vec<String>> {
 /// materialising an id per row — the backlog readout polls this.
 pub fn full_text_backfill_count(conn: &Connection) -> Result<i64> {
     Ok(
-        conn.query_row(concat!("SELECT COUNT(*) ", backfill_where!()), [], |r| {
+        conn.query_row(&format!("SELECT COUNT(*) {}", backfill_where()), [], |r| {
             r.get(0)
         })?,
     )
@@ -817,6 +902,20 @@ pub fn hard_delete_paper(conn: &mut Connection, source_id: &str) -> Result<Optio
         tx.execute("DELETE FROM PAPER_ROOTS WHERE SOURCE_ID = ?", [source_id])?;
         Ok(path)
     })
+}
+
+/// Which of `source_ids` are stored and active. Ids are namespaced
+/// (`arxiv:2204.12985`); unknown ids are simply absent from the result.
+pub fn existing_source_ids(conn: &Connection, source_ids: &[String]) -> Result<Vec<String>> {
+    if source_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = vec!["?"; source_ids.len()].join(",");
+    let mut stmt = conn.prepare(&format!(
+        "SELECT DISTINCT source_id FROM papers WHERE source_id IN ({placeholders})"
+    ))?;
+    let rows = stmt.query_map(params_from_iter(source_ids), |r| r.get(0))?;
+    Ok(rows.collect::<std::result::Result<Vec<String>, _>>()?)
 }
 
 /// `is_paper_deleted` — true if a PAPER_ROOTS row exists with STATUS='deleted'.
@@ -1084,6 +1183,165 @@ mod tests {
             list_papers(&conn, false, Some(1), 1, None).unwrap().len(),
             1
         );
+    }
+
+    #[test]
+    fn list_papers_sorted_orders_by_the_requested_metric() {
+        let conn = open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        // Insertion order (= add order) matches neither the publication nor the
+        // title order. Titles differ in case so a binary-collation ORDER BY
+        // (Banana, apple, cherry) would fail.
+        for (sid, title, published) in [
+            ("arxiv:b", "Banana", "2024-01-01"),
+            ("arxiv:a", "apple", "2024-06-01"),
+            ("arxiv:c", "cherry", "2023-01-01"),
+        ] {
+            conn.execute("INSERT INTO PAPER_ROOTS (SOURCE_ID) VALUES (?1)", [sid])
+                .unwrap();
+            let fk = conn.last_insert_rowid();
+            // Every VERSION row is stamped the same, later date: `added` must come
+            // from the root, so p.CREATED_AT can't stand in for it.
+            conn.execute(
+                "INSERT INTO PAPER (SOURCE_ID, VERSION, TITLE, SOURCE_FK, CREATED_AT) \
+                 VALUES (?1, 1, ?2, ?3, '2026-01-01 00:00:00')",
+                params![sid, title, fk],
+            )
+            .unwrap();
+            let pid = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO PAPER_META (PAPER_ID, PUBLISHED) VALUES (?1, ?2)",
+                params![pid, published],
+            )
+            .unwrap();
+        }
+
+        // The oldest-added paper gains a v2 today. Ordering by the version row's
+        // timestamp would make it the "most recently added" paper.
+        let apple_fk: i64 = conn
+            .query_row(
+                "SELECT SOURCE_FK FROM PAPER_ROOTS WHERE SOURCE_ID = 'arxiv:a'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO PAPER (SOURCE_ID, VERSION, TITLE, SOURCE_FK, CREATED_AT) \
+             VALUES ('arxiv:a', 2, 'apple', ?1, '2026-06-01 00:00:00')",
+            params![apple_fk],
+        )
+        .unwrap();
+        let apple_v2 = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO PAPER_META (PAPER_ID, PUBLISHED) VALUES (?1, '2024-06-01')",
+            params![apple_v2],
+        )
+        .unwrap();
+
+        // An undated paper: stored as the 0001-01-01 sentinel, it must sink under
+        // BOTH publication orders rather than heading "oldest first".
+        conn.execute("INSERT INTO PAPER_ROOTS (SOURCE_ID) VALUES ('arxiv:d')", [])
+            .unwrap();
+        let undated_fk = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO PAPER (SOURCE_ID, VERSION, TITLE, SOURCE_FK, CREATED_AT) \
+             VALUES ('arxiv:d', 1, 'durian', ?1, '2026-01-01 00:00:00')",
+            params![undated_fk],
+        )
+        .unwrap();
+        let undated_pid = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO PAPER_META (PAPER_ID, PUBLISHED) VALUES (?1, '0001-01-01')",
+            params![undated_pid],
+        )
+        .unwrap();
+
+        let titles = |sort, desc| {
+            list_papers_sorted(&conn, true, None, 0, None, sort, desc)
+                .unwrap()
+                .into_iter()
+                .map(|p| p.title)
+                .collect::<Vec<_>>()
+        };
+
+        // "durian" is undated: last under both publication orders.
+        assert_eq!(
+            titles(PaperSort::Published, true),
+            ["apple", "Banana", "cherry", "durian"]
+        );
+        assert_eq!(
+            titles(PaperSort::Published, false),
+            ["cherry", "Banana", "apple", "durian"]
+        );
+        // Add order, not the v2 stored for "apple" in 2026 (which is the newest
+        // PAPER row of all and would otherwise head "recently added").
+        assert_eq!(
+            titles(PaperSort::Added, true),
+            ["durian", "cherry", "apple", "Banana"]
+        );
+        assert_eq!(
+            titles(PaperSort::Added, false),
+            ["Banana", "apple", "cherry", "durian"]
+        );
+        assert_eq!(
+            titles(PaperSort::Title, false),
+            ["apple", "Banana", "cherry", "durian"]
+        );
+        assert_eq!(
+            titles(PaperSort::Title, true),
+            ["durian", "cherry", "Banana", "apple"]
+        );
+
+        // Unknown wire keys can't reach the ORDER BY: they resolve to the default.
+        assert_eq!(PaperSort::from_key("title; DROP"), PaperSort::Published);
+        assert_eq!(PaperSort::from_key("added"), PaperSort::Added);
+        assert!(PaperSort::Added.default_desc());
+        assert!(!PaperSort::Title.default_desc());
+    }
+
+    /// Being indexed doesn't mean SQLite picks the index — a mismatched collation
+    /// or an expression in the leading ORDER BY term silently drops it back to a
+    /// full temp-b-tree sort of the whole library, which is exactly what these
+    /// migration-18 indexes exist to prevent.
+    #[test]
+    fn list_papers_sorted_orderings_use_their_index() {
+        let conn = open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+
+        let plan = |sort, desc| -> Vec<String> {
+            let (sql, _) = list_papers_sql(true, None, 0, None, sort, desc);
+            conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap()
+                .query_map([], |r| r.get::<_, String>(3))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        let uses = |sort, desc, index: &str| {
+            let steps = plan(sort, desc);
+            assert!(
+                steps.iter().any(|s| s.contains(index)),
+                "{sort:?} desc={desc} must scan {index}, got plan: {steps:?}"
+            );
+            // The tiebreak term may need a temp b-tree; the metric itself must not.
+            assert!(
+                !steps.iter().any(|s| s == "USE TEMP B-TREE FOR ORDER BY"),
+                "{sort:?} desc={desc} sorted the whole library, plan: {steps:?}"
+            );
+        };
+
+        uses(PaperSort::Published, true, "idx_paper_meta_published");
+        // Oldest-first leads with the undated-sinking expression, so it needs the
+        // expression index rather than the plain one.
+        uses(
+            PaperSort::Published,
+            false,
+            "idx_paper_meta_published_dated",
+        );
+        uses(PaperSort::Added, true, "idx_paper_source_fk");
+        uses(PaperSort::Added, false, "idx_paper_source_fk");
+        uses(PaperSort::Title, false, "idx_paper_title_nocase");
+        uses(PaperSort::Title, true, "idx_paper_title_nocase");
     }
 
     // ── Write tests ───────────────────────────────────────────────────────────
@@ -1484,5 +1742,27 @@ mod tests {
         assert!(find_doi_version_candidates(&conn, no_doi_fk)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn existing_source_ids_reports_only_active_stored_papers() {
+        let mut conn = open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        save_paper_metadata(&mut conn, &meta("arxiv:2204.12985", 1), None).unwrap();
+        save_paper_metadata(&mut conn, &meta("arxiv:2204.12985", 2), None).unwrap();
+        save_paper_metadata(&mut conn, &meta("openalex:W123", 1), None).unwrap();
+        soft_delete_paper(&mut conn, "openalex:W123").unwrap();
+
+        let found = existing_source_ids(
+            &conn,
+            &[
+                "arxiv:2204.12985".into(), // stored, two versions -> reported once
+                "openalex:W123".into(),    // trashed -> absent
+                "arxiv:1111.00001".into(), // never saved -> absent
+            ],
+        )
+        .unwrap();
+        assert_eq!(found, vec!["arxiv:2204.12985".to_string()]);
+        assert!(existing_source_ids(&conn, &[]).unwrap().is_empty());
     }
 }
