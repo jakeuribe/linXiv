@@ -112,9 +112,52 @@ pub fn create_tag(conn: &mut Connection, label: &str) -> Result<i64> {
 }
 
 /// `storage/tags.py::delete_tag` — hard delete by id. No-op if absent.
-pub fn delete_tag(conn: &Connection, tag_id: i64) -> Result<()> {
-    conn.execute("DELETE FROM TAG WHERE TAG_FK = ?", [tag_id])?;
-    Ok(())
+/// Unlinks first: PAPER_TO_TAG/PROJECT_TO_TAG declare TAG_FK with no ON DELETE, and
+/// `PRAGMA foreign_keys = ON`, so a bare row delete fails on any tag actually in use.
+///
+/// Paper tags live in two places — PAPER_TO_TAG and the denormalized
+/// `PAPER_META.TAGS` JSON — and both are cleared here, in one `db::transaction`
+/// (IMMEDIATE, so a writer in another process waits out `busy_timeout`).
+/// Project tags are only ever read from the join.
+pub fn delete_tag(conn: &mut Connection, tag_id: i64) -> Result<()> {
+    db::transaction(conn, |tx| {
+        let label: Option<String> = tx
+            .query_row("SELECT TAG FROM TAG WHERE TAG_FK = ?", [tag_id], |r| {
+                r.get::<_, Option<String>>(0)
+            })
+            .optional()?
+            .flatten();
+
+        if let Some(label) = label {
+            // Strip the label from PAPER_META.TAGS directly rather than via
+            // `remove_paper_tags`, whose `latest_papers` read skips trashed papers —
+            // a tag on a soft-deleted paper would otherwise be undeletable.
+            let rows: Vec<(i64, Option<String>)> = {
+                let mut stmt = tx.prepare(
+                    "SELECT pm.PAPER_ID, pm.TAGS FROM PAPER_META pm \
+                     JOIN PAPER_TO_TAG ptt ON ptt.PAPER_ID = pm.PAPER_ID \
+                     WHERE ptt.TAG_FK = ?",
+                )?;
+                let it = stmt.query_map([tag_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                it.collect::<rusqlite::Result<_>>()?
+            };
+            for (paper_id, tags_json) in rows {
+                let Some(json) = tags_json else { continue };
+                let kept: Vec<String> = db::list_from_sql(&json)?
+                    .into_iter()
+                    .filter(|t| !t.eq_ignore_ascii_case(&label))
+                    .collect();
+                tx.execute(
+                    "UPDATE PAPER_META SET TAGS = ? WHERE PAPER_ID = ?",
+                    rusqlite::params![db::list_to_sql(&kept), paper_id],
+                )?;
+            }
+        }
+        tx.execute("DELETE FROM PAPER_TO_TAG WHERE TAG_FK = ?", [tag_id])?;
+        tx.execute("DELETE FROM PROJECT_TO_TAG WHERE TAG_FK = ?", [tag_id])?;
+        tx.execute("DELETE FROM TAG WHERE TAG_FK = ?", [tag_id])?;
+        Ok(())
+    })
 }
 
 /// `storage/tags.py::get_project_tags` — labels of every tag linked to a project,
@@ -276,8 +319,167 @@ mod tests {
         let mut conn = db::open_in_memory().unwrap();
         storage::init_db(&conn).unwrap();
         let id = create_tag(&mut conn, "doomed").unwrap();
-        delete_tag(&conn, id).unwrap();
+        delete_tag(&mut conn, id).unwrap();
         assert!(get_tag(&conn, id).unwrap().is_none());
+    }
+
+    // A tag still applied to a paper deletes too — the TAG_FK foreign keys are
+    // NO ACTION, so a bare DELETE FROM TAG raises FOREIGN KEY constraint failed.
+    #[test]
+    fn delete_tag_unlinks_papers_and_projects_first() {
+        let mut conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        let id = create_tag(&mut conn, "inuse").unwrap();
+        let project_id = crate::service::project::create(
+            &mut conn,
+            &crate::models::ProjectIn {
+                name: "P".into(),
+                description: String::new(),
+                color: None,
+                tags: vec!["inuse".into()],
+                source_fks: Vec::new(),
+            },
+        )
+        .unwrap();
+        assert!(!get_project_tags(&conn, project_id).unwrap().is_empty());
+
+        delete_tag(&mut conn, id).unwrap();
+        assert!(get_tag(&conn, id).unwrap().is_none());
+        assert!(get_project_tags(&conn, project_id).unwrap().is_empty());
+    }
+
+    // The label also has to leave PAPER_META.TAGS, which is what every paper read
+    // actually returns — otherwise the paper keeps reporting a tag that is gone.
+    #[test]
+    fn delete_tag_clears_the_denormalized_paper_tag_list() {
+        use rusqlite::params;
+        let mut conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        conn.execute("INSERT INTO PAPER_ROOTS (SOURCE_ID) VALUES ('arxiv:1')", [])
+            .unwrap();
+        let fk = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO PAPER (SOURCE_ID, VERSION, TITLE, SOURCE_FK) \
+             VALUES ('arxiv:1', 1, 'T', ?1)",
+            params![fk],
+        )
+        .unwrap();
+        let pid = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO PAPER_META (PAPER_ID, PUBLISHED) VALUES (?1, '2024-01-01')",
+            params![pid],
+        )
+        .unwrap();
+
+        // add_paper_tags is the real writer: it fills both PAPER_TO_TAG and the JSON.
+        super::super::paper::add_paper_tags(
+            &mut conn,
+            "arxiv:1",
+            &["keep".to_string(), "doomed".to_string()],
+        )
+        .unwrap();
+        let doomed: i64 = conn
+            .query_row(TAG_FK_BY_LABEL_SQL, ["doomed"], |r| r.get(0))
+            .unwrap();
+
+        delete_tag(&mut conn, doomed).unwrap();
+
+        let remaining: Option<String> = conn
+            .query_row(
+                "SELECT TAGS FROM PAPER_META WHERE PAPER_ID = ?",
+                [pid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining.as_deref(), Some(r#"["keep"]"#));
+    }
+
+    // A tag on a trashed paper must still be deletable: the denormalized strip
+    // cannot go through `latest_papers`, which filters soft-deleted roots out.
+    #[test]
+    fn delete_tag_works_when_the_only_tagged_paper_is_trashed() {
+        use rusqlite::params;
+        let mut conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        conn.execute("INSERT INTO PAPER_ROOTS (SOURCE_ID) VALUES ('arxiv:1')", [])
+            .unwrap();
+        let fk = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO PAPER (SOURCE_ID, VERSION, TITLE, SOURCE_FK) \
+             VALUES ('arxiv:1', 1, 'T', ?1)",
+            params![fk],
+        )
+        .unwrap();
+        let pid = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO PAPER_META (PAPER_ID, PUBLISHED) VALUES (?1, '2024-01-01')",
+            params![pid],
+        )
+        .unwrap();
+        super::super::paper::add_paper_tags(&mut conn, "arxiv:1", &["doomed".to_string()]).unwrap();
+        conn.execute(
+            "UPDATE PAPER_ROOTS SET STATUS = 'deleted' WHERE SOURCE_FK = ?",
+            params![fk],
+        )
+        .unwrap();
+
+        let doomed: i64 = conn
+            .query_row(TAG_FK_BY_LABEL_SQL, ["doomed"], |r| r.get(0))
+            .unwrap();
+        delete_tag(&mut conn, doomed).unwrap();
+
+        assert!(get_tag(&conn, doomed).unwrap().is_none());
+        let remaining: Option<String> = conn
+            .query_row(
+                "SELECT TAGS FROM PAPER_META WHERE PAPER_ID = ?",
+                [pid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining.as_deref(), Some("[]"), "stale label cleared too");
+    }
+
+    // TAG lookup is COLLATE NOCASE, so the TAG row's casing can differ from what a
+    // paper stored. The JSON strip has to fold case or the label survives the delete.
+    #[test]
+    fn delete_tag_strips_the_denormalized_label_regardless_of_case() {
+        use rusqlite::params;
+        let mut conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        conn.execute("INSERT INTO PAPER_ROOTS (SOURCE_ID) VALUES ('arxiv:1')", [])
+            .unwrap();
+        let fk = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO PAPER (SOURCE_ID, VERSION, TITLE, SOURCE_FK) \
+             VALUES ('arxiv:1', 1, 'T', ?1)",
+            params![fk],
+        )
+        .unwrap();
+        let pid = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO PAPER_META (PAPER_ID, PUBLISHED) VALUES (?1, '2024-01-01')",
+            params![pid],
+        )
+        .unwrap();
+
+        // TAG row is "ML"; the paper stores "ml" and reuses that row (NOCASE unique).
+        let upper = create_tag(&mut conn, "ML").unwrap();
+        super::super::paper::add_paper_tags(&mut conn, "arxiv:1", &["ml".to_string()]).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM TAG", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "NOCASE index means one row, not two");
+
+        delete_tag(&mut conn, upper).unwrap();
+
+        let remaining: Option<String> = conn
+            .query_row(
+                "SELECT TAGS FROM PAPER_META WHERE PAPER_ID = ?",
+                [pid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining.as_deref(), Some("[]"), "case-folded strip");
     }
 
     #[test]

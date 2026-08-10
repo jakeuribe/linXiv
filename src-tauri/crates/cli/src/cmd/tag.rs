@@ -103,7 +103,7 @@ pub async fn run(cmd: TagCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         // cmd_tag_delete
         TagCmd::Delete { tag_id } => {
             svc_tag::delete(
-                &ctx.conn,
+                &mut ctx.conn,
                 &Tag {
                     tag_id: Some(tag_id),
                     label: None,

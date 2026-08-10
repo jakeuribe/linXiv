@@ -49,7 +49,7 @@ on the **Python/argparse version**; regenerate with the pinned interpreter.
 
 Only commands whose stdout is deterministic and **path-free** on an empty DB:
 
-- structural: `--help` for the root and all 15 top-level subcommands;
+- structural: `--help` for the root and all 18 visible top-level subcommands;
 - data: `stats`, `list`, `categories`, `tag list-all`, `author list`,
   `project list`, `trash list`, `note list`, `settings get`.
 

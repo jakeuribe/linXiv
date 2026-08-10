@@ -4,13 +4,15 @@ use std::path::PathBuf;
 
 use clap::Subcommand;
 use serde::Serialize;
+use serde_json::{json, Value};
 
 use linxiv_core::config;
 use linxiv_core::service::files as svc_files;
+use linxiv_core::service::paper as svc_paper;
 use linxiv_core::service::paper_import;
 
 use crate::ctx::Ctx;
-use crate::output::{as_source_id, fail, output};
+use crate::output::{as_source_id, fail, output, pyrepr};
 
 #[derive(Subcommand)]
 pub enum PdfCmd {
@@ -30,6 +32,10 @@ pub enum PdfCmd {
         #[arg(long)]
         version: Option<i64>,
     },
+    /// List papers with a PDF saved on disk
+    List,
+    /// Delete every saved version's PDF for a paper
+    Delete { source_id: String },
     /// Report total PDF storage usage
     Storage,
     /// Import a local PDF (extract metadata)
@@ -90,7 +96,17 @@ pub async fn run(cmd: PdfCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         } => {
             let source_id = as_source_id(&source_id, "arxiv");
             let paper = super::paper::resolve_paper_or_exit(ctx, &source_id);
-            let version = version.filter(|&v| v != 0).unwrap_or(paper.version);
+            // An explicit --version must name a stored version. mark_pdf_saved below
+            // updates no rows otherwise, and refusing after the download would leave
+            // an orphan file in the managed dir that no command can see or remove.
+            let version = match version.filter(|&v| v != 0) {
+                Some(v) if !stored_versions(ctx, &source_id).contains(&v) => fail(format!(
+                    "Paper {} has no version {v} in DB",
+                    pyrepr(&source_id)
+                )),
+                Some(v) => v,
+                None => paper.version,
+            };
             let max_pdf_bytes = ctx.settings.pdf_save_limit_bytes();
             let path = svc_files::download_pdf(
                 &ctx.pdf_dir,
@@ -104,12 +120,89 @@ pub async fn run(cmd: PdfCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                 eprintln!("[pdf] {e}");
                 fail(e)
             });
+            // Record the file like the MCP `download_pdf` tool does; without this the
+            // paper stays has_pdf=0 and the PDF is invisible to `pdf list` and GET /api/pdfs.
+            svc_paper::mark_pdf_saved(
+                &mut ctx.conn,
+                &paper.source_id,
+                &path.to_string_lossy(),
+                version,
+            )?;
             output(&PdfLocation {
                 source_id: paper.source_id,
                 version,
                 path: Some(path),
             });
         }
+        // GET /api/pdfs: latest-version papers whose PDF is actually on disk,
+        // largest first. Uncapped — the route's 200-row cap is for the UI list.
+        PdfCmd::List => {
+            let papers = svc_paper::list_papers(&ctx.conn, true, None, 0, None)?;
+            let mut rows: Vec<Value> = Vec::new();
+            for p in papers.into_iter().filter(|p| p.has_pdf) {
+                let Some(path) = svc_files::pdf_path(
+                    &ctx.pdf_dir,
+                    &p.source_id,
+                    p.version,
+                    p.pdf_path.as_deref(),
+                ) else {
+                    continue;
+                };
+                let Ok(meta) = std::fs::metadata(&path) else {
+                    continue;
+                };
+                rows.push(json!({
+                    "source_id": p.source_id,
+                    "source_fk": p.source_fk,
+                    "title": p.title,
+                    "version": p.version,
+                    "size_bytes": meta.len(),
+                }));
+            }
+            rows.sort_by(|a, b| {
+                b["size_bytes"]
+                    .as_u64()
+                    .cmp(&a["size_bytes"].as_u64())
+                    .then_with(|| a["source_id"].as_str().cmp(&b["source_id"].as_str()))
+            });
+            output(&json!({ "pdfs": rows }));
+        }
+
+        // DELETE /api/pdfs/{source_id}: drop every version's local file, keeping
+        // the paper row. `delete_pdf` refuses paths outside the managed dir.
+        PdfCmd::Delete { source_id } => {
+            let source_id = as_source_id(&source_id, "arxiv");
+            let all = match svc_paper::get_all(
+                &ctx.conn,
+                &svc_paper::Paper {
+                    source_id: Some(source_id.clone()),
+                    ..Default::default()
+                },
+            )? {
+                Some(all) => all,
+                None => fail(format!("Paper {} not found in DB", pyrepr(&source_id))),
+            };
+            for ver in &all.versions {
+                let path = svc_files::pdf_path(
+                    &ctx.pdf_dir,
+                    &source_id,
+                    ver.version,
+                    ver.pdf_path.as_deref(),
+                );
+                if let Some(p) = &path {
+                    if !svc_files::delete_pdf(&ctx.pdf_dir, &p.to_string_lossy()) {
+                        fail("PDF is outside managed storage");
+                    }
+                }
+                // Clear the flag/path per version, before a later one may bail.
+                svc_paper::set_has_pdf(&ctx.conn, &source_id, ver.version, false)?;
+                if path.is_some() {
+                    svc_paper::set_pdf_path(&ctx.conn, &source_id, "", Some(ver.version))?;
+                }
+            }
+            output(&json!({ "source_id": source_id, "deleted": true }));
+        }
+
         PdfCmd::Storage => {
             let mb = svc_files::pdf_storage_mb(&ctx.pdf_dir);
             output(&StorageInfo {
@@ -148,4 +241,20 @@ pub async fn run(cmd: PdfCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Stored VERSIONs for a paper, empty when the root is absent. Used to reject an
+/// explicit `--version` before anything is written to disk.
+fn stored_versions(ctx: &Ctx, source_id: &str) -> Vec<i64> {
+    svc_paper::get_all(
+        &ctx.conn,
+        &svc_paper::Paper {
+            source_id: Some(source_id.to_string()),
+            ..Default::default()
+        },
+    )
+    .ok()
+    .flatten()
+    .map(|all| all.versions.iter().map(|v| v.version).collect())
+    .unwrap_or_default()
 }

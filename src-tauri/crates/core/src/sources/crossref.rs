@@ -250,6 +250,29 @@ pub async fn search_by_title(title: &str, limit: u32) -> Vec<PaperMetadata> {
     parse_search_body(&body)
 }
 
+/// `search_by_title` that reports transport/HTTP failures instead of folding them
+/// into an empty result, so a caller can tell "CrossRef is down" from "no matches".
+/// Same relationship to `search_by_title` as `fetch_by_doi_checked` has to `fetch_by_doi`.
+pub async fn search_by_title_checked(title: &str, limit: u32) -> Result<Vec<PaperMetadata>> {
+    let url = reqwest::Url::parse_with_params(
+        CROSSREF_BASE,
+        [("query.title", title), ("rows", &limit.to_string())],
+    )
+    .map_err(|e| CoreError::Upstream(format!("CrossRef search failed: {e}")))?;
+    let resp = http::get_guarded(url.as_str(), ALLOW).await?;
+    if resp.status() != reqwest::StatusCode::OK {
+        return Err(CoreError::Upstream(format!(
+            "CrossRef search failed: HTTP {}",
+            resp.status().as_u16()
+        )));
+    }
+    let body = resp
+        .bytes()
+        .await
+        .map_err(|e| CoreError::Upstream(format!("CrossRef search failed: {e}")))?;
+    Ok(parse_search_body(&body))
+}
+
 // ---------------------------------------------------------------------------
 // Tests — recorded CrossRef wire shapes lifted from tests/test_crossref_source.py
 // (the `_make_msg` dict and the search/items fixtures), committed as fixtures.

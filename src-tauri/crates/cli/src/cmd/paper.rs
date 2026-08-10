@@ -53,6 +53,8 @@ pub enum PaperCmd {
     },
     /// Remove a paper from every project
     RemoveFromAllProjects { source_id: String },
+    /// List other paper roots sharing this paper's DOI
+    DoiCandidates { source_id: String },
     /// Fetch a paper's arXiv TeX source and index it for full-text search
     FetchSource {
         source_id: String,
@@ -240,6 +242,21 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                     crate::output::pyrepr(&source_id)
                 )),
             }
+        }
+
+        // GET /api/papers/sfk/{fk}/doi-candidates keys off SOURCE_FK; resolve the
+        // CLI's source_id to its root first. Empty when the paper has no DOI.
+        PaperCmd::DoiCandidates { source_id } => {
+            let source_id = as_source_id(&source_id, "arxiv");
+            let root = match storage::queries::paper::get_paper_root(&ctx.conn, &source_id)? {
+                Some(r) => r,
+                None => fail(format!(
+                    "Paper {} not found",
+                    crate::output::pyrepr(&source_id)
+                )),
+            };
+            let candidates = svc_paper::find_doi_version_candidates(&ctx.conn, root.source_fk)?;
+            output(&json!({ "candidates": candidates }));
         }
 
         // The write half of `paper search`: pull the TeX tarball, extract, index.
