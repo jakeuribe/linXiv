@@ -40,7 +40,7 @@ fn map_core(e: CoreError) -> ErrorData {
     }
 }
 
-use crate::util::{blocking, json_ok};
+use crate::util::{blocking, guard_err, json_ok};
 
 /// Resolve a project to its papers, erroring with the Python message when the
 /// project is missing. Empty `source_fks` yields no papers without a query.
