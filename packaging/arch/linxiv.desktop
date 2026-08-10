@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=linXiv
+Comment=Discover, manage, and visualize academic papers
+Exec=linxiv-app
+Icon=linxiv-app
+Terminal=false
+Type=Application
+Categories=Office;Education;Science;
+StartupNotify=true

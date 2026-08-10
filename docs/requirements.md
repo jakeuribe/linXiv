@@ -7,6 +7,7 @@ of this applies.
 
 - [Toolchains](#toolchains)
 - [System libraries](#system-libraries)
+  - [Arch Linux](#arch-linux)
   - [Fedora / RHEL](#fedora--rhel)
   - [Debian / Ubuntu](#debian--ubuntu)
   - [macOS](#macos)
@@ -43,6 +44,35 @@ variable must contain its parent directory.
 
 Install the whole set in one go. Fixing them one error at a time just walks you up
 the dependency chain: `gdk-sys` → `webkit2gtk-sys` → `libappindicator` → …
+
+### Arch Linux
+
+Install the native build dependencies from the official repositories:
+
+```bash
+sudo pacman -S --needed appmenu-gtk-module base-devel curl file git glib2 gtk3 \
+  libappindicator librsvg openssl patchelf webkit2gtk-4.1 wget xdotool
+```
+
+After installing [Rust and Node.js](#toolchains), clone and build linXiv:
+
+```bash
+git clone --recurse-submodules https://github.com/linxiv-dev/linXiv.git
+cd linXiv
+npm install
+npm run build:arch
+```
+
+`npm run build:arch` downloads PDFium, builds the app and its CLI/MCP sidecars,
+and creates `packaging/arch/linxiv-<version>-1-x86_64.pkg.tar.zst`. Install the
+result with pacman:
+
+```bash
+sudo pacman -U packaging/arch/linxiv-*.pkg.tar.zst
+```
+
+Unlike manually extracting a `.deb` or `.rpm`, this registers every installed
+file with pacman so the package can be upgraded or removed normally.
 
 ### Fedora / RHEL
 
