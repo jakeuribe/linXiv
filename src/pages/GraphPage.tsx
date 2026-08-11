@@ -4,8 +4,8 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useThemeStore } from "../stores/theme";
 import { useUiStore } from "../stores/ui";
 import { getColors } from "../lib/theme";
-import { listProjects, addPapers, createProjectWithPapers } from "../api/projects";
-import { invalidateProjectMembershipQueries, partialFailureMessage } from "../lib/paperMutations";
+import { listProjects } from "../api/projects";
+import { addToProjectMutationOptions, createProjectMutationOptions } from "../lib/paperMutations";
 import { getStats } from "../api/settings";
 import { Spinner } from "../components/ui/spinner";
 import { Button } from "../components/ui/button";
@@ -65,58 +65,24 @@ export default function GraphPage() {
     enabled: projectPickerOpen,
   });
 
-  const addToProjectMutation = useMutation({
-    mutationFn: addPapers,
-    onMutate: () => {
-      setProjectPickerError(null);
-    },
-    onSettled: () => {
-      invalidateProjectMembershipQueries(queryClient);
-    },
-    onSuccess: (failedIds, { sourceIds }) => {
-      if (failedIds.length > 0) {
-        // Re-select only the failures so a retry can't re-add the rest.
-        setSelectedSourceIds(failedIds);
-        setProjectPickerError(partialFailureMessage(failedIds.length, sourceIds.length));
-      } else {
-        setProjectPickerOpen(false);
-        setProjectPickerError(null);
-        setSelectedSourceIds([]);
-        postToIframe({ type: "clear_selection" });
-      }
-    },
-    onError: (err) => {
-      setProjectPickerError(err instanceof Error ? err.message : "Failed to add papers to project");
-    },
-  });
-
-  const createProjectMutation = useMutation({
-    mutationFn: createProjectWithPapers,
-    // Invalidate in onSettled, not onSuccess: the project may have been
-    // created even when the mutation rejects (e.g. a paper-add request fails).
-    onSettled: () => {
-      invalidateProjectMembershipQueries(queryClient);
-    },
-    onSuccess: (failedIds) => {
-      // The project exists either way — clear the name so a retry can't
-      // create a duplicate.
-      setNewProjectName("");
-      if (failedIds.length > 0) {
-        setSelectedSourceIds(failedIds);
-        setProjectPickerError(
-          `Project created, but ${failedIds.length} paper${failedIds.length !== 1 ? "s" : ""} could not be added`
-        );
-        return;
-      }
+  const projectPickerUi = {
+    setError: setProjectPickerError,
+    selectFailures: setSelectedSourceIds,
+    onDone: () => {
       setProjectPickerOpen(false);
-      setProjectPickerError(null);
       setSelectedSourceIds([]);
       postToIframe({ type: "clear_selection" });
     },
-    onError: (err) => {
-      setProjectPickerError(err instanceof Error ? err.message : "Failed to create project");
-    },
-  });
+    clearName: () => setNewProjectName(""),
+  };
+
+  const addToProjectMutation = useMutation(
+    addToProjectMutationOptions(queryClient, projectPickerUi)
+  );
+
+  const createProjectMutation = useMutation(
+    createProjectMutationOptions(queryClient, projectPickerUi)
+  );
 
   function postToIframe(msg: object) {
     iframeRef.current?.contentWindow?.postMessage(msg, window.location.origin);

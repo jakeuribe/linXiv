@@ -5,11 +5,11 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { Upload, FileText, SearchX, FilterX } from "lucide-react";
 import { listPapers, deletePaper, searchLibrary } from "../api/papers";
 import type { PaperSort } from "../api/papers";
-import { listProjects, addPapers, createProjectWithPapers } from "../api/projects";
+import { listProjects } from "../api/projects";
 import {
   invalidatePaperQueries,
-  invalidateProjectMembershipQueries,
-  partialFailureMessage,
+  addToProjectMutationOptions,
+  createProjectMutationOptions,
 } from "../lib/paperMutations";
 import { useSelectionStore } from "../stores/selection";
 import { useLibraryStore } from "../stores/library";
@@ -137,58 +137,23 @@ export default function LibraryPage() {
     },
   });
 
-  const addToProjectMutation = useMutation({
-    mutationFn: addPapers,
-    onMutate: () => {
-      setProjectPickerError(null);
-    },
-    onSettled: () => {
-      invalidateProjectMembershipQueries(queryClient);
-    },
-    onSuccess: (failedIds, { sourceIds }) => {
-      if (failedIds.length > 0) {
-        // Re-select only the failures so a retry can't re-add the rest.
-        selectAll(failedIds);
-        setProjectPickerError(partialFailureMessage(failedIds.length, sourceIds.length));
-        return;
-      }
+  const projectPickerUi = {
+    setError: setProjectPickerError,
+    selectFailures: selectAll,
+    onDone: () => {
       setProjectPickerOpen(false);
-      setProjectPickerError(null);
       clear();
     },
-    onError: (err) => {
-      setProjectPickerError(
-        err instanceof Error ? err.message : "Failed to add papers to project"
-      );
-    },
-  });
+    clearName: () => setNewProjectName(""),
+  };
 
-  const createProjectMutation = useMutation({
-    mutationFn: createProjectWithPapers,
-    // Invalidate in onSettled, not onSuccess: the project may have been
-    // created even when the mutation rejects (e.g. a paper-add request fails).
-    onSettled: () => {
-      invalidateProjectMembershipQueries(queryClient);
-    },
-    onSuccess: (failedIds) => {
-      // The project exists either way — clear the name so a retry can't
-      // create a duplicate.
-      setNewProjectName("");
-      if (failedIds.length > 0) {
-        selectAll(failedIds);
-        setProjectPickerError(
-          `Project created, but ${failedIds.length} paper${failedIds.length !== 1 ? "s" : ""} could not be added`
-        );
-        return;
-      }
-      setProjectPickerOpen(false);
-      setProjectPickerError(null);
-      clear();
-    },
-    onError: (err) => {
-      setProjectPickerError(err instanceof Error ? err.message : "Failed to create project");
-    },
-  });
+  const addToProjectMutation = useMutation(
+    addToProjectMutationOptions(queryClient, projectPickerUi)
+  );
+
+  const createProjectMutation = useMutation(
+    createProjectMutationOptions(queryClient, projectPickerUi)
+  );
 
   const allPapers = papersData?.papers ?? [];
 
