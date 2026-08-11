@@ -10,7 +10,9 @@
 //! forwarded to the same storage reads with a narrower signature.
 
 use crate::error::{CoreError, Result};
-use crate::models::{AuthorIn, AuthorPaperPreview, AuthorWithCount, BasicAuthorDetails};
+use crate::models::{
+    AuthorIn, AuthorPaperPreview, AuthorWithCount, AuthorWithPapers, BasicAuthorDetails,
+};
 use crate::storage::queries::author as store;
 use rusqlite::Connection;
 
@@ -207,6 +209,20 @@ pub fn orcid_merge_candidates(
 /// Latest-version display rows for active papers linked to an author.
 pub fn get_paper_previews(conn: &Connection, author_id: i64) -> Result<Vec<AuthorPaperPreview>> {
     store::get_paper_previews(conn, author_id)
+}
+
+/// The author-detail composite (`AuthorWithPapers`) all three surfaces emit:
+/// base fields + `paper_count` + `papers` previews. `Ok(None)` if absent.
+pub fn get_with_papers(conn: &Connection, author_id: i64) -> Result<Option<AuthorWithPapers>> {
+    let Some(base) = store::get_author(conn, author_id)? else {
+        return Ok(None);
+    };
+    let papers = store::get_paper_previews(conn, author_id)?;
+    Ok(Some(AuthorWithPapers {
+        base,
+        paper_count: papers.len(),
+        papers,
+    }))
 }
 
 /// Total distinct paper roots linked to this author, regardless of status.
@@ -555,6 +571,30 @@ mod tests {
         unlink_author_from_paper(&conn, bob, pid).unwrap();
         assert_eq!(count_paper_links(&conn, bob).unwrap(), 0);
         assert_eq!(get_paper_authors(&conn, pid).unwrap().len(), 1);
+    }
+
+    /// Wire-shape pin: the composite is the flattened author + paper_count + papers.
+    #[test]
+    fn author_with_papers_wire_shape() {
+        let conn = mem();
+        let (_pid, bob, _alice) = seed(&conn);
+        let v = serde_json::to_value(get_with_papers(&conn, bob).unwrap().unwrap()).unwrap();
+        let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            [
+                "author_id",
+                "orcid",
+                "full_name",
+                "first_name",
+                "last_name",
+                "paper_count",
+                "papers"
+            ]
+        );
+        assert_eq!(v["paper_count"], 1);
+        assert_eq!(v["papers"][0]["source_id"], "arxiv:1");
+        assert!(get_with_papers(&conn, 99_999).unwrap().is_none());
     }
 
     fn by_id(id: i64) -> Author {

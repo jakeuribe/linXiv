@@ -115,7 +115,12 @@ fn pdf_path(state: &AppState, source_id: &str, ctx: &ReqCtx<'_>) -> Result<Value
         let ver = version.unwrap_or(paper.version);
         let path = resolve_local_pdf(&pdf_dir, paper.pdf_path.as_deref(), &paper.source_id, ver)
             .ok_or_else(|| ApiError::new(404, "PDF file not found on disk"))?;
-        Ok(json!({ "path": path }))
+        // Canonical location envelope (path is always Some here — missing is 404).
+        crate::route::to_value(&files::PdfLocation {
+            source_id: paper.source_id,
+            version: ver,
+            path: Some(path.into()),
+        })
     })
 }
 

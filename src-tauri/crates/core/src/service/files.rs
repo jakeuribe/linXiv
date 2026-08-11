@@ -19,6 +19,16 @@ fn pdf_file(pdf_dir: &Path, paper_id: &str, version: i64) -> PathBuf {
     pdf_dir.join(crate::service::paper::pdf_on_disk_name(paper_id, version))
 }
 
+/// "Where is this paper's PDF" wire envelope — `pdf path`/`pdf download` (CLI),
+/// `get_pdf_path`/`download_pdf` (MCP), and `GET /api/papers/{id}/pdf-path` all
+/// emit this shape.
+#[derive(Debug, serde::Serialize)]
+pub struct PdfLocation {
+    pub source_id: String,
+    pub version: i64,
+    pub path: Option<PathBuf>,
+}
+
 /// Local path to a paper's PDF if it exists, else `None`. Checks `custom_path` first
 /// (the value stored on the paper row), then the standard managed location.
 /// Port of `files.pdf_path` — returns the path only when the file is actually present.
@@ -136,6 +146,20 @@ mod tests {
         let p = dir.join(name);
         fs::write(&p, vec![0u8; bytes]).unwrap();
         p
+    }
+
+    /// Wire-shape pin: `{"source_id", "version", "path"}`, path nullable.
+    #[test]
+    fn pdf_location_wire_shape() {
+        let loc = PdfLocation {
+            source_id: "arxiv:1".into(),
+            version: 2,
+            path: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&loc).unwrap(),
+            r#"{"source_id":"arxiv:1","version":2,"path":null}"#
+        );
     }
 
     #[test]

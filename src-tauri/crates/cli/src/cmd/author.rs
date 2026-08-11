@@ -51,15 +51,12 @@ pub async fn run(cmd: AuthorCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         AuthorCmd::List => {
             output(&svc_author::list_with_paper_count(&ctx.conn, 0)?);
         }
-        // cmd_author_get: author dict with an inlined "papers" preview list.
+        // cmd_author_get: the canonical AuthorWithPapers composite.
         AuthorCmd::Get { author_id } => {
-            let Some(author) = svc_author::get(&ctx.conn, &by_id(author_id))? else {
+            let Some(detail) = svc_author::get_with_papers(&ctx.conn, author_id)? else {
                 fail(format!("Author {author_id} not found"))
             };
-            let previews = svc_author::get_paper_previews(&ctx.conn, author_id)?;
-            let mut result = serde_json::to_value(&author)?;
-            result["papers"] = serde_json::to_value(&previews)?;
-            output(&result);
+            output(&detail);
         }
         // cmd_author_update: update_fields owns the "exists" + "at least one field" guards.
         AuthorCmd::Update {

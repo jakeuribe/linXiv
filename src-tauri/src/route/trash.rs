@@ -37,40 +37,10 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
     }
 }
 
-/// `GET /api/trash` — `api_trash_list`. Two arrays with hand-picked keys (the
-/// `DeletedPaperDetails`/`ProjectDetails` structs carry more than the API exposes).
+/// `GET /api/trash` — `api_trash_list`. The canonical `TrashListing` envelope
+/// (core `service::trash`), shared with `linxiv trash list` and MCP `list_trash`.
 fn list(state: &AppState) -> Result<Value, ApiError> {
-    state.with_conn(|conn| {
-        let papers = svc_paper::list_deleted(conn)?;
-        let projects = svc_project::list_deleted(conn)?;
-        let papers: Vec<Value> = papers
-            .iter()
-            .map(|d| {
-                json!({
-                    "source_fk": d.source_fk,
-                    "source_id": d.source_id,
-                    "title": d.title,
-                    "authors": d.authors,
-                    "published": d.published,
-                    "deleted_at": d.deleted_at,
-                    "had_pdf": d.had_pdf,
-                })
-            })
-            .collect();
-        let projects: Vec<Value> = projects
-            .iter()
-            .map(|p| {
-                json!({
-                    "id": p.id,
-                    "name": p.name,
-                    // archived_at is overwritten by delete(), so it holds the deletion timestamp
-                    "deleted_at": p.archived_at,
-                    "paper_count": p.source_fks.len(),
-                })
-            })
-            .collect();
-        Ok(json!({ "papers": papers, "projects": projects }))
-    })
+    state.with_conn(|conn| crate::route::to_value(&linxiv_core::service::trash::list_trash(conn)?))
 }
 
 /// `POST /api/trash/{source_id:path}/restore` — `api_trash_restore`. 404 unless the

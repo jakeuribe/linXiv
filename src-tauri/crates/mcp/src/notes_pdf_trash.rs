@@ -2,10 +2,11 @@
 //! `notes_pdf_trash` Fill agent.
 //!
 //! Bodies use `self.with_conn(|conn| ...)`; PDF tools also read `self.pdf_dir`.
-//! Call `linxiv_core::service::{note, files, paper, project}`. Replicate the
-//! Python dict shapes EXACTLY, e.g. get_pdf_path returns
-//! `{"paper_id", "version", "path"}`, get_pdf_storage returns
-//! `{"storage_mb", "pdf_dir"}`, list_trash returns `{"papers", "projects"}`.
+//! Call `linxiv_core::service::{note, files, paper, project}`. Wire shapes are
+//! the canonical core serializers shared with the route/CLI surfaces:
+//! `NoteDetails` (create/get/update), `DeletedNote`, `PdfLocation`
+//! (get_pdf_path/download_pdf), `TrashListing` (list_trash); get_pdf_storage
+//! returns `{"storage_mb", "pdf_dir"}`.
 //! Map Python `ValueError` to `Err(ErrorData::invalid_params(msg, None))` with
 //! the exact message (mind `{paper_id!r}` -> `{paper_id:?}` quoting).
 
@@ -155,22 +156,8 @@ impl Server {
                 },
             )
             .map_err(core_err)?;
-            match svc_note::get(
-                conn,
-                &svc_note::Note {
-                    note_id: Some(note_id),
-                },
-            )
-            .map_err(core_err)?
-            {
-                Some(n) => json_ok(&n),
-                None => json_ok(&json!({
-                    "id": note_id,
-                    "source_fk": source_fk,
-                    "project_id": p.project_id,
-                    "title": p.title,
-                })),
-            }
+            // Canonical create envelope: the full NoteDetails serialization.
+            json_ok(&svc_note::get_required(conn, note_id).map_err(core_err)?)
         })
     }
 
@@ -180,17 +167,8 @@ impl Server {
         Parameters(p): Parameters<NoteIdParams>,
     ) -> Result<String, ErrorData> {
         self.with_conn(|conn| {
-            match svc_note::get(
-                conn,
-                &svc_note::Note {
-                    note_id: Some(p.note_id),
-                },
-            )
-            .map_err(core_err)?
-            {
-                Some(n) => json_ok(&n),
-                None => json_ok(&Value::Null),
-            }
+            // A missing note is an error (shared contract), never a JSON null.
+            json_ok(&svc_note::get_required(conn, p.note_id).map_err(guard_err)?)
         })
     }
 
@@ -215,7 +193,7 @@ impl Server {
         Parameters(p): Parameters<UpdateNoteParams>,
     ) -> Result<String, ErrorData> {
         self.with_conn(|conn| {
-            let ok = svc_note::update(
+            svc_note::update(
                 conn,
                 &NoteUpdateIn {
                     note_id: p.note_id,
@@ -223,21 +201,10 @@ impl Server {
                     content: p.content.clone(),
                 },
             )
-            .map_err(core_err)?;
-            if !ok {
-                return Err(invalid(format!("Note {} not found.", p.note_id)));
-            }
-            match svc_note::get(
-                conn,
-                &svc_note::Note {
-                    note_id: Some(p.note_id),
-                },
-            )
-            .map_err(core_err)?
-            {
-                Some(n) => json_ok(&n),
-                None => json_ok(&json!({})),
-            }
+            .map_err(guard_err)?;
+            // No row matched -> get_required raises the shared not-found; else
+            // the canonical update envelope is the full NoteDetails serialization.
+            json_ok(&svc_note::get_required(conn, p.note_id).map_err(guard_err)?)
         })
     }
 
@@ -248,9 +215,11 @@ impl Server {
     ) -> Result<String, ErrorData> {
         self.with_conn(|conn| {
             if !svc_editor::delete_note(conn, &config::vault_dir(), p.note_id).map_err(core_err)? {
-                return Err(invalid(format!("Note {} not found.", p.note_id)));
+                return Err(guard_err(svc_note::not_found(p.note_id)));
             }
-            json_ok(&json!({ "deleted": p.note_id }))
+            json_ok(&svc_note::DeletedNote {
+                deleted_note_id: p.note_id,
+            })
         })
     }
 
@@ -310,11 +279,12 @@ impl Server {
             let ver = paper.version;
             let path =
                 svc_files::pdf_path(&pdf_dir, &paper.source_id, ver, paper.pdf_path.as_deref());
-            json_ok(&json!({
-                "paper_id": p.paper_id,
-                "version": ver,
-                "path": path.map(|p| p.to_string_lossy().into_owned()),
-            }))
+            // Canonical location envelope, shared with `pdf path` and the route.
+            json_ok(&svc_files::PdfLocation {
+                source_id: paper.source_id,
+                version: ver,
+                path,
+            })
         })
     }
 
@@ -354,11 +324,11 @@ impl Server {
         self.with_conn(|conn| {
             svc_paper::mark_pdf_saved(conn, &source_id, &path_str, ver).map_err(core_err)
         })?;
-        json_ok(&json!({
-            "paper_id": p.paper_id,
-            "version": ver,
-            "path": path_str,
-        }))
+        json_ok(&svc_files::PdfLocation {
+            source_id,
+            version: ver,
+            path: Some(path),
+        })
     }
 
     #[tool(
@@ -462,17 +432,8 @@ impl Server {
     #[tool(description = "List all soft-deleted papers and projects currently in the trash.")]
     pub async fn list_trash(&self) -> Result<String, ErrorData> {
         self.with_conn(|conn| {
-            let papers = svc_paper::list_deleted(conn).map_err(core_err)?;
-            let projects = svc_project::list_deleted(conn)
-                .map_err(core_err)?
-                .into_iter()
-                .map(|p| svc_project::to_out(conn, p))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(core_err)?;
-            json_ok(&json!({
-                "papers": papers,
-                "projects": projects,
-            }))
+            // Canonical TrashListing envelope (core service::trash).
+            json_ok(&linxiv_core::service::trash::list_trash(conn).map_err(core_err)?)
         })
     }
 

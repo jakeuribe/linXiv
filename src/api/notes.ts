@@ -29,9 +29,7 @@ export interface NoteCreateBody {
   content?: string;
 }
 
-export async function createNote(
-  body: NoteCreateBody
-): Promise<{ id: number }> {
+export async function createNote(body: NoteCreateBody): Promise<Note> {
   return apiFetch("/api/notes", {
     method: "POST",
     body: JSON.stringify(body),
@@ -46,13 +44,15 @@ export interface NoteUpdateBody {
 export async function updateNote(
   id: number,
   body: NoteUpdateBody
-): Promise<{ ok: boolean }> {
+): Promise<Note> {
   return apiFetch(`/api/notes/${id}`, {
     method: "PATCH",
     body: JSON.stringify(body),
   });
 }
 
-export async function deleteNote(id: number): Promise<{ ok: boolean }> {
+export async function deleteNote(
+  id: number
+): Promise<{ deleted_note_id: number }> {
   return apiFetch(`/api/notes/${id}`, { method: "DELETE" });
 }
