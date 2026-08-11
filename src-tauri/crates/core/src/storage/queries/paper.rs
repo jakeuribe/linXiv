@@ -156,9 +156,8 @@ impl PaperSort {
     }
 }
 
-/// Shared SQL + bind params for the list-papers filter/order/pagination, used by
-/// `list_papers` here and the CLI's raw-row `cmd_list`.
-pub fn list_papers_sql(
+/// SQL + bind params for the list-papers filter/order/pagination.
+fn list_papers_sql(
     latest_only: bool,
     limit: Option<i64>,
     offset: i64,

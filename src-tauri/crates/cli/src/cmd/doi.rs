@@ -30,15 +30,42 @@ pub async fn run(cmd: DoiCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
     match cmd {
         // cmd_doi_resolve: dump metadata.
         DoiCmd::Resolve { .. } => output(&meta),
-        // cmd_doi_save: persist, then emit {source_id, version, title}.
+        // cmd_doi_save: persist, then emit the route's envelope
+        // (`POST /api/doi/save`): the resolved metadata + saved flag.
         DoiCmd::Save { .. } => {
-            let (source_id, version) = svc_paper::save_paper_metadata(&mut ctx.conn, &meta, None)?;
-            output(&json!({
-                "source_id": source_id,
-                "version": version,
-                "title": meta.title,
-            }));
+            svc_paper::save_paper_metadata(&mut ctx.conn, &meta, None)?;
+            output(&save_value(&meta));
         }
     }
     Ok(())
+}
+
+/// `doi save` response — the same envelope route's `POST /api/doi/save` returns.
+fn save_value(meta: &linxiv_core::models::PaperMetadata) -> serde_json::Value {
+    json!({ "metadata": meta, "saved": true })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pin the `doi save` envelope: `{metadata: <PaperMetadata>, saved: true}`,
+    /// not the old `{source_id, version, title}` triple.
+    #[test]
+    fn doi_save_emits_route_envelope() {
+        let meta: linxiv_core::models::PaperMetadata = serde_json::from_value(json!({
+            "source_id": "doi:10.1000/xyz",
+            "version": 1,
+            "title": "T",
+            "authors": ["A"],
+            "published": "2024-01-01",
+            "summary": "S",
+        }))
+        .unwrap();
+        let v = save_value(&meta);
+        let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, ["metadata", "saved"]);
+        assert_eq!(v["saved"], json!(true));
+        assert_eq!(v["metadata"]["source_id"], json!("doi:10.1000/xyz"));
+    }
 }

@@ -4,6 +4,7 @@
 use clap::{Args, ValueEnum};
 
 use linxiv_core::config;
+use linxiv_core::models::SearchResultOut;
 use linxiv_core::service::paper::{self as svc_paper, PaperSort};
 use linxiv_core::sources::fetch as svc_fetch;
 
@@ -72,8 +73,9 @@ pub enum Dir {
     Desc,
 }
 
-// cmd_search: search the source, dump the metadata list. The `[search] {e}`
-// prefix line + error JSON mirror Python's two-line stderr on failure.
+// cmd_search: search the source, dump the results as `SearchResultOut` — the
+// canonical search wire shape all three surfaces emit (ADR-0011). The
+// `[search] {e}` prefix line + error JSON mirror Python's two-line stderr on failure.
 pub async fn search(args: SearchArgs, _ctx: &mut Ctx) -> anyhow::Result<()> {
     // Python `source.search` defaults sort="relevance"; the CLI never overrides it.
     let results = match svc_fetch::search(
@@ -92,6 +94,7 @@ pub async fn search(args: SearchArgs, _ctx: &mut Ctx) -> anyhow::Result<()> {
             fail(e);
         }
     };
+    let results: Vec<SearchResultOut> = results.into_iter().map(SearchResultOut::from).collect();
     output(&results);
     Ok(())
 }
@@ -123,8 +126,9 @@ pub async fn fetch(args: FetchArgs, ctx: &mut Ctx) -> anyhow::Result<()> {
     Ok(())
 }
 
-// cmd_list: latest-version rows, optional category/limit/offset filter.
-// Python dumps the RAW `latest_papers` view rows, not curated structs.
+// cmd_list: latest-version rows, optional category/limit/offset filter, emitted
+// as `PaperDetails` (models.rs SERIALIZER 2) — the same wire shape route and MCP
+// list arms serialize. `full_text` never ships (skip_serializing on the model).
 pub async fn list(args: ListArgs, ctx: &mut Ctx) -> anyhow::Result<()> {
     let sort = PaperSort::from_key(args.sort.to_possible_value().unwrap().get_name());
     let desc = match args.dir {
@@ -132,8 +136,9 @@ pub async fn list(args: ListArgs, ctx: &mut Ctx) -> anyhow::Result<()> {
         Some(Dir::Asc) => false,
         None => sort.default_desc(),
     };
-    let papers = list_papers_raw(
+    let papers = svc_paper::list_papers_sorted(
         &ctx.conn,
+        true,
         args.limit,
         args.offset,
         args.category.as_deref(),
@@ -144,72 +149,6 @@ pub async fn list(args: ListArgs, ctx: &mut Ctx) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Columns stored as JSON TEXT by `storage::db::list_to_sql`.
-const LIST_COLUMNS: [&str; 3] = ["categories", "authors", "tags"];
-
-/// `cmd_list` body: `[{k: row[k] for k in row.keys()} for row in rows]` over the
-/// RAW `latest_papers` view rows — NOT `PaperDetails`. Each column stays as its
-/// raw SQLite value: integers (incl. has_pdf/downloaded_source 0/1) stay integers,
-/// created_at/updated_at are included, non-LIST NULLs serialize to null, and
-/// columns keep view order (preserve_order). Same filter/order as
-/// `db.list_papers(latest_only=True)`.
-///
-/// The LIST columns (categories/authors/tags) are decoded from their JSON-TEXT
-/// storage form so they cross the wire as arrays, matching `row_to_paper`; a
-/// NULL list column reads as `[]`, not null.
-///
-/// One exception: `full_text` always reports null. `list_papers_sql` selects it
-/// as NULL so a multi-row read doesn't haul every indexed TeX body into memory;
-/// `paper get` still returns the real value.
-fn list_papers_raw(
-    conn: &rusqlite::Connection,
-    limit: Option<i64>,
-    offset: i64,
-    category: Option<&str>,
-    sort: PaperSort,
-    desc: bool,
-) -> anyhow::Result<Vec<serde_json::Value>> {
-    use linxiv_core::storage::db::list_from_sql;
-    use rusqlite::types::ValueRef;
-
-    let (sql, params) = linxiv_core::storage::queries::paper::list_papers_sql(
-        true, limit, offset, category, sort, desc,
-    );
-
-    let mut stmt = conn.prepare(&sql)?;
-    let cols: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
-    let mut rows = stmt.query(rusqlite::params_from_iter(&params))?;
-    let mut out = Vec::new();
-    while let Some(row) = rows.next()? {
-        let mut obj = serde_json::Map::new();
-        for (i, name) in cols.iter().enumerate() {
-            // LIST columns decode to an array; a NULL one reads as `[]`. Both
-            // are the mappings `row_to_paper`'s `list` closure applies.
-            let is_list = LIST_COLUMNS.contains(&name.as_str());
-            let val = match row.get_ref(i)? {
-                ValueRef::Null if is_list => serde_json::Value::Array(Vec::new()),
-                ValueRef::Null => serde_json::Value::Null,
-                ValueRef::Integer(n) => serde_json::Value::from(n),
-                ValueRef::Real(f) => serde_json::Value::from(f),
-                ValueRef::Text(t) => {
-                    let s = String::from_utf8_lossy(t).into_owned();
-                    if is_list {
-                        serde_json::Value::from(list_from_sql(&s)?)
-                    } else {
-                        serde_json::Value::from(s)
-                    }
-                }
-                ValueRef::Blob(b) => {
-                    serde_json::Value::from(String::from_utf8_lossy(b).into_owned())
-                }
-            };
-            obj.insert(name.clone(), val);
-        }
-        out.push(serde_json::Value::Object(obj));
-    }
-    Ok(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,8 +156,11 @@ mod tests {
     use linxiv_core::storage;
     use serde_json::json;
 
+    /// `linxiv list` emits `PaperDetails` — pin the exact wire keys so a raw-row
+    /// regression (JSON-string lists, 0/1 ints, created_at/updated_at extras,
+    /// leaked full_text) can't come back.
     #[test]
-    fn list_papers_raw_emits_list_columns_as_arrays() {
+    fn list_emits_paper_details_wire_shape() {
         let mut conn = storage::open_in_memory().unwrap();
         storage::init_db(&conn).unwrap();
         let meta: PaperMetadata = serde_json::from_value(json!({
@@ -234,12 +176,62 @@ mod tests {
         }))
         .unwrap();
         svc_paper::save_paper_metadata(&mut conn, &meta, None).unwrap();
+        svc_paper::set_full_text(&mut conn, "arxiv:1234.5678", 1, "tex body").unwrap();
 
-        let rows = list_papers_raw(&conn, None, 0, None, PaperSort::Published, true).unwrap();
-        assert_eq!(rows[0]["authors"], json!(["Ada Lovelace", "Alan Turing"]));
-        assert_eq!(rows[0]["categories"], json!(["cs.LG", "stat.ML"]));
-        // No tags were supplied, so the column is SQL NULL. It must still read
-        // as [] here, the way `row_to_paper` renders it for every other door.
-        assert_eq!(rows[0]["tags"], json!([]));
+        let papers =
+            svc_paper::list_papers_sorted(&conn, true, None, 0, None, PaperSort::Published, true)
+                .unwrap();
+        let row = serde_json::to_value(&papers[0]).unwrap();
+        let keys: Vec<&str> = row.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(
+            keys,
+            [
+                "paper_id",
+                "source_id",
+                "version",
+                "title",
+                "summary",
+                "published",
+                "updated",
+                "url",
+                "doi",
+                "category",
+                "categories",
+                "journal_ref",
+                "comment",
+                "authors",
+                "tags",
+                "has_pdf",
+                "pdf_path",
+                "source",
+                "downloaded_source",
+                "source_fk",
+            ]
+        );
+        assert_eq!(row["authors"], json!(["Ada Lovelace", "Alan Turing"]));
+        assert_eq!(row["has_pdf"], json!(false)); // bool, not 0/1
+        assert_eq!(row["downloaded_source"], json!(true));
+    }
+
+    /// `linxiv search` emits `SearchResultOut` (ADR-0011) — pin the exact wire
+    /// shape so this surface can't drift back to raw `PaperMetadata`.
+    #[test]
+    fn search_results_pin_the_canonical_wire_shape() {
+        let meta: PaperMetadata = serde_json::from_value(json!({
+            "source_id": "arxiv:2204.12985",
+            "version": 2,
+            "title": "T",
+            "authors": ["A", "B"],
+            "published": "2024-01-15",
+            "summary": "S",
+            "category": "cs.LG",
+            "url": "http://x",
+        }))
+        .unwrap();
+        let v = serde_json::to_value(SearchResultOut::from(meta)).unwrap();
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            r#"{"source_id":"2204.12985","version":2,"title":"T","summary":"S","authors":["A","B"],"published":"2024-01-15","paper_url":"http://x","primary_category":"cs.LG","entry_id":"arxiv:2204.12985"}"#
+        );
     }
 }
