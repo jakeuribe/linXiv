@@ -19,7 +19,6 @@ use linxiv_core::models::PaperMetadata;
 use linxiv_core::service::paper::{self as svc_paper, PaperSort};
 use linxiv_core::sources::arxiv_downloads;
 use linxiv_core::sources::fetch as svc_fetch;
-use linxiv_core::storage::queries::paper as store_paper;
 use linxiv_core::{config, service::project as svc_project};
 
 use crate::Server;
@@ -401,15 +400,9 @@ impl Server {
     ) -> Result<String, ErrorData> {
         // Keyed by the stable paper root, as the sfk route is.
         let candidates = self.with_conn(|conn| {
-            let root = store_paper::get_paper_root(conn, &paper_id)
-                .map_err(core_err)?
-                .ok_or_else(|| {
-                    invalid(format!(
-                        "Paper {} not found in database.",
-                        crate::util::pyrepr(&paper_id)
-                    ))
-                })?;
-            svc_paper::find_doi_version_candidates(conn, root.source_fk).map_err(core_err)
+            let source_fk =
+                svc_paper::resolve_source_fk(conn, &paper_id).map_err(crate::util::guard_err)?;
+            svc_paper::find_doi_version_candidates(conn, source_fk).map_err(core_err)
         })?;
         json_ok(&serde_json::json!({
             "paper_id": paper_id,
@@ -434,14 +427,9 @@ impl Server {
     ) -> Result<String, ErrorData> {
         // Keyed by the stable paper root so the fix survives a source_id rename.
         self.with_conn(|conn| {
-            let Some(root) = store_paper::get_paper_root(conn, &paper_id)? else {
-                return Ok(Err(ErrorData::invalid_params(
-                    format!(
-                        "Paper {} not found in database.",
-                        crate::util::pyrepr(&paper_id)
-                    ),
-                    None,
-                )));
+            let source_fk = match svc_paper::resolve_source_fk(conn, &paper_id) {
+                Ok(fk) => fk,
+                Err(e) => return Ok(Err(crate::util::guard_err(e))),
             };
             // Date validated after the existence check, matching Python ordering.
             let published_date = match svc_paper::parse_published(&published) {
@@ -472,7 +460,7 @@ impl Server {
                 author_orcids: None,
             };
             // Validation lives in the service so every front door refuses the same input.
-            if let Err(e) = svc_paper::repair_paper(conn, root.source_fk, &meta) {
+            if let Err(e) = svc_paper::repair_paper(conn, source_fk, &meta) {
                 return match e {
                     CoreError::Validation(m) => Ok(Err(invalid(m))),
                     other => Err(other),
@@ -510,11 +498,8 @@ impl Server {
         Parameters(PaperIdParams { paper_id }): Parameters<PaperIdParams>,
     ) -> Result<String, ErrorData> {
         self.with_conn(|conn| {
-            if store_paper::get_paper_root(conn, &paper_id)?.is_none() {
-                return Ok(Err(ErrorData::invalid_params(
-                    format!("Paper {} not found.", crate::util::pyrepr(&paper_id)),
-                    None,
-                )));
+            if let Err(e) = svc_paper::resolve_source_fk(conn, &paper_id) {
+                return Ok(Err(crate::util::guard_err(e)));
             }
             svc_paper::hard_delete(conn, &paper_key(&paper_id))?;
             Ok(Ok(()))
@@ -653,7 +638,8 @@ mod tests {
         assert_eq!(one["candidates"].as_array().unwrap().len(), 1);
     }
 
-    /// An unknown id is refused; a paper with no DOI twin lists no candidates.
+    /// An unknown id is refused with the service's typed not-found (no root
+    /// conjured); a paper with no DOI twin lists no candidates.
     #[tokio::test]
     async fn doi_candidates_rejects_unknown_papers() {
         let srv = server();
@@ -663,10 +649,11 @@ mod tests {
             }))
             .await
             .unwrap_err();
-        assert_eq!(
-            err.message.as_ref(),
-            "Paper 'arxiv:nope' not found in database."
-        );
+        assert_eq!(err.message.as_ref(), "Paper 'arxiv:nope' not found");
+        assert!(srv
+            .with_conn(|conn| svc_paper::get_paper_root(conn, "arxiv:nope"))
+            .unwrap()
+            .is_none());
 
         srv.with_conn(|conn| {
             svc_paper::save_paper_metadata(conn, &meta("arxiv:9", Some("arxiv"), None), None)

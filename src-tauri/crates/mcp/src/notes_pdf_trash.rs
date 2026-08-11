@@ -23,7 +23,6 @@ use linxiv_core::service::{
     paper_import, project as svc_project,
 };
 use linxiv_core::sources::pdf_metadata::resolve_pdf_metadata;
-use linxiv_core::storage::queries::paper as store_paper;
 
 use crate::util::{core_err, guard_err, invalid, json_ok};
 use crate::Server;
@@ -480,16 +479,9 @@ impl Server {
         Parameters(p): Parameters<PaperIdParams>,
     ) -> Result<String, ErrorData> {
         self.with_conn(|conn| {
+            // require_trashed passing implies the root exists (STATUS='deleted' row),
+            // so no separate existence check — same reasoning as cli/cmd/trash.rs.
             svc_paper::require_trashed(conn, &p.paper_id).map_err(guard_err)?;
-            if store_paper::get_paper_root(conn, &p.paper_id)
-                .map_err(core_err)?
-                .is_none()
-            {
-                return Err(invalid(format!(
-                    "Paper {} not found.",
-                    crate::util::pyrepr(&p.paper_id)
-                )));
-            }
             svc_paper::hard_delete(
                 conn,
                 &svc_paper::Paper {

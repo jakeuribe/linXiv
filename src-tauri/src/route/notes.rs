@@ -9,7 +9,6 @@ use linxiv_core::models::{NoteIn, NoteUpdateIn};
 use linxiv_core::service::editor_project as svc_editor;
 use linxiv_core::service::note::{self as svc_note, Note, Notes};
 use linxiv_core::service::paper as svc_paper;
-use linxiv_core::storage::queries::paper as store_paper;
 
 use crate::route::{path_i64, ApiError, ReqCtx};
 use crate::state::AppState;
@@ -35,7 +34,7 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let project_fk = ctx.q_i64("project_id");
     let all_projects = ctx.q_bool("all_projects");
     state.with_conn(|conn| {
-        let root = match store_paper::get_paper_root(conn, source_id)? {
+        let root = match svc_paper::get_paper_root(conn, source_id)? {
             Some(r) => r,
             None => return Ok(json!({ "notes": [] })),
         };
@@ -240,7 +239,7 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.status, 404);
         assert!(st
-            .with_conn(|conn| store_paper::get_paper_root(conn, "arxiv:404"))
+            .with_conn(|conn| svc_paper::get_paper_root(conn, "arxiv:404"))
             .unwrap()
             .is_none());
     }

@@ -124,22 +124,11 @@ pub fn get(conn: &Connection, paper: &Paper) -> Result<Option<PaperDetails>> {
     Ok(None)
 }
 
-/// Fetch every stored version, display fields from the latest. Resolution order
-/// DIFFERS from `get`: `source_id` → `paper_id` → `source_fk`.
+/// Fetch every stored version, display fields from the latest. Key resolution
+/// shares [`resolve_source_id`] with delete/restore/hard-delete. (`get` stays
+/// paper_id-first: its paper_id key selects an exact version row by PK.)
 pub fn get_all(conn: &Connection, paper: &Paper) -> Result<Option<PaperDetailsAll>> {
-    let source_id = if let Some(sid) = paper.source_id.clone() {
-        sid
-    } else if let Some(pid) = paper.paper_id {
-        match paper_by_id(conn, pid)? {
-            Some(p) => p.source_id,
-            None => return Ok(None),
-        }
-    } else if let Some(sfk) = paper.source_fk {
-        match paper_by_source_fk(conn, sfk)? {
-            Some(p) => p.source_id,
-            None => return Ok(None),
-        }
-    } else {
+    let Some(source_id) = resolve_source_id(conn, paper)? else {
         return Ok(None);
     };
 
@@ -497,6 +486,12 @@ pub fn resolve_source_fk(conn: &Connection, source_id: &str) -> Result<i64> {
         .ok_or_else(|| {
             CoreError::NotFound(format!("Paper {} not found", crate::formats::pyrepr(sid)))
         })
+}
+
+/// PAPER_ROOTS row for a source_id, or None — the Option-returning sibling of
+/// [`resolve_source_fk`] for callers that treat an unknown paper as empty, not 404.
+pub fn get_paper_root(conn: &Connection, source_id: &str) -> Result<Option<store::PaperRoot>> {
+    store::get_paper_root(conn, source_id)
 }
 
 /// SOURCE_ID for a SOURCE_FK, or None.
