@@ -20,7 +20,7 @@ use chrono::{Datelike, NaiveDate, Utc};
 use pdfium_render::prelude::*;
 
 use crate::error::Result;
-use crate::models::PaperMetadata;
+use crate::models::{local_source_id, PaperMetadata};
 use crate::sources::{arxiv, crossref, doi_resolve};
 
 // ---------------------------------------------------------------------------
@@ -587,12 +587,12 @@ fn run_worker(worker: &Path, pdf: &Path, timeout: std::time::Duration) -> Option
 
 fn pdf_source_id(bytes: &[u8]) -> String {
     let h = sha256(bytes);
-    let mut s = String::from("local:");
+    let mut hex = String::new();
     for byte in &h[..8] {
         use std::fmt::Write;
-        let _ = write!(s, "{byte:02x}");
+        let _ = write!(hex, "{byte:02x}");
     }
-    s
+    local_source_id(&hex)
 }
 
 // ---------------------------------------------------------------------------

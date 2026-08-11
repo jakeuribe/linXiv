@@ -11,7 +11,10 @@ use chrono::NaiveDate;
 use serde_json::Value;
 
 use crate::error::{CoreError, Result};
-use crate::models::{date_min, normalize_orcid, PaperMetadata};
+use crate::models::{
+    date_min, normalize_orcid, openalex_source_id, strip_provider_prefix, PaperMetadata,
+    OPENALEX_ID_PREFIX,
+};
 use crate::sources::http;
 
 const BASE_URL: &str = "https://api.openalex.org";
@@ -148,7 +151,7 @@ fn work_to_metadata(work: &Value) -> Result<PaperMetadata> {
     let summary = reconstruct_abstract(work.get("abstract_inverted_index")).unwrap_or_default();
 
     Ok(PaperMetadata {
-        source_id: format!("openalex:{openalex_id}"),
+        source_id: openalex_source_id(openalex_id),
         version: 1,
         title: work
             .get("title")
@@ -251,10 +254,7 @@ async fn fetch_by_id_at(
     source_id: &str,
     mailto: &str,
 ) -> Result<PaperMetadata> {
-    let mut bare = source_id
-        .strip_prefix("openalex:")
-        .unwrap_or(source_id)
-        .to_string();
+    let mut bare = strip_provider_prefix(source_id, OPENALEX_ID_PREFIX).to_string();
     // Normalise any URL form (API or landing page) to a bare Work ID.
     if bare.starts_with("http://") || bare.starts_with("https://") {
         bare = bare.rsplit('/').next().unwrap_or("").to_string();
