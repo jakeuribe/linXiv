@@ -7,6 +7,7 @@ of this applies.
 
 - [Toolchains](#toolchains)
 - [System libraries](#system-libraries)
+  - [Arch Linux](#arch-linux)
   - [Fedora / RHEL](#fedora--rhel)
   - [Debian / Ubuntu](#debian--ubuntu)
   - [macOS](#macos)
