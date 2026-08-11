@@ -1,78 +1,65 @@
-# Golden captures — the frozen Python CLI contract
+# Golden captures — the CLI output contract
 
-These files are the **frozen output contract** for the strangler-fig Rust port
-(`docs/rust-port-plan.md` §7 Phase 0, §10, **D31**). They are byte-for-byte
-captures of the Python CLI's stdout, recorded **before** any Python code is
-deleted. The `.json` goldens are the **byte-for-byte (canonicalized) parity
-contract** the Rust CLI must reproduce. The `.txt` `--help` goldens are a
-**structural reference only** — clap cannot reproduce argparse help verbatim
-(different section headers, wrapping), so compare command/flag *presence*, not
-exact text — before the corresponding Python surface is removed.
-
-> D31: "Capture Python HTTP/format goldens in Phase 0 regardless — the
-> app/command surface is verified against those frozen goldens after HTTP
-> deletion." This is the CLI half of that capture.
+These files freeze the stdout of the **Rust CLI** (`src-tauri/crates/cli`,
+binary `linxiv-cli`, clap). They started life as Python/argparse captures for
+the strangler-fig port; the Python CLI is gone, so today they are simply the
+wire contract the Rust CLI must keep reproducing.
 
 ## Layout
 
 ```
 goldens/cli/<slug>.json   read-only data commands (JSON on stdout, empty DB)
-goldens/cli/<slug>.txt    argparse --help text (the command-tree structure / D9)
+goldens/cli/<slug>.txt    command-tree reference (help text)
 ```
 
 `<slug>` is the argv with leading dashes stripped, tokens joined by `_`
 (e.g. `tag list-all` -> `tag_list-all.json`, `project --help` -> `project_help.txt`).
 
-## Regenerate
+- **`.json`** — byte-for-byte contract. The Rust CLI's empty-DB output must
+  match exactly (keys stay in Python-parity insertion order via serde_json's
+  `preserve_order`).
+- **`.txt`** — **structural reference only**. These are still in the frozen
+  argparse help format; clap renders help differently (`Usage:`, `Commands:`,
+  different wrapping), so compare command/flag *presence* against
+  `linxiv-cli ... --help`, not exact text. They are hand-maintained when the
+  command tree changes — no tool regenerates them.
 
-Run with the **project venv** (the CLI needs its deps); the global interpreter
-will not have them:
+## Refresh (manual — there is no capture script)
+
+`scripts/capture_cli_goldens.py` no longer exists. To refresh the `.json`
+goldens, run the built binary with a **fresh temp `LINXIV_DATA_DIR` per
+command** so every capture is an empty-DB result and the real data dir is
+never touched:
 
 ```sh
-.venv/bin/python scripts/capture_cli_goldens.py
+cd src-tauri && cargo build --release -p linxiv-cli && cd ..
+cli=src-tauri/target/release/linxiv-cli
+for argv in stats list categories "tag list-all" "author list" \
+            "project list" "trash list" "note list" "settings get"; do
+  slug=$(printf %s "$argv" | tr ' ' '_')
+  LINXIV_DATA_DIR=$(mktemp -d) $cli $argv > "goldens/cli/$slug.json"
+done
 ```
 
-The harness:
+(POSIX sh/bash — zsh needs `${=cli} ${=argv}` for the word splitting.)
 
-- runs each argv via `python -m linxiv_cli ...` in a **fresh temp
-  `LINXIV_DATA_DIR` per command** — it never touches the real user data dir, so
-  every JSON golden is an *empty-DB* result;
-- pins `COLUMNS=80` so argparse help wraps identically across machines;
-- writes stdout verbatim (bytes) to `goldens/cli/`.
+A changed `.json` means the CLI's output contract changed — treat that as a
+deliberate decision, not noise. `--version` is intentionally uncaptured; it
+bumps every release.
 
-It is deterministic: re-running produces byte-identical files (verified with
-`diff -r`). If a `.json` golden changes, the CLI's output contract changed —
-treat that as a deliberate decision, not noise. Help `.txt` goldens also depend
-on the **Python/argparse version**; regenerate with the pinned interpreter.
+## Caveat: nothing runs these
 
-## What is captured (the safe corpus)
+**No test or CI job compares `goldens/cli/` against the CLI.** Drift is
+silent — it has already accumulated once (missing commands and settings keys
+were backfilled by hand). Wiring a runner is tracked in TODO.md
+("Nothing runs the CLI goldens", Surface parity section).
 
-Only commands whose stdout is deterministic and **path-free** on an empty DB:
+## Corpus
 
-- structural: `--help` for the root and all 18 visible top-level subcommands;
-- data: `stats`, `list`, `categories`, `tag list-all`, `author list`,
-  `project list`, `trash list`, `note list`, `settings get`.
-
-## What is NOT captured yet (and why)
-
-`scripts/capture_cli_goldens.py` parks the rest in a clearly-labeled
-`TODO_CORPUS` (data only, never run). Each is blocked on a Phase-0-unavailable
-prerequisite:
-
-- **network** (`search`, `fetch`, `doi resolve/save`, `pdf download`) — needs
-  recorded wire-body fixtures (arXiv/OpenAlex/Crossref/DOI), per §10.
-- **seeded DB** (`paper get/versions/search`, `author get`, `project get`,
-  `note get`, `tag list/list-project`, `pdf path`) — needs a committed,
-  deterministic fixture DB.
-- **path-bearing output** (`pdf storage`) — stdout embeds the absolute data-dir
-  path; needs the D25/R8 normalizer allowlist before it can be a stable golden.
-- **mutating** (all `create/update/delete/restore/archive/hard-delete`,
-  tag/note edits, `settings update`, project membership) — capture later as
-  before/after pairs.
-- **file-input** (`pdf import`, `bibtex import`, `project import/export*`) —
-  needs committed `.pdf` / `.bib` / `.lxproj` sample fixtures.
-- **`--version`** — intentionally excluded; the string bumps every release, so
-  freezing it is pure churn. Rust parity for it is trivial and unfrozen.
-
-When those prerequisites land in later phases, move the entry from `TODO_CORPUS`
-into `CORPUS` and re-run.
+Only commands whose stdout is deterministic and path-free on an empty DB:
+help text for the root and each top-level group, plus the data commands
+listed in the refresh loop above. Network commands (`search`, `fetch`, `doi`,
+`pdf download`), seeded-DB reads, path-bearing output (`pdf storage`),
+mutations, and file-input commands (`pdf import`, `bibtex import`,
+`project import/export`) are not captured — each needs fixtures or output
+normalization that doesn't exist yet.
