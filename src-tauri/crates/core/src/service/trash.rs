@@ -1,84 +1,51 @@
 //! Trash-listing envelope — the one serialization of `GET /api/trash`,
 //! `linxiv trash list`, and MCP `list_trash`.
 //!
-//! The rows are hand-picked projections: `DeletedPaperDetails` and
-//! `ProjectDetails` carry more than the trash listing exposes (`pdf_path`,
-//! `project_fks`, tags, …), so the named row types here are the wire contract.
+//! Rows carry the FULL data: papers are `DeletedPaperDetails` as-is, projects
+//! are the canonical `ProjectOut` plus an explicit `deleted_at`. The GUI
+//! renders a subset; CLI/MCP consumers get everything (`pdf_path`,
+//! `project_fks`, tags, …) — trimming here would drop functionality the
+//! frontend merely doesn't surface yet.
 
-use chrono::{NaiveDate, NaiveDateTime};
+use chrono::NaiveDateTime;
 use rusqlite::Connection;
 use serde::Serialize;
 
 use crate::error::Result;
-use crate::models::ProjectDetails;
+use crate::models::ProjectOut;
 use crate::service::paper::{self as svc_paper, DeletedPaperDetails};
 use crate::service::project as svc_project;
 
-/// One soft-deleted paper as the trash listing shows it.
-#[derive(Debug, Serialize)]
-pub struct TrashedPaperRow {
-    pub source_fk: i64,
-    pub source_id: String,
-    pub title: String,
-    pub authors: Vec<String>,
-    pub published: Option<NaiveDate>,
-    pub deleted_at: Option<NaiveDateTime>,
-    pub had_pdf: bool,
-}
-
-impl From<DeletedPaperDetails> for TrashedPaperRow {
-    fn from(d: DeletedPaperDetails) -> Self {
-        TrashedPaperRow {
-            source_fk: d.source_fk,
-            source_id: d.source_id,
-            title: d.title,
-            authors: d.authors,
-            published: d.published,
-            deleted_at: d.deleted_at,
-            had_pdf: d.had_pdf,
-        }
-    }
-}
-
-/// One soft-deleted project as the trash listing shows it.
+/// One soft-deleted project: the canonical `ProjectOut` fields (flattened)
+/// plus the deletion time (`delete()` overwrites `archived_at` with it).
 #[derive(Debug, Serialize)]
 pub struct TrashedProjectRow {
-    pub id: Option<i64>,
-    pub name: String,
-    /// `archived_at` is overwritten by delete(), so it holds the deletion time.
+    #[serde(flatten)]
+    pub project: ProjectOut,
     pub deleted_at: Option<NaiveDateTime>,
-    pub paper_count: usize,
-}
-
-impl From<ProjectDetails> for TrashedProjectRow {
-    fn from(p: ProjectDetails) -> Self {
-        TrashedProjectRow {
-            id: p.id,
-            name: p.name,
-            deleted_at: p.archived_at,
-            paper_count: p.source_fks.len(),
-        }
-    }
 }
 
 /// `{"papers": [...], "projects": [...]}` — newest-trashed first on both.
 #[derive(Debug, Serialize)]
 pub struct TrashListing {
-    pub papers: Vec<TrashedPaperRow>,
+    pub papers: Vec<DeletedPaperDetails>,
     pub projects: Vec<TrashedProjectRow>,
 }
 
 /// Everything currently in the trash, in the canonical listing shape.
 pub fn list_trash(conn: &Connection) -> Result<TrashListing> {
     Ok(TrashListing {
-        papers: svc_paper::list_deleted(conn)?
-            .into_iter()
-            .map(Into::into)
-            .collect(),
+        papers: svc_paper::list_deleted(conn)?,
         projects: svc_project::list_deleted(conn)?
             .into_iter()
-            .map(Into::into)
-            .collect(),
+            .map(|p| {
+                let deleted_at = p.archived_at;
+                Ok(TrashedProjectRow {
+                    project: svc_project::to_out(conn, p)?,
+                    deleted_at,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?,
     })
 }
 
@@ -159,25 +126,44 @@ mod tests {
     #[test]
     fn trash_listing_wire_shape() {
         let listing = TrashListing {
-            papers: vec![TrashedPaperRow {
+            papers: vec![DeletedPaperDetails {
                 source_fk: 1,
                 source_id: "arxiv:1".into(),
                 title: "T".into(),
                 authors: vec!["A".into()],
                 published: None,
                 deleted_at: None,
+                pdf_path: None,
                 had_pdf: true,
+                project_fks: vec![5],
             }],
             projects: vec![TrashedProjectRow {
-                id: Some(5),
-                name: "P".into(),
+                project: crate::models::ProjectOut {
+                    id: Some(5),
+                    name: "P".into(),
+                    description: String::new(),
+                    color_hex: None,
+                    project_tags: vec![],
+                    source_ids: vec!["arxiv:1".into(), "arxiv:2".into()],
+                    paper_count: 2,
+                    status: crate::models::Status::Deleted,
+                    created_at: None,
+                    updated_at: None,
+                    archived_at: None,
+                    share_id: None,
+                },
                 deleted_at: None,
-                paper_count: 2,
             }],
         };
         assert_eq!(
             serde_json::to_string(&listing).unwrap(),
-            r#"{"papers":[{"source_fk":1,"source_id":"arxiv:1","title":"T","authors":["A"],"published":null,"deleted_at":null,"had_pdf":true}],"projects":[{"id":5,"name":"P","deleted_at":null,"paper_count":2}]}"#
+            concat!(
+                r#"{"papers":[{"source_fk":1,"source_id":"arxiv:1","title":"T","authors":["A"],"#,
+                r#""published":null,"deleted_at":null,"pdf_path":null,"had_pdf":true,"project_fks":[5]}],"#,
+                r#""projects":[{"id":5,"name":"P","description":"","color_hex":null,"project_tags":[],"#,
+                r#""source_ids":["arxiv:1","arxiv:2"],"paper_count":2,"status":"deleted","created_at":null,"#,
+                r#""updated_at":null,"archived_at":null,"share_id":null,"deleted_at":null}]}"#
+            )
         );
     }
 }
