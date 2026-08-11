@@ -266,7 +266,10 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                     project_fk: Some(project_id),
                 },
             )?;
-            output(&json!({ "restored_project_id": project_id }));
+            output(&linxiv_core::service::trash::RestoredProject {
+                ok: true,
+                restored_project_id: project_id,
+            });
         }
 
         ProjectCmd::HardDelete { project_id } => {
@@ -277,7 +280,10 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                     project_fk: Some(project_id),
                 },
             )?;
-            output(&json!({ "hard_deleted_project_id": project_id }));
+            output(&linxiv_core::service::trash::HardDeletedProject {
+                ok: true,
+                hard_deleted_project_id: project_id,
+            });
         }
 
         ProjectCmd::AddPaper {

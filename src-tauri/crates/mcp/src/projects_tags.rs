@@ -415,7 +415,10 @@ impl Server {
         self.with_conn(|conn| {
             ensure_project(conn, id)?;
             project::restore(conn, &proj(id)).map_err(core_err)?;
-            jval(json!({ "restored_project_id": id }))
+            jval(linxiv_core::service::trash::RestoredProject {
+                ok: true,
+                restored_project_id: id,
+            })
         })
     }
 
@@ -428,7 +431,10 @@ impl Server {
         self.with_conn(|conn| {
             ensure_project(conn, id)?;
             project::hard_delete(conn, &proj(id)).map_err(core_err)?;
-            jval(json!({ "hard_deleted_project_id": id }))
+            jval(linxiv_core::service::trash::HardDeletedProject {
+                ok: true,
+                hard_deleted_project_id: id,
+            })
         })
     }
 
