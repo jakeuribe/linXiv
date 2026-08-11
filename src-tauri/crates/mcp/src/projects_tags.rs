@@ -227,7 +227,12 @@ impl Server {
                     .filter(|p| p.status != Status::Deleted)
                     .collect(),
             };
-            jval(projects)
+            let out = projects
+                .into_iter()
+                .map(|p| project::to_out(conn, p))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(core_err)?;
+            jval(out)
         })
     }
 
@@ -237,9 +242,11 @@ impl Server {
         _params: Parameters<ProjectIdParams>,
     ) -> Result<String, ErrorData> {
         let id = _params.0.project_id;
-        self.with_conn(|conn| match get_project(conn, id)? {
-            Some(d) => jval(d),
-            None => jval(Value::Null),
+        // Not-found is a tool ERROR (not JSON null), worded by CoreError like
+        // the route's 404 and the CLI's exit-1 body.
+        self.with_conn(|conn| {
+            let d = project::get_required(conn, id).map_err(crate::util::guard_err)?;
+            jval(project::to_out(conn, d).map_err(core_err)?)
         })
     }
 
@@ -259,7 +266,7 @@ impl Server {
             };
             let fk = project::create(conn, &pin).map_err(core_err)?;
             match get_project(conn, fk)? {
-                Some(d) => jval(d),
+                Some(d) => jval(project::to_out(conn, d).map_err(core_err)?),
                 None => jval(json!({ "id": fk, "name": name })),
             }
         })
@@ -296,7 +303,7 @@ impl Server {
             };
             project::update(conn, &upd).map_err(core_err)?;
             match get_project(conn, project_id)? {
-                Some(d) => jval(d),
+                Some(d) => jval(project::to_out(conn, d).map_err(core_err)?),
                 None => jval(json!({})),
             }
         })

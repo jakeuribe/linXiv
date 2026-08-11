@@ -66,7 +66,7 @@ fn detail(state: &AppState, label: &str) -> Result<Value, ApiError> {
         let mut projects = Vec::new();
         for p in svc_project::get_many(conn, &active)? {
             if p.project_tags.iter().any(|t| t.eq_ignore_ascii_case(label)) {
-                projects.push(super::projects::project_to_dict_with_count(conn, p)?);
+                projects.push(super::projects::project_out(conn, p)?);
             }
         }
 

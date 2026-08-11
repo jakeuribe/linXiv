@@ -528,8 +528,9 @@ impl Server {
                     None,
                 )
             })?;
+        // One envelope across route/CLI/MCP; the caller already knows the id.
         json_ok(&serde_json::json!({
-            "paper_id": paper_id,
+            "ok": true,
             "removed_from_projects": removed,
         }))
     }

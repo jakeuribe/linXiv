@@ -18,7 +18,7 @@ use chrono::{Duration, Utc};
 use rusqlite::Connection;
 
 use crate::error::{CoreError, Result};
-use crate::models::{ProjectDetails, ProjectIn, ProjectUpdateIn, Status};
+use crate::models::{ProjectDetails, ProjectIn, ProjectOut, ProjectUpdateIn, Status};
 use crate::storage::db::transaction;
 use crate::storage::queries::{note as nq, paper as paperq, project as pq, tag as tq};
 use crate::storage::query::{self, Q};
@@ -108,6 +108,40 @@ pub fn get(conn: &Connection, project: &Project) -> Result<Option<ProjectDetails
     pq::get_project(conn, fk, true)?
         .map(|p| fill_tags(conn, p))
         .transpose()
+}
+
+/// `get` by bare project_fk where absence is an error: the one place the
+/// not-found contract comes from (`CoreError::ProjectNotFound` — route 404,
+/// CLI exit 1, MCP tool error all word it identically).
+pub fn get_required(conn: &Connection, project_fk: i64) -> Result<ProjectDetails> {
+    get(
+        conn,
+        &Project {
+            project_fk: Some(project_fk),
+        },
+    )?
+    .ok_or(CoreError::ProjectNotFound)
+}
+
+/// The single mapping point to the canonical wire shape (`models::ProjectOut`,
+/// SERIALIZER 3): resolves `source_fks` to namespaced source ids and renders
+/// `color` as `#rrggbb`. All three surfaces serialize projects through here.
+pub fn to_out(conn: &Connection, p: ProjectDetails) -> Result<ProjectOut> {
+    let source_ids = crate::service::paper::sfks_to_source_ids(conn, &p.source_fks)?;
+    Ok(ProjectOut {
+        id: p.id,
+        name: p.name,
+        description: p.description,
+        color_hex: p.color.map(color_to_hex),
+        project_tags: p.project_tags,
+        paper_count: source_ids.len(),
+        source_ids,
+        status: p.status,
+        created_at: p.created_at,
+        updated_at: p.updated_at,
+        archived_at: p.archived_at,
+        share_id: p.share_id,
+    })
 }
 
 /// `service/project.py::get_many` — projects matching any combination of the

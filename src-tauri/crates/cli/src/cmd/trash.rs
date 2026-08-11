@@ -28,7 +28,10 @@ pub async fn run(cmd: TrashCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         // cmd_trash_list
         TrashCmd::List => {
             let papers = svc_paper::list_deleted(&ctx.conn)?;
-            let projects = svc_project::list_deleted(&ctx.conn)?;
+            let projects = svc_project::list_deleted(&ctx.conn)?
+                .into_iter()
+                .map(|p| svc_project::to_out(&ctx.conn, p))
+                .collect::<Result<Vec<_>, _>>()?;
             output(&json!({ "papers": papers, "projects": projects }));
         }
         // cmd_trash_restore -> _do_paper_restore
@@ -96,18 +99,14 @@ pub async fn run(cmd: TrashCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// `_resolve_project_or_exit`: None -> `{"error": "Project {id} not found"}` + exit(1).
+/// `_resolve_project_or_exit`: None -> `{"error": "Project not found"}` + exit(1).
+/// Wording comes from `CoreError::ProjectNotFound`, shared with route and MCP.
 pub(crate) fn resolve_project_or_exit(
     ctx: &Ctx,
     project_id: i64,
 ) -> anyhow::Result<linxiv_core::models::ProjectDetails> {
-    match svc_project::get(
-        &ctx.conn,
-        &Project {
-            project_fk: Some(project_id),
-        },
-    )? {
-        Some(d) => Ok(d),
-        None => fail(format!("Project {project_id} not found")),
+    match svc_project::get_required(&ctx.conn, project_id) {
+        Ok(d) => Ok(d),
+        Err(e) => fail(e),
     }
 }
