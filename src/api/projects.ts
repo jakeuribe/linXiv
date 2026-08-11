@@ -1,4 +1,4 @@
-import { apiFetch } from "./client";
+import { apiFetch } from "./client.ts";
 import type { Project } from "../types/api";
 
 export async function listProjects(

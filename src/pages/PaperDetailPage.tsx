@@ -19,6 +19,7 @@ import type { Note, Paper, Annotation } from "../types/api";
 import { PdfReader } from "../components/pdf/PdfReader";
 import { PagePill } from "../components/pdf/PagePill";
 import { parseAnchor } from "../lib/pdfAnchor";
+import { invalidatePaperQueries } from "../lib/paperMutations";
 import { submitOnCtrlEnter } from "../lib/submitShortcut";
 import { Spinner } from "../components/ui/spinner";
 import { Button } from "../components/ui/button";
@@ -340,14 +341,7 @@ export default function PaperDetailPage() {
   }
 
   function handlePaperSaved(_updated: Paper) {
-    queryClient.invalidateQueries({ queryKey: ["paper", "sfk", sfk] });
-    queryClient.invalidateQueries({ queryKey: ["paper", "versions", sfk] });
-    queryClient.invalidateQueries({ queryKey: ["notes", paper?.source_id] });
-    queryClient.invalidateQueries({ queryKey: ["papers"] });
-    queryClient.invalidateQueries({ queryKey: ["graph"] });
-    queryClient.invalidateQueries({ queryKey: ["stats"] });
-    queryClient.invalidateQueries({ queryKey: ["tags"] });
-    queryClient.invalidateQueries({ queryKey: ["tag"] });
+    invalidatePaperQueries(queryClient);
   }
 
   async function handleOpenNative() {
