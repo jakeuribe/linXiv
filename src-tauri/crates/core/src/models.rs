@@ -44,6 +44,34 @@ pub fn is_arxiv_source_id(source_id: &str) -> bool {
     source_id.starts_with(ARXIV_ID_PREFIX)
 }
 
+pub const OPENALEX_ID_PREFIX: &str = "openalex:";
+pub const DOI_ID_PREFIX: &str = "doi:";
+pub const LOCAL_ID_PREFIX: &str = "local:";
+
+/// The one home for `source_id` namespace construction (CONTEXT.md § source_id,
+/// ADR 0002). Sources build ids here so [`strip_namespace`] is the exact inverse.
+pub fn arxiv_source_id(bare_id: &str) -> String {
+    format!("{ARXIV_ID_PREFIX}{bare_id}")
+}
+
+pub fn openalex_source_id(work_id: &str) -> String {
+    format!("{OPENALEX_ID_PREFIX}{work_id}")
+}
+
+pub fn doi_source_id(doi: &str) -> String {
+    format!("{DOI_ID_PREFIX}{doi}")
+}
+
+pub fn local_source_id(hash: &str) -> String {
+    format!("{LOCAL_ID_PREFIX}{hash}")
+}
+
+/// Strip one leading provider prefix if present (`removeprefix` semantics —
+/// at most once, never mid-string), else return the id unchanged.
+pub fn strip_provider_prefix<'a>(source_id: &'a str, prefix: &str) -> &'a str {
+    source_id.strip_prefix(prefix).unwrap_or(source_id)
+}
+
 /// The `date.min` sentinel (`0001-01-01`) used to mark "no published date".
 pub(crate) fn date_min() -> NaiveDate {
     NaiveDate::from_ymd_opt(1, 1, 1).expect("0001-01-01 is a valid date")
@@ -600,6 +628,21 @@ pub struct ProjectUpdateIn {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_id_constructors_round_trip() {
+        assert_eq!(strip_namespace(&arxiv_source_id("2204.12985")), "2204.12985");
+        assert_eq!(strip_namespace(&openalex_source_id("W123")), "W123");
+        assert_eq!(strip_namespace(&doi_source_id("10.1000/xyz")), "10.1000/xyz");
+        assert_eq!(strip_namespace(&local_source_id("deadbeef")), "deadbeef");
+        assert!(is_arxiv_source_id(&arxiv_source_id("2204.12985")));
+        assert!(!is_arxiv_source_id(&openalex_source_id("W123")));
+        assert!(!is_arxiv_source_id(&doi_source_id("10.1000/xyz")));
+        assert!(!is_arxiv_source_id(&local_source_id("deadbeef")));
+        // removeprefix semantics: at most one leading prefix comes off.
+        assert_eq!(strip_provider_prefix("doi:doi:1", DOI_ID_PREFIX), "doi:1");
+        assert_eq!(strip_provider_prefix("10.1000/xyz", DOI_ID_PREFIX), "10.1000/xyz");
+    }
 
     #[test]
     fn normalize_orcid_strips_prefix_trailing_slash_and_uppercases() {

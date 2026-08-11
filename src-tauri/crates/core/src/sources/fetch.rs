@@ -15,7 +15,7 @@
 use std::path::Path;
 
 use crate::error::{CoreError, Result};
-use crate::models::PaperMetadata;
+use crate::models::{strip_provider_prefix, PaperMetadata, DOI_ID_PREFIX};
 use crate::sources::{arxiv, crossref, openalex};
 
 /// `_resolve_source`'s unknown-source `ValueError`. Plain string → single-quoted, matching
@@ -24,12 +24,6 @@ fn unknown_source(source: &str) -> CoreError {
     CoreError::Validation(format!(
         "Unknown source '{source}'. Use 'arxiv', 'crossref', or 'openalex'."
     ))
-}
-
-/// CrossRef ids carry a `doi:` namespace; strip it before the DOI lookup
-/// (port of `CrossRefSource.fetch_by_id`'s `source_id.removeprefix("doi:")`).
-fn strip_doi_prefix(source_id: &str) -> &str {
-    source_id.strip_prefix("doi:").unwrap_or(source_id)
 }
 
 /// Fetch full metadata for one paper by id from `source`, normalized to `PaperMetadata`.
@@ -45,7 +39,9 @@ pub async fn fetch_by_id(
         "openalex" => openalex::fetch_by_id(paper_id, mailto).await,
         // CrossRef returns Option (None on any non-200/parse error); the Python
         // `fetch_by_id` raises ValueError on None — mirror that with Validation.
-        "crossref" => crossref::fetch_by_doi(strip_doi_prefix(paper_id))
+        // CrossRef ids carry a `doi:` namespace; strip it before the DOI lookup
+        // (port of `CrossRefSource.fetch_by_id`'s `source_id.removeprefix("doi:")`).
+        "crossref" => crossref::fetch_by_doi(strip_provider_prefix(paper_id, DOI_ID_PREFIX))
             .await
             .ok_or_else(|| {
                 CoreError::Validation(format!("CrossRef: no record found for DOI '{paper_id}'"))
@@ -82,15 +78,6 @@ pub async fn search(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn strip_doi_prefix_removes_namespace_once() {
-        assert_eq!(strip_doi_prefix("doi:10.1000/xyz"), "10.1000/xyz");
-        // No prefix → unchanged.
-        assert_eq!(strip_doi_prefix("10.1000/xyz"), "10.1000/xyz");
-        // Only a leading `doi:` is stripped (removeprefix semantics).
-        assert_eq!(strip_doi_prefix("doi:doi:1"), "doi:1");
-    }
 
     #[test]
     fn unknown_source_message_matches_python() {

@@ -22,7 +22,7 @@ use std::path::Path;
 
 use super::{arxiv, crossref, http};
 use crate::error::{CoreError, Result};
-use crate::models::PaperMetadata;
+use crate::models::{doi_source_id, PaperMetadata};
 
 /// Fields requested from the Semantic Scholar graph API (`_S2_FIELDS`).
 const S2_FIELDS: &str = "title,authors,year,abstract,externalIds,venue,publicationDate,url";
@@ -152,7 +152,7 @@ fn parse_s2(data: &Value, doi: &str) -> Option<PaperMetadata> {
         });
 
     Some(PaperMetadata {
-        source_id: format!("doi:{doi}"),
+        source_id: doi_source_id(doi),
         version: 1,
         title: title.to_string(),
         authors,

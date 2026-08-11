@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use super::http;
 use crate::error::{CoreError, Result};
-use crate::models::{normalize_orcid, PaperMetadata};
+use crate::models::{doi_source_id, normalize_orcid, PaperMetadata};
 
 const CROSSREF_BASE: &str = "https://api.crossref.org/works";
 /// CrossRef is reached over exactly one host; the http guard enforces it.
@@ -123,7 +123,7 @@ pub fn parse_work(msg: &Value, doi: &str) -> PaperMetadata {
         source_id: if paper_doi.is_empty() {
             String::new()
         } else {
-            format!("doi:{paper_doi}")
+            doi_source_id(&paper_doi)
         },
         version: 1,
         title,
