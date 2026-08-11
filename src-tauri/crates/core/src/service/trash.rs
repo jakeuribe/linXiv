@@ -82,9 +82,78 @@ pub fn list_trash(conn: &Connection) -> Result<TrashListing> {
     })
 }
 
+/// Receipt for a paper restore — one shape on route/CLI/MCP.
+#[derive(Debug, Serialize)]
+pub struct RestoredPaper {
+    pub ok: bool,
+    pub restored: String,
+    pub pdf_path: Option<String>,
+    pub project_fks: Vec<i64>,
+}
+
+/// Receipt for a paper hard-delete.
+#[derive(Debug, Serialize)]
+pub struct HardDeletedPaper {
+    pub ok: bool,
+    pub hard_deleted: String,
+}
+
+/// Receipt for a project restore.
+#[derive(Debug, Serialize)]
+pub struct RestoredProject {
+    pub ok: bool,
+    pub restored_project_id: i64,
+}
+
+/// Receipt for a project hard-delete.
+#[derive(Debug, Serialize)]
+pub struct HardDeletedProject {
+    pub ok: bool,
+    pub hard_deleted_project_id: i64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Wire-shape pin: exact keys of the four mutation receipts.
+    #[test]
+    fn trash_receipt_wire_shapes() {
+        assert_eq!(
+            serde_json::to_string(&RestoredPaper {
+                ok: true,
+                restored: "arxiv:1".into(),
+                pdf_path: None,
+                project_fks: vec![2],
+            })
+            .unwrap(),
+            r#"{"ok":true,"restored":"arxiv:1","pdf_path":null,"project_fks":[2]}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&HardDeletedPaper {
+                ok: true,
+                hard_deleted: "arxiv:1".into(),
+            })
+            .unwrap(),
+            r#"{"ok":true,"hard_deleted":"arxiv:1"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&RestoredProject {
+                ok: true,
+                restored_project_id: 5,
+            })
+            .unwrap(),
+            r#"{"ok":true,"restored_project_id":5}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&HardDeletedProject {
+                ok: true,
+                hard_deleted_project_id: 5,
+            })
+            .unwrap(),
+            r#"{"ok":true,"hard_deleted_project_id":5}"#
+        );
+    }
 
     /// Wire-shape pin: exact keys of both row types and the envelope.
     #[test]

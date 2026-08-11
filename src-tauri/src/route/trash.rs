@@ -10,10 +10,11 @@
 //! BEFORE the greedy paper `rest @ ..` arms (Rust matches top-to-bottom), so
 //! project hard-delete and restore now route to `svc_project` correctly.
 
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use linxiv_core::service::paper::{self as svc_paper, Paper};
 use linxiv_core::service::project as svc_project;
+use linxiv_core::service::trash as svc_trash;
 
 use crate::route::{ApiError, ReqCtx};
 use crate::state::AppState;
@@ -57,7 +58,12 @@ fn restore(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
                 },
             )?)
         })?;
-    Ok(json!({ "ok": true, "pdf_path": pdf_path, "project_fks": project_fks }))
+    crate::route::to_value(&svc_trash::RestoredPaper {
+        ok: true,
+        restored: source_id.to_string(),
+        pdf_path,
+        project_fks,
+    })
 }
 
 /// `DELETE /api/trash/{source_id:path}` — `api_trash_hard_delete`. Permanent, so it
@@ -74,7 +80,10 @@ fn hard_delete(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
         )?;
         Ok(())
     })?;
-    Ok(json!({ "ok": true }))
+    crate::route::to_value(&svc_trash::HardDeletedPaper {
+        ok: true,
+        hard_deleted: source_id.to_string(),
+    })
 }
 
 /// `POST /api/trash/projects/{id}/restore` — un-trash a project. 422 on a non-integer
@@ -91,7 +100,10 @@ fn restore_project(state: &AppState, id: &str) -> Result<Value, ApiError> {
         )?;
         Ok(())
     })?;
-    Ok(json!({ "ok": true }))
+    crate::route::to_value(&svc_trash::RestoredProject {
+        ok: true,
+        restored_project_id: project_fk,
+    })
 }
 
 /// `DELETE /api/trash/projects/{id}` — permanently delete a trashed project. 422 on a
@@ -108,13 +120,17 @@ fn hard_delete_project(state: &AppState, id: &str) -> Result<Value, ApiError> {
         )?;
         Ok(())
     })?;
-    Ok(json!({ "ok": true }))
+    crate::route::to_value(&svc_trash::HardDeletedProject {
+        ok: true,
+        hard_deleted_project_id: project_fk,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::route::testutil::state;
+    use serde_json::json;
 
     // Trash routes never take a body.
     async fn req(st: &AppState, method: &str, path: &str) -> Result<Value, ApiError> {
@@ -190,7 +206,7 @@ mod tests {
         let v = req(&st, "DELETE", &format!("/api/trash/projects/{id}"))
             .await
             .unwrap();
-        assert_eq!(v, json!({ "ok": true }));
+        assert_eq!(v, json!({ "ok": true, "hard_deleted_project_id": id }));
         // Gone from the DB entirely.
         assert_eq!(get_status(&st, id), None);
     }
@@ -203,7 +219,7 @@ mod tests {
         let v = req(&st, "POST", &format!("/api/trash/projects/{id}/restore"))
             .await
             .unwrap();
-        assert_eq!(v, json!({ "ok": true }));
+        assert_eq!(v, json!({ "ok": true, "restored_project_id": id }));
         assert_eq!(get_status(&st, id), Some(Status::Active));
     }
 

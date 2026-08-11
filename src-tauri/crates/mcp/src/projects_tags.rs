@@ -245,7 +245,10 @@ impl Server {
         // Not-found is a tool ERROR (not JSON null), worded by CoreError like
         // the route's 404 and the CLI's exit-1 body.
         self.with_conn(|conn| {
-            let d = project::get_required(conn, id).map_err(crate::util::guard_err)?;
+            let d = project::get_required(conn, id).map_err(|e| match e {
+                CoreError::ProjectNotFound => project_not_found(id),
+                other => crate::util::guard_err(other),
+            })?;
             jval(project::to_out(conn, d).map_err(core_err)?)
         })
     }

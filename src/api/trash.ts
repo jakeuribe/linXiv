@@ -22,6 +22,8 @@ export async function listTrash(): Promise<{ papers: TrashedPaper[]; projects: T
 }
 
 export interface RestorePaperResult {
+  ok: boolean;
+  restored: string;
   pdf_path: string | null;
   project_fks: number[];
 }

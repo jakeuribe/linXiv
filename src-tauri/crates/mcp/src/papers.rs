@@ -491,11 +491,12 @@ impl Server {
                 Ok(Ok(svc_paper::restore(conn, &paper_key(&paper_id))?))
             })
             .map_err(core_err)??;
-        json_ok(&serde_json::json!({
-            "restored": paper_id,
-            "pdf_path": pdf_path,
-            "project_fks": project_fks,
-        }))
+        json_ok(&linxiv_core::service::trash::RestoredPaper {
+            ok: true,
+            restored: paper_id,
+            pdf_path,
+            project_fks,
+        })
     }
 
     #[tool(description = "Permanently delete a paper and all its data. Irreversible.")]
@@ -511,7 +512,10 @@ impl Server {
             Ok(Ok(()))
         })
         .map_err(core_err)??;
-        json_ok(&serde_json::json!({ "hard_deleted": paper_id }))
+        json_ok(&linxiv_core::service::trash::HardDeletedPaper {
+            ok: true,
+            hard_deleted: paper_id,
+        })
     }
 
     #[tool(description = "Remove a paper from every project it currently belongs to.")]

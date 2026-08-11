@@ -198,11 +198,12 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             let source_id = as_source_id(&source_id, "arxiv");
             svc_paper::require_trashed(&ctx.conn, &source_id).unwrap_or_else(|e| fail(e));
             let (pdf_path, project_fks) = svc_paper::restore(&mut ctx.conn, &paper(&source_id))?;
-            output(&json!({
-                "restored": source_id,
-                "pdf_path": pdf_path,
-                "project_fks": project_fks,
-            }));
+            output(&linxiv_core::service::trash::RestoredPaper {
+                ok: true,
+                restored: source_id,
+                pdf_path,
+                project_fks,
+            });
         }
 
         // cmd_paper_hard_delete: permanently remove an existing paper.
@@ -210,7 +211,10 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             let source_id = as_source_id(&source_id, "arxiv");
             svc_paper::resolve_source_fk(&ctx.conn, &source_id).unwrap_or_else(|e| fail(e));
             svc_paper::hard_delete(&mut ctx.conn, &paper(&source_id))?;
-            output(&json!({ "hard_deleted": source_id }));
+            output(&linxiv_core::service::trash::HardDeletedPaper {
+                ok: true,
+                hard_deleted: source_id,
+            });
         }
 
         // cmd_paper_search: `svc_paper.search_papers` — the shared FTS + note-content

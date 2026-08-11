@@ -456,7 +456,10 @@ impl Server {
                 },
             )
             .map_err(core_err)?;
-            json_ok(&json!({ "hard_deleted": p.paper_id }))
+            json_ok(&linxiv_core::service::trash::HardDeletedPaper {
+                ok: true,
+                hard_deleted: p.paper_id.clone(),
+            })
         })
     }
 
@@ -476,7 +479,10 @@ impl Server {
                 },
             )
             .map_err(core_err)?;
-            json_ok(&json!({ "restored_project_id": p.project_id }))
+            json_ok(&linxiv_core::service::trash::RestoredProject {
+                ok: true,
+                restored_project_id: p.project_id,
+            })
         })
     }
 
@@ -496,7 +502,10 @@ impl Server {
                 },
             )
             .map_err(core_err)?;
-            json_ok(&json!({ "hard_deleted_project_id": p.project_id }))
+            json_ok(&linxiv_core::service::trash::HardDeletedProject {
+                ok: true,
+                hard_deleted_project_id: p.project_id,
+            })
         })
     }
 
