@@ -133,33 +133,10 @@ fn status_from_str(s: &str) -> Option<Status> {
     serde_json::from_value(Value::String(s.into())).ok()
 }
 
-/// `app.py` builds each project dict the same way for list + get. Consumes the row
-/// (callers own it). Emits the 7 shared keys in order; the list arm appends
-/// `paper_count` after `status`, the get arm stops here.
-fn project_to_dict(conn: &Connection, p: ProjectDetails) -> Result<Value, ApiError> {
-    let source_ids = svc_paper::sfks_to_source_ids(conn, &p.source_fks)?;
-    let color_hex = p.color.map(project::color_to_hex);
-    Ok(json!({
-        "id": p.id,
-        "name": p.name,
-        "description": p.description,
-        "color_hex": color_hex,
-        "project_tags": p.project_tags,
-        "source_ids": source_ids,
-        "status": p.status,
-    }))
-}
-
-/// `project_to_dict` + the trailing `paper_count` key — shared by the projects
-/// list arm and the tag-detail projects scan.
-pub(crate) fn project_to_dict_with_count(
-    conn: &Connection,
-    p: ProjectDetails,
-) -> Result<Value, ApiError> {
-    let mut obj = project_to_dict(conn, p)?;
-    let count = obj["source_ids"].as_array().map_or(0, Vec::len);
-    obj["paper_count"] = json!(count);
-    Ok(obj)
+/// Canonical project wire shape — `service::project::to_out` (SERIALIZER 3;
+/// identical bytes on route, CLI and MCP). Shared with the tag-detail scan.
+pub(crate) fn project_out(conn: &Connection, p: ProjectDetails) -> Result<Value, ApiError> {
+    serde_json::to_value(project::to_out(conn, p)?).map_err(|e| ApiError::new(500, e.to_string()))
 }
 
 /// `GET /api/projects?status=` — `api_projects`. Default "active"; "all" => no filter.
@@ -181,7 +158,7 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
             if p.id.is_none() {
                 continue; // app.py drops null-id rows (data-integrity guard)
             }
-            out.push(project_to_dict_with_count(conn, p)?);
+            out.push(project_out(conn, p)?);
         }
         Ok(out)
     })?;
@@ -226,18 +203,13 @@ fn parse_color(hex: Option<&str>) -> Result<Option<i32>, ApiError> {
     }
 }
 
-/// `GET /api/projects/{id}` — `api_project_get`.
+/// `GET /api/projects/{id}` — `api_project_get`. Not-found wording comes from
+/// `CoreError::ProjectNotFound` (the shared contract), mapped to 404 here.
 fn get_one(state: &AppState, id: &str) -> Result<Value, ApiError> {
     let pid = path_i64(id)?;
     state.with_conn(|conn| {
-        let p = project::get(
-            conn,
-            &Project {
-                project_fk: Some(pid),
-            },
-        )?
-        .ok_or_else(|| ApiError::new(404, "Project not found"))?;
-        project_to_dict(conn, p)
+        let p = project::get_required(conn, pid)?;
+        project_out(conn, p)
     })
 }
 
@@ -445,8 +417,39 @@ mod tests {
         assert_eq!(err.detail, "Invalid color_hex");
     }
 
+    /// Canonical wire keys of `ProjectOut` (SERIALIZER 3), in order.
+    const WIRE_KEYS: [&str; 12] = [
+        "id",
+        "name",
+        "description",
+        "color_hex",
+        "project_tags",
+        "source_ids",
+        "paper_count",
+        "status",
+        "created_at",
+        "updated_at",
+        "archived_at",
+        "share_id",
+    ];
+
+    fn assert_wire_shape(v: &Value, pid: i64) {
+        let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, WIRE_KEYS);
+        assert_eq!(v["id"], json!(pid));
+        assert_eq!(v["name"], json!("RL"));
+        assert_eq!(v["description"], json!(""));
+        assert_eq!(v["color_hex"], json!("#00ff00"));
+        assert_eq!(v["project_tags"], json!([]));
+        assert_eq!(v["source_ids"], json!([]));
+        assert_eq!(v["paper_count"], json!(0));
+        assert_eq!(v["status"], json!("active"));
+        assert_eq!(v["archived_at"], Value::Null);
+        assert_eq!(v["share_id"], Value::Null);
+    }
+
     #[tokio::test]
-    async fn create_then_get_and_list_match_envelopes() {
+    async fn create_then_get_and_list_emit_canonical_wire_shape() {
         let st = state();
         let created = req(
             &st,
@@ -459,24 +462,14 @@ mod tests {
         let pid = created["project"]["id"].as_i64().unwrap();
         assert_eq!(created, json!({ "project": { "id": pid, "name": "RL" } }));
 
+        // get and list emit the same canonical shape (paper_count included on both).
         let got = req(&st, "GET", &format!("/api/projects/{pid}"), None)
             .await
             .unwrap();
-        assert_eq!(
-            serde_json::to_string(&got).unwrap(),
-            format!(
-                r##"{{"id":{pid},"name":"RL","description":"","color_hex":"#00ff00","project_tags":[],"source_ids":[],"status":"active"}}"##
-            )
-        );
+        assert_wire_shape(&got, pid);
 
-        // list appends paper_count after status, in order.
         let listed = req(&st, "GET", "/api/projects", None).await.unwrap();
-        assert_eq!(
-            serde_json::to_string(&listed).unwrap(),
-            format!(
-                r##"{{"projects":[{{"id":{pid},"name":"RL","description":"","color_hex":"#00ff00","project_tags":[],"source_ids":[],"status":"active","paper_count":0}}]}}"##
-            )
-        );
+        assert_wire_shape(&listed["projects"][0], pid);
     }
 
     #[tokio::test]

@@ -72,7 +72,7 @@ export interface PaperRepairBody {
   tags?: string[] | null;
 }
 
-export async function removeFromAllProjects(sfk: number): Promise<{ ok: boolean; removed_from: number[] }> {
+export async function removeFromAllProjects(sfk: number): Promise<{ ok: boolean; removed_from_projects: number[] }> {
   return apiFetch(`/api/papers/sfk/${sfk}/projects`, { method: "DELETE" });
 }
 

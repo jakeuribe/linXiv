@@ -267,7 +267,7 @@ fn remove_from_projects(state: &AppState, fk: &str) -> Result<Value, ApiError> {
     let source_fk = path_i64(fk)?;
     let removed =
         state.with_conn(|conn| svc_project::remove_paper_from_all_projects(conn, source_fk))?;
-    Ok(json!({ "ok": true, "removed_from": removed }))
+    Ok(json!({ "ok": true, "removed_from_projects": removed }))
 }
 
 /// `PaperRepairBody` (`src/api/papers.ts`). `published` stays a `String` so the
@@ -722,7 +722,7 @@ mod tests {
             req(&state(), "DELETE", "/api/papers/sfk/999/projects", None)
                 .await
                 .unwrap(),
-            json!({ "ok": true, "removed_from": [] })
+            json!({ "ok": true, "removed_from_projects": [] })
         );
     }
 }

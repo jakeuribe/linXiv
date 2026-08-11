@@ -223,8 +223,9 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         PaperCmd::RemoveFromAllProjects { source_id } => {
             let source_id = as_source_id(&source_id, "arxiv");
             match svc_project::remove_paper_from_all_projects_by_id(&mut ctx.conn, &source_id)? {
+                // One envelope across route/CLI/MCP; the caller already knows the id.
                 Some(removed) => output(&json!({
-                    "source_id": source_id,
+                    "ok": true,
                     "removed_from_projects": removed,
                 })),
                 None => fail(format!(

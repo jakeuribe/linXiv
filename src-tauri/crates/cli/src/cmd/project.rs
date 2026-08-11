@@ -3,7 +3,6 @@
 use std::path::Path;
 
 use clap::{Subcommand, ValueEnum};
-use serde::Serialize;
 use serde_json::json;
 
 use linxiv_core::error::Result as CoreResult;
@@ -133,16 +132,11 @@ pub enum ProjectCmd {
     },
 }
 
-/// `_resolve_project_or_exit`: fetch by id or fail with the exact Python message.
+/// `_resolve_project_or_exit`: fetch by id or exit 1. The not-found wording is
+/// `CoreError::ProjectNotFound` — the same message the route and MCP emit.
 fn resolve_or_exit(ctx: &Ctx, project_id: i64) -> linxiv_core::models::ProjectDetails {
-    match project::get(
-        &ctx.conn,
-        &project::Project {
-            project_fk: Some(project_id),
-        },
-    ) {
-        Ok(Some(p)) => p,
-        Ok(None) => fail(format!("Project {project_id} not found")),
+    match project::get_required(&ctx.conn, project_id) {
+        Ok(p) => p,
         Err(e) => fail(e),
     }
 }
@@ -175,34 +169,16 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             if core_status.is_none() {
                 projects.retain(|p| p.status != Status::Deleted);
             }
-            #[derive(Serialize)]
-            struct ListRow {
-                id: Option<i64>,
-                name: String,
-                description: String,
-                status: Status,
-                paper_count: usize,
-                color: Option<i32>,
-                project_tags: Vec<String>,
-            }
-            let rows: Vec<ListRow> = projects
+            let rows = projects
                 .into_iter()
-                .map(|p| ListRow {
-                    id: p.id,
-                    name: p.name,
-                    description: p.description,
-                    status: p.status,
-                    paper_count: p.source_fks.len(),
-                    color: p.color,
-                    project_tags: p.project_tags,
-                })
-                .collect();
+                .map(|p| project::to_out(&ctx.conn, p))
+                .collect::<CoreResult<Vec<_>>>()?;
             output(&rows);
         }
 
         ProjectCmd::Get { project_id } => {
             let details = resolve_or_exit(ctx, project_id);
-            output(&details);
+            output(&project::to_out(&ctx.conn, details)?);
         }
 
         ProjectCmd::Create {
@@ -257,7 +233,7 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                 fail(e);
             }
             let updated = resolve_or_exit(ctx, project_id);
-            output(&updated);
+            output(&project::to_out(&ctx.conn, updated)?);
         }
 
         ProjectCmd::Delete { project_id } => {

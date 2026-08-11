@@ -463,7 +463,12 @@ impl Server {
     pub async fn list_trash(&self) -> Result<String, ErrorData> {
         self.with_conn(|conn| {
             let papers = svc_paper::list_deleted(conn).map_err(core_err)?;
-            let projects = svc_project::list_deleted(conn).map_err(core_err)?;
+            let projects = svc_project::list_deleted(conn)
+                .map_err(core_err)?
+                .into_iter()
+                .map(|p| svc_project::to_out(conn, p))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(core_err)?;
             json_ok(&json!({
                 "papers": papers,
                 "projects": projects,

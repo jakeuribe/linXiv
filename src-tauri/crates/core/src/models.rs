@@ -357,35 +357,25 @@ pub struct ProjectDetails {
     pub share_id: Option<String>,
 }
 
-impl ProjectDetails {
-    /// Derived `paper_count = len(source_fks)`; emitted by the `Serialize` impl
-    /// below to match `service/models/project.py::to_dict` (plan §5.2, D16).
-    pub fn paper_count(&self) -> usize {
-        self.source_fks.len()
-    }
-}
-
-// Manual Serialize matching Python's to_dict key order, with the derived
-// `paper_count` between `source_fks` and `status`, plus the trailing `share_id`.
-// A `#[derive(Serialize)]` would silently drop paper_count (it is a method).
-impl Serialize for ProjectDetails {
-    fn serialize<S: serde::Serializer>(&self, ser: S) -> std::result::Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct;
-        let mut st = ser.serialize_struct("ProjectDetails", 12)?;
-        st.serialize_field("id", &self.id)?;
-        st.serialize_field("name", &self.name)?;
-        st.serialize_field("description", &self.description)?;
-        st.serialize_field("color", &self.color)?;
-        st.serialize_field("project_tags", &self.project_tags)?;
-        st.serialize_field("source_fks", &self.source_fks)?;
-        st.serialize_field("paper_count", &self.paper_count())?;
-        st.serialize_field("status", &self.status)?;
-        st.serialize_field("created_at", &self.created_at)?;
-        st.serialize_field("updated_at", &self.updated_at)?;
-        st.serialize_field("archived_at", &self.archived_at)?;
-        st.serialize_field("share_id", &self.share_id)?;
-        st.end()
-    }
+// SERIALIZER 3 — ProjectOut: the one project wire shape, emitted identically by
+// the route, the CLI and MCP (ADR-0011 scope). `ProjectDetails` itself is
+// deliberately NOT Serialize so no surface can bypass this shape. Produced only
+// via `service::project::to_out`, which resolves `source_fks` → namespaced
+// `source_ids` and renders `color` as `color_hex`.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProjectOut {
+    pub id: Option<i64>,
+    pub name: String,
+    pub description: String,
+    pub color_hex: Option<String>,
+    pub project_tags: Vec<String>,
+    pub source_ids: Vec<String>,
+    pub paper_count: usize,
+    pub status: Status,
+    pub created_at: Option<NaiveDateTime>,
+    pub updated_at: Option<NaiveDateTime>,
+    pub archived_at: Option<NaiveDateTime>,
+    pub share_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -747,31 +737,45 @@ mod tests {
     }
 
     #[test]
-    fn project_details_emits_paper_count_in_order() {
-        let p = ProjectDetails {
+    fn project_out_wire_shape_is_pinned() {
+        let p = ProjectOut {
             id: Some(5),
             name: "n".into(),
             description: String::new(),
-            color: None,
+            color_hex: Some("#00ff00".into()),
             project_tags: vec![],
-            source_fks: vec![1, 2, 3],
+            source_ids: vec!["arxiv:2204.12985".into()],
+            paper_count: 1,
             status: Status::Active,
             created_at: None,
             updated_at: None,
             archived_at: None,
             share_id: None,
         };
-        let s = serde_json::to_string(&p).unwrap();
-        // derived field present and correct (a derive(Serialize) would drop it)
+        let v = serde_json::to_value(&p).unwrap();
+        // Exact keys in exact order — the canonical shape all three surfaces emit.
+        let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&s).unwrap()["paper_count"],
-            3
+            keys,
+            [
+                "id",
+                "name",
+                "description",
+                "color_hex",
+                "project_tags",
+                "source_ids",
+                "paper_count",
+                "status",
+                "created_at",
+                "updated_at",
+                "archived_at",
+                "share_id",
+            ]
         );
-        // and emitted between source_fks and status, matching to_dict order
-        let fks = s.find("source_fks").unwrap();
-        let pc = s.find("paper_count").unwrap();
-        let st = s.find("\"status\"").unwrap();
-        assert!(fks < pc && pc < st);
+        assert_eq!(v["color_hex"], serde_json::json!("#00ff00"));
+        assert_eq!(v["source_ids"], serde_json::json!(["arxiv:2204.12985"]));
+        assert_eq!(v["paper_count"], serde_json::json!(1));
+        assert_eq!(v["status"], serde_json::json!("active"));
     }
 
     #[test]
