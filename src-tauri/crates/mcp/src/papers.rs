@@ -15,7 +15,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use linxiv_core::error::CoreError;
-use linxiv_core::models::PaperMetadata;
+use linxiv_core::models::{PaperMetadata, SearchResultOut};
 use linxiv_core::service::paper::{self as svc_paper, PaperSort};
 use linxiv_core::sources::arxiv_downloads;
 use linxiv_core::sources::fetch as svc_fetch;
@@ -188,6 +188,9 @@ impl Server {
         )
         .await
         .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+        // The canonical search wire shape all three surfaces emit (ADR-0011).
+        let results: Vec<SearchResultOut> =
+            results.into_iter().map(SearchResultOut::from).collect();
         json_ok(&results)
     }
 
@@ -318,8 +321,9 @@ impl Server {
                 ))
             })?;
         if paper.downloaded_source && !force {
+            // `source_id` key, matching the route's envelope (src/route/papers.rs).
             return json_ok(&serde_json::json!({
-                "paper_id": paper.source_id,
+                "source_id": paper.source_id,
                 "version": paper.version,
                 "indexed": false,
                 "reason": "source already indexed; pass force=true to re-fetch",
@@ -346,7 +350,7 @@ impl Server {
         let chars = text.chars().count();
         if !store {
             return json_ok(&serde_json::json!({
-                "paper_id": source_id,
+                "source_id": source_id,
                 "version": version,
                 "indexed": false,
                 "reason": "re-fetch produced no TeX; kept the text already indexed",
@@ -357,7 +361,7 @@ impl Server {
         self.with_conn(|conn| svc_paper::set_full_text(conn, &source_id, version, &text))
             .map_err(map_fetch_err)?;
         json_ok(&serde_json::json!({
-            "paper_id": source_id,
+            "source_id": source_id,
             "version": version,
             "indexed": true,
             "chars": chars,
@@ -426,7 +430,7 @@ impl Server {
         }): Parameters<RepairPaperParams>,
     ) -> Result<String, ErrorData> {
         // Keyed by the stable paper root so the fix survives a source_id rename.
-        self.with_conn(|conn| {
+        let updated = self.with_conn(|conn| {
             let source_fk = match svc_paper::resolve_source_fk(conn, &paper_id) {
                 Ok(fk) => fk,
                 Err(e) => return Ok(Err(crate::util::guard_err(e))),
@@ -466,10 +470,12 @@ impl Server {
                     other => Err(other),
                 };
             }
-            Ok(Ok(()))
+            // Route parity: return the repaired paper's full `PaperDetails`.
+            Ok(Ok(svc_paper::get(conn, &paper_key(&paper_id))?))
         })
         .map_err(core_err)??;
-        json_ok(&serde_json::json!({ "repaired": paper_id }))
+        let updated = updated.ok_or_else(|| ErrorData::internal_error("Repair failed", None))?;
+        json_ok(&updated)
     }
 
     #[tool(description = "Restore a soft-deleted (trashed) paper back into the library.")]
@@ -683,8 +689,55 @@ mod tests {
 
         let out = fetch(&srv, "arxiv:3", false).await.unwrap();
         assert_eq!(out["indexed"], serde_json::json!(false));
+        // Route-parity envelope: keyed `source_id`, not the old `paper_id`.
+        assert_eq!(out["source_id"], serde_json::json!("arxiv:3"));
+        assert!(out.get("paper_id").is_none(), "stale paper_id key: {out}");
 
         let err = fetch(&srv, "arxiv:3", true).await.unwrap_err();
         assert!(err.message.contains("no arXiv PDF URL"));
+    }
+
+    /// `search_papers` emits `SearchResultOut` (ADR-0011) — pin the exact wire
+    /// shape so this surface can't drift back to raw `PaperMetadata`.
+    #[test]
+    fn search_results_pin_the_canonical_wire_shape() {
+        let mut m = meta("arxiv:2204.12985", Some("arxiv"), Some("http://x"));
+        m.category = Some("cs.LG".into());
+        let v = serde_json::to_value(SearchResultOut::from(m)).unwrap();
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            r#"{"source_id":"2204.12985","version":1,"title":"T","summary":"S","authors":["A"],"published":"2024-01-01","paper_url":"http://x","primary_category":"cs.LG","entry_id":"arxiv:2204.12985"}"#
+        );
+    }
+
+    /// `repair_paper` returns the repaired paper's full `PaperDetails` (route
+    /// parity), not the old `{"repaired": id}` receipt — and never `full_text`.
+    #[tokio::test]
+    async fn repair_returns_the_updated_paper_details() {
+        let srv = server();
+        srv.with_conn(|conn| {
+            svc_paper::save_paper_metadata(conn, &meta("arxiv:7", Some("arxiv"), None), None)
+        })
+        .unwrap();
+        let out = srv
+            .repair_paper(Parameters(RepairPaperParams {
+                paper_id: "arxiv:7".to_string(),
+                title: "Fixed".to_string(),
+                authors: vec!["B".to_string()],
+                published: "2024-02-02".to_string(),
+                summary: "S2".to_string(),
+                category: None,
+                doi: None,
+                url: None,
+                tags: None,
+            }))
+            .await
+            .unwrap();
+        let out: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(out["source_id"], serde_json::json!("arxiv:7"));
+        assert_eq!(out["title"], serde_json::json!("Fixed"));
+        assert!(out["paper_id"].is_i64(), "missing PaperDetails keys: {out}");
+        assert!(out.get("full_text").is_none(), "leaked full_text: {out}");
+        assert!(out.get("repaired").is_none(), "stale receipt shape: {out}");
     }
 }

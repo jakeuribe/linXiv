@@ -7,8 +7,8 @@
 //! for the settings tools. `import_bibtex` delegates to `linxiv_core::formats`.
 //! Replicate the Python dict shapes EXACTLY, e.g. export returns
 //! `{"path", "project_id"}`, get_stats returns
-//! `{"paper_count", "tag_count", "category_count", "pdf_count"}`, save_doi
-//! returns `{"source_id", "version", "title"}`. Map `ValueError` to
+//! `{"paper_count", "tag_count", "category_count", "pdf_count"}`; save_doi
+//! returns the route's `{"metadata", "saved"}` envelope. Map `ValueError` to
 //! `Err(ErrorData::invalid_params(msg, None))` with the exact message.
 
 use std::path::{Path, PathBuf};
@@ -311,14 +311,10 @@ impl Server {
         let meta = doi_resolve::resolve_doi(&params.0.doi, &config::data_dir())
             .await
             .map_err(map_core)?;
-        let (source_id, version) = self
-            .with_conn(|conn| svc_paper::save_paper_metadata(conn, &meta, None))
+        self.with_conn(|conn| svc_paper::save_paper_metadata(conn, &meta, None))
             .map_err(map_core)?;
-        json_ok(&json!({
-            "source_id": source_id,
-            "version": version,
-            "title": meta.title,
-        }))
+        // Route parity (`POST /api/doi/save`): the resolved metadata + saved flag.
+        json_ok(&json!({ "metadata": meta, "saved": true }))
     }
 
     #[tool(description = "List all authors in the library with their paper counts.")]

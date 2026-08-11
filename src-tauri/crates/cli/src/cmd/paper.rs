@@ -189,7 +189,8 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                 Err(e @ linxiv_core::error::CoreError::Validation(_)) => fail(e.to_string()),
                 Err(e) => return Err(e.into()),
             }
-            output(&json!({ "repaired": source_id }));
+            // Route parity (`PUT /api/papers/sfk/{fk}`): the repaired PaperDetails.
+            output(&resolve_paper_or_exit(ctx, &source_id));
         }
 
         // cmd_paper_restore: only valid from trash; returns pdf path + project links.
