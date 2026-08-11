@@ -10,7 +10,6 @@ use linxiv_core::config;
 use linxiv_core::models::PaperMetadata;
 use linxiv_core::service::{paper as svc_paper, project as svc_project};
 use linxiv_core::sources::arxiv_downloads;
-use linxiv_core::storage;
 
 #[derive(Subcommand)]
 pub enum PaperCmd {
@@ -157,13 +156,8 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             tags,
         } => {
             let source_id = as_source_id(&source_id, "arxiv");
-            let root = match storage::queries::paper::get_paper_root(&ctx.conn, &source_id)? {
-                Some(r) => r,
-                None => fail(format!(
-                    "Paper {} not found",
-                    crate::output::pyrepr(&source_id)
-                )),
-            };
+            let source_fk =
+                svc_paper::resolve_source_fk(&ctx.conn, &source_id).unwrap_or_else(|e| fail(e));
             // `existing.version if existing is not None else 1`.
             let version = svc_paper::get(&ctx.conn, &paper(&source_id))?
                 .map(|e| e.version)
@@ -190,7 +184,7 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                 author_orcids: None,
             };
             // repair_paper normalizes and validates (blank title, no authors, empty DOI).
-            match svc_paper::repair_paper(&mut ctx.conn, root.source_fk, &meta) {
+            match svc_paper::repair_paper(&mut ctx.conn, source_fk, &meta) {
                 Ok(()) => {}
                 Err(e @ linxiv_core::error::CoreError::Validation(_)) => fail(e.to_string()),
                 Err(e) => return Err(e.into()),
@@ -213,12 +207,7 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         // cmd_paper_hard_delete: permanently remove an existing paper.
         PaperCmd::HardDelete { source_id } => {
             let source_id = as_source_id(&source_id, "arxiv");
-            if storage::queries::paper::get_paper_root(&ctx.conn, &source_id)?.is_none() {
-                fail(format!(
-                    "Paper {} not found",
-                    crate::output::pyrepr(&source_id)
-                ));
-            }
+            svc_paper::resolve_source_fk(&ctx.conn, &source_id).unwrap_or_else(|e| fail(e));
             svc_paper::hard_delete(&mut ctx.conn, &paper(&source_id))?;
             output(&json!({ "hard_deleted": source_id }));
         }
@@ -248,14 +237,9 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         // CLI's source_id to its root first. Empty when the paper has no DOI.
         PaperCmd::DoiCandidates { source_id } => {
             let source_id = as_source_id(&source_id, "arxiv");
-            let root = match storage::queries::paper::get_paper_root(&ctx.conn, &source_id)? {
-                Some(r) => r,
-                None => fail(format!(
-                    "Paper {} not found",
-                    crate::output::pyrepr(&source_id)
-                )),
-            };
-            let candidates = svc_paper::find_doi_version_candidates(&ctx.conn, root.source_fk)?;
+            let source_fk =
+                svc_paper::resolve_source_fk(&ctx.conn, &source_id).unwrap_or_else(|e| fail(e));
+            let candidates = svc_paper::find_doi_version_candidates(&ctx.conn, source_fk)?;
             output(&json!({ "candidates": candidates }));
         }
 
@@ -361,6 +345,7 @@ async fn index_sources_result(ctx: &mut Ctx, limit: usize) -> serde_json::Value 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use linxiv_core::storage;
     use std::env;
 
     fn arxiv_meta(source_id: &str, url: &str) -> PaperMetadata {
