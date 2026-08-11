@@ -36,6 +36,29 @@ pub fn get(conn: &Connection, note: &Note) -> Result<Option<NoteDetails>> {
     }
 }
 
+/// The one "Note {id} not found" error all three surfaces word identically.
+pub fn not_found(note_id: i64) -> CoreError {
+    CoreError::NotFound(format!("Note {note_id} not found"))
+}
+
+/// `get`, but an absent note is a typed `NotFound` error — the shared missing-note
+/// contract for route/CLI/MCP (404 / exit 1 / invalid-params respectively).
+pub fn get_required(conn: &Connection, note_id: i64) -> Result<NoteDetails> {
+    get(
+        conn,
+        &Note {
+            note_id: Some(note_id),
+        },
+    )?
+    .ok_or_else(|| not_found(note_id))
+}
+
+/// Delete-note wire envelope, shared by all three surfaces.
+#[derive(Debug, serde::Serialize)]
+pub struct DeletedNote {
+    pub deleted_note_id: i64,
+}
+
 /// Every note, CREATED_AT ASC.
 pub fn list_all(conn: &Connection) -> Result<Vec<NoteDetails>> {
     Ok(q::list_all_notes(conn)?)
@@ -204,6 +227,36 @@ mod tests {
 
         assert!(delete(&conn, &Note { note_id: Some(id) }).unwrap());
         assert!(get(&conn, &Note { note_id: Some(id) }).unwrap().is_none());
+    }
+
+    #[test]
+    fn get_required_returns_note_or_typed_not_found() {
+        let conn = setup();
+        let id = create(
+            &conn,
+            &NoteIn {
+                source_fk: 1,
+                title: "t".into(),
+                content: "c".into(),
+                paper_id: None,
+                project_fk: None,
+                uuid: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(get_required(&conn, id).unwrap().title, "t");
+        let err = get_required(&conn, 999).unwrap_err();
+        assert_eq!(err.http_status(), 404);
+        assert_eq!(err.to_string(), "Note 999 not found");
+    }
+
+    /// Wire-shape pin: the delete envelope is exactly `{"deleted_note_id": n}`.
+    #[test]
+    fn deleted_note_wire_shape() {
+        assert_eq!(
+            serde_json::to_string(&DeletedNote { deleted_note_id: 7 }).unwrap(),
+            r#"{"deleted_note_id":7}"#
+        );
     }
 
     #[test]

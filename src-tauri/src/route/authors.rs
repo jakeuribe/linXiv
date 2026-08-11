@@ -106,18 +106,12 @@ fn delete(state: &AppState, id: &str) -> Result<Value, ApiError> {
     Ok(json!({ "ok": true }))
 }
 
-/// Build `{**author.to_dict(), paper_count, papers}` — shared by GET and PATCH.
+/// The canonical `AuthorWithPapers` composite — shared by GET and PATCH.
 fn detail_response(state: &AppState, author_id: i64) -> Result<Value, ApiError> {
     state.with_conn(|conn| {
-        let author = svc_author::get(conn, &author_ref(author_id))?
+        let detail = svc_author::get_with_papers(conn, author_id)?
             .ok_or_else(|| ApiError::new(404, "Author not found"))?;
-        let previews = svc_author::get_paper_previews(conn, author_id)?;
-        let mut v = crate::route::to_value(&author)?;
-        if let Value::Object(map) = &mut v {
-            map.insert("paper_count".into(), json!(previews.len()));
-            map.insert("papers".into(), crate::route::to_value(&previews)?);
-        }
-        Ok(v)
+        crate::route::to_value(&detail)
     })
 }
 

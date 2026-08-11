@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 
 use linxiv_core::models::{NoteIn, NoteUpdateIn};
 use linxiv_core::service::editor_project as svc_editor;
-use linxiv_core::service::note::{self as svc_note, Note, Notes};
+use linxiv_core::service::note::{self as svc_note, Notes};
 use linxiv_core::service::paper as svc_paper;
 
 use crate::route::{path_i64, ApiError, ReqCtx};
@@ -56,13 +56,7 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
 fn get(state: &AppState, id: &str) -> Result<Value, ApiError> {
     let note_id = path_i64(id)?;
     state.with_conn(|conn| {
-        let note = svc_note::get(
-            conn,
-            &Note {
-                note_id: Some(note_id),
-            },
-        )?
-        .ok_or_else(|| ApiError::new(404, "Note not found"))?;
+        let note = svc_note::get_required(conn, note_id)?;
         Ok(json!({ "note": note }))
     })
 }
@@ -98,7 +92,10 @@ fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
                 uuid: None,
             },
         )?;
-        Ok(json!({ "id": note_id }))
+        // Canonical create envelope: the full NoteDetails serialization.
+        Ok(crate::route::to_value(&svc_note::get_required(
+            conn, note_id,
+        )?)?)
     })
 }
 
@@ -112,17 +109,19 @@ fn update(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     }
     let b: Body = ctx.parse_body()?;
     state.with_conn(|conn| {
-        if !svc_note::update(
+        svc_note::update(
             conn,
             &NoteUpdateIn {
                 note_id,
                 title: b.title,
                 content: b.content,
             },
-        )? {
-            return Err(ApiError::new(404, "Note not found"));
-        }
-        Ok(json!({ "ok": true }))
+        )?;
+        // No row matched -> get_required raises the shared 404; else the
+        // canonical update envelope is the full NoteDetails serialization.
+        Ok(crate::route::to_value(&svc_note::get_required(
+            conn, note_id,
+        )?)?)
     })
 }
 
@@ -131,9 +130,11 @@ fn delete(state: &AppState, id: &str) -> Result<Value, ApiError> {
     let note_id = path_i64(id)?;
     state.with_conn(|conn| {
         if !svc_editor::delete_note(conn, &state.vault_root, note_id)? {
-            return Err(ApiError::new(404, "Note not found"));
+            return Err(svc_note::not_found(note_id).into());
         }
-        Ok(json!({ "ok": true }))
+        Ok(crate::route::to_value(&svc_note::DeletedNote {
+            deleted_note_id: note_id,
+        })?)
     })
 }
 
@@ -198,11 +199,58 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(created, json!({ "id": 1 }));
+        // Wire-shape pin: create returns the full canonical NoteDetails envelope.
+        let keys: Vec<&str> = created
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "id",
+                "uuid",
+                "source_fk",
+                "paper_id_fk",
+                "project_id",
+                "title",
+                "content",
+                "created_at",
+                "updated_at"
+            ]
+        );
+        assert_eq!(created["id"], json!(1));
+        assert_eq!(created["title"], json!("t"));
+        assert_eq!(created["content"], json!("c"));
         let listed = req(&st, "GET", "/api/notes?source_id=arxiv:1", None)
             .await
             .unwrap();
         assert_eq!(listed["notes"].as_array().unwrap().len(), 1);
+    }
+
+    /// Update and delete emit the shared canonical envelopes (full NoteDetails /
+    /// `{"deleted_note_id": n}`), not the old `{"ok": true}`.
+    #[tokio::test]
+    async fn update_and_delete_return_canonical_envelopes() {
+        let st = state();
+        seed_paper(&st, "arxiv:1");
+        req(
+            &st,
+            "POST",
+            "/api/notes",
+            Some(json!({ "source_id": "arxiv:1", "title": "t", "content": "c" })),
+        )
+        .await
+        .unwrap();
+        let updated = req(&st, "PATCH", "/api/notes/1", Some(json!({ "title": "t2" })))
+            .await
+            .unwrap();
+        assert_eq!(updated["id"], json!(1));
+        assert_eq!(updated["title"], json!("t2"));
+        assert_eq!(updated["content"], json!("c"));
+        let deleted = req(&st, "DELETE", "/api/notes/1", None).await.unwrap();
+        assert_eq!(deleted, json!({ "deleted_note_id": 1 }));
     }
 
     #[tokio::test]
@@ -255,7 +303,7 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(err.status, 404);
-        assert_eq!(err.detail, "Note not found");
+        assert_eq!(err.detail, "Note 999 not found");
     }
 
     #[tokio::test]
@@ -264,7 +312,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.status, 404);
-        assert_eq!(err.detail, "Note not found");
+        assert_eq!(err.detail, "Note 999 not found");
     }
 
     #[tokio::test]

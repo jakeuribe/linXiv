@@ -1,13 +1,11 @@
 //! Group `note` — cmd_note_* in `linxiv_cli.py`.
 
 use clap::Subcommand;
-use serde::Serialize;
 
 use linxiv_core::config;
 use linxiv_core::models::{NoteIn, NoteUpdateIn};
 use linxiv_core::service::editor_project as svc_editor;
 use linxiv_core::service::note as svc_note;
-use linxiv_core::service::note::Note;
 use linxiv_core::service::paper as svc_paper;
 use linxiv_core::service::project as svc_project;
 use linxiv_core::service::project::Project;
@@ -51,28 +49,6 @@ pub enum NoteCmd {
     Delete { note_id: i64 },
 }
 
-/// `cmd_note_create` output dict.
-#[derive(Serialize)]
-struct CreatedNote {
-    id: i64,
-    source_fk: i64,
-    project_id: Option<i64>,
-    title: String,
-}
-
-/// `cmd_note_update` output dict.
-#[derive(Serialize)]
-struct UpdatedNote {
-    id: i64,
-    updated: bool,
-}
-
-/// `cmd_note_delete` output dict.
-#[derive(Serialize)]
-struct DeletedNote {
-    deleted_note_id: i64,
-}
-
 pub async fn run(cmd: NoteCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
     let conn = &ctx.conn;
     match cmd {
@@ -101,30 +77,18 @@ pub async fn run(cmd: NoteCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                 conn,
                 &NoteIn {
                     source_fk,
-                    title: title.clone(),
+                    title,
                     content,
                     paper_id: None,
                     project_fk: project_id,
                     uuid: None,
                 },
             )?;
-            output(&CreatedNote {
-                id: note_id,
-                source_fk,
-                project_id,
-                title,
-            });
+            // Canonical create envelope: the full NoteDetails serialization.
+            output(&svc_note::get_required(conn, note_id)?);
         }
         NoteCmd::Get { note_id } => {
-            match svc_note::get(
-                conn,
-                &Note {
-                    note_id: Some(note_id),
-                },
-            )? {
-                Some(details) => output(&details),
-                None => fail(format!("Note {note_id} not found")),
-            }
+            output(&svc_note::get_required(conn, note_id).unwrap_or_else(|e| fail(e)));
         }
         NoteCmd::List {
             source_id,
@@ -138,16 +102,8 @@ pub async fn run(cmd: NoteCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             title,
             content,
         } => {
-            if svc_note::get(
-                conn,
-                &Note {
-                    note_id: Some(note_id),
-                },
-            )?
-            .is_none()
-            {
-                fail(format!("Note {note_id} not found"));
-            }
+            // Existence first (shared "Note {id} not found" wording), then args.
+            svc_note::get_required(conn, note_id).unwrap_or_else(|e| fail(e));
             if title.is_none() && content.is_none() {
                 fail("at least one of --title or --content must be provided");
             }
@@ -159,16 +115,14 @@ pub async fn run(cmd: NoteCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                     content,
                 },
             )?;
-            output(&UpdatedNote {
-                id: note_id,
-                updated: true,
-            });
+            // Canonical update envelope: the full NoteDetails serialization.
+            output(&svc_note::get_required(conn, note_id)?);
         }
         NoteCmd::Delete { note_id } => {
             if !svc_editor::delete_note(conn, &config::vault_dir(), note_id)? {
-                fail(format!("Note {note_id} not found"));
+                fail(svc_note::not_found(note_id));
             }
-            output(&DeletedNote {
+            output(&svc_note::DeletedNote {
                 deleted_note_id: note_id,
             });
         }

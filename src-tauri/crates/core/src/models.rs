@@ -316,6 +316,16 @@ pub struct AuthorPaperPreview {
     pub title: Option<String>,
 }
 
+/// `{**author, paper_count, papers}` — the author-detail composite every surface
+/// (route GET/PATCH, `linxiv author get`, MCP `get_author`) emits.
+#[derive(Debug, Clone, Serialize)]
+pub struct AuthorWithPapers {
+    #[serde(flatten)]
+    pub base: BasicAuthorDetails,
+    pub paper_count: usize,
+    pub papers: Vec<AuthorPaperPreview>,
+}
+
 // ---------------------------------------------------------------------------
 // Project (service/models/project.py)
 // ---------------------------------------------------------------------------

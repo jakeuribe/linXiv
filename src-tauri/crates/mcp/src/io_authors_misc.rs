@@ -331,26 +331,14 @@ impl Server {
         params: Parameters<AuthorIdParams>,
     ) -> Result<String, ErrorData> {
         let author_id = params.0.author_id;
-        let value = self.with_conn(|conn| -> Result<Value, ErrorData> {
-            let author = svc_author::get(
-                conn,
-                &Author {
-                    author_id: Some(author_id),
-                    ..Default::default()
-                },
-            )
+        // The canonical AuthorWithPapers composite, shared with route + CLI.
+        let detail = self
+            .with_conn(|conn| svc_author::get_with_papers(conn, author_id))
             .map_err(map_core)?
             .ok_or_else(|| {
                 ErrorData::invalid_params(format!("Author {author_id} not found."), None)
             })?;
-            let previews = svc_author::get_paper_previews(conn, author_id).map_err(map_core)?;
-            let mut value = serde_json::to_value(&author)
-                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-            value["papers"] = serde_json::to_value(&previews)
-                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-            Ok(value)
-        })?;
-        json_ok(&value)
+        json_ok(&detail)
     }
 
     #[tool(description = "Update an author's fields. At least one field must be provided.")]

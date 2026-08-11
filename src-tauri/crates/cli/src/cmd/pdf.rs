@@ -7,7 +7,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use linxiv_core::config;
-use linxiv_core::service::files as svc_files;
+use linxiv_core::service::files::{self as svc_files, PdfLocation};
 use linxiv_core::service::paper as svc_paper;
 use linxiv_core::service::paper_import;
 
@@ -46,14 +46,6 @@ pub enum PdfCmd {
         #[arg(long = "project-id")]
         project_id: Option<i64>,
     },
-}
-
-/// `cmd_pdf_path` / `cmd_pdf_download` output dict.
-#[derive(Serialize)]
-struct PdfLocation {
-    source_id: String,
-    version: i64,
-    path: Option<PathBuf>,
 }
 
 /// `cmd_pdf_storage` output dict.
