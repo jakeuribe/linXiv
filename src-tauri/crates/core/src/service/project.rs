@@ -120,7 +120,7 @@ pub fn get_required(conn: &Connection, project_fk: i64) -> Result<ProjectDetails
             project_fk: Some(project_fk),
         },
     )?
-    .ok_or(CoreError::ProjectNotFound)
+    .ok_or(CoreError::ProjectNotFound(project_fk))
 }
 
 /// The single mapping point to the canonical wire shape (`models::ProjectOut`,
@@ -171,7 +171,7 @@ pub fn get_many(conn: &Connection, projects: &Projects) -> Result<Vec<ProjectDet
 pub fn ensure_share_id(conn: &Connection, project_fk: i64) -> Result<String> {
     ensure_membership_writable(conn, project_fk)?;
     let candidate = uuid::Uuid::new_v4().to_string();
-    pq::ensure_share_id(conn, project_fk, &candidate)?.ok_or(CoreError::ProjectNotFound)
+    pq::ensure_share_id(conn, project_fk, &candidate)?.ok_or(CoreError::ProjectNotFound(project_fk))
 }
 
 /// Reverse share lookup: the project (if any) whose SHARE_ID equals `share_id`.
@@ -188,7 +188,7 @@ pub fn adopt_share_id(conn: &Connection, project_fk: i64, share_id: &str) -> Res
         )));
     }
     let stored =
-        pq::ensure_share_id(conn, project_fk, share_id)?.ok_or(CoreError::ProjectNotFound)?;
+        pq::ensure_share_id(conn, project_fk, share_id)?.ok_or(CoreError::ProjectNotFound(project_fk))?;
     if stored != share_id {
         tracing::warn!(
             "adopt_share_id: project {project_fk} already has SHARE_ID {stored}; archive share id {share_id} not adopted"
@@ -240,7 +240,7 @@ pub fn create(conn: &mut Connection, project: &ProjectIn) -> Result<i64> {
 /// sync and the field UPDATE are separate transactions, so a failure between them leaves
 /// tags changed and fields not.
 pub fn update(conn: &mut Connection, upd: &ProjectUpdateIn) -> Result<()> {
-    let mut p = pq::get_project(conn, upd.project_fk, false)?.ok_or(CoreError::ProjectNotFound)?;
+    let mut p = pq::get_project(conn, upd.project_fk, false)?.ok_or(CoreError::ProjectNotFound(upd.project_fk))?;
     if p.status == Status::Deleted && upd.status != Some(Status::Active) {
         return Err(CoreError::ProjectDeleted(
             "cannot update a deleted project".into(),
@@ -324,7 +324,7 @@ fn save_fields(conn: &Connection, p: &ProjectDetails) -> Result<()> {
 /// not-deleted), no write. Import flows call this before mutating the library.
 pub fn ensure_membership_writable(conn: &Connection, project_fk: i64) -> Result<()> {
     match pq::get_project(conn, project_fk, false)? {
-        None => Err(CoreError::ProjectNotFound),
+        None => Err(CoreError::ProjectNotFound(project_fk)),
         Some(p) if p.status == Status::Deleted => Err(CoreError::ProjectDeleted(
             "cannot update a deleted project".into(),
         )),
@@ -809,7 +809,7 @@ mod tests {
                 },
             )
             .unwrap_err(),
-            CoreError::ProjectNotFound
+            CoreError::ProjectNotFound(_)
         ));
     }
 
@@ -916,7 +916,7 @@ mod tests {
         ));
         assert!(matches!(
             ensure_membership_writable(&conn, 9999).unwrap_err(),
-            CoreError::ProjectNotFound
+            CoreError::ProjectNotFound(_)
         ));
     }
 

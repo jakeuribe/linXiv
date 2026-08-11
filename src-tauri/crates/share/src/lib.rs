@@ -266,7 +266,7 @@ pub fn import_shared_project(conn: &mut Connection, sp: &SharedProject) -> Resul
                     project_fk: Some(fk),
                 },
             )?
-            .ok_or(CoreError::ProjectNotFound)?;
+            .ok_or(CoreError::ProjectNotFound(fk))?;
             // Union so remote tag removals stay local-only (additive rule).
             let mut tags = existing.project_tags.clone();
             for t in sp.tags.iter().take(MAX_SHARED_ITEMS) {

@@ -137,7 +137,7 @@ where
     if let Some(pid) = project_id {
         if let Err(e) = link_imported(conn, pid, &sid) {
             return Err(match e {
-                CoreError::ProjectNotFound | CoreError::ProjectDeleted(_) => {
+                CoreError::ProjectNotFound(_) | CoreError::ProjectDeleted(_) => {
                     CoreError::PaperLink(format!(
                         "paper {sid} was imported but could not be linked to project {pid}: {e}"
                     ))
@@ -315,7 +315,7 @@ fn rollback(conn: &mut Connection, tmp_path: &Path, st: &ImportState) {
 /// soft-deleted → ProjectDeleted.
 fn ensure_membership_writable(conn: &Connection, project_fk: i64) -> Result<()> {
     match proj_store::get_project(conn, project_fk, false)? {
-        None => Err(CoreError::ProjectNotFound),
+        None => Err(CoreError::ProjectNotFound(project_fk)),
         Some(p) if p.status == Status::Deleted => Err(CoreError::ProjectDeleted(
             "cannot update a deleted project".into(),
         )),
@@ -714,7 +714,7 @@ mod tests {
             resolver(meta("local:p1", 1), None),
         )
         .unwrap_err();
-        assert!(matches!(err, CoreError::ProjectNotFound));
+        assert!(matches!(err, CoreError::ProjectNotFound(_)));
         assert!(paper::list_papers(&conn, false, None, 0, None)
             .unwrap()
             .is_empty());

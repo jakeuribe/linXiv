@@ -77,7 +77,7 @@ pub fn create(conn: &Connection, ann: &AnnotationIn) -> Result<i64> {
     validate_anchor(&ann.anchor).map_err(|m| CoreError::Validation(m.into()))?;
     if let Some(pid) = ann.project_fk {
         if crate::storage::queries::project::get_project(conn, pid, false)?.is_none() {
-            return Err(CoreError::ProjectNotFound);
+            return Err(CoreError::ProjectNotFound(pid));
         }
     }
     let uuid: Option<String> = match &ann.uuid {

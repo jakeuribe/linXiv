@@ -7,9 +7,10 @@
 #[derive(thiserror::Error, Debug)]
 pub enum CoreError {
     // ── Typed failure modes (named so callers can branch + word them) ──────
-    /// service.project.ProjectNotFoundError — membership guard. 404.
-    #[error("Project not found")]
-    ProjectNotFound,
+    /// service.project.ProjectNotFoundError — membership guard. 404. Carries
+    /// the project id so every surface words the message identically.
+    #[error("Project {0} not found")]
+    ProjectNotFound(i64),
     /// service.project.ProjectDeletedError — project is soft-deleted. 400.
     #[error("{0}")]
     ProjectDeleted(String),
@@ -63,7 +64,7 @@ impl CoreError {
     pub fn http_status(&self) -> u16 {
         use CoreError::*;
         match self {
-            ProjectNotFound | PaperNotFound | ArxivNotFound(_) | OpenAlexNotFound(_)
+            ProjectNotFound(_) | PaperNotFound | ArxivNotFound(_) | OpenAlexNotFound(_)
             | NotFound(_) => 404,
             ProjectDeleted(_) | PaperLink(_) | OpenAlexInput(_) | BadRequest(_) => 400,
             Conflict(_) => 409,
@@ -106,7 +107,7 @@ mod tests {
 
     #[test]
     fn status_matches_contract() {
-        assert_eq!(CoreError::ProjectNotFound.http_status(), 404);
+        assert_eq!(CoreError::ProjectNotFound(1).http_status(), 404);
         assert_eq!(CoreError::ProjectDeleted("gone".into()).http_status(), 400);
         assert_eq!(CoreError::PdfImport("x".into()).http_status(), 422);
         assert_eq!(CoreError::PaperLink("x".into()).http_status(), 400);

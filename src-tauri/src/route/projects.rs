@@ -106,13 +106,7 @@ fn export_text(
         ));
     };
     let content = state.with_conn(|conn| -> Result<String, ApiError> {
-        let proj = project::get(
-            conn,
-            &Project {
-                project_fk: Some(project_fk),
-            },
-        )?
-        .ok_or_else(|| ApiError::new(404, "Project not found"))?;
+        let proj = project::get_required(conn, project_fk)?;
         let ids: HashSet<String> = svc_paper::sfks_to_source_ids(conn, &proj.source_fks)?
             .into_iter()
             .collect();
@@ -258,7 +252,6 @@ fn patch(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError
         .with_conn(|conn| project::update(conn, &upd))
         .map_err(|e| match e {
             // app.py: LookupError -> 404 "Project not found"; ValueError -> 400 str(e).
-            CoreError::ProjectNotFound => ApiError::new(404, "Project not found"),
             CoreError::ProjectDeleted(m) | CoreError::Validation(m) => ApiError::new(400, m),
             other => other.into(),
         })?;
@@ -272,9 +265,7 @@ fn delete(state: &AppState, id: &str) -> Result<Value, ApiError> {
         project_fk: Some(pid),
     };
     state.with_conn(|conn| -> Result<(), ApiError> {
-        if project::get(conn, &proj)?.is_none() {
-            return Err(ApiError::new(404, "Project not found"));
-        }
+        project::get_required(conn, pid)?;
         project::delete(conn, &proj)?;
         Ok(())
     })?;
@@ -284,7 +275,6 @@ fn delete(state: &AppState, id: &str) -> Result<Value, ApiError> {
 /// Map the `add_papers`/`remove_papers` membership guards to app.py's status codes.
 fn map_membership(r: linxiv_core::error::Result<Vec<String>>) -> Result<Vec<String>, ApiError> {
     r.map_err(|e| match e {
-        CoreError::ProjectNotFound => ApiError::new(404, "Project not found"),
         CoreError::ProjectDeleted(m) => ApiError::new(400, m),
         other => other.into(),
     })
@@ -378,7 +368,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.status, 404);
-        assert_eq!(err.detail, "Project not found");
+        assert_eq!(err.detail, "Project 999 not found");
     }
 
     #[tokio::test]
@@ -497,7 +487,7 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(err.status, 404);
-        assert_eq!(err.detail, "Project not found");
+        assert_eq!(err.detail, "Project 999 not found");
     }
 
     #[tokio::test]
@@ -506,7 +496,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.status, 404);
-        assert_eq!(err.detail, "Project not found");
+        assert_eq!(err.detail, "Project 999 not found");
     }
 
     #[tokio::test]
@@ -520,7 +510,7 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(err.status, 404);
-        assert_eq!(err.detail, "Project not found");
+        assert_eq!(err.detail, "Project 999 not found");
     }
 
     #[tokio::test]

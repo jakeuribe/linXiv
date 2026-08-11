@@ -521,9 +521,7 @@ impl Server {
         if let Some(pid) = p.project_id {
             self.with_conn(
                 |conn| match svc_project::ensure_membership_writable(conn, pid) {
-                    Err(CoreError::ProjectNotFound) => {
-                        Err(invalid(format!("Project {pid} not found.")))
-                    }
+                    Err(e @ CoreError::ProjectNotFound(_)) => Err(invalid(e.to_string())),
                     Err(e) => Err(core_err(e)),
                     Ok(()) => Ok(()),
                 },
@@ -555,10 +553,7 @@ impl Server {
                 |_| Ok(resolved.clone()),
             ) {
                 Ok(result) => json_ok(&result),
-                Err(CoreError::ProjectNotFound) => Err(invalid(format!(
-                    "Project {} not found.",
-                    p.project_id.unwrap_or_default()
-                ))),
+                Err(e @ CoreError::ProjectNotFound(_)) => Err(invalid(e.to_string())),
                 Err(e @ CoreError::PaperLink(_)) => Err(invalid(e.to_string())),
                 Err(e) => Err(core_err(e)),
             }

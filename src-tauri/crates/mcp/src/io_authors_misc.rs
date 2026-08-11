@@ -535,11 +535,8 @@ impl Server {
             if let Some(pid) = project_id {
                 match svc_project::ensure_membership_writable(conn, pid) {
                     Ok(()) => {}
-                    Err(CoreError::ProjectNotFound) => {
-                        return Err(ErrorData::invalid_params(
-                            format!("Project {pid} not found."),
-                            None,
-                        ));
+                    Err(e @ CoreError::ProjectNotFound(_)) => {
+                        return Err(crate::util::invalid(e.to_string()));
                     }
                     Err(e) => return Err(map_core(e)),
                 }
