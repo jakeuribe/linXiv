@@ -314,7 +314,8 @@ fn dedup_nonblank(items: &[String]) -> Vec<String> {
 }
 
 /// Library search: FTS hits (TeX source + note index) merged with the LIKE scan
-/// over note text, deduped by source_id, FTS rows first then note-recency order.
+/// over note text, deduped by source_id, FTS rows first then note-recency order —
+/// bm25 relevance is the stronger signal, so LIKE-only extras trail it.
 pub fn search_library(conn: &Connection, query: &str, limit: i64) -> Result<Vec<PaperDetails>> {
     // A missing or corrupt FTS index yields no rows rather than failing the whole
     // search, so note hits still populate.
@@ -966,6 +967,24 @@ mod tests {
     }
 
     #[test]
+    fn require_trashed_rejects_active_and_missing_papers() {
+        let mut conn = mem();
+        let (fk, _v1, _v2) = seed_two_versions(&mut conn);
+        // Active (never-trashed) and unknown papers both 404 out of trash-only ops.
+        assert_eq!(require_trashed(&conn, "arxiv:A").unwrap_err().http_status(), 404);
+        assert_eq!(require_trashed(&conn, "arxiv:nope").unwrap_err().http_status(), 404);
+        delete(
+            &mut conn,
+            &Paper {
+                source_fk: Some(fk),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        require_trashed(&conn, "arxiv:A").unwrap();
+    }
+
+    #[test]
     fn delete_restore_hard_delete_resolve_via_keys() {
         let mut conn = mem();
         let (fk, v1, _v2) = seed_two_versions(&mut conn);
@@ -1348,6 +1367,37 @@ mod tests {
         let hits = search_library(&conn, "orpholog", 10).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].source_id, "arxiv:N");
+    }
+
+    // The case MCP used to drop before the merge was hoisted here: one query
+    // where paper A matches via indexed full text and paper B only via note
+    // content the FTS tokenizer can't reach. Both must return, FTS hit first.
+    #[test]
+    fn search_library_returns_full_text_and_note_hits_together() {
+        let mut conn = mem();
+        save_paper_metadata(&mut conn, &meta("arxiv:ftA", 1, "cs.LG", &[]), None).unwrap();
+        set_full_text(&mut conn, "arxiv:ftA", 1, "a study of zephyranthes blooms").unwrap();
+
+        save_paper_metadata(&mut conn, &meta("arxiv:ntB", 1, "cs.LG", &[]), None).unwrap();
+        ensure_paper_root(&mut conn, "arxiv:ntB").unwrap();
+        conn.execute(
+            "INSERT INTO NOTE (SOURCE_FK, TITLE, NOTE) \
+             SELECT SOURCE_FK, 'n', 'compare with megazephyranthes cultivars' \
+             FROM PAPER_ROOTS WHERE SOURCE_ID = ?1",
+            ["arxiv:ntB"],
+        )
+        .unwrap();
+
+        // "megazephyranthes" is one FTS token, so only the LIKE scan reaches B.
+        let fts = search_store::search_full_text(&conn, "zephyranthes", 10).unwrap();
+        assert_eq!(fts.len(), 1);
+        assert_eq!(fts[0].source_id, "arxiv:ftA");
+
+        let hits = search_library(&conn, "zephyranthes", 10).unwrap();
+        assert_eq!(
+            hits.iter().map(|p| p.source_id.as_str()).collect::<Vec<_>>(),
+            ["arxiv:ftA", "arxiv:ntB"]
+        );
     }
 
     // Repair input rules live behind the service seam, not in one caller.
