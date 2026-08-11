@@ -15,7 +15,8 @@
     "pretauri": "npm run submodules",
     "tauri": "tauri",
     "build:sidecar": "bash scripts/fetch_pdfium.sh && bash scripts/stage_rust_bins.sh",
-    "build:all": "npm run build:sidecar && npm run tauri build"
+    "build:all": "npm run build:sidecar && npm run tauri build",
+    "build:arch": "bash scripts/build_arch_package.sh"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.4",
