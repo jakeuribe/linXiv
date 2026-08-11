@@ -161,7 +161,6 @@ fn import_bibtex(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> 
     state.with_conn(|conn| -> Result<Value, ApiError> {
         if let Some(pid) = b.project_id {
             svc_project::ensure_membership_writable(conn, pid).map_err(|e| match e {
-                CoreError::ProjectNotFound => ApiError::new(404, "Project not found"),
                 CoreError::ProjectDeleted(m) => ApiError::new(400, m),
                 other => other.into(),
             })?;
@@ -417,7 +416,7 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(err.status, 404);
-        assert_eq!(err.detail, "Project not found");
+        assert_eq!(err.detail, "Project 9999 not found");
     }
 
     #[tokio::test]

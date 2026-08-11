@@ -293,9 +293,7 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             let source_id = as_source_id(&source_id, "arxiv");
             let failed = match project::add_papers(&ctx.conn, project_id, &[source_id.clone()]) {
                 Ok(failed) => failed,
-                Err(linxiv_core::error::CoreError::ProjectNotFound) => {
-                    fail(format!("Project {project_id} not found"))
-                }
+                Err(e @ linxiv_core::error::CoreError::ProjectNotFound(_)) => fail(e),
                 Err(e @ linxiv_core::error::CoreError::ProjectDeleted(_)) => fail(e),
                 Err(e) => return Err(e.into()),
             };
@@ -321,9 +319,7 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                 .collect();
             let failed = match project::add_papers(&ctx.conn, project_id, &source_ids) {
                 Ok(failed) => failed,
-                Err(linxiv_core::error::CoreError::ProjectNotFound) => {
-                    fail(format!("Project {project_id} not found"))
-                }
+                Err(e @ linxiv_core::error::CoreError::ProjectNotFound(_)) => fail(e),
                 Err(e @ linxiv_core::error::CoreError::ProjectDeleted(_)) => fail(e),
                 Err(e) => return Err(e.into()),
             };
@@ -343,9 +339,7 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             let source_id = as_source_id(&source_id, "arxiv");
             let failed = match project::remove_papers(&ctx.conn, project_id, &[source_id.clone()]) {
                 Ok(failed) => failed,
-                Err(linxiv_core::error::CoreError::ProjectNotFound) => {
-                    fail(format!("Project {project_id} not found"))
-                }
+                Err(e @ linxiv_core::error::CoreError::ProjectNotFound(_)) => fail(e),
                 Err(e @ linxiv_core::error::CoreError::ProjectDeleted(_)) => fail(e),
                 Err(e) => return Err(e.into()),
             };

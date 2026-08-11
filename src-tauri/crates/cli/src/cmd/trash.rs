@@ -115,6 +115,6 @@ pub(crate) fn resolve_project_or_exit(
         },
     )? {
         Some(d) => Ok(d),
-        None => fail(format!("Project {project_id} not found")),
+        None => fail(linxiv_core::error::CoreError::ProjectNotFound(project_id)),
     }
 }
