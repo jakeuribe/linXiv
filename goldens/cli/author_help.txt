@@ -1,11 +1,14 @@
-usage: linxiv author [-h] {list,get,update,delete} ...
+usage: linxiv author [-h] {list,get,update,delete,merge,merge-candidates} ...
 
 positional arguments:
-  {list,get,update,delete}
+  {list,get,update,delete,merge,merge-candidates}
     list                List all authors with paper counts
     get                 Get author details and paper list
     update              Update author fields
     delete              Delete an author (blocked if linked to papers)
+    merge               Merge duplicate authors into a canonical one
+    merge-candidates    List authors sharing this author's ORCID (likely
+                        duplicates)
 
 options:
   -h, --help            show this help message and exit

@@ -28,6 +28,14 @@ pub enum AuthorCmd {
     },
     /// Delete an author (blocked if linked to papers)
     Delete { author_id: i64 },
+    /// Merge duplicate authors into a canonical one
+    Merge {
+        canonical_id: i64,
+        #[arg(required = true, num_args = 1..)]
+        duplicate_ids: Vec<i64>,
+    },
+    /// List authors sharing this author's ORCID (likely duplicates)
+    MergeCandidates { author_id: i64 },
 }
 
 fn by_id(author_id: i64) -> Author {
@@ -76,6 +84,26 @@ pub async fn run(cmd: AuthorCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         AuthorCmd::Delete { author_id } => {
             svc_author::delete(&ctx.conn, &by_id(author_id)).unwrap_or_else(|e| fail(e));
             output(&json!({ "deleted_author_id": author_id }));
+        }
+        // `merge_authors` (MCP) / POST /api/authors/{id}/merge: 404 on the canonical
+        // first, then re-point the duplicates' papers. Absent ids merge to nothing.
+        AuthorCmd::Merge {
+            canonical_id,
+            duplicate_ids,
+        } => {
+            if svc_author::get(&ctx.conn, &by_id(canonical_id))?.is_none() {
+                fail(format!("Author {canonical_id} not found"));
+            }
+            let merged = svc_author::merge(&mut ctx.conn, canonical_id, &duplicate_ids)?;
+            output(&json!({ "canonical_id": canonical_id, "merged_ids": merged }));
+        }
+        // GET /api/authors/{id}/merge-candidates: empty when the author has no ORCID.
+        AuthorCmd::MergeCandidates { author_id } => {
+            if svc_author::get(&ctx.conn, &by_id(author_id))?.is_none() {
+                fail(format!("Author {author_id} not found"));
+            }
+            let candidates = svc_author::orcid_merge_candidates(&ctx.conn, author_id)?;
+            output(&json!({ "candidates": candidates }));
         }
     }
     Ok(())

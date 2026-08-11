@@ -87,7 +87,10 @@ fn attach_pdf(state: &AppState, source_id: &str, ctx: &ReqCtx<'_>) -> Result<Val
         if dest.parent() != Some(pdf_dir.as_path()) {
             return Err(ApiError::new(400, "Invalid source_id"));
         }
-        std::fs::write(&dest, &content).map_err(|e| ApiError::new(500, e.to_string()))?;
+        std::fs::create_dir_all(&pdf_dir)
+            .map_err(|e| ApiError::new(500, format!("{}: {e}", pdf_dir.display())))?;
+        std::fs::write(&dest, &content)
+            .map_err(|e| ApiError::new(500, format!("{}: {e}", dest.display())))?;
         let dest_str = dest.to_string_lossy().into_owned();
         if let Err(e) = svc_paper::mark_pdf_saved(conn, source_id, &dest_str, ver) {
             std::fs::remove_file(&dest).ok();
@@ -340,6 +343,36 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.status, 400);
         assert_eq!(err.detail, "Not a valid PDF");
+    }
+
+    /// Regression: pdf_dir may not exist yet on a fresh install (nothing creates
+    /// it at startup) — attach must create it, not 500 with os error 2.
+    #[tokio::test]
+    async fn attach_creates_missing_pdf_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let pdf_dir = dir.path().join("pdfs");
+        let conn = storage::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        let st = AppState::from_parts(conn, pdf_dir.clone(), std::env::temp_dir());
+        let sid = st
+            .with_conn(|conn| svc_paper::save_paper_metadata(conn, &meta("arxiv:2204.99998"), None))
+            .unwrap()
+            .0;
+        let path = format!("/api/papers/{}/pdf", sid);
+        let ok = route(
+            &st,
+            ApiRequest {
+                method: "PUT".into(),
+                path,
+                body: Some(json!({ "file_b64": b64(b"%PDF-1.4 test") })),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(ok, json!({ "ok": true }));
+        assert!(pdf_dir
+            .join(pdf_on_disk_name("arxiv:2204.99998", 1))
+            .is_file());
     }
 
     #[tokio::test]

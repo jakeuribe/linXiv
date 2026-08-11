@@ -181,6 +181,14 @@ pub struct PaperTagsParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct ProjectPapersParams {
+    /// Numeric project id.
+    pub project_id: i64,
+    /// Paper source ids to add (e.g. ["arxiv:2204.12985"]).
+    pub paper_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct CreateTagParams {
     /// Tag label text.
     pub label: String,
@@ -317,6 +325,50 @@ impl Server {
             paper_id,
         } = _params.0;
         self.with_conn(|conn| paper_membership(conn, project_id, paper_id, project::add_papers))
+    }
+
+    #[tool(
+        description = "Add several papers to a project in one call. Ids that are not in the local \
+                       database come back in `failed` instead of failing the whole call."
+    )]
+    pub async fn add_papers_to_project(
+        &self,
+        _params: Parameters<ProjectPapersParams>,
+    ) -> Result<String, ErrorData> {
+        let ProjectPapersParams {
+            project_id,
+            paper_ids,
+        } = _params.0;
+        // `failed` comes back deduped, so `added` is derived from a deduped list too —
+        // otherwise a repeated id is reported added twice and won't match paper_count.
+        let mut seen = std::collections::HashSet::new();
+        let paper_ids: Vec<String> = paper_ids
+            .iter()
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty() && seen.insert(id.clone()))
+            .collect();
+        self.with_conn(|conn| {
+            let failed = match project::add_papers(conn, project_id, &paper_ids) {
+                Ok(f) => f,
+                Err(CoreError::ProjectNotFound) => return Err(project_not_found(project_id)),
+                Err(e @ CoreError::ProjectDeleted(_)) => {
+                    return Err(ErrorData::invalid_params(e.to_string(), None))
+                }
+                Err(e) => return Err(core_err(e)),
+            };
+            let added: Vec<&String> = paper_ids.iter().filter(|id| !failed.contains(id)).collect();
+            let count = get_project(conn, project_id)?
+                .ok_or_else(|| project_not_found(project_id))?
+                .source_fks
+                .len();
+            jval(json!({
+                "project_id": project_id,
+                "ok": failed.is_empty(),
+                "added": added,
+                "failed": failed,
+                "paper_count": count,
+            }))
+        })
     }
 
     #[tool(description = "Remove a paper from a project.")]
@@ -517,5 +569,81 @@ impl Server {
             .map_err(core_err)?;
             jval(json!({ "deleted": tag_id }))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use linxiv_core::models::PaperMetadata;
+    use linxiv_core::storage;
+
+    use super::*;
+
+    /// Mirrors `papers.rs`'s test `server()`: an in-memory DB, tool methods
+    /// called directly rather than dispatched through `tool_router`.
+    fn server() -> Server {
+        let conn = storage::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        Server {
+            conn: Arc::new(Mutex::new(conn)),
+            pdf_dir: std::env::temp_dir(),
+            tool_router: Server::tools_projects_tags(),
+        }
+    }
+
+    /// One known id is linked while an unknown one is reported in `failed`,
+    /// instead of the whole call failing.
+    #[tokio::test]
+    async fn bulk_add_reports_partial_success() {
+        let srv = server();
+        let meta: PaperMetadata = serde_json::from_value(json!({
+            "source_id": "arxiv:1",
+            "version": 1,
+            "title": "T",
+            "authors": ["A"],
+            "published": "2024-01-01",
+            "summary": "S",
+        }))
+        .unwrap();
+        srv.with_conn(|conn| paper::save_paper_metadata(conn, &meta, None))
+            .unwrap();
+        let project_id = srv
+            .with_conn(|conn| {
+                project::create(
+                    conn,
+                    &ProjectIn {
+                        name: "P".to_string(),
+                        description: String::new(),
+                        color: None,
+                        tags: Vec::new(),
+                        source_fks: Vec::new(),
+                    },
+                )
+            })
+            .unwrap();
+
+        let out = srv
+            .add_papers_to_project(Parameters(ProjectPapersParams {
+                project_id,
+                paper_ids: vec!["arxiv:1".to_string(), "arxiv:nope".to_string()],
+            }))
+            .await
+            .unwrap();
+        let out: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(out["ok"], json!(false));
+        assert_eq!(out["added"], json!(["arxiv:1"]));
+        assert_eq!(out["failed"], json!(["arxiv:nope"]));
+        assert_eq!(out["paper_count"], json!(1));
+
+        let err = srv
+            .add_papers_to_project(Parameters(ProjectPapersParams {
+                project_id: 999,
+                paper_ids: vec!["arxiv:1".to_string()],
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.message.as_ref(), "Project 999 not found.");
     }
 }

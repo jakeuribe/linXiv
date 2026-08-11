@@ -1,8 +1,10 @@
 {
   "pdf_save_limit_mb": 1024,
+  "rss_cache_retention_days": 30,
   "tex_rendering_enabled": true,
   "search_history_enabled": true,
   "search_history_max": 200,
+  "full_text_worker_enabled": false,
   "cat_color_overrides": {},
   "theme_overrides": {},
   "theme_override_alphas": {},

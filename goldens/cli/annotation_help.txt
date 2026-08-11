@@ -1,0 +1,12 @@
+usage: linxiv annotation [-h] {create,get,list,update,delete} ...
+
+positional arguments:
+  {create,get,list,update,delete}
+    create              Create a PDF highlight annotation on a paper
+    get                 Get an annotation by ID
+    list                List annotations
+    update              Update an annotation's comment
+    delete              Delete an annotation by ID
+
+options:
+  -h, --help            show this help message and exit

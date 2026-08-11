@@ -28,8 +28,10 @@ use linxiv_core::storage::queries::paper as store_paper;
 use crate::util::{core_err, guard_err, invalid, json_ok};
 use crate::Server;
 
-/// Shared trash-tool guard: the project must exist and be soft-deleted. The rule
-/// itself lives in core so the route and CLI answer identically.
+/// Cap on `list_pdfs` rows, matching `GET /api/pdfs`.
+const SAVED_PDF_LIST_CAP: usize = 200;
+
+/// Shared trash-tool guard: the project must exist and be soft-deleted.
 fn require_trashed_project(conn: &rusqlite::Connection, id: i64) -> Result<(), ErrorData> {
     svc_project::require_trashed(conn, id).map_err(guard_err)
 }
@@ -360,6 +362,94 @@ impl Server {
         }))
     }
 
+    #[tool(
+        description = "List every paper whose PDF is stored on disk, with file sizes, largest \
+                       first (capped at 200)."
+    )]
+    pub async fn list_pdfs(&self) -> Result<String, ErrorData> {
+        let pdf_dir = self.pdf_dir.clone();
+        // Pull the rows under the lock; the files are stat'd after it is released.
+        let papers = self
+            .with_conn(|conn| svc_paper::list_papers(conn, true, None, 0, None))
+            .map_err(core_err)?;
+        let mut pdfs: Vec<Value> = Vec::new();
+        for paper in papers.into_iter().filter(|p| p.has_pdf) {
+            let Some(path) = svc_files::pdf_path(
+                &pdf_dir,
+                &paper.source_id,
+                paper.version,
+                paper.pdf_path.as_deref(),
+            ) else {
+                continue;
+            };
+            let Ok(meta) = std::fs::metadata(&path) else {
+                continue;
+            };
+            pdfs.push(json!({
+                "source_id": paper.source_id,
+                "source_fk": paper.source_fk,
+                "title": paper.title,
+                "version": paper.version,
+                "size_bytes": meta.len(),
+            }));
+        }
+        pdfs.sort_by(|a, b| {
+            b["size_bytes"]
+                .as_u64()
+                .cmp(&a["size_bytes"].as_u64())
+                .then_with(|| a["source_id"].as_str().cmp(&b["source_id"].as_str()))
+        });
+        pdfs.truncate(SAVED_PDF_LIST_CAP);
+        json_ok(&json!({ "pdfs": pdfs }))
+    }
+
+    #[tool(
+        description = "Delete a paper's stored PDF files from disk — every version — keeping the \
+                       paper record itself."
+    )]
+    pub async fn delete_pdf(
+        &self,
+        Parameters(p): Parameters<PaperIdParams>,
+    ) -> Result<String, ErrorData> {
+        let pdf_dir = self.pdf_dir.clone();
+        self.with_conn(|conn| {
+            let all = svc_paper::get_all(
+                conn,
+                &svc_paper::Paper {
+                    source_id: Some(p.paper_id.clone()),
+                    ..Default::default()
+                },
+            )
+            .map_err(core_err)?
+            .ok_or_else(|| {
+                invalid(format!(
+                    "Paper {} not found in database.",
+                    crate::util::pyrepr(&p.paper_id)
+                ))
+            })?;
+            for ver in &all.versions {
+                let path = svc_files::pdf_path(
+                    &pdf_dir,
+                    &p.paper_id,
+                    ver.version,
+                    ver.pdf_path.as_deref(),
+                );
+                if let Some(path) = &path {
+                    if !svc_files::delete_pdf(&pdf_dir, &path.to_string_lossy()) {
+                        return Err(invalid("PDF is outside managed storage"));
+                    }
+                }
+                // Clear the flag/path before a later version may refuse.
+                svc_paper::set_has_pdf(conn, &p.paper_id, ver.version, false).map_err(core_err)?;
+                if path.is_some() {
+                    svc_paper::set_pdf_path(conn, &p.paper_id, "", Some(ver.version))
+                        .map_err(core_err)?;
+                }
+            }
+            json_ok(&json!({ "deleted": true, "paper_id": p.paper_id }))
+        })
+    }
+
     #[tool(description = "Report total PDF storage usage for all managed PDFs.")]
     pub async fn get_pdf_storage(&self) -> Result<String, ErrorData> {
         let mb = svc_files::pdf_storage_mb(&self.pdf_dir);
@@ -506,5 +596,89 @@ impl Server {
                 Err(e) => Err(core_err(e)),
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use linxiv_core::models::PaperMetadata;
+    use linxiv_core::storage;
+
+    use super::*;
+
+    /// Mirrors `papers.rs`'s test `server()`, with a scratch PDF dir: these
+    /// tests call tool methods directly instead of dispatching through the router.
+    fn server(pdf_dir: std::path::PathBuf) -> Server {
+        let conn = storage::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        Server {
+            conn: Arc::new(Mutex::new(conn)),
+            pdf_dir,
+            tool_router: Server::tools_notes_pdf_trash(),
+        }
+    }
+
+    /// Unique scratch dir (no tempfile dep): nanos-suffixed under the system temp.
+    fn scratch() -> std::path::PathBuf {
+        let n = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let d = std::env::temp_dir().join(format!("linxiv_mcp_pdfs_{n}"));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// A managed PDF is listed with its size, then deleted off disk while the
+    /// paper row survives; an unknown id is refused.
+    #[tokio::test]
+    async fn list_then_delete_a_managed_pdf() {
+        let dir = scratch();
+        let srv = server(dir.clone());
+        let meta: PaperMetadata = serde_json::from_value(json!({
+            "source_id": "arxiv:1",
+            "version": 1,
+            "title": "T",
+            "authors": ["A"],
+            "published": "2024-01-01",
+            "summary": "S",
+        }))
+        .unwrap();
+        srv.with_conn(|conn| svc_paper::save_paper_metadata(conn, &meta, None))
+            .unwrap();
+        let path = dir.join(svc_paper::pdf_on_disk_name("arxiv:1", 1));
+        std::fs::write(&path, b"%PDF").unwrap();
+        srv.with_conn(|conn| {
+            svc_paper::mark_pdf_saved(conn, "arxiv:1", &path.to_string_lossy(), 1)
+        })
+        .unwrap();
+
+        let listed: Value = serde_json::from_str(&srv.list_pdfs().await.unwrap()).unwrap();
+        assert_eq!(listed["pdfs"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["pdfs"][0]["source_id"], json!("arxiv:1"));
+        assert_eq!(listed["pdfs"][0]["size_bytes"], json!(4));
+
+        srv.delete_pdf(Parameters(PaperIdParams {
+            paper_id: "arxiv:1".to_string(),
+        }))
+        .await
+        .unwrap();
+        assert!(!path.exists());
+        let listed: Value = serde_json::from_str(&srv.list_pdfs().await.unwrap()).unwrap();
+        assert_eq!(listed["pdfs"], json!([]));
+
+        let err = srv
+            .delete_pdf(Parameters(PaperIdParams {
+                paper_id: "arxiv:nope".to_string(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.message.as_ref(),
+            "Paper 'arxiv:nope' not found in database."
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

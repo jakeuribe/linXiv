@@ -31,6 +31,8 @@ linxiv paper search "scaled dot-product"     # full-text search of the local lib
 linxiv paper fetch-source 2204.12985         # pull the arXiv TeX source so `search` can find it
 linxiv paper fetch-source 2204.12985 --force # re-fetch a paper already indexed
 linxiv paper index-sources --limit 25        # backfill papers with no TeX source yet (~7s each)
+linxiv paper doi-candidates 2204.12985       # other paper roots sharing this paper's DOI
+linxiv paper repair 2204.12985 --title "Attention Is All You Need" --authors "A. Vaswani" "N. Shazeer" --published 2017-06-12 --summary "..." --category cs.CL --doi 10.48550/arXiv.1706.03762 --url https://arxiv.org/abs/1706.03762 --tags attention transformers
 linxiv paper delete 2204.12985               # soft-delete
 linxiv paper restore 2204.12985
 linxiv paper hard-delete 2204.12985
@@ -55,6 +57,7 @@ linxiv project get 1
 linxiv project create "Diffusion Models" --description "Score-based generative models" --color "#4f86f7" --tags generative
 linxiv project update 1 --name "Diffusion Models v2" --status archived
 linxiv project add-paper 1 2006.11239
+linxiv project add-papers 1 2006.11239 2204.12985  # bulk; reports added + failed ids
 linxiv project remove-paper 1 2006.11239
 linxiv project archive 1
 linxiv project restore 1
@@ -85,7 +88,10 @@ linxiv annotation delete 3
 linxiv pdf path 2204.12985
 linxiv pdf path 2204.12985 --version 2
 linxiv pdf download 2204.12985 https://arxiv.org/pdf/2204.12985
+linxiv pdf download 2204.12985 https://arxiv.org/pdf/2204.12985v2 --version 2
 linxiv pdf import ./local-paper.pdf --project-id 1
+linxiv pdf list                                  # papers with a PDF saved on disk, largest first
+linxiv pdf delete 2204.12985                     # remove every saved version's PDF, keep the paper
 linxiv pdf storage
 
 # DOI
@@ -97,9 +103,12 @@ linxiv author list
 linxiv author get 12
 linxiv author update 12 --full-name "A. N. Other"
 linxiv author delete 12                          # blocked if still linked to papers
+linxiv author merge-candidates 12                # other authors sharing author 12's ORCID
+linxiv author merge 12 34 56                     # fold 34 and 56 into canonical author 12
 
 # BibTeX import
 linxiv bibtex import ./refs.bib
+linxiv bibtex import ./refs.bib --project-id 1   # link every imported paper to a project
 
 # Trash (soft-deleted items)
 linxiv trash list

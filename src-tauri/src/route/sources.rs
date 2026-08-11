@@ -16,7 +16,7 @@ use linxiv_core::config;
 use linxiv_core::error::CoreError;
 use linxiv_core::models::{strip_namespace, PaperMetadata, SearchResultOut};
 use linxiv_core::service::paper as svc_paper;
-use linxiv_core::sources::{doi_resolve, fetch as svc_fetch};
+use linxiv_core::sources::{crossref, doi_resolve, fetch as svc_fetch};
 
 use crate::route::{ApiError, ReqCtx};
 use crate::state::AppState;
@@ -28,6 +28,7 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
         ("POST", ["api", "arxiv", "fetch"]) => Some(arxiv_fetch(state, ctx).await),
         ("POST", ["api", "openalex", "search"]) => Some(openalex_search(state, ctx).await),
         ("POST", ["api", "openalex", "save"]) => Some(openalex_save(state, ctx).await),
+        ("POST", ["api", "crossref", "search"]) => Some(crossref_search(ctx).await),
         ("POST", ["api", "doi", "resolve"]) => Some(doi_resolve_route(ctx).await),
         ("POST", ["api", "doi", "save"]) => Some(doi_save_route(state, ctx).await),
         _ => None,
@@ -231,6 +232,29 @@ async fn openalex_save(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiE
     Ok(json!({ "saved": true, "source_id": strip_namespace(&stored) }))
 }
 
+/// `POST /api/crossref/search` — same envelope as the openalex arm. CrossRef title
+/// search is relevance-only, so a `sort` in the body is ignored rather than validated.
+async fn crossref_search(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
+    #[derive(Deserialize)]
+    struct Body {
+        query: String,
+        #[serde(default = "default_max_results")]
+        max_results: i64,
+    }
+    let b: Body = ctx.parse_body()?;
+    if b.query.is_empty() {
+        return Err(ApiError::new(422, "query must not be empty"));
+    }
+    let max_results = check_max_results(b.max_results)?;
+    // Not svc_fetch::search: its crossref arm swallows every transport/HTTP failure
+    // into an empty Vec, so an outage would render as "no results" instead of a 502.
+    let results = crossref::search_by_title_checked(b.query.trim(), max_results as u32)
+        .await
+        .map_err(upstream_502)?;
+    let results: Vec<SearchResultOut> = results.into_iter().map(SearchResultOut::from).collect();
+    Ok(json!({ "results": results }))
+}
+
 /// `POST /api/doi/resolve` (830–836). `400` on a bad DOI (CoreError::BadRequest →
 /// 400 via `?`, matching Python's `ValueError`).
 async fn doi_resolve_route(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
@@ -331,7 +355,11 @@ mod tests {
 
     #[tokio::test]
     async fn empty_query_is_422_before_any_network() {
-        for path in ["/api/arxiv/search", "/api/openalex/search"] {
+        for path in [
+            "/api/arxiv/search",
+            "/api/openalex/search",
+            "/api/crossref/search",
+        ] {
             let err = post(&state(), path, json!({ "query": "" }))
                 .await
                 .unwrap_err();
@@ -352,6 +380,18 @@ mod tests {
             .unwrap_err();
             assert_eq!(err.status, 422, "max_results={mr}");
         }
+    }
+
+    #[tokio::test]
+    async fn crossref_search_rejects_out_of_range_max_results_before_network() {
+        let err = post(
+            &state(),
+            "/api/crossref/search",
+            json!({ "query": "abc", "max_results": 0 }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status, 422);
     }
 
     #[tokio::test]
