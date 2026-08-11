@@ -1,7 +1,6 @@
 //! Group `trash` — cmd_trash_* in `linxiv_cli.py`.
 
 use clap::Subcommand;
-use serde_json::json;
 
 use linxiv_core::service::paper::{self as svc_paper, Paper};
 use linxiv_core::service::project::{self as svc_project, Project};
@@ -40,11 +39,12 @@ pub async fn run(cmd: TrashCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                     ..Default::default()
                 },
             )?;
-            output(&json!({
-                "restored": source_id,
-                "pdf_path": pdf_path,
-                "project_fks": project_fks,
-            }));
+            output(&linxiv_core::service::trash::RestoredPaper {
+                ok: true,
+                restored: source_id,
+                pdf_path,
+                project_fks,
+            });
         }
         // cmd_trash_hard_delete -> require_trashed guard then _do_paper_hard_delete
         TrashCmd::HardDelete { source_id } => {
@@ -66,7 +66,10 @@ pub async fn run(cmd: TrashCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                     crate::output::pyrepr(&source_id)
                 ));
             }
-            output(&json!({ "hard_deleted": source_id }));
+            output(&linxiv_core::service::trash::HardDeletedPaper {
+                ok: true,
+                hard_deleted: source_id,
+            });
         }
         // cmd_trash_restore_project
         TrashCmd::RestoreProject { project_id } => {
@@ -77,7 +80,10 @@ pub async fn run(cmd: TrashCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                     project_fk: Some(project_id),
                 },
             )?;
-            output(&json!({ "restored_project_id": project_id }));
+            output(&linxiv_core::service::trash::RestoredProject {
+                ok: true,
+                restored_project_id: project_id,
+            });
         }
         // cmd_trash_hard_delete_project
         TrashCmd::HardDeleteProject { project_id } => {
@@ -88,7 +94,10 @@ pub async fn run(cmd: TrashCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                     project_fk: Some(project_id),
                 },
             )?;
-            output(&json!({ "hard_deleted_project_id": project_id }));
+            output(&linxiv_core::service::trash::HardDeletedProject {
+                ok: true,
+                hard_deleted_project_id: project_id,
+            });
         }
     }
     Ok(())

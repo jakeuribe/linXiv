@@ -579,15 +579,31 @@ pub fn get_source_id(conn: &Connection, source_fk: i64) -> Result<Option<String>
 }
 
 /// `service/paper.py::sfks_to_source_ids` — resolve SOURCE_FKs to SOURCE_IDs,
-/// dropping any that do not exist.
+/// dropping any that do not exist. Input order is preserved.
+///
+/// Batched: project listings resolve every paper of every project through
+/// here, so this must not be a query per fk. Chunked to stay under SQLite's
+/// bound-variable limit.
 pub fn sfks_to_source_ids(conn: &Connection, source_fks: &[i64]) -> Result<Vec<String>> {
-    let mut out = Vec::new();
-    for &sfk in source_fks {
-        if let Some(sid) = get_source_id(conn, sfk)? {
-            out.push(sid);
+    let mut by_fk = std::collections::HashMap::with_capacity(source_fks.len());
+    for chunk in source_fks.chunks(900) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let sql = format!(
+            "SELECT SOURCE_FK, SOURCE_ID FROM PAPER_ROOTS WHERE SOURCE_FK IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (fk, sid) = row?;
+            by_fk.insert(fk, sid);
         }
     }
-    Ok(out)
+    Ok(source_fks
+        .iter()
+        .filter_map(|fk| by_fk.get(fk).cloned())
+        .collect())
 }
 
 /// `repair_paper` — in-place metadata repair keyed by the stable SOURCE_FK,
