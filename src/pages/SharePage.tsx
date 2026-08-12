@@ -27,12 +27,10 @@ import {
   type ShareDirection,
   type SharedSummary,
   type ShareMember,
-  type ShareSettings,
-} from "../api/share";
+  type ShareSettings, shareErrText } from "../api/share";
 import { listProjects } from "../api/projects";
 import { ApiError } from "../api/client";
 import { useSlowHint } from "../hooks/useSlowHint";
-import { errText } from "../lib/errText";
 import {
   invalidatePaperMutationQueries,
   invalidateProjectMutationQueries,
@@ -172,7 +170,7 @@ function ShareCard({
           saved++;
           consecutiveFailures = 0;
         } catch (e) {
-          failed.push(`${p.title || p.source_id}: ${errText(e, "Unexpected sharing error")}`);
+          failed.push(`${p.title || p.source_id}: ${shareErrText(e)}`);
           if (e instanceof ApiError && e.status === 413) {
             stopped = "storage limit reached";
             break;
@@ -294,7 +292,7 @@ function ShareCard({
               : "var(--color-danger)",
           }}
         >
-          {sync.isError ? errText(sync.error, "Unexpected sharing error") : humanizeReason(sync.data?.reason)}
+          {sync.isError ? shareErrText(sync.error) : humanizeReason(sync.data?.reason)}
         </p>
       )}
       {sync.data && syncCounters(sync.data) && (
@@ -307,7 +305,7 @@ function ShareCard({
       )}
       {pdfs.isError && (
         <p className="px-5 pb-3 text-xs" style={{ color: "var(--color-danger)" }}>
-          {errText(pdfs.error, "Unexpected sharing error")}
+          {shareErrText(pdfs.error)}
         </p>
       )}
       {pdfs.data && (
@@ -480,7 +478,7 @@ function MembersSection({ shareId }: { shareId: string }) {
       )}
       {rekeyM.isError && (
         <p className="text-xs" style={{ color: "var(--color-danger)" }}>
-          {errText(rekeyM.error, "Unexpected sharing error")}
+          {shareErrText(rekeyM.error)}
         </p>
       )}
       {members.map((m) => (
@@ -651,7 +649,7 @@ function MembersSection({ shareId }: { shareId: string }) {
       </div>
       {(inviteM.isError || revokeM.isError || roleM.isError || membersQ.isError) && (
         <p className="text-xs" style={{ color: "var(--color-danger)" }}>
-          {errText(inviteM.error ?? revokeM.error ?? roleM.error ?? membersQ.error, "Unexpected sharing error")}
+          {shareErrText(inviteM.error ?? revokeM.error ?? roleM.error ?? membersQ.error)}
         </p>
       )}
       {invite && (
@@ -827,7 +825,7 @@ function ShareSettingsDialog({
         </SettingsRow>
         {err != null && (
           <p className="text-xs" style={{ color: "var(--color-danger)" }}>
-            {errText(err, "Unexpected sharing error")}
+            {shareErrText(err)}
           </p>
         )}
         {leaveM.data?.forgotten === false && (
@@ -941,7 +939,7 @@ function ShareProjectDialog({ open, onClose }: { open: boolean; onClose: () => v
       queryClient.invalidateQueries({ queryKey: ["share", "published"] });
     } catch (e) {
       if (genTokenRef.current !== token || !alive.current) return;
-      setError(errText(e, "Unexpected sharing error"));
+      setError(shareErrText(e));
     } finally {
       if (genTokenRef.current === token && alive.current) setGenerating(false);
     }
@@ -1127,7 +1125,7 @@ export default function SharePage() {
       queryClient.invalidateQueries({ queryKey: ["share", "received"] });
     } catch (e) {
       if (!alive.current) return;
-      setJoinErr(errText(e, "Unexpected sharing error"));
+      setJoinErr(shareErrText(e));
     } finally {
       if (alive.current) setJoining(false);
     }
@@ -1151,7 +1149,7 @@ export default function SharePage() {
         // Clipboard write denied.
       }
     } catch (e) {
-      if (alive.current) setCodeErr(errText(e, "Unexpected sharing error"));
+      if (alive.current) setCodeErr(shareErrText(e));
     }
   }
 
@@ -1244,7 +1242,7 @@ export default function SharePage() {
           }}
         >
           Failed to load shared projects:{" "}
-          {[publishedIsError && errText(publishedError, "Unexpected sharing error"), receivedIsError && errText(receivedError, "Unexpected sharing error")]
+          {[publishedIsError && shareErrText(publishedError), receivedIsError && shareErrText(receivedError)]
             .filter(Boolean)
             .join("; ")}
         </div>
