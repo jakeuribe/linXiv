@@ -61,10 +61,7 @@ pub async fn run(cmd: TrashCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             )?
             .is_none()
             {
-                fail(format!(
-                    "Paper {} not found",
-                    crate::output::pyrepr(&source_id)
-                ));
+                fail(linxiv_core::error::CoreError::PaperNotFound(source_id.clone()));
             }
             output(&linxiv_core::service::trash::HardDeletedPaper {
                 ok: true,

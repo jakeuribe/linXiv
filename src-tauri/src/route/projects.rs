@@ -61,21 +61,7 @@ fn export(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     };
     let pdf_dir = state.pdf_dir.clone();
     state.with_conn(|conn| -> Result<(), ApiError> {
-        // app.py maps export_project's ValueError -> 404 with `str(e)` =
-        // "Project {fk} not found"; pre-check to produce the same status + message.
-        if project::get(
-            conn,
-            &Project {
-                project_fk: Some(project_fk),
-            },
-        )?
-        .is_none()
-        {
-            return Err(ApiError::new(
-                404,
-                format!("Project {project_fk} not found"),
-            ));
-        }
+        // export_project's own get_required words the miss (typed 404 via `?`).
         export_import::export_project(
             conn,
             project_fk,
@@ -262,7 +248,7 @@ fn delete(state: &AppState, id: &str) -> Result<Value, ApiError> {
 }
 
 /// `POST /api/projects/{id}/papers` — `api_project_add_paper`. Core's shared
-/// receipt; `?` keeps app.py's statuses (PaperNotFound → 404 "Paper not found",
+/// receipt; `?` keeps app.py's statuses (PaperNotFound → 404 with the paper id,
 /// ProjectNotFound → 404, ProjectDeleted → 400).
 fn add_paper(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let pid = path_i64(id)?;
@@ -499,7 +485,7 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(err.status, 404);
-        assert_eq!(err.detail, "Paper not found");
+        assert_eq!(err.detail, "Paper ghost not found");
     }
 
     #[tokio::test]

@@ -6,7 +6,8 @@
 //! Python port does). Return `Ok(Json(value))` on success; on the error paths
 //! the Python code raises `ValueError`, so map those to
 //! `Err(ErrorData::invalid_params(msg, None))` with the EXACT message string
-//! (mind Python `{x!r}` quoting, e.g. `format!("Paper {paper_id:?} not found in database.")`).
+//! Misses word themselves via `CoreError::PaperNotFound`'s Display — no
+//! per-surface message building.
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_router, ErrorData};
@@ -259,13 +260,9 @@ impl Server {
     ) -> Result<String, ErrorData> {
         self.with_conn(|conn| {
             if svc_paper::get(conn, &paper_key(&paper_id))?.is_none() {
-                return Ok(Err(ErrorData::invalid_params(
-                    format!(
-                        "Paper {} not found in database.",
-                        crate::util::pyrepr(&paper_id)
-                    ),
-                    None,
-                )));
+                return Ok(Err(crate::util::guard_err(CoreError::PaperNotFound(
+                    paper_id.clone(),
+                ))));
             }
             svc_paper::delete(conn, &paper_key(&paper_id))?;
             Ok(Ok(()))
@@ -313,12 +310,7 @@ impl Server {
         let paper = self
             .with_conn(|conn| svc_paper::get(conn, &paper_key(&paper_id)))
             .map_err(core_err)?
-            .ok_or_else(|| {
-                invalid(format!(
-                    "Paper {} not found in database.",
-                    crate::util::pyrepr(&paper_id)
-                ))
-            })?;
+            .ok_or_else(|| crate::util::guard_err(CoreError::PaperNotFound(paper_id.clone())))?;
         if paper.downloaded_source && !force {
             return json_ok(&svc_paper::FullTextReceipt::already_indexed(&paper));
         }
@@ -326,10 +318,7 @@ impl Server {
         // are user-facing refusals, not server faults.
         let map_fetch_err = |e: CoreError| match e {
             CoreError::BadRequest(m) | CoreError::Validation(m) => invalid(m),
-            CoreError::PaperNotFound => invalid(format!(
-                "Paper {} not found in database.",
-                crate::util::pyrepr(&paper_id)
-            )),
+            e @ CoreError::PaperNotFound(_) => invalid(e.to_string()),
             other => core_err(other),
         };
         // Two-phase ingest from core: fetch outside the lock, commit under it.
@@ -500,12 +489,7 @@ impl Server {
         let removed = self
             .with_conn(|conn| svc_project::remove_paper_from_all_projects_by_id(conn, &paper_id))
             .map_err(core_err)?
-            .ok_or_else(|| {
-                ErrorData::invalid_params(
-                    format!("Paper {} not found.", crate::util::pyrepr(&paper_id)),
-                    None,
-                )
-            })?;
+            .ok_or_else(|| crate::util::guard_err(CoreError::PaperNotFound(paper_id.clone())))?;
         // One envelope across route/CLI/MCP; the caller already knows the id.
         json_ok(&serde_json::json!({
             "ok": true,
@@ -566,10 +550,7 @@ mod tests {
     async fn fetch_full_text_rejects_before_reaching_the_network() {
         let srv = server();
         let err = fetch(&srv, "arxiv:nope", false).await.unwrap_err();
-        assert_eq!(
-            err.message.as_ref(),
-            "Paper 'arxiv:nope' not found in database."
-        );
+        assert_eq!(err.message.as_ref(), "Paper arxiv:nope not found");
 
         srv.with_conn(|conn| {
             svc_paper::save_paper_metadata(conn, &meta("doi:10.1/z", Some("crossref"), None), None)
@@ -634,7 +615,7 @@ mod tests {
             }))
             .await
             .unwrap_err();
-        assert_eq!(err.message.as_ref(), "Paper 'arxiv:nope' not found");
+        assert_eq!(err.message.as_ref(), "Paper arxiv:nope not found");
         assert!(srv
             .with_conn(|conn| svc_paper::get_paper_root(conn, "arxiv:nope"))
             .unwrap()

@@ -478,14 +478,13 @@ pub fn ensure_paper_root(conn: &mut Connection, source_id: &str) -> Result<i64> 
 }
 
 /// SOURCE_FK for an existing paper root — the fail-if-absent counterpart to
-/// [`ensure_paper_root`]. `NotFound` (404) when the paper is not in the library.
+/// [`ensure_paper_root`]. `PaperNotFound` (404) when the paper is not in the
+/// library; the message is the variant's Display, same on every surface.
 pub fn resolve_source_fk(conn: &Connection, source_id: &str) -> Result<i64> {
     let sid = source_id.trim();
     store::get_paper_root(conn, sid)?
         .map(|root| root.source_fk)
-        .ok_or_else(|| {
-            CoreError::NotFound(format!("Paper {} not found", crate::formats::pyrepr(sid)))
-        })
+        .ok_or_else(|| CoreError::PaperNotFound(sid.to_string()))
 }
 
 /// PAPER_ROOTS row for a source_id, or None — the Option-returning sibling of
@@ -550,7 +549,7 @@ pub fn set_full_text(
     full_text: &str,
 ) -> Result<()> {
     if store::get_paper(conn, source_id, Some(version))?.is_none() {
-        return Err(CoreError::PaperNotFound);
+        return Err(CoreError::PaperNotFound(source_id.to_string()));
     }
     store::set_full_text(conn, source_id, version, Some(full_text))
 }

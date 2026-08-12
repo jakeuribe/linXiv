@@ -140,7 +140,7 @@ impl Server {
         self.with_conn(|conn| {
             let source_fk =
                 svc_paper::resolve_source_fk(conn, &p.paper_id).map_err(|e| match e {
-                    CoreError::NotFound(m) => invalid(format!("{m}. Run fetch_paper first.")),
+                    e @ CoreError::PaperNotFound(_) => invalid(format!("{e}. Run fetch_paper first.")),
                     other => core_err(other),
                 })?;
             let note_id = svc_note::create(
@@ -269,12 +269,7 @@ impl Server {
                 },
             )
             .map_err(core_err)?
-            .ok_or_else(|| {
-                invalid(format!(
-                    "Paper {} not found in database.",
-                    crate::util::pyrepr(&p.paper_id)
-                ))
-            })?;
+            .ok_or_else(|| crate::util::guard_err(CoreError::PaperNotFound(p.paper_id.clone())))?;
             let ver = paper.version;
             let path =
                 svc_files::pdf_path(&pdf_dir, &paper.source_id, ver, paper.pdf_path.as_deref());
@@ -305,12 +300,7 @@ impl Server {
                 },
             )
             .map_err(core_err)?
-            .ok_or_else(|| {
-                invalid(format!(
-                    "Paper {} not found in database.",
-                    crate::util::pyrepr(&p.paper_id)
-                ))
-            })
+            .ok_or_else(|| crate::util::guard_err(CoreError::PaperNotFound(p.paper_id.clone())))
             .map(|paper| (paper.source_id, paper.version))
         })?;
         let max_pdf_bytes = config::UserSettings::load()
@@ -389,12 +379,7 @@ impl Server {
                 },
             )
             .map_err(core_err)?
-            .ok_or_else(|| {
-                invalid(format!(
-                    "Paper {} not found in database.",
-                    crate::util::pyrepr(&p.paper_id)
-                ))
-            })?;
+            .ok_or_else(|| crate::util::guard_err(CoreError::PaperNotFound(p.paper_id.clone())))?;
             for ver in &all.versions {
                 let path = svc_files::pdf_path(
                     &pdf_dir,
@@ -627,10 +612,7 @@ mod tests {
             }))
             .await
             .unwrap_err();
-        assert_eq!(
-            err.message.as_ref(),
-            "Paper 'arxiv:nope' not found in database."
-        );
+        assert_eq!(err.message.as_ref(), "Paper arxiv:nope not found");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

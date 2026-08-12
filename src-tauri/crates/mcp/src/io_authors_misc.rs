@@ -24,7 +24,7 @@ use linxiv_core::error::CoreError;
 use linxiv_core::service::author::{self as svc_author, Author};
 use linxiv_core::service::export_import::{self as svc_ei, OnConflict};
 use linxiv_core::service::paper_import as svc_paper_import;
-use linxiv_core::service::project::{self as svc_project, Project};
+use linxiv_core::service::project::{self as svc_project};
 use linxiv_core::service::paper as svc_paper;
 use linxiv_core::sources::doi_resolve;
 use linxiv_core::storage;
@@ -49,14 +49,7 @@ fn project_papers(
     conn: &rusqlite::Connection,
     project_id: i64,
 ) -> Result<Vec<linxiv_core::models::PaperDetails>, ErrorData> {
-    let details = svc_project::get(
-        conn,
-        &Project {
-            project_fk: Some(project_id),
-        },
-    )
-    .map_err(map_core)?
-    .ok_or_else(|| ErrorData::invalid_params(format!("Project {project_id} not found."), None))?;
+    let details = svc_project::get_required(conn, project_id).map_err(guard_err)?;
     // One resolution for every surface: library order (ADR-0011, route wins).
     svc_project::export_papers(conn, &details.source_fks).map_err(map_core)
 }
@@ -215,16 +208,7 @@ impl Server {
         } = params.0;
         let pdf_dir = self.pdf_dir.clone();
         let path = self.with_conn(|conn| -> Result<String, ErrorData> {
-            svc_project::get(
-                conn,
-                &Project {
-                    project_fk: Some(project_id),
-                },
-            )
-            .map_err(map_core)?
-            .ok_or_else(|| {
-                ErrorData::invalid_params(format!("Project {project_id} not found."), None)
-            })?;
+            svc_project::get_required(conn, project_id).map_err(guard_err)?;
             let out =
                 svc_ei::export_project(conn, project_id, Path::new(&dest), include_pdfs, &pdf_dir)
                     .map_err(map_core)?;

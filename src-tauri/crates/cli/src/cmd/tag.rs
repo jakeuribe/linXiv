@@ -59,7 +59,7 @@ pub async fn run(cmd: TagCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             let source_id = as_source_id(&source_id, "arxiv");
             match paperq::add_paper_tags(&mut ctx.conn, &source_id, &tags) {
                 Ok(updated) => output(&json!({ "source_id": source_id, "tags": updated })),
-                Err(CoreError::NotFound(_)) => fail(format!("Paper {source_id} not found in DB")),
+                Err(CoreError::NotFound(_)) => fail(CoreError::PaperNotFound(source_id.clone())),
                 Err(e) => return Err(e.into()),
             }
         }
@@ -68,7 +68,7 @@ pub async fn run(cmd: TagCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             let source_id = as_source_id(&source_id, "arxiv");
             match paperq::remove_paper_tags(&mut ctx.conn, &source_id, &tags) {
                 Ok(updated) => output(&json!({ "source_id": source_id, "tags": updated })),
-                Err(CoreError::NotFound(_)) => fail(format!("Paper {source_id} not found in DB")),
+                Err(CoreError::NotFound(_)) => fail(CoreError::PaperNotFound(source_id.clone())),
                 Err(e) => return Err(e.into()),
             }
         }

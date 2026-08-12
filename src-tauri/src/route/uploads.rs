@@ -72,7 +72,7 @@ fn attach_pdf(state: &AppState, source_id: &str, ctx: &ReqCtx<'_>) -> Result<Val
     let pdf_dir = state.pdf_dir.clone();
     state.with_conn(|conn| -> Result<Value, ApiError> {
         let paper = svc_paper::get(conn, &sid_key(source_id))?
-            .ok_or_else(|| ApiError::new(404, "Paper not found"))?;
+            .ok_or_else(|| CoreError::PaperNotFound(source_id.to_string()))?;
         if !content.starts_with(b"%PDF") {
             return Err(ApiError::new(400, "Not a valid PDF"));
         }
@@ -359,7 +359,7 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(err.status, 404);
-        assert_eq!(err.detail, "Paper not found");
+        assert_eq!(err.detail, "Paper arxiv:ghost not found");
     }
 
     #[tokio::test]

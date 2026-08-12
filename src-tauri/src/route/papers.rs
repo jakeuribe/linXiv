@@ -10,6 +10,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use linxiv_core::config;
+use linxiv_core::error::CoreError;
 use linxiv_core::models::PaperMetadata;
 use linxiv_core::service::paper::{self as svc_paper, Paper};
 use linxiv_core::service::project as svc_project;
@@ -61,7 +62,7 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
 fn versions(state: &AppState, fk: &str) -> Result<Value, ApiError> {
     let source_fk = path_i64(fk)?;
     let all = state.with_conn(|conn| svc_paper::get_all(conn, &sfk_key(source_fk)))?;
-    let all = all.ok_or_else(|| ApiError::new(404, "Paper not found"))?;
+    let all = all.ok_or(CoreError::PaperNotFound(source_fk.to_string()))?;
     let versions: Vec<Value> = all
         .versions
         .iter()
@@ -87,7 +88,7 @@ fn doi_candidates(state: &AppState, fk: &str) -> Result<Value, ApiError> {
     let source_fk = path_i64(fk)?;
     let candidates = state.with_conn(|conn| -> Result<_, ApiError> {
         if svc_paper::get_source_id(conn, source_fk)?.is_none() {
-            return Err(ApiError::new(404, "Paper not found"));
+            return Err(CoreError::PaperNotFound(source_fk.to_string()).into());
         }
         Ok(svc_paper::find_doi_version_candidates(conn, source_fk)?)
     })?;
@@ -104,7 +105,7 @@ fn by_sfk(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
         let paper = if let Some(version) = version {
             // version branch: resolve source_id first, then the pinned version.
             let source_id = svc_paper::get_source_id(conn, source_fk)?
-                .ok_or_else(|| ApiError::new(404, "Paper not found"))?;
+                .ok_or_else(|| CoreError::PaperNotFound(source_fk.to_string()))?;
             let key = Paper {
                 source_id: Some(source_id),
                 version: Some(version),
@@ -114,7 +115,7 @@ fn by_sfk(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
                 .ok_or_else(|| ApiError::new(404, format!("Version {version} not stored")))?
         } else {
             svc_paper::get(conn, &sfk_key(source_fk))?
-                .ok_or_else(|| ApiError::new(404, "Paper not found"))?
+                .ok_or_else(|| CoreError::PaperNotFound(source_fk.to_string()))?
         };
         to_value(&paper)
     })
@@ -150,7 +151,7 @@ async fn fetch_full_text(
 ) -> Result<Value, ApiError> {
     let paper = state
         .with_conn(|conn| svc_paper::get(conn, &sid_key(source_id)))?
-        .ok_or_else(|| ApiError::new(404, "Paper not found"))?;
+        .ok_or_else(|| CoreError::PaperNotFound(source_id.to_string()))?;
     if paper.downloaded_source && !ctx.q_bool("force") {
         return to_value(&svc_paper::FullTextReceipt::already_indexed(&paper));
     }
@@ -179,7 +180,7 @@ pub(crate) async fn ingest_full_text(
 /// `GET /api/papers/{source_id}` — `api_get_paper`. Bare `to_dict()`.
 fn get_one(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
     let paper = state.with_conn(|conn| svc_paper::get(conn, &sid_key(source_id)))?;
-    let paper = paper.ok_or_else(|| ApiError::new(404, "Paper not found"))?;
+    let paper = paper.ok_or_else(|| CoreError::PaperNotFound(source_id.to_string()))?;
     to_value(&paper)
 }
 
@@ -187,7 +188,7 @@ fn get_one(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
 fn delete(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
     state.with_conn(|conn| -> Result<(), ApiError> {
         if svc_paper::get(conn, &sid_key(source_id))?.is_none() {
-            return Err(ApiError::new(404, "Paper not found"));
+            return Err(CoreError::PaperNotFound(source_id.to_string()).into());
         }
         svc_paper::delete(conn, &sid_key(source_id))?;
         Ok(())
@@ -202,7 +203,7 @@ fn repair(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     let b: RepairBody = ctx.parse_body()?;
     state.with_conn(|conn| -> Result<Value, ApiError> {
         let paper = svc_paper::get(conn, &sfk_key(source_fk))?
-            .ok_or_else(|| ApiError::new(404, "Paper not found"))?;
+            .ok_or_else(|| CoreError::PaperNotFound(source_fk.to_string()))?;
         // Date validated after the existence check, matching MCP and Python.
         let published = svc_paper::parse_published(&b.published)?;
         let meta = PaperMetadata {
@@ -315,7 +316,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.status, 404);
-        assert_eq!(err.detail, "Paper not found");
+        assert_eq!(err.detail, "Paper arxiv:nope not found");
     }
 
     #[tokio::test]
@@ -324,7 +325,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.status, 404);
-        assert_eq!(err.detail, "Paper not found");
+        assert_eq!(err.detail, "Paper arxiv:nope not found");
     }
 
     fn meta(source_id: &str, doi: Option<&str>) -> PaperMetadata {
@@ -353,7 +354,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.status, 404);
-        assert_eq!(err.detail, "Paper not found");
+        assert_eq!(err.detail, "Paper arxiv:nope not found");
 
         // An arXiv paper saved without a `/pdf/` URL → refused as unfetchable.
         let mut no_url = meta("arxiv:2", None);
@@ -452,7 +453,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.status, 404);
-        assert_eq!(err.detail, "Paper not found");
+        assert_eq!(err.detail, "Paper 999 not found");
     }
 
     #[tokio::test]
@@ -493,7 +494,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.status, 404);
-        assert_eq!(err.detail, "Paper not found");
+        assert_eq!(err.detail, "Paper 999 not found");
     }
 
     #[tokio::test]
@@ -504,15 +505,15 @@ mod tests {
                 .await
                 .unwrap_err()
                 .detail,
-            "Paper not found"
+            "Paper 999 not found"
         );
-        // version branch: unknown sfk -> "Paper not found" (source_id resolves to None).
+        // version branch: unknown sfk is the typed miss (source_id resolves to None).
         assert_eq!(
             req(&st, "GET", "/api/papers/sfk/999?version=2", None)
                 .await
                 .unwrap_err()
                 .detail,
-            "Paper not found"
+            "Paper 999 not found"
         );
     }
 
@@ -610,7 +611,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.status, 404);
-        assert_eq!(err.detail, "Paper not found");
+        assert_eq!(err.detail, "Paper 999 not found");
     }
 
     #[tokio::test]

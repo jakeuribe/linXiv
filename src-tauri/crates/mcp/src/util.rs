@@ -3,8 +3,6 @@
 use linxiv_core::error::CoreError;
 use rmcp::ErrorData;
 
-pub use linxiv_core::formats::pyrepr;
-
 /// `ValueError` → MCP invalid-params, preserving the Python message verbatim.
 pub(crate) fn invalid(msg: impl Into<String>) -> ErrorData {
     ErrorData::invalid_params(msg.into(), None)

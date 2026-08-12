@@ -86,9 +86,8 @@ pub(super) fn resolve_paper_or_exit(
 ) -> linxiv_core::models::PaperDetails {
     match svc_paper::get(&ctx.conn, &paper(source_id)) {
         Ok(Some(p)) => p,
-        Ok(None) => fail(format!(
-            "Paper {} not found in DB",
-            crate::output::pyrepr(source_id)
+        Ok(None) => fail(linxiv_core::error::CoreError::PaperNotFound(
+            source_id.to_string(),
         )),
         Err(e) => fail(e),
     }
@@ -123,10 +122,7 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             let source_id = as_source_id(&source_id, "arxiv");
             match svc_paper::get_all(&ctx.conn, &paper(&source_id))? {
                 Some(all) => output(&all),
-                None => fail(format!(
-                    "Paper {} not found in DB",
-                    crate::output::pyrepr(&source_id)
-                )),
+                None => fail(linxiv_core::error::CoreError::PaperNotFound(source_id.clone())),
             }
         }
 
@@ -219,10 +215,7 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                     "ok": true,
                     "removed_from_projects": removed,
                 })),
-                None => fail(format!(
-                    "Paper {} not found",
-                    crate::output::pyrepr(&source_id)
-                )),
+                None => fail(linxiv_core::error::CoreError::PaperNotFound(source_id.clone())),
             }
         }
 

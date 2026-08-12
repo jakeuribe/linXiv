@@ -437,7 +437,7 @@ fn membership_receipt(
 ) -> Result<PaperMembershipReceipt> {
     let failed = op(conn, project_fk, &[source_id.to_string()])?;
     if !failed.is_empty() {
-        return Err(CoreError::PaperNotFound);
+        return Err(CoreError::PaperNotFound(source_id.to_string()));
     }
     let paper_count = get_required(conn, project_fk)?.source_fks.len();
     Ok(PaperMembershipReceipt {
@@ -532,9 +532,7 @@ pub fn require_trashed(conn: &Connection, project_fk: i64) -> Result<()> {
         },
     )?
     else {
-        return Err(CoreError::NotFound(format!(
-            "Project {project_fk} not found."
-        )));
+        return Err(CoreError::ProjectNotFound(project_fk));
     };
     if d.status != Status::Deleted {
         return Err(CoreError::BadRequest(format!(
@@ -674,7 +672,7 @@ mod tests {
         // Unresolvable id → the typed miss, nothing changed.
         assert!(matches!(
             add_paper(&conn, id, "arxiv:ghost").unwrap_err(),
-            CoreError::PaperNotFound
+            CoreError::PaperNotFound(sid) if sid == "arxiv:ghost"
         ));
     }
 
