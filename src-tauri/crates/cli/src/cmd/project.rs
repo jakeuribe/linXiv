@@ -141,6 +141,21 @@ fn resolve_or_exit(ctx: &Ctx, project_id: i64) -> linxiv_core::models::ProjectDe
     }
 }
 
+/// Unwrap a single-paper membership op: user-facing refusals exit 1 with the
+/// shared wording, anything else propagates as a hard error.
+fn membership_or_exit(
+    r: CoreResult<project::PaperMembershipReceipt>,
+    source_id: &str,
+) -> anyhow::Result<project::PaperMembershipReceipt> {
+    use linxiv_core::error::CoreError;
+    match r {
+        Ok(receipt) => Ok(receipt),
+        Err(CoreError::PaperNotFound) => fail(format!("Paper {source_id} not found in database")),
+        Err(e @ (CoreError::ProjectNotFound(_) | CoreError::ProjectDeleted(_))) => fail(e),
+        Err(e) => Err(e.into()),
+    }
+}
+
 
 pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
     match cmd {
@@ -278,16 +293,10 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             source_id,
         } => {
             let source_id = as_source_id(&source_id, "arxiv");
-            let failed = match project::add_papers(&ctx.conn, project_id, &[source_id.clone()]) {
-                Ok(failed) => failed,
-                Err(e @ linxiv_core::error::CoreError::ProjectNotFound(_)) => fail(e),
-                Err(e @ linxiv_core::error::CoreError::ProjectDeleted(_)) => fail(e),
-                Err(e) => return Err(e.into()),
-            };
-            if !failed.is_empty() {
-                fail(format!("Paper {source_id} not found in database"));
-            }
-            output(&json!({ "project_id": project_id, "source_id": source_id }));
+            output(&membership_or_exit(
+                project::add_paper(&ctx.conn, project_id, &source_id),
+                &source_id,
+            )?);
         }
 
         // POST /api/projects/{id}/papers/bulk: partial success — `failed` holds the
@@ -324,16 +333,10 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             source_id,
         } => {
             let source_id = as_source_id(&source_id, "arxiv");
-            let failed = match project::remove_papers(&ctx.conn, project_id, &[source_id.clone()]) {
-                Ok(failed) => failed,
-                Err(e @ linxiv_core::error::CoreError::ProjectNotFound(_)) => fail(e),
-                Err(e @ linxiv_core::error::CoreError::ProjectDeleted(_)) => fail(e),
-                Err(e) => return Err(e.into()),
-            };
-            if !failed.is_empty() {
-                fail(format!("Paper {source_id} not found in database"));
-            }
-            output(&json!({ "project_id": project_id, "source_id": source_id, "removed": true }));
+            output(&membership_or_exit(
+                project::remove_paper(&ctx.conn, project_id, &source_id),
+                &source_id,
+            )?);
         }
 
         ProjectCmd::Export {

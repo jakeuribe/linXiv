@@ -57,10 +57,18 @@ export async function restoreProject(id: number): Promise<{ ok: boolean }> {
   return updateProject(id, { status: "active" });
 }
 
+/** Core's PaperMembershipReceipt — shared by add and remove. */
+export interface PaperMembershipReceipt {
+  ok: boolean;
+  project_id: number;
+  paper_id: string;
+  paper_count: number;
+}
+
 export async function addPaperToProject(
   projectId: number,
   sourceId: string
-): Promise<{ ok: boolean }> {
+): Promise<PaperMembershipReceipt> {
   return apiFetch(`/api/projects/${projectId}/papers`, {
     method: "POST",
     body: JSON.stringify({ source_id: sourceId }),
@@ -95,7 +103,7 @@ export async function addPapersToProject(
 export async function removePaperFromProject(
   projectId: number,
   sourceId: string
-): Promise<{ ok: boolean }> {
+): Promise<PaperMembershipReceipt> {
   return apiFetch(
     `/api/projects/${projectId}/papers/${encodeURIComponent(sourceId)}`,
     { method: "DELETE" }
