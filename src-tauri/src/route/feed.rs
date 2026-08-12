@@ -1,17 +1,17 @@
 //! `GET /api/feed?url=…` — fetch the user's home RSS/Atom feed into a rolling
 //! `RSS_CACHE_ENTRY` window, throttled per `CACHE_TTL`, dismissed/rule-filtered before response.
+//! Thin handlers over `service::feed`; only the in-process fetch throttle
+//! (GUI polling concern, useless to one-shot CLI runs) lives here.
 
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
-use chrono::NaiveDateTime;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use linxiv_core::config::UserSettings;
-use linxiv_core::sources::feed as svc_feed;
-use linxiv_core::storage::queries::rss;
+use linxiv_core::service::feed as svc_feed;
 
 use crate::route::{ApiError, ReqCtx};
 use crate::state::AppState;
@@ -32,132 +32,6 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
         ("DELETE", ["api", "feed", "rules", id]) => Some(delete_rule(state, id)),
         _ => None,
     }
-}
-
-/// `arxiv:{id}` source_id + parsed version for an entry, when it has an arXiv id.
-fn entry_identity(entry: &Value) -> (Option<String>, Option<i64>) {
-    let source_id = entry
-        .get("arxiv_id")
-        .and_then(|v| v.as_str())
-        .map(|id| format!("arxiv:{id}"));
-    let version = entry.get("version").and_then(|v| v.as_i64());
-    (source_id, version)
-}
-
-/// Parse a feed entry's `published` string (RSS is RFC 822, Atom is RFC 3339).
-/// `None` if neither parses -- caller then falls back to `FETCHED_AT`.
-fn parse_published(s: &str) -> Option<NaiveDateTime> {
-    chrono::DateTime::parse_from_rfc2822(s)
-        .or_else(|_| chrono::DateTime::parse_from_rfc3339(s))
-        .map(|dt| dt.naive_utc())
-        .ok()
-}
-
-/// Build the DB row for a freshly-fetched entry. Dedup key is arxiv
-/// `id+version` when present (so v2 doesn't overwrite v1), else link, else
-/// title. `None` if the entry has none of those to key by.
-fn to_cache_entry(entry: &svc_feed::FeedEntry) -> Option<rss::CacheEntry> {
-    let entry_json = serde_json::to_string(entry).ok()?;
-    let source_id = entry.arxiv_id.as_deref().map(|id| format!("arxiv:{id}"));
-    let dedup_key = match (&source_id, entry.version) {
-        (Some(sid), Some(v)) => format!("{sid}v{v}"),
-        _ if !entry.link.is_empty() => entry.link.clone(),
-        _ if !entry.title.is_empty() => entry.title.clone(),
-        _ => return None,
-    };
-    Some(rss::CacheEntry {
-        dedup_key,
-        source_id,
-        entry_json,
-        published_at: parse_published(&entry.published),
-    })
-}
-
-/// Drops dismissed/rule-hidden entries, records survivors as seen, and
-/// returns which of them are already saved to the library.
-fn annotate_and_filter(state: &AppState, feed_value: &mut Value) -> Vec<String> {
-    use linxiv_core::storage::queries::paper;
-
-    let Some(entries) = feed_value.get_mut("entries").and_then(|e| e.as_array_mut()) else {
-        return Vec::new();
-    };
-
-    state.with_conn(|conn| {
-        // One transaction for the whole read+write batch.
-        let tx = match conn.transaction() {
-            Ok(tx) => tx,
-            Err(e) => {
-                eprintln!("[linxiv] feed annotate_and_filter: failed to start transaction: {e}");
-                return Vec::new();
-            }
-        };
-        let blocked = rss::blocked_source_ids(&tx).unwrap_or_default();
-        let dismissed_versions = rss::dismissed_versions(&tx).unwrap_or_default();
-        let rules = rss::list_rules(&tx).unwrap_or_default();
-
-        entries.retain(|entry| {
-            let title = entry.get("title").and_then(|v| v.as_str()).unwrap_or("");
-            let summary = entry.get("summary").and_then(|v| v.as_str()).unwrap_or("");
-            let authors = entry
-                .get("authors")
-                .and_then(|v| v.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|x| x.as_str())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                })
-                .unwrap_or_default();
-            let (source_id, version) = entry_identity(entry);
-
-            if source_id.as_ref().is_some_and(|sid| blocked.contains(sid)) {
-                return false;
-            }
-            if let (Some(sid), Some(v)) = (&source_id, version) {
-                if dismissed_versions.contains(&(sid.clone(), v)) {
-                    return false;
-                }
-            }
-            !rss::is_hidden(&rules, title, summary, &authors)
-        });
-        // Truncate after filtering, not before, so hidden entries don't eat
-        // into the 200 the client gets to see.
-        entries.truncate(200);
-
-        // Record each survivor as seen, separately from the (pure) filter above.
-        for entry in entries.iter() {
-            let title = entry.get("title").and_then(|v| v.as_str()).unwrap_or("");
-            let (source_id, version) = entry_identity(entry);
-            if let (Some(sid), Some(v)) = (&source_id, version) {
-                if let Err(e) = rss::upsert_seen(&tx, sid, v, title) {
-                    eprintln!("[linxiv] feed upsert_seen failed: source_id={sid}, error={e}");
-                }
-            }
-        }
-
-        let saved_arxiv_ids = entries
-            .iter()
-            .filter_map(|entry| entry.get("arxiv_id").and_then(|id| id.as_str()))
-            .filter_map(|arxiv_id| {
-                let source_id = format!("arxiv:{arxiv_id}");
-                match paper::get_paper(&tx, &source_id, None) {
-                    Ok(Some(_)) => Some(arxiv_id.to_string()),
-                    Ok(None) => None,
-                    Err(e) => {
-                        eprintln!(
-                            "[linxiv] feed saved-check failed: source_id={source_id}, error={e}"
-                        );
-                        None
-                    }
-                }
-            })
-            .collect();
-
-        if let Err(e) = tx.commit() {
-            eprintln!("[linxiv] feed annotate_and_filter: commit failed: {e}");
-        }
-        saved_arxiv_ids
-    })
 }
 
 async fn get_feed(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
@@ -183,24 +57,15 @@ async fn get_feed(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError>
     let mut fetch_err = None;
     if due {
         // Cleanup before fetching, non-fatal (shouldn't fail the request).
-        if let Err(e) = state.with_conn(|conn| rss::prune_dismissed(conn, retention_days)) {
+        if let Err(e) = state.with_conn(|conn| svc_feed::prune_dismissed(conn, retention_days)) {
             eprintln!("[linxiv] feed: prune_dismissed failed: {e}");
         }
-        eprintln!("[linxiv] feed: fetching {url}");
         // data_dir carries the shared .arxiv_ratelimit file (same one arxiv_get uses).
-        match svc_feed::fetch_feed(url, &linxiv_core::config::data_dir()).await {
-            Ok(feed) => {
-                eprintln!(
-                    "[linxiv] feed: fetched {url} ({} entries)",
-                    feed.entries.len()
-                );
-                title = feed.title.clone();
-                let fresh: Vec<rss::CacheEntry> =
-                    feed.entries.iter().filter_map(to_cache_entry).collect();
-                state.with_conn(|conn| -> linxiv_core::error::Result<()> {
-                    rss::merge_cache_entries(conn, url, &fresh)?;
-                    rss::prune_cache_entries(conn, url, retention_days)?;
-                    Ok(())
+        match svc_feed::fetch(url, &linxiv_core::config::data_dir()).await {
+            Ok(fetched) => {
+                title = fetched.title.clone();
+                state.with_conn(|conn| {
+                    svc_feed::apply_fetch(conn, url, &fetched.entries, retention_days)
                 })?;
                 LAST_FETCH
                     .lock()
@@ -216,18 +81,17 @@ async fn get_feed(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError>
         }
     }
 
-    let entries = state.with_conn(|conn| rss::load_cache_entries(conn, url, retention_days))?;
-    if entries.is_empty() {
+    let page = state.with_conn(|conn| svc_feed::read_page(conn, url, retention_days))?;
+    if page.window_was_empty {
         if let Some(e) = fetch_err {
             return Err(e.into());
         }
     }
-    let mut result = json!({ "title": title, "entries": entries });
-
-    // The DB-window entries above are unfiltered; filter fresh against current state.
-    let saved_arxiv_ids = annotate_and_filter(state, &mut result);
-    result["saved_arxiv_ids"] = serde_json::json!(saved_arxiv_ids);
-    Ok(result)
+    Ok(json!({
+        "title": title,
+        "entries": page.entries,
+        "saved_arxiv_ids": page.saved_arxiv_ids,
+    }))
 }
 
 /// `POST /api/feed/dismiss` — hide an entry. `permanent: true` blocks the
@@ -241,17 +105,13 @@ fn dismiss(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
         permanent: bool,
     }
     let b: Body = ctx.parse_body()?;
-    if b.arxiv_id.trim().is_empty() {
-        return Err(ApiError::new(422, "arxiv_id is required"));
-    }
-    let source_id = format!("arxiv:{}", b.arxiv_id);
-    state.with_conn(|conn| rss::dismiss(conn, &source_id, b.version, b.permanent))?;
+    state.with_conn(|conn| svc_feed::dismiss(conn, &b.arxiv_id, b.version, b.permanent))?;
     Ok(json!({ "ok": true }))
 }
 
 /// `GET /api/feed/rules` — list auto-filter rules.
 fn list_rules(state: &AppState) -> Result<Value, ApiError> {
-    let rules = state.with_conn(|conn| rss::list_rules(conn))?;
+    let rules = state.with_conn(|conn| svc_feed::list_rules(conn))?;
     Ok(json!({ "rules": rules }))
 }
 
@@ -268,39 +128,24 @@ fn create_rule(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
         "DENY".to_string()
     }
     let b: Body = ctx.parse_body()?;
-    if !matches!(b.field.as_str(), "TITLE" | "SUMMARY" | "AUTHOR") {
-        return Err(ApiError::new(
-            422,
-            "field must be TITLE, SUMMARY, or AUTHOR",
-        ));
-    }
-    if !matches!(b.action.as_str(), "DENY" | "ALLOW") {
-        return Err(ApiError::new(422, "action must be DENY or ALLOW"));
-    }
-    if b.keywords.trim().is_empty() {
-        return Err(ApiError::new(422, "keywords is required"));
-    }
     let rule_id =
-        state.with_conn(|conn| rss::create_rule(conn, &b.field, &b.keywords, &b.action))?;
+        state.with_conn(|conn| svc_feed::create_rule(conn, &b.field, &b.keywords, &b.action))?;
     Ok(json!({ "rule_id": rule_id }))
 }
 
 /// `DELETE /api/feed/rules/{id}` — remove an auto-filter rule. 404 when unset.
 fn delete_rule(state: &AppState, id: &str) -> Result<Value, ApiError> {
     let rule_id = crate::route::path_i64(id)?;
-    let deleted = state.with_conn(|conn| rss::delete_rule(conn, rule_id))?;
-    if !deleted {
-        return Err(ApiError::new(404, "no such rule"));
-    }
+    state.with_conn(|conn| svc_feed::delete_rule(conn, rule_id))?;
     Ok(json!({ "ok": true }))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::rss;
     use crate::route::{route, ApiRequest};
     use crate::state::AppState;
     use linxiv_core::storage;
+    use linxiv_core::storage::queries::rss;
 
     fn state() -> AppState {
         let conn = storage::open_in_memory().unwrap();

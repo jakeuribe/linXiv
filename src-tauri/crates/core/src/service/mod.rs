@@ -3,6 +3,7 @@ pub mod annotation;
 pub mod author;
 pub mod editor_project;
 pub mod export_import;
+pub mod feed;
 pub mod files;
 pub mod note;
 pub mod orcid_backfill;
