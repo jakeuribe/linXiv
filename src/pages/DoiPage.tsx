@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "../components/ui/button";
 import { formSubmitOnCtrlEnter } from "../lib/submitShortcut";
+import { invalidatePaperMutationQueries } from "../lib/paperMutations";
 import { Input } from "../components/ui/input";
 import { Spinner } from "../components/ui/spinner";
 import { resolveDoi, saveDoi } from "../api/search";
@@ -49,9 +50,7 @@ export default function DoiPage() {
     mutationFn: (d: string) => saveDoi(d),
     onSuccess: () => {
       setSaveSuccess(true);
-      // Refresh library/stats consumers and trip the graph's dirty flag.
-      queryClient.invalidateQueries({ queryKey: ["papers"] });
-      queryClient.invalidateQueries({ queryKey: ["stats"] });
+      invalidatePaperMutationQueries(queryClient);
     },
   });
 

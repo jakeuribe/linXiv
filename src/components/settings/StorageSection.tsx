@@ -8,10 +8,12 @@ import { listSavedPdfs, deleteSavedPdf } from "../../api/pdfs";
 import type { SavedPdf } from "../../api/pdfs";
 import { getPaperPdfUrl } from "../../api/papers";
 import { useConfirmWithTimeout } from "../../hooks/useConfirmWithTimeout";
+import { invalidatePaperMutationQueries } from "../../lib/paperMutations";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Spinner } from "../ui/spinner";
 import { SettingGroup, SettingGroupLabel, SettingRow } from "./SettingRow";
+import { errText } from "../../lib/errText";
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -55,7 +57,7 @@ export function StorageSection() {
     onSuccess: (info) =>
       setBackupMsg(info ? { ok: true, text: `Saved ${formatBytes(info.bytes)} to ${info.path}` } : null),
     onError: (e) =>
-      setBackupMsg({ ok: false, text: e instanceof Error ? e.message : "Backup failed" }),
+      setBackupMsg({ ok: false, text: errText(e, "Backup failed") }),
   });
 
   const restoreGuard = useConfirmWithTimeout();
@@ -68,7 +70,7 @@ export function StorageSection() {
       qc.invalidateQueries();
     },
     onError: (e) =>
-      setRestoreMsg({ ok: false, text: e instanceof Error ? e.message : "Restore failed" }),
+      setRestoreMsg({ ok: false, text: errText(e, "Restore failed") }),
   });
 
   const {
@@ -84,9 +86,7 @@ export function StorageSection() {
   const savedPdfs = pdfData?.pdfs ?? [];
 
   const invalidateAfterDelete = useCallback(() => {
-    qc.invalidateQueries({ queryKey: ["saved-pdfs"] });
-    qc.invalidateQueries({ queryKey: ["papers"] });
-    qc.invalidateQueries({ queryKey: ["stats"] });
+    invalidatePaperMutationQueries(qc);
   }, [qc]);
 
   function viewPdf(pdf: SavedPdf) {
@@ -280,7 +280,7 @@ function SavedPdfRow({
       setErr(null);
       onDeleted();
     },
-    onError: (e) => setErr(e instanceof Error ? e.message : "Delete failed"),
+    onError: (e) => setErr(errText(e, "Delete failed")),
   });
   return (
     <li className="flex flex-col gap-1 py-2">

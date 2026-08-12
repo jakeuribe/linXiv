@@ -1,9 +1,21 @@
 import type { QueryClient, UseMutationOptions } from "@tanstack/react-query";
 import { addPapers, createProjectWithPapers } from "../api/projects.ts";
 import type { AddPapersVars, CreateProjectWithPapersVars } from "../api/projects.ts";
+import { errText } from "./errText.ts";
 
-/** Every cached key whose contents depend on which papers exist. These are
- *  prefixes — react-query matches ["papers","list",sort] under ["papers"]. */
+// ---------------------------------------------------------------------------
+// Invalidation registry: one owner per operation for "which cached keys go
+// stale". Key sets are the UNION of what the call sites used to invalidate for
+// the same operation, so every page performing it refreshes the same views.
+// All keys are prefixes — react-query matches ["papers","list",sort] under
+// ["papers"].
+// ---------------------------------------------------------------------------
+
+/** Keys affected by a tag edit. Tags are only ever edited through project
+ *  saves and imports, so this set is folded into those operations' sets. */
+export const TAG_QUERY_KEYS: readonly string[] = ["tags", "tag"];
+
+/** Every cached key whose contents depend on which papers exist. */
 export const PAPER_QUERY_KEYS: readonly string[] = [
   "papers",
   "paper",
@@ -12,15 +24,44 @@ export const PAPER_QUERY_KEYS: readonly string[] = [
   "notes",
   "note",
   "annotations",
-  "tags",
-  "tag",
+  ...TAG_QUERY_KEYS,
   "graph",
   "stats",
   "trash",
 ];
 
+/** Keys affected by a paper mutation short of deletion: save from
+ *  search/DOI/feed, import, new-version fetch, full-text index, PDF
+ *  attach/detach. */
+export const PAPER_MUTATION_QUERY_KEYS: readonly string[] = [
+  "papers",
+  "paper",
+  "stats",
+  ...TAG_QUERY_KEYS,
+  "saved-pdfs",
+];
+
+/** Keys affected by a project mutation: create, edit (incl. its tags),
+ *  archive, restore, soft/hard delete, share import. */
+export const PROJECT_MUTATION_QUERY_KEYS: readonly string[] = [
+  "projects",
+  "project",
+  ...TAG_QUERY_KEYS,
+  "trash",
+];
+
 /** Keys affected by changing which papers belong to a project. */
-export const PROJECT_MEMBERSHIP_QUERY_KEYS: readonly string[] = ["projects", "project"];
+export const PROJECT_MEMBERSHIP_QUERY_KEYS: readonly string[] = [
+  "projects",
+  "project",
+  "papers",
+];
+
+/** Keys affected by a note create/edit/delete. */
+export const NOTE_QUERY_KEYS: readonly string[] = ["notes", "note"];
+
+/** Keys affected by an annotation create/edit/delete. */
+export const ANNOTATION_QUERY_KEYS: readonly string[] = ["annotations"];
 
 function invalidateAll(qc: QueryClient, keys: readonly string[]): Promise<void> {
   return Promise.all(keys.map((k) => qc.invalidateQueries({ queryKey: [k] }))).then(() => {});
@@ -33,8 +74,24 @@ export function invalidatePaperQueries(qc: QueryClient): Promise<void> {
   return invalidateAll(qc, PAPER_QUERY_KEYS);
 }
 
+export function invalidatePaperMutationQueries(qc: QueryClient): Promise<void> {
+  return invalidateAll(qc, PAPER_MUTATION_QUERY_KEYS);
+}
+
+export function invalidateProjectMutationQueries(qc: QueryClient): Promise<void> {
+  return invalidateAll(qc, PROJECT_MUTATION_QUERY_KEYS);
+}
+
 export function invalidateProjectMembershipQueries(qc: QueryClient): Promise<void> {
   return invalidateAll(qc, PROJECT_MEMBERSHIP_QUERY_KEYS);
+}
+
+export function invalidateNoteQueries(qc: QueryClient): Promise<void> {
+  return invalidateAll(qc, NOTE_QUERY_KEYS);
+}
+
+export function invalidateAnnotationQueries(qc: QueryClient): Promise<void> {
+  return invalidateAll(qc, ANNOTATION_QUERY_KEYS);
 }
 
 export interface ReadingStatusRemover {
@@ -91,7 +148,7 @@ export function addToProjectMutationOptions(
       ui.onDone();
     },
     onError: (err) => {
-      ui.setError(err instanceof Error ? err.message : "Failed to add papers to project");
+      ui.setError(errText(err, "Failed to add papers to project"));
     },
   };
 }
@@ -124,7 +181,7 @@ export function createProjectMutationOptions(
       ui.onDone();
     },
     onError: (err) => {
-      ui.setError(err instanceof Error ? err.message : "Failed to create project");
+      ui.setError(errText(err, "Failed to create project"));
     },
   };
 }

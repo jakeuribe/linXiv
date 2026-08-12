@@ -5,6 +5,7 @@ import { Button } from "../ui/button";
 import type { Paper } from "../../types/api";
 import { repairPaper } from "../../api/papers";
 import { formSubmitOnCtrlEnter } from "../../lib/submitShortcut";
+import { errText } from "../../lib/errText";
 
 interface PaperMetadataEditorProps {
   onClose: () => void;
@@ -63,7 +64,7 @@ export function PaperMetadataEditor({
       onSaved(updated);
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save changes");
+      setError(errText(err, "Failed to save changes"));
     } finally {
       setSubmitting(false);
     }

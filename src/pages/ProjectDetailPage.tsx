@@ -34,8 +34,14 @@ import { EmptyState } from "../components/ui/empty-state";
 import { MathText } from "../lib/tex";
 import { READING_LIST_TAG, isReadingListProject } from "../lib/readingStatus";
 import { useReadingStatusStore } from "../stores/readingStatus";
-import { invalidateProjectMembershipQueries, partialFailureMessage } from "../lib/paperMutations";
+import {
+  invalidateProjectMembershipQueries,
+  invalidateProjectMutationQueries,
+  partialFailureMessage,
+} from "../lib/paperMutations";
 import { StatusButton } from "../components/reading/StatusButton";
+import { errText } from "../lib/errText";
+import { useConfirmWithTimeout } from "../hooks/useConfirmWithTimeout";
 
 // ---------------------------------------------------------------------------
 // Edit Project Dialog
@@ -109,15 +115,10 @@ function EditProjectDialog({
         color_hex: color,
         project_tags: currentTags,
       });
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["projects"] }),
-        queryClient.invalidateQueries({ queryKey: ["project", String(projectId)] }),
-        queryClient.invalidateQueries({ queryKey: ["tags"] }),
-        queryClient.invalidateQueries({ queryKey: ["tag"] }),
-      ]);
+      await invalidateProjectMutationQueries(queryClient);
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to update project");
+      setError(errText(err, "Failed to update project"));
     } finally {
       setSubmitting(false);
     }
@@ -288,7 +289,7 @@ function AddPapersDialog({
         onClose();
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to add papers");
+      setError(errText(err, "Failed to add papers"));
     } finally {
       setSubmitting(false);
     }
@@ -488,7 +489,7 @@ function ExportDialog({
       onClose();
     } catch (e) {
       if (e instanceof Error && e.name === "AbortError") return; // file-picker cancelled — keep dialog open, show nothing
-      setError(e instanceof Error ? e.message : "Export failed");
+      setError(errText(e, "Export failed"));
     } finally {
       setBusy(null);
     }
@@ -578,11 +579,11 @@ export default function ProjectDetailPage() {
     function handleOutside(e: MouseEvent) {
       if (moreRef.current && !moreRef.current.contains(e.target as Node)) {
         setMoreOpen(false);
-        setConfirmDelete(false);
+        disarm();
       }
     }
     function handleEsc(e: KeyboardEvent) {
-      if (e.key === "Escape") { setMoreOpen(false); setConfirmDelete(false); }
+      if (e.key === "Escape") { setMoreOpen(false); disarm(); }
     }
     document.addEventListener("mousedown", handleOutside);
     document.addEventListener("keydown", handleEsc);
@@ -594,7 +595,7 @@ export default function ProjectDetailPage() {
 
   const [statusBusy, setStatusBusy] = useState(false);
   const [statusError, setStatusError] = useState<string | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState(false);
+  const { confirm: confirmDelete, arm, disarm } = useConfirmWithTimeout();
   const [importOpen, setImportOpen] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
@@ -675,7 +676,7 @@ export default function ProjectDetailPage() {
         // A transport/server reject is not the same as unresolvable ids, so it
         // carries its own message rather than a per-paper count.
         failed = project.source_ids;
-        addError = err instanceof Error ? err.message : "Failed to add papers to the fork";
+        addError = errText(err, "Failed to add papers to the fork");
       }
       await invalidateProjectMembershipQueries(queryClient);
       const notice =
@@ -685,7 +686,7 @@ export default function ProjectDetailPage() {
           : null);
       navigate(`/projects/${created.id}`, { state: notice ? { notice } : null });
     } catch (err) {
-      setStatusError(err instanceof Error ? err.message : "Failed to fork project");
+      setStatusError(errText(err, "Failed to fork project"));
     } finally {
       setStatusBusy(false);
     }
@@ -719,11 +720,9 @@ export default function ProjectDetailPage() {
         }
         clear();
       }
-      await queryClient.invalidateQueries({ queryKey: ["project", id] });
-      // Invalidate ["projects"] list for paper detail scope picker.
-      await queryClient.invalidateQueries({ queryKey: ["projects"] });
+      await invalidateProjectMembershipQueries(queryClient);
     } catch (err) {
-      setRemoveError(err instanceof Error ? err.message : "Failed to remove papers");
+      setRemoveError(errText(err, "Failed to remove papers"));
     } finally {
       setRemoving(false);
     }
@@ -734,10 +733,10 @@ export default function ProjectDetailPage() {
     setStatusError(null);
     try {
       await archiveProject(projectId);
-      await queryClient.invalidateQueries({ queryKey: ["projects"] });
+      await invalidateProjectMutationQueries(queryClient);
       navigate("/projects");
     } catch (err) {
-      setStatusError(err instanceof Error ? err.message : "Failed to archive project");
+      setStatusError(errText(err, "Failed to archive project"));
     } finally {
       setStatusBusy(false);
     }
@@ -748,12 +747,9 @@ export default function ProjectDetailPage() {
     setStatusError(null);
     try {
       await restoreProject(projectId);
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["projects"] }),
-        queryClient.invalidateQueries({ queryKey: ["project", id] }),
-      ]);
+      await invalidateProjectMutationQueries(queryClient);
     } catch (err) {
-      setStatusError(err instanceof Error ? err.message : "Failed to restore project");
+      setStatusError(errText(err, "Failed to restore project"));
     } finally {
       setStatusBusy(false);
     }
@@ -761,10 +757,10 @@ export default function ProjectDetailPage() {
 
   async function handleDelete() {
     if (!confirmDelete) {
-      setConfirmDelete(true);
+      arm();
       return;
     }
-    setConfirmDelete(false);
+    disarm();
     setStatusBusy(true);
     setStatusError(null);
     try {
@@ -775,10 +771,10 @@ export default function ProjectDetailPage() {
         });
       }
       await deleteProject(projectId);
-      await queryClient.invalidateQueries({ queryKey: ["projects"] });
+      await invalidateProjectMutationQueries(queryClient);
       navigate("/projects");
     } catch (err) {
-      setStatusError(err instanceof Error ? err.message : "Failed to delete project");
+      setStatusError(errText(err, "Failed to delete project"));
     } finally {
       setStatusBusy(false);
     }
@@ -804,9 +800,7 @@ export default function ProjectDetailPage() {
           <ArrowLeft size={14} /> Projects
         </Link>
         <p className="text-sm" style={{ color: "var(--color-danger)" }}>
-          {projectFetchError instanceof Error
-            ? projectFetchError.message
-            : "Project not found"}
+          {errText(projectFetchError, "Project not found")}
         </p>
       </div>
     );
@@ -877,7 +871,7 @@ export default function ProjectDetailPage() {
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => { setMoreOpen((v) => !v); setConfirmDelete(false); }}
+                onClick={() => { setMoreOpen((v) => !v); disarm(); }}
                 aria-label="More actions"
                 aria-haspopup="menu"
                 aria-expanded={moreOpen}
@@ -1088,8 +1082,6 @@ export default function ProjectDetailPage() {
               projectId={projectId}
               onDone={(newProjectIds) => {
                 setImportOpen(false);
-                queryClient.invalidateQueries({ queryKey: ["project", id] });
-                queryClient.invalidateQueries({ queryKey: ["papers"] });
                 const newId = newProjectIds[0];
                 if (newId && newId !== projectId) {
                   navigate(`/projects/${newId}`);

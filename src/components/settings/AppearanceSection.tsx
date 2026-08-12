@@ -13,6 +13,7 @@ import { ZoomControl } from "./ZoomControl";
 import { Segmented } from "../ui/segmented";
 import { useUiStore } from "../../stores/ui";
 import type { Density } from "../../lib/density";
+import { errText } from "../../lib/errText";
 
 const DENSITY_OPTIONS: { value: Density; label: string }[] = [
   { value: "comfortable", label: "Comfortable" },
@@ -567,7 +568,7 @@ export function AppearanceSection() {
               Render $…$ LaTeX in titles, abstracts, and notes
               {texError && (
                 <span className="block text-danger mt-0.5">
-                  {texError instanceof Error ? texError.message : "Failed to save setting"}
+                  {errText(texError, "Failed to save setting")}
                 </span>
               )}
             </>

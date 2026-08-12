@@ -25,6 +25,7 @@ import { PaperCard } from "../components/papers/PaperCard";
 import { SelectionBar } from "../components/papers/SelectionBar";
 import { ImportDialog } from "../components/import/ImportDialog";
 import { EmptyState } from "../components/ui/empty-state";
+import { errText } from "../lib/errText";
 
 const PAPER_FETCH_LIMIT = 5000;
 const VIRTUALIZER_ESTIMATE_HEIGHT = 120;
@@ -132,7 +133,7 @@ export default function LibraryPage() {
     },
     onError: (err) => {
       setDeleteError(
-        err instanceof Error ? err.message : "Failed to delete papers"
+        errText(err, "Failed to delete papers")
       );
     },
   });
@@ -251,7 +252,7 @@ export default function LibraryPage() {
     return (
       <div className="flex items-center justify-center h-full">
         <p className="text-sm" style={{ color: "var(--color-danger)" }}>
-          {error instanceof Error ? error.message : "Failed to load papers"}
+          {errText(error, "Failed to load papers")}
         </p>
       </div>
     );
@@ -440,8 +441,6 @@ export default function LibraryPage() {
         open={importOpen}
         onClose={() => setImportOpen(false)}
         onDone={(newProjectIds) => {
-          queryClient.invalidateQueries({ queryKey: ["papers"] });
-          queryClient.invalidateQueries({ queryKey: ["stats"] });
           if (newProjectIds.length === 1) {
             navigate(`/projects/${newProjectIds[0]}`);
           }

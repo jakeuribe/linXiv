@@ -11,7 +11,12 @@ import {
 } from "../../api/trash";
 import { removeFromAllProjects } from "../../api/papers";
 import { useReadingStatusStore } from "../../stores/readingStatus";
-import { invalidatePaperQueries, forgetPurgedPapers } from "../../lib/paperMutations";
+import {
+  invalidatePaperQueries,
+  invalidateProjectMembershipQueries,
+  invalidateProjectMutationQueries,
+  forgetPurgedPapers,
+} from "../../lib/paperMutations";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
 import { Dialog } from "../ui/dialog";
@@ -245,8 +250,7 @@ export function TrashSection() {
     setRemoveError(null);
     try {
       await removeFromAllProjects(projectPrompt.sourceFk);
-      await qc.invalidateQueries({ queryKey: ["projects"] });
-      await qc.invalidateQueries({ queryKey: ["papers"] });
+      await invalidateProjectMembershipQueries(qc);
       setProjectPrompt(null);
     } catch (e) {
       console.error(e);
@@ -278,8 +282,7 @@ export function TrashSection() {
     setActionError(null);
     try {
       await restoreProject(id);
-      await qc.invalidateQueries({ queryKey: ["trash"] });
-      await qc.invalidateQueries({ queryKey: ["projects"] });
+      await invalidateProjectMutationQueries(qc);
     } catch (e) {
       console.error(e);
       setActionError("Failed to restore the project.");
@@ -293,8 +296,7 @@ export function TrashSection() {
     setActionError(null);
     try {
       await hardDeleteProject(id);
-      await qc.invalidateQueries({ queryKey: ["trash"] });
-      await qc.invalidateQueries({ queryKey: ["projects"] });
+      await invalidateProjectMutationQueries(qc);
     } catch (e) {
       console.error(e);
       setActionError("Failed to permanently delete the project.");

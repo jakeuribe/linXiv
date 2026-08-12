@@ -18,7 +18,9 @@ import {
   isReadingListProject,
   queueOf,
 } from "../lib/readingStatus";
+import { invalidateProjectMutationQueries } from "../lib/paperMutations";
 import { useReadingStatusStore } from "../stores/readingStatus";
+import { errText } from "../lib/errText";
 
 function NewReadingListDialog({
   open,
@@ -53,15 +55,11 @@ function NewReadingListDialog({
         name: name.trim(),
         project_tags: [READING_LIST_TAG],
       });
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["projects"] }),
-        queryClient.invalidateQueries({ queryKey: ["tags"] }),
-        queryClient.invalidateQueries({ queryKey: ["tag"] }),
-      ]);
+      await invalidateProjectMutationQueries(queryClient);
       handleClose();
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : "Failed to create reading list"
+        errText(err, "Failed to create reading list")
       );
     } finally {
       setSubmitting(false);
@@ -170,7 +168,7 @@ export default function ReadingListsPage() {
           }}
         >
           Failed to load reading lists:{" "}
-          {errorMsg instanceof Error ? errorMsg.message : "Unknown error"}
+          {errText(errorMsg, "Unknown error")}
         </div>
       )}
 

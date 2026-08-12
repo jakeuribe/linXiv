@@ -13,6 +13,7 @@ import { isTauri } from "../../api/client";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
 import { SettingGroup, SettingGroupLabel, SettingRow } from "./SettingRow";
+import { errText } from "../../lib/errText";
 
 function IntegrationRow({
   label,
@@ -175,7 +176,7 @@ export function IntegrationsSection() {
       await qc.invalidateQueries({ queryKey: ["cli_installed"] });
     } catch (e) {
       console.error(e);
-      setRowError("cli", e instanceof Error ? e.message : String(e));
+      setRowError("cli", errText(e, String(e)));
     } finally {
       setCliPending(false);
     }
@@ -190,7 +191,7 @@ export function IntegrationsSection() {
       await qc.invalidateQueries({ queryKey: ["mcp_clients"] });
     } catch (e) {
       console.error(e);
-      setRowError(clientId, e instanceof Error ? e.message : String(e));
+      setRowError(clientId, errText(e, String(e)));
     } finally {
       setMcpPending((prev) => {
         const next = { ...prev };

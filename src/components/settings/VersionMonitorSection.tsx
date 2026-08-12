@@ -11,6 +11,7 @@ import { ApiError } from "../../api/client";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
 import { MathText } from "../../lib/tex";
+import { invalidatePaperMutationQueries } from "../../lib/paperMutations";
 import { SettingGroup, SettingGroupLabel } from "./SettingRow";
 
 function NewVersionRow({ item }: { item: NewVersion }) {
@@ -66,8 +67,7 @@ export function VersionMonitorSection() {
       setLastRun({ checked: result.checked, found: result.new_versions.length });
       qc.invalidateQueries({ queryKey: ["versions", "new"] });
       if (result.new_versions.length > 0) {
-        qc.invalidateQueries({ queryKey: ["papers"] });
-        qc.invalidateQueries({ queryKey: ["paper"] });
+        invalidatePaperMutationQueries(qc);
       }
     },
   });

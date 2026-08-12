@@ -13,6 +13,8 @@ import { Card, MonoLabel, SectionTitle } from "../components/ui/card";
 import { DismissControls } from "../components/feed/DismissControls";
 import type { FeedEntry, Paper, SearchResult } from "../types/api";
 import { MathText } from "../lib/tex";
+import { invalidatePaperMutationQueries } from "../lib/paperMutations";
+import { errText } from "../lib/errText";
 
 interface StatCardProps {
   label: string;
@@ -77,8 +79,7 @@ function FeedRow({
     try {
       await fetchArxiv(arxivId, true);
       setSaveState("saved");
-      queryClient.invalidateQueries({ queryKey: ["papers"] });
-      queryClient.invalidateQueries({ queryKey: ["stats"] });
+      invalidatePaperMutationQueries(queryClient);
     } catch (err) {
       console.error(err);
       setSaveState("error");
@@ -250,7 +251,7 @@ function FeedSection({ url }: { url: string }) {
       ) : error ? (
         <Card inset className="text-center">
           <p className="text-sm" style={{ color: "var(--color-danger)" }}>
-            {error instanceof Error ? error.message : "Failed to load feed"}
+            {errText(error, "Failed to load feed")}
           </p>
           <p className="mt-1 text-xs text-muted">
             Feed URL is set in Settings → Library.
@@ -321,7 +322,7 @@ export default function HomePage() {
       ) : error ? (
         <div className="flex items-center justify-center h-full">
           <p className="text-sm" style={{ color: "var(--color-danger)" }}>
-            {error instanceof Error ? error.message : "Failed to load stats"}
+            {errText(error, "Failed to load stats")}
           </p>
         </div>
       ) : (

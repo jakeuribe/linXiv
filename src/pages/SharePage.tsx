@@ -32,6 +32,11 @@ import {
 import { listProjects } from "../api/projects";
 import { ApiError } from "../api/client";
 import { useSlowHint } from "../hooks/useSlowHint";
+import { errText } from "../lib/errText";
+import {
+  invalidatePaperMutationQueries,
+  invalidateProjectMutationQueries,
+} from "../lib/paperMutations";
 import { Button } from "../components/ui/button";
 import { Dialog } from "../components/ui/dialog";
 import { Input, Textarea } from "../components/ui/input";
@@ -42,10 +47,6 @@ import { Spinner } from "../components/ui/spinner";
 // publish/join plus e2ee shares (per-member invites, PDF blobs); no presence.
 
 type ShareRole = "Hoster" | "Reader";
-
-function errText(e: unknown): string {
-  return e instanceof ApiError ? e.message : "Unexpected sharing error";
-}
 
 function RolePill({ role }: { role: ShareRole }) {
   const hosted = role === "Hoster";
@@ -171,7 +172,7 @@ function ShareCard({
           saved++;
           consecutiveFailures = 0;
         } catch (e) {
-          failed.push(`${p.title || p.source_id}: ${errText(e)}`);
+          failed.push(`${p.title || p.source_id}: ${errText(e, "Unexpected sharing error")}`);
           if (e instanceof ApiError && e.status === 413) {
             stopped = "storage limit reached";
             break;
@@ -186,8 +187,7 @@ function ShareCard({
       return { total: papers.length, saved, failed, stopped };
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["papers"] });
-      queryClient.invalidateQueries({ queryKey: ["paper"] });
+      invalidatePaperMutationQueries(queryClient);
     },
   });
   return (
@@ -294,7 +294,7 @@ function ShareCard({
               : "var(--color-danger)",
           }}
         >
-          {sync.isError ? errText(sync.error) : humanizeReason(sync.data?.reason)}
+          {sync.isError ? errText(sync.error, "Unexpected sharing error") : humanizeReason(sync.data?.reason)}
         </p>
       )}
       {sync.data && syncCounters(sync.data) && (
@@ -307,7 +307,7 @@ function ShareCard({
       )}
       {pdfs.isError && (
         <p className="px-5 pb-3 text-xs" style={{ color: "var(--color-danger)" }}>
-          {errText(pdfs.error)}
+          {errText(pdfs.error, "Unexpected sharing error")}
         </p>
       )}
       {pdfs.data && (
@@ -480,7 +480,7 @@ function MembersSection({ shareId }: { shareId: string }) {
       )}
       {rekeyM.isError && (
         <p className="text-xs" style={{ color: "var(--color-danger)" }}>
-          {errText(rekeyM.error)}
+          {errText(rekeyM.error, "Unexpected sharing error")}
         </p>
       )}
       {members.map((m) => (
@@ -651,7 +651,7 @@ function MembersSection({ shareId }: { shareId: string }) {
       </div>
       {(inviteM.isError || revokeM.isError || roleM.isError || membersQ.isError) && (
         <p className="text-xs" style={{ color: "var(--color-danger)" }}>
-          {errText(inviteM.error ?? revokeM.error ?? roleM.error ?? membersQ.error)}
+          {errText(inviteM.error ?? revokeM.error ?? roleM.error ?? membersQ.error, "Unexpected sharing error")}
         </p>
       )}
       {invite && (
@@ -735,7 +735,7 @@ function ShareSettingsDialog({
     mutationFn: () => importReceived(share.share_id),
     onSuccess: () => {
       invalidateShares();
-      queryClient.invalidateQueries({ queryKey: ["projects"] });
+      invalidateProjectMutationQueries(queryClient);
     },
   });
   const leaveM = useMutation({
@@ -827,7 +827,7 @@ function ShareSettingsDialog({
         </SettingsRow>
         {err != null && (
           <p className="text-xs" style={{ color: "var(--color-danger)" }}>
-            {errText(err)}
+            {errText(err, "Unexpected sharing error")}
           </p>
         )}
         {leaveM.data?.forgotten === false && (
@@ -941,7 +941,7 @@ function ShareProjectDialog({ open, onClose }: { open: boolean; onClose: () => v
       queryClient.invalidateQueries({ queryKey: ["share", "published"] });
     } catch (e) {
       if (genTokenRef.current !== token || !alive.current) return;
-      setError(errText(e));
+      setError(errText(e, "Unexpected sharing error"));
     } finally {
       if (genTokenRef.current === token && alive.current) setGenerating(false);
     }
@@ -1127,7 +1127,7 @@ export default function SharePage() {
       queryClient.invalidateQueries({ queryKey: ["share", "received"] });
     } catch (e) {
       if (!alive.current) return;
-      setJoinErr(errText(e));
+      setJoinErr(errText(e, "Unexpected sharing error"));
     } finally {
       if (alive.current) setJoining(false);
     }
@@ -1151,7 +1151,7 @@ export default function SharePage() {
         // Clipboard write denied.
       }
     } catch (e) {
-      if (alive.current) setCodeErr(errText(e));
+      if (alive.current) setCodeErr(errText(e, "Unexpected sharing error"));
     }
   }
 
@@ -1244,7 +1244,7 @@ export default function SharePage() {
           }}
         >
           Failed to load shared projects:{" "}
-          {[publishedIsError && errText(publishedError), receivedIsError && errText(receivedError)]
+          {[publishedIsError && errText(publishedError, "Unexpected sharing error"), receivedIsError && errText(receivedError, "Unexpected sharing error")]
             .filter(Boolean)
             .join("; ")}
         </div>
