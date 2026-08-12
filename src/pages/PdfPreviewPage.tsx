@@ -12,6 +12,8 @@ import { Spinner } from "../components/ui/spinner";
 import type { SearchResult } from "../types/api";
 import { isArxivId } from "../lib/papers";
 import { MathText } from "../lib/tex";
+import { invalidatePaperMutationQueries } from "../lib/paperMutations";
+import { errText } from "../lib/errText";
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/build/pdf.worker.min.mjs",
@@ -85,8 +87,7 @@ export default function PdfPreviewPage() {
         appendSavedId(data.source_id).catch((e) =>
           console.error("appendSavedId failed:", e)
         );
-        queryClient.invalidateQueries({ queryKey: ["papers"] });
-        queryClient.invalidateQueries({ queryKey: ["stats"] });
+        invalidatePaperMutationQueries(queryClient);
       }
     },
   });
@@ -157,9 +158,7 @@ export default function PdfPreviewPage() {
 
         {saveMutation.isError && (
           <span className="text-xs text-danger">
-            {saveMutation.error instanceof Error
-              ? saveMutation.error.message
-              : "Save failed"}
+            {errText(saveMutation.error, "Save failed")}
           </span>
         )}
       </div>

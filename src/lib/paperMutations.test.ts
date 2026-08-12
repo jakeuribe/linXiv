@@ -4,6 +4,9 @@ import assert from "node:assert/strict";
 import { QueryClient } from "@tanstack/react-query";
 import {
   PAPER_QUERY_KEYS,
+  PAPER_MUTATION_QUERY_KEYS,
+  PROJECT_MUTATION_QUERY_KEYS,
+  PROJECT_MEMBERSHIP_QUERY_KEYS,
   invalidatePaperQueries,
   invalidateProjectMembershipQueries,
   forgetPurgedPapers,
@@ -55,6 +58,19 @@ test("invalidation matches nested keys by prefix", async () => {
   assert.ok(stale.has(JSON.stringify(["tag", "ml"])));
   // Unrelated caches must survive.
   assert.ok(!stale.has(JSON.stringify(["settings"])));
+});
+
+// Each registry set is the union of what its call sites used to invalidate —
+// these pin the members a single divergent site contributed, so a future trim
+// can't silently reintroduce the per-page divergence.
+test("registry sets keep their union members", () => {
+  for (const key of ["saved-pdfs", "tags", "tag", "stats", "paper"]) {
+    assert.ok(PAPER_MUTATION_QUERY_KEYS.includes(key), `${key} missing from paper mutation set`);
+  }
+  for (const key of ["trash", "tags", "tag", "project"]) {
+    assert.ok(PROJECT_MUTATION_QUERY_KEYS.includes(key), `${key} missing from project mutation set`);
+  }
+  assert.ok(PROJECT_MEMBERSHIP_QUERY_KEYS.includes("papers"), "papers missing from membership set");
 });
 
 test("project membership invalidation stays narrow", async () => {

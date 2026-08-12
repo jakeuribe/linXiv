@@ -17,6 +17,7 @@ import { getSettings } from "../api/settings";
 import { listPapers } from "../api/papers";
 import type { Clause, SearchResult, Paper } from "../types/api";
 import { isArxivId } from "../lib/papers";
+import { invalidatePaperMutationQueries } from "../lib/paperMutations";
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -276,9 +277,7 @@ const { data: settings } = useQuery({ queryKey: ["settings"], queryFn: getSettin
       throw new Error(`Unknown source ID format: ${sourceId}`);
     }
     setSavedIds((prev) => new Set([...prev, sourceId]));
-    // Refresh library/stats consumers and trip the graph's dirty flag.
-    queryClient.invalidateQueries({ queryKey: ["papers"] });
-    queryClient.invalidateQueries({ queryKey: ["stats"] });
+    invalidatePaperMutationQueries(queryClient);
   }, [queryClient]);
 
   const handleViewPdf = useCallback((result: SearchResult, isSaved: boolean) => {

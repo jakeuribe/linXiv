@@ -12,6 +12,8 @@ import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/input";
 import { Spinner } from "../components/ui/spinner";
 import { formSubmitOnCtrlEnter } from "../lib/submitShortcut";
+import { invalidateProjectMutationQueries } from "../lib/paperMutations";
+import { errText } from "../lib/errText";
 
 function NewProjectDialog({
   open,
@@ -44,14 +46,10 @@ function NewProjectDialog({
         color_hex: color,
         project_tags: currentTags.length > 0 ? currentTags : undefined,
       });
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["projects"] }),
-        queryClient.invalidateQueries({ queryKey: ["tags"] }),
-        queryClient.invalidateQueries({ queryKey: ["tag"] }),
-      ]);
+      await invalidateProjectMutationQueries(queryClient);
       handleClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to create project");
+      setError(errText(err, "Failed to create project"));
     } finally {
       setSubmitting(false);
     }
@@ -227,7 +225,7 @@ export default function ProjectsPage() {
           }}
         >
           Failed to load projects:{" "}
-          {error instanceof Error ? error.message : "Unknown error"}
+          {errText(error, "Unknown error")}
         </div>
       )}
 
