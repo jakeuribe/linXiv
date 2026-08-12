@@ -131,6 +131,9 @@ async fn import_pdf(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     // (it never errors), so app.py's PdfImportError → 422 path is unreachable here —
     // a %PDF-but-corrupt file saves a minimal paper + 200 where app.py returns 422.
     // Matching that needs core to surface PdfImport from the resolver (deferred).
+    // Fail-fast: a bad project_id is rejected before the network resolve; the
+    // commit lock re-checks (project can vanish in between). Same error bytes.
+    state.with_conn(|conn| paper_import::precheck_import_pdf(conn, project_id))?;
     let resolved =
         paper_import::resolve_import_pdf(&pdf_dir, &content, max_pdf_bytes, &config::data_dir())
             .await?;
