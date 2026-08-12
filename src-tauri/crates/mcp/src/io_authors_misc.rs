@@ -4,12 +4,12 @@
 //! Bodies use `self.with_conn(|conn| ...)`; export tools also use
 //! `self.pdf_dir`. Call `linxiv_core::service::{export_import, author, paper,
 //! tag}`, `::sources` for DOI resolution, and `linxiv_core::config::UserSettings`
-//! for the settings tools. `import_bibtex` delegates to `linxiv_core::formats`.
-//! Replicate the Python dict shapes EXACTLY, e.g. export returns
-//! `{"path", "project_id"}`, get_stats returns
-//! `{"paper_count", "tag_count", "category_count", "pdf_count"}`; save_doi
-//! returns the route's `{"metadata", "saved"}` envelope. Map `ValueError` to
-//! `Err(ErrorData::invalid_params(msg, None))` with the exact message.
+//! for the settings tools. `import_bibtex` and `get_stats` emit core's shared
+//! receipts (`service::paper_import::BibtexImportReceipt`, `service::stats::Stats`).
+//! Replicate the Python dict shapes EXACTLY elsewhere, e.g. export returns
+//! `{"path", "project_id"}`; save_doi returns the route's `{"metadata", "saved"}`
+//! envelope. Map `ValueError` to `Err(ErrorData::invalid_params(msg, None))`
+//! with the exact message.
 
 use std::path::{Path, PathBuf};
 

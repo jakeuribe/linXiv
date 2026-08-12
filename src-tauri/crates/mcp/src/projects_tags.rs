@@ -2,8 +2,8 @@
 //!
 //! Bodies use `self.with_conn(|conn| ...)` and call `linxiv_core::service::project`
 //! and `::tag`. Replicate the Python dict shapes EXACTLY (field names + order),
-//! e.g. delete returns `{"deleted": project_id}`, add_paper_to_project returns
-//! `{"project_id", "paper_id", "paper_count"}`. Map Python `ValueError` paths to
+//! e.g. delete returns `{"deleted": project_id}`; add/remove_paper_to_project
+//! emit core's `PaperMembershipReceipt`. Map Python `ValueError` paths to
 //! `Err(ErrorData::invalid_params(msg, None))` with the exact message string
 //! (e.g. `format!("Project {project_id} not found.")`, status uses `{status:?}`).
 
