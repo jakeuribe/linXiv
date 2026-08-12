@@ -14,9 +14,11 @@ pub enum CoreError {
     /// service.project.ProjectDeletedError — project is soft-deleted. 400.
     #[error("{0}")]
     ProjectDeleted(String),
-    /// Paper lookup miss. 404.
-    #[error("Paper not found")]
-    PaperNotFound,
+    /// Paper lookup miss — carries the key the caller addressed it by
+    /// (source_id, or a stringified SOURCE_FK), so every surface words the
+    /// message identically. 404.
+    #[error("Paper {0} not found")]
+    PaperNotFound(String),
     /// service.paper.PdfImportError — metadata extraction failed. 422.
     #[error("Could not extract PDF metadata: {0}")]
     PdfImport(String),
@@ -64,7 +66,7 @@ impl CoreError {
     pub fn http_status(&self) -> u16 {
         use CoreError::*;
         match self {
-            ProjectNotFound(_) | PaperNotFound | ArxivNotFound(_) | OpenAlexNotFound(_)
+            ProjectNotFound(_) | PaperNotFound(_) | ArxivNotFound(_) | OpenAlexNotFound(_)
             | NotFound(_) => 404,
             ProjectDeleted(_) | PaperLink(_) | OpenAlexInput(_) | BadRequest(_) => 400,
             Conflict(_) => 409,

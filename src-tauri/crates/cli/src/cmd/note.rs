@@ -8,7 +8,6 @@ use linxiv_core::service::editor_project as svc_editor;
 use linxiv_core::service::note as svc_note;
 use linxiv_core::service::paper as svc_paper;
 use linxiv_core::service::project as svc_project;
-use linxiv_core::service::project::Project;
 
 use crate::ctx::Ctx;
 use crate::output::{as_source_id, fail, output};
@@ -60,16 +59,7 @@ pub async fn run(cmd: NoteCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         } => {
             // Project existence is validated before paper resolution (Python order).
             if let Some(pid) = project_id {
-                if svc_project::get(
-                    conn,
-                    &Project {
-                        project_fk: Some(pid),
-                    },
-                )?
-                .is_none()
-                {
-                    fail(format!("Project {pid} not found"));
-                }
+                svc_project::get_required(conn, pid).unwrap_or_else(|e| fail(e));
             }
             let source_id = as_source_id(&source_id, "arxiv");
             let source_fk = svc_paper::resolve_source_fk(conn, &source_id)?;

@@ -5,7 +5,7 @@
 //! e.g. delete returns `{"deleted": project_id}`; add/remove_paper_to_project
 //! emit core's `PaperMembershipReceipt`. Map Python `ValueError` paths to
 //! `Err(ErrorData::invalid_params(msg, None))` with the exact message string
-//! (e.g. `format!("Project {project_id} not found.")`, status uses `{status:?}`).
+//! Misses word themselves via the typed `CoreError` variants; status uses `{status:?}`.
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_router, ErrorData};
@@ -67,13 +67,11 @@ fn ensure_paper(conn: &rusqlite::Connection, paper_id: &str) -> Result<(), Error
     )
     .map_err(core_err)?
     .map(|_| ())
-    .ok_or_else(|| {
-        ErrorData::invalid_params(format!("Paper {paper_id:?} not found in database."), None)
-    })
+    .ok_or_else(|| crate::util::guard_err(CoreError::PaperNotFound(paper_id.to_string())))
 }
 
 /// Shared body of add_paper_to_project / remove_paper_from_project — core's
-/// receipt, with the MCP wording for a missing paper.
+/// receipt; misses word themselves via the typed variants' Display.
 fn paper_membership(
     conn: &rusqlite::Connection,
     project_id: i64,
@@ -82,10 +80,7 @@ fn paper_membership(
 ) -> Result<String, ErrorData> {
     match op(conn, project_id, &paper_id) {
         Ok(receipt) => jval(receipt),
-        Err(CoreError::PaperNotFound) => Err(ErrorData::invalid_params(
-            format!("Paper {paper_id:?} not found in database."),
-            None,
-        )),
+        Err(e @ CoreError::PaperNotFound(_)) => Err(crate::util::guard_err(e)),
         Err(e @ CoreError::ProjectNotFound(_)) => Err(crate::util::guard_err(e)),
         Err(e) => Err(core_err(e)),
     }

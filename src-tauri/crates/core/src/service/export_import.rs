@@ -256,13 +256,7 @@ pub fn build_manifest(
     include_pdfs: bool,
     pdf_dir: &Path,
 ) -> Result<(Manifest, Vec<(String, PathBuf)>)> {
-    let details = project::get(
-        conn,
-        &project::Project {
-            project_fk: Some(project_fk),
-        },
-    )?
-    .ok_or_else(|| CoreError::BadRequest(format!("Project {project_fk} not found")))?;
+    let details = project::get_required(conn, project_fk)?;
 
     let papers = paper::get_many(
         conn,
@@ -940,12 +934,12 @@ mod tests {
     }
 
     #[test]
-    fn build_manifest_missing_project_is_bad_request() {
+    fn build_manifest_missing_project_is_typed_not_found() {
         let conn = mem();
         let tmp = tempfile::tempdir().unwrap();
         assert!(matches!(
             build_manifest(&conn, 999, false, tmp.path()).unwrap_err(),
-            CoreError::BadRequest(_)
+            CoreError::ProjectNotFound(999)
         ));
     }
 
