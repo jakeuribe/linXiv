@@ -72,29 +72,23 @@ fn ensure_paper(conn: &rusqlite::Connection, paper_id: &str) -> Result<(), Error
     })
 }
 
-/// Shared body of add_paper_to_project / remove_paper_from_project.
+/// Shared body of add_paper_to_project / remove_paper_from_project — core's
+/// receipt, with the MCP wording for a missing paper.
 fn paper_membership(
     conn: &rusqlite::Connection,
     project_id: i64,
     paper_id: String,
-    op: fn(&rusqlite::Connection, i64, &[String]) -> Result<Vec<String>, CoreError>,
+    op: fn(&rusqlite::Connection, i64, &str) -> Result<project::PaperMembershipReceipt, CoreError>,
 ) -> Result<String, ErrorData> {
-    let failed = match op(conn, project_id, &[paper_id.clone()]) {
-        Ok(f) => f,
-        Err(e @ CoreError::ProjectNotFound(_)) => return Err(crate::util::guard_err(e)),
-        Err(e) => return Err(core_err(e)),
-    };
-    if !failed.is_empty() {
-        return Err(ErrorData::invalid_params(
+    match op(conn, project_id, &paper_id) {
+        Ok(receipt) => jval(receipt),
+        Err(CoreError::PaperNotFound) => Err(ErrorData::invalid_params(
             format!("Paper {paper_id:?} not found in database."),
             None,
-        ));
+        )),
+        Err(e @ CoreError::ProjectNotFound(_)) => Err(crate::util::guard_err(e)),
+        Err(e) => Err(core_err(e)),
     }
-    let count = get_project(conn, project_id)?
-        .ok_or_else(|| crate::util::guard_err(CoreError::ProjectNotFound(project_id)))?
-        .source_fks
-        .len();
-    jval(json!({ "project_id": project_id, "paper_id": paper_id, "paper_count": count }))
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -326,7 +320,7 @@ impl Server {
             project_id,
             paper_id,
         } = _params.0;
-        self.with_conn(|conn| paper_membership(conn, project_id, paper_id, project::add_papers))
+        self.with_conn(|conn| paper_membership(conn, project_id, paper_id, project::add_paper))
     }
 
     #[tool(
@@ -382,7 +376,7 @@ impl Server {
             project_id,
             paper_id,
         } = _params.0;
-        self.with_conn(|conn| paper_membership(conn, project_id, paper_id, project::remove_papers))
+        self.with_conn(|conn| paper_membership(conn, project_id, paper_id, project::remove_paper))
     }
 
     #[tool(description = "Archive a project (read-only, still visible).")]

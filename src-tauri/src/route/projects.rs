@@ -261,15 +261,9 @@ fn delete(state: &AppState, id: &str) -> Result<Value, ApiError> {
     Ok(json!({ "ok": true }))
 }
 
-/// Map the `add_papers`/`remove_papers` membership guards to app.py's status codes.
-fn map_membership(r: linxiv_core::error::Result<Vec<String>>) -> Result<Vec<String>, ApiError> {
-    r.map_err(|e| match e {
-        CoreError::ProjectDeleted(m) => ApiError::new(400, m),
-        other => other.into(),
-    })
-}
-
-/// `POST /api/projects/{id}/papers` — `api_project_add_paper`.
+/// `POST /api/projects/{id}/papers` — `api_project_add_paper`. Core's shared
+/// receipt; `?` keeps app.py's statuses (PaperNotFound → 404 "Paper not found",
+/// ProjectNotFound → 404, ProjectDeleted → 400).
 fn add_paper(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let pid = path_i64(id)?;
     #[derive(Deserialize)]
@@ -277,14 +271,8 @@ fn add_paper(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiE
         source_id: String,
     }
     let b: Body = ctx.parse_body()?;
-    state.with_conn(|conn| -> Result<(), ApiError> {
-        let failed = map_membership(project::add_papers(conn, pid, &[b.source_id]))?;
-        if !failed.is_empty() {
-            return Err(ApiError::new(404, "Paper not found"));
-        }
-        Ok(())
-    })?;
-    Ok(json!({ "ok": true }))
+    let receipt = state.with_conn(|conn| project::add_paper(conn, pid, &b.source_id))?;
+    crate::route::to_value(&receipt)
 }
 
 /// `POST /api/projects/{id}/papers/bulk` — `api_project_add_papers`. Partial success.
@@ -295,8 +283,7 @@ fn add_papers_bulk(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value
         source_ids: Vec<String>,
     }
     let b: Body = ctx.parse_body()?;
-    let failed =
-        state.with_conn(|conn| map_membership(project::add_papers(conn, pid, &b.source_ids)))?;
+    let failed = state.with_conn(|conn| project::add_papers(conn, pid, &b.source_ids))?;
     Ok(json!({ "ok": failed.is_empty(), "failed": failed }))
 }
 
@@ -304,14 +291,8 @@ fn add_papers_bulk(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value
 /// arrives already percent-decoded in `ctx.segs`.
 fn remove_paper(state: &AppState, id: &str, sid: &str) -> Result<Value, ApiError> {
     let pid = path_i64(id)?;
-    state.with_conn(|conn| -> Result<(), ApiError> {
-        let failed = map_membership(project::remove_papers(conn, pid, &[sid.to_string()]))?;
-        if !failed.is_empty() {
-            return Err(ApiError::new(404, "Paper not found"));
-        }
-        Ok(())
-    })?;
-    Ok(json!({ "ok": true }))
+    let receipt = state.with_conn(|conn| project::remove_paper(conn, pid, sid))?;
+    crate::route::to_value(&receipt)
 }
 
 #[cfg(test)]

@@ -400,6 +400,54 @@ pub fn export_papers(conn: &Connection, source_fks: &[i64]) -> Result<Vec<PaperD
         .collect())
 }
 
+/// Receipt for the single-paper membership ops — one shape for all three
+/// surfaces (`ok` + ids + the project's post-op paper count).
+#[derive(Debug, serde::Serialize)]
+pub struct PaperMembershipReceipt {
+    pub ok: bool,
+    pub project_id: i64,
+    pub paper_id: String,
+    pub paper_count: usize,
+}
+
+/// Add one paper to a project, returning the shared receipt. An id that
+/// resolves to no paper root is `PaperNotFound` (guards per `add_papers`).
+pub fn add_paper(
+    conn: &Connection,
+    project_fk: i64,
+    source_id: &str,
+) -> Result<PaperMembershipReceipt> {
+    membership_receipt(conn, project_fk, source_id, add_papers)
+}
+
+/// Remove one paper from a project — same contract as [`add_paper`].
+pub fn remove_paper(
+    conn: &Connection,
+    project_fk: i64,
+    source_id: &str,
+) -> Result<PaperMembershipReceipt> {
+    membership_receipt(conn, project_fk, source_id, remove_papers)
+}
+
+fn membership_receipt(
+    conn: &Connection,
+    project_fk: i64,
+    source_id: &str,
+    op: fn(&Connection, i64, &[String]) -> Result<Vec<String>>,
+) -> Result<PaperMembershipReceipt> {
+    let failed = op(conn, project_fk, &[source_id.to_string()])?;
+    if !failed.is_empty() {
+        return Err(CoreError::PaperNotFound);
+    }
+    let paper_count = get_required(conn, project_fk)?.source_fks.len();
+    Ok(PaperMembershipReceipt {
+        ok: true,
+        project_id: project_fk,
+        paper_id: source_id.to_string(),
+        paper_count,
+    })
+}
+
 /// `service/project.py::link_imported` — same write path as `add_papers`, but ids come
 /// from the import (not a user), so an unresolved id is logged, not returned.
 pub fn link_imported(conn: &Connection, project_fk: i64, source_ids: &[String]) -> Result<()> {
@@ -609,6 +657,25 @@ mod tests {
         assert_eq!(got.source_fks, vec![10, 11]);
         assert_eq!(got.project_tags, vec!["RL", "Vision"]); // ORDER BY label
         assert_eq!(got.status, Status::Active);
+    }
+
+    #[test]
+    fn membership_receipt_counts_and_pins_wire_shape() {
+        let mut conn = setup();
+        let id = create(&mut conn, &pin("Proj", vec![10], vec![])).unwrap();
+
+        let receipt = add_paper(&conn, id, "arxiv:2").unwrap();
+        assert_eq!(
+            serde_json::to_string(&receipt).unwrap(),
+            format!(r#"{{"ok":true,"project_id":{id},"paper_id":"arxiv:2","paper_count":2}}"#)
+        );
+        let receipt = remove_paper(&conn, id, "arxiv:2").unwrap();
+        assert_eq!(receipt.paper_count, 1);
+        // Unresolvable id → the typed miss, nothing changed.
+        assert!(matches!(
+            add_paper(&conn, id, "arxiv:ghost").unwrap_err(),
+            CoreError::PaperNotFound
+        ));
     }
 
     #[test]
