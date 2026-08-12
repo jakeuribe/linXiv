@@ -23,8 +23,9 @@ use linxiv_core::config::{self, UserSettings};
 use linxiv_core::error::CoreError;
 use linxiv_core::service::author::{self as svc_author, Author};
 use linxiv_core::service::export_import::{self as svc_ei, OnConflict};
+use linxiv_core::service::paper_import as svc_paper_import;
 use linxiv_core::service::project::{self as svc_project, Project};
-use linxiv_core::service::{paper as svc_paper, tag as svc_tag};
+use linxiv_core::service::paper as svc_paper;
 use linxiv_core::sources::doi_resolve;
 use linxiv_core::storage;
 
@@ -56,17 +57,8 @@ fn project_papers(
     )
     .map_err(map_core)?
     .ok_or_else(|| ErrorData::invalid_params(format!("Project {project_id} not found."), None))?;
-    if details.source_fks.is_empty() {
-        return Ok(Vec::new());
-    }
-    svc_paper::get_many(
-        conn,
-        &svc_paper::Papers {
-            source_fks: Some(details.source_fks),
-            ..Default::default()
-        },
-    )
-    .map_err(map_core)
+    // One resolution for every surface: library order (ADR-0011, route wins).
+    svc_project::export_papers(conn, &details.source_fks).map_err(map_core)
 }
 
 use linxiv_core::formats::with_default_ext;
@@ -526,63 +518,21 @@ impl Server {
         let ImportBibtexParams { file, project_id } = params.0;
         let text = std::fs::read_to_string(&file)
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
-        let metas = linxiv_core::formats::bibtex_import(&text)
-            .map_err(|m| ErrorData::invalid_params(m, None))?;
-
-        let value = self.with_conn(|conn| -> Result<Value, ErrorData> {
-            // Guard before saving so a missing/deleted project fails the call
-            // before the library is mutated.
-            if let Some(pid) = project_id {
-                match svc_project::ensure_membership_writable(conn, pid) {
-                    Ok(()) => {}
-                    Err(e @ CoreError::ProjectNotFound(_)) => {
-                        return Err(crate::util::invalid(e.to_string()));
-                    }
-                    Err(e) => return Err(map_core(e)),
-                }
-            }
-            let saved: Vec<(String, i64)> = metas
-                .iter()
-                .map(|meta| svc_paper::save_paper_metadata(conn, meta, None).map_err(map_core))
-                .collect::<Result<_, _>>()?;
-            if let Some(pid) = project_id {
-                if !saved.is_empty() {
-                    let ids: Vec<String> = saved.iter().map(|(s, _)| s.clone()).collect();
-                    if let Err(e) = svc_project::link_imported(conn, pid, &ids) {
-                        return Err(ErrorData::invalid_params(
-                            format!(
-                                "{} paper(s) were imported but could not be linked: {e}",
-                                saved.len()
-                            ),
-                            None,
-                        ));
-                    }
-                }
-            }
-            let papers: Vec<Value> = saved
-                .iter()
-                .map(|(s, v)| json!({ "source_id": s, "version": v }))
-                .collect();
-            Ok(json!({ "imported": saved.len(), "papers": papers }))
-        })?;
-        json_ok(&value)
+        // guard_err: the guard/parse/link refusals are ValueErrors, DB faults internal.
+        let receipt = self
+            .with_conn(|conn| svc_paper_import::import_bibtex(conn, &text, project_id))
+            .map_err(guard_err)?;
+        json_ok(&receipt)
     }
 
     #[tool(
-        description = "Report library statistics: paper, tag, category, and downloaded-PDF counts."
+        description = "Report library statistics: paper, tag, category, and downloaded-PDF counts, \
+                       plus the 10 newest papers."
     )]
     pub async fn get_stats(&self) -> Result<String, ErrorData> {
-        self.with_conn(|conn| -> Result<String, ErrorData> {
-            let papers = svc_paper::list_papers(conn, true, None, 0, None).map_err(map_core)?;
-            let categories = svc_paper::get_categories(conn).map_err(map_core)?;
-            let all_tags = svc_tag::list_all_tags(conn).map_err(map_core)?;
-            let pdf_count = papers.iter().filter(|p| p.has_pdf).count();
-            json_ok(&json!({
-                "paper_count": papers.len(),
-                "tag_count": all_tags.len(),
-                "category_count": categories.len(),
-                "pdf_count": pdf_count,
-            }))
+        self.with_conn(|conn| {
+            let s = linxiv_core::service::stats::stats(conn).map_err(map_core)?;
+            json_ok(&s)
         })
     }
 

@@ -13,7 +13,6 @@ use linxiv_core::config;
 use linxiv_core::models::PaperMetadata;
 use linxiv_core::service::paper::{self as svc_paper, Paper};
 use linxiv_core::service::project as svc_project;
-use linxiv_core::sources::arxiv_downloads;
 
 use crate::route::{path_i64, ApiError, ReqCtx};
 use crate::state::AppState;
@@ -153,28 +152,10 @@ async fn fetch_full_text(
         .with_conn(|conn| svc_paper::get(conn, &sid_key(source_id)))?
         .ok_or_else(|| ApiError::new(404, "Paper not found"))?;
     if paper.downloaded_source && !ctx.q_bool("force") {
-        return Ok(json!({
-            "source_id": paper.source_id,
-            "version": paper.version,
-            "indexed": false,
-            "reason": "source already indexed; pass force=true to re-fetch",
-        }));
+        return to_value(&svc_paper::FullTextReceipt::already_indexed(&paper));
     }
-    let (sid, version) = (paper.source_id.clone(), paper.version);
-    match ingest_full_text(state, &paper).await? {
-        Some(chars) => Ok(json!({
-            "source_id": sid,
-            "version": version,
-            "indexed": true,
-            "chars": chars,
-        })),
-        None => Ok(json!({
-            "source_id": sid,
-            "version": version,
-            "indexed": false,
-            "reason": "re-fetch produced no TeX; kept the text already indexed",
-        })),
-    }
+    let receipt = ingest_full_text(state, &paper).await?;
+    to_value(&receipt)
 }
 
 /// `GET /api/papers/full-text-pending` — how many stored arXiv papers have no
@@ -184,25 +165,15 @@ fn full_text_pending(state: &AppState) -> Result<Value, ApiError> {
     Ok(json!({ "pending": pending }))
 }
 
-/// Download + extract + store one paper's TeX, returning the stored char count.
-/// `Ok(None)` means the extract came back empty and a body is already indexed,
-/// so nothing was written. Shared by the route above and `full_text_worker`.
+/// Download + extract + store one paper's TeX (`service::paper`'s two-phase
+/// ingest: fetch outside the lock, commit under it). Shared by the route above
+/// and `full_text_worker`.
 pub(crate) async fn ingest_full_text(
     state: &AppState,
     paper: &linxiv_core::models::PaperDetails,
-) -> Result<Option<usize>, ApiError> {
-    // Resolve the URL (and drop the connection) before the await — with_conn's
-    // guard must never span it.
-    let url = svc_paper::source_fetch_url(paper)?.to_string();
-    let text = arxiv_downloads::fetch_source_text(&url, &config::data_dir()).await?;
-    if !svc_paper::should_store_full_text(paper, &text) {
-        return Ok(None);
-    }
-    // arXiv serves PDF-only submissions from the same `/src/` path, so an empty
-    // extract still marks the paper DOWNLOADED_SOURCE; `force` fetches again.
-    state
-        .with_conn(|conn| svc_paper::set_full_text(conn, &paper.source_id, paper.version, &text))?;
-    Ok(Some(text.chars().count()))
+) -> Result<svc_paper::FullTextReceipt, ApiError> {
+    let fetched = svc_paper::fetch_full_text(paper, &config::data_dir()).await?;
+    Ok(state.with_conn(|conn| fetched.commit(conn))?)
 }
 
 /// `GET /api/papers/{source_id}` — `api_get_paper`. Bare `to_dict()`.

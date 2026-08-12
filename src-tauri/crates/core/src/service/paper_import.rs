@@ -153,12 +153,43 @@ where
     })
 }
 
-/// `import_pdf` with the production resolver wired in. Async because the resolver
-/// (`sources::pdf_metadata::resolve_pdf_metadata`) hits the network for arXiv/DOI/
-/// CrossRef enrichment; `data_dir` threads to arXiv's rate-limit file. We resolve
-/// FIRST, then hand the already-resolved `(meta, external)` to the sync `import_pdf`
-/// via a closure (its bytes arg is ignored) — so `import_pdf`'s seam, and the
-/// rollback-matrix tests over it, stay exactly as they are.
+/// The output of the import's resolve phase: extracted/enriched metadata plus
+/// the optional upstream `(source_id, version)` identity.
+pub type ResolvedPdf = (PaperMetadata, Option<(String, i64)>);
+
+/// Phase 1 of the two-phase import — everything that must NOT hold the DB lock:
+/// the `pdf_save_limit_mb` quota precheck (fail before the expensive pdfium
+/// parse; `import_pdf` re-checks it under the lock) and the network metadata
+/// resolve. Hand the result to [`commit_import_pdf`] under the caller's lock.
+pub async fn resolve_import_pdf(
+    pdf_dir: &Path,
+    content: &[u8],
+    max_total_bytes: u64,
+    data_dir: &Path,
+) -> Result<ResolvedPdf> {
+    check_pdf_storage_quota(pdf_dir, content.len(), max_total_bytes)?;
+    crate::sources::pdf_metadata::resolve_pdf_metadata(content, data_dir).await
+}
+
+/// Phase 2, under the caller's DB lock: the sync import (quota re-check,
+/// membership guard when a project is targeted, rollback matrix) with the
+/// already-resolved metadata. Thin over `import_pdf`, so its seam — and the
+/// rollback-matrix tests over it — stay exactly as they are.
+pub fn commit_import_pdf(
+    conn: &mut Connection,
+    pdf_dir: &Path,
+    content: &[u8],
+    project_id: Option<i64>,
+    max_total_bytes: u64,
+    resolved: ResolvedPdf,
+) -> Result<PaperImportResult> {
+    import_pdf(conn, pdf_dir, content, project_id, max_total_bytes, move |_| {
+        Ok(resolved.clone())
+    })
+}
+
+/// Both phases against one directly-held connection (the CLI's shape — no mutex
+/// to keep the await out from under).
 pub async fn import_pdf_default(
     conn: &mut Connection,
     pdf_dir: &Path,
@@ -167,12 +198,49 @@ pub async fn import_pdf_default(
     max_total_bytes: u64,
     data_dir: &Path,
 ) -> Result<PaperImportResult> {
-    // Quota first: don't spend a full pdfium parse + network enrichment on a PDF
-    // that's about to be rejected anyway (import_pdf re-checks — cheap, idempotent).
-    check_pdf_storage_quota(pdf_dir, content.len(), max_total_bytes)?;
-    let resolved = crate::sources::pdf_metadata::resolve_pdf_metadata(content, data_dir).await?;
-    import_pdf(conn, pdf_dir, content, project_id, max_total_bytes, |_| {
-        Ok(resolved.clone())
+    let resolved = resolve_import_pdf(pdf_dir, content, max_total_bytes, data_dir).await?;
+    commit_import_pdf(conn, pdf_dir, content, project_id, max_total_bytes, resolved)
+}
+
+/// Receipt for a BibTeX import — the route's `/api/papers/import/bibtex` shape,
+/// emitted by all three surfaces.
+#[derive(Debug, Clone, Serialize)]
+pub struct BibtexImportReceipt {
+    pub saved_count: usize,
+    pub source_ids: Vec<String>,
+}
+
+/// Import papers from BibTeX text, optionally linking them to a project.
+/// Guard order matches the import contract: membership guard (missing →
+/// `ProjectNotFound`, deleted → `ProjectDeleted`) before parsing, parse errors →
+/// `BadRequest`, and a project vanishing between guard and link → `PaperLink`
+/// with the papers kept.
+pub fn import_bibtex(
+    conn: &mut Connection,
+    text: &str,
+    project_id: Option<i64>,
+) -> Result<BibtexImportReceipt> {
+    if let Some(pid) = project_id {
+        crate::service::project::ensure_membership_writable(conn, pid)?;
+    }
+    let metas = crate::formats::bibtex_import(text).map_err(CoreError::BadRequest)?;
+    let mut source_ids = Vec::with_capacity(metas.len());
+    for meta in &metas {
+        source_ids.push(crate::service::paper::save_paper_metadata(conn, meta, None)?.0);
+    }
+    if let Some(pid) = project_id {
+        if !source_ids.is_empty() {
+            if let Err(e) = crate::service::project::link_imported(conn, pid, &source_ids) {
+                return Err(CoreError::PaperLink(format!(
+                    "{} paper(s) were imported but could not be linked: {e}",
+                    source_ids.len()
+                )));
+            }
+        }
+    }
+    Ok(BibtexImportReceipt {
+        saved_count: source_ids.len(),
+        source_ids,
     })
 }
 

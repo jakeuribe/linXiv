@@ -17,7 +17,6 @@ use serde_json::Value;
 use linxiv_core::error::CoreError;
 use linxiv_core::models::{PaperMetadata, SearchResultOut};
 use linxiv_core::service::paper::{self as svc_paper, PaperSort};
-use linxiv_core::sources::arxiv_downloads;
 use linxiv_core::sources::fetch as svc_fetch;
 use linxiv_core::{config, service::project as svc_project};
 
@@ -321,13 +320,7 @@ impl Server {
                 ))
             })?;
         if paper.downloaded_source && !force {
-            // `source_id` key, matching the route's envelope (src/route/papers.rs).
-            return json_ok(&serde_json::json!({
-                "source_id": paper.source_id,
-                "version": paper.version,
-                "indexed": false,
-                "reason": "source already indexed; pass force=true to re-fetch",
-            }));
+            return json_ok(&svc_paper::FullTextReceipt::already_indexed(&paper));
         }
         // Mirrors io_authors_misc.rs's map_core: BadRequest/Validation/PaperNotFound
         // are user-facing refusals, not server faults.
@@ -339,33 +332,14 @@ impl Server {
             )),
             other => core_err(other),
         };
-        let url = svc_paper::source_fetch_url(&paper)
-            .map_err(map_fetch_err)?
-            .to_string();
-        let text = arxiv_downloads::fetch_source_text(&url, &config::data_dir())
+        // Two-phase ingest from core: fetch outside the lock, commit under it.
+        let fetched = svc_paper::fetch_full_text(&paper, &config::data_dir())
             .await
             .map_err(map_fetch_err)?;
-        let store = svc_paper::should_store_full_text(&paper, &text);
-        let (source_id, version) = (paper.source_id, paper.version);
-        let chars = text.chars().count();
-        if !store {
-            return json_ok(&serde_json::json!({
-                "source_id": source_id,
-                "version": version,
-                "indexed": false,
-                "reason": "re-fetch produced no TeX; kept the text already indexed",
-            }));
-        }
-        // An empty extract is stored, not dropped: it marks the paper attempted so a
-        // PDF-only submission isn't re-fetched on every run. force=true re-opens it.
-        self.with_conn(|conn| svc_paper::set_full_text(conn, &source_id, version, &text))
+        let receipt = self
+            .with_conn(|conn| fetched.commit(conn))
             .map_err(map_fetch_err)?;
-        json_ok(&serde_json::json!({
-            "source_id": source_id,
-            "version": version,
-            "indexed": true,
-            "chars": chars,
-        }))
+        json_ok(&receipt)
     }
 
     #[tool(

@@ -7,8 +7,8 @@ use serde_json::json;
 
 use linxiv_core::error::Result as CoreResult;
 use linxiv_core::formats::with_default_ext;
-use linxiv_core::models::{PaperDetails, ProjectIn, ProjectUpdateIn, Status};
-use linxiv_core::service::{export_import, paper, project};
+use linxiv_core::models::{ProjectIn, ProjectUpdateIn, Status};
+use linxiv_core::service::{export_import, project};
 
 use crate::ctx::Ctx;
 use crate::output::{as_source_id, fail, output};
@@ -141,19 +141,6 @@ fn resolve_or_exit(ctx: &Ctx, project_id: i64) -> linxiv_core::models::ProjectDe
     }
 }
 
-/// Resolve a project's papers, mirroring `get_many(Papers(source_fks=...)) if source_fks else []`.
-fn project_papers(ctx: &Ctx, source_fks: &[i64]) -> CoreResult<Vec<PaperDetails>> {
-    if source_fks.is_empty() {
-        return Ok(Vec::new());
-    }
-    paper::get_many(
-        &ctx.conn,
-        &paper::Papers {
-            source_fks: Some(source_fks.to_vec()),
-            ..Default::default()
-        },
-    )
-}
 
 pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
     match cmd {
@@ -395,7 +382,7 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
 
         ProjectCmd::ExportBibtex { project_id, dest } => {
             let details = resolve_or_exit(ctx, project_id);
-            let papers = project_papers(ctx, &details.source_fks)?;
+            let papers = project::export_papers(&ctx.conn, &details.source_fks)?;
             let bibtex = linxiv_core::formats::bibtex_export(&papers);
             let dest = with_default_ext(&dest, "bib");
             std::fs::write(&dest, bibtex)?;
@@ -404,7 +391,7 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
 
         ProjectCmd::ExportObsidian { project_id, dest } => {
             let details = resolve_or_exit(ctx, project_id);
-            let papers = project_papers(ctx, &details.source_fks)?;
+            let papers = project::export_papers(&ctx.conn, &details.source_fks)?;
             let md = linxiv_core::formats::obsidian_export(&papers);
             let dest = with_default_ext(&dest, "md");
             std::fs::write(&dest, md)?;

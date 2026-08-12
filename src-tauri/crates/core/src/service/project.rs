@@ -18,7 +18,7 @@ use chrono::{Duration, Utc};
 use rusqlite::Connection;
 
 use crate::error::{CoreError, Result};
-use crate::models::{ProjectDetails, ProjectIn, ProjectOut, ProjectUpdateIn, Status};
+use crate::models::{PaperDetails, ProjectDetails, ProjectIn, ProjectOut, ProjectUpdateIn, Status};
 use crate::storage::db::transaction;
 use crate::storage::queries::{note as nq, paper as paperq, project as pq, tag as tq};
 use crate::storage::query::{self, Q};
@@ -381,6 +381,23 @@ pub fn remove_papers(
         pq::remove_papers(conn, project_fk, &fks)?;
     }
     Ok(failed)
+}
+
+/// A project's papers for the text exporters, resolved ONE way for every
+/// surface: the latest-papers view in library order, filtered to the project
+/// (the shipped GUI contract — app.py's
+/// `[p for p in list_paper_details(latest) if id in ids]`).
+pub fn export_papers(conn: &Connection, source_fks: &[i64]) -> Result<Vec<PaperDetails>> {
+    if source_fks.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids: HashSet<String> = crate::service::paper::sfks_to_source_ids(conn, source_fks)?
+        .into_iter()
+        .collect();
+    Ok(crate::service::paper::list_papers(conn, true, None, 0, None)?
+        .into_iter()
+        .filter(|p| ids.contains(&p.source_id))
+        .collect())
 }
 
 /// `service/project.py::link_imported` — same write path as `add_papers`, but ids come

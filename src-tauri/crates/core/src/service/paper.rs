@@ -595,6 +595,83 @@ pub fn should_store_full_text(paper: &PaperDetails, extracted: &str) -> bool {
     !extracted.is_empty() || paper.full_text.as_deref().unwrap_or_default().is_empty()
 }
 
+/// Receipt for one full-text ingest attempt — the wire shape route, CLI and MCP
+/// all emit (`{source_id, version, indexed}` + `chars` or `reason`).
+#[derive(Debug, Serialize)]
+pub struct FullTextReceipt {
+    pub source_id: String,
+    pub version: i64,
+    pub indexed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chars: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<&'static str>,
+}
+
+impl FullTextReceipt {
+    /// The `downloaded_source && !force` skip, decided before any network work.
+    pub fn already_indexed(paper: &PaperDetails) -> Self {
+        FullTextReceipt {
+            source_id: paper.source_id.clone(),
+            version: paper.version,
+            indexed: false,
+            chars: None,
+            reason: Some("source already indexed; pass force=true to re-fetch"),
+        }
+    }
+}
+
+/// Phase 1 of a full-text ingest — everything that must NOT hold the DB lock:
+/// resolve the source URL, download the tarball, extract the TeX. Hand the
+/// result to [`FetchedFullText::commit`] under the caller's lock (two-phase so
+/// no surface holds its connection mutex across the network await).
+pub async fn fetch_full_text(paper: &PaperDetails, data_dir: &std::path::Path) -> Result<FetchedFullText> {
+    let url = source_fetch_url(paper)?.to_string();
+    let text = crate::sources::arxiv_downloads::fetch_source_text(&url, data_dir).await?;
+    Ok(FetchedFullText {
+        source_id: paper.source_id.clone(),
+        version: paper.version,
+        store: should_store_full_text(paper, &text),
+        text,
+    })
+}
+
+/// A downloaded-and-extracted TeX body waiting to be committed (phase 2).
+#[derive(Debug)]
+pub struct FetchedFullText {
+    source_id: String,
+    version: i64,
+    text: String,
+    store: bool,
+}
+
+impl FetchedFullText {
+    /// Phase 2, under the caller's DB lock: store + index the body, or refuse to
+    /// clobber an already-indexed one with an empty re-fetch. An empty extract is
+    /// otherwise stored — arXiv serves PDF-only submissions from the same `/src/`
+    /// path, and writing "" marks the paper DOWNLOADED_SOURCE so the backfill
+    /// stops re-fetching it (`force` re-opens it).
+    pub fn commit(self, conn: &mut Connection) -> Result<FullTextReceipt> {
+        if !self.store {
+            return Ok(FullTextReceipt {
+                source_id: self.source_id,
+                version: self.version,
+                indexed: false,
+                chars: None,
+                reason: Some("re-fetch produced no TeX; kept the text already indexed"),
+            });
+        }
+        set_full_text(conn, &self.source_id, self.version, &self.text)?;
+        Ok(FullTextReceipt {
+            source_id: self.source_id,
+            version: self.version,
+            indexed: true,
+            chars: Some(self.text.chars().count()),
+            reason: None,
+        })
+    }
+}
+
 /// SOURCE_IDs of stored arXiv papers with no TeX source yet, oldest-published
 /// first — the backfill work list. Ids only; the caller loads each paper as it
 /// goes. The query matches on the same `arxiv:` / `/pdf/` constants

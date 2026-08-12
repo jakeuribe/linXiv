@@ -7,7 +7,6 @@ use clap::Subcommand;
 use serde_json::{json, Value};
 
 use linxiv_core::service::paper as svc_paper;
-use linxiv_core::service::tag as svc_tag;
 use linxiv_core::storage;
 
 use crate::ctx::Ctx;
@@ -25,18 +24,9 @@ pub enum SettingsCmd {
     },
 }
 
-// cmd_stats
+// cmd_stats — `service::stats` owns the envelope (ADR-0011: gained `recent_papers`).
 pub async fn stats(ctx: &mut Ctx) -> anyhow::Result<()> {
-    let papers = svc_paper::list_papers(&ctx.conn, true, None, 0, None)?;
-    let categories = svc_paper::get_categories(&ctx.conn)?;
-    let all_tags = svc_tag::list_all_tags(&ctx.conn)?;
-    let pdf_count = papers.iter().filter(|p| p.has_pdf).count();
-    output(&json!({
-        "paper_count": papers.len(),
-        "tag_count": all_tags.len(),
-        "category_count": categories.len(),
-        "pdf_count": pdf_count,
-    }));
+    output(&linxiv_core::service::stats::stats(&ctx.conn)?);
     Ok(())
 }
 
