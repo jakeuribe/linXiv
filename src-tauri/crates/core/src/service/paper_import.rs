@@ -157,6 +157,17 @@ where
 /// the optional upstream `(source_id, version)` identity.
 pub type ResolvedPdf = (PaperMetadata, Option<(String, i64)>);
 
+/// Fail-fast guard for the two-phase import: run under a short lock BEFORE
+/// [`resolve_import_pdf`], so a bad `project_id` is rejected without paying
+/// for the network resolve + pdfium parse. `import_pdf` re-checks under the
+/// commit lock (the project can vanish between the phases).
+pub fn precheck_import_pdf(conn: &Connection, project_id: Option<i64>) -> Result<()> {
+    match project_id {
+        Some(pid) => ensure_membership_writable(conn, pid),
+        None => Ok(()),
+    }
+}
+
 /// Phase 1 of the two-phase import — everything that must NOT hold the DB lock:
 /// the `pdf_save_limit_mb` quota precheck (fail before the expensive pdfium
 /// parse; `import_pdf` re-checks it under the lock) and the network metadata
@@ -198,6 +209,7 @@ pub async fn import_pdf_default(
     max_total_bytes: u64,
     data_dir: &Path,
 ) -> Result<PaperImportResult> {
+    precheck_import_pdf(conn, project_id)?;
     let resolved = resolve_import_pdf(pdf_dir, content, max_total_bytes, data_dir).await?;
     commit_import_pdf(conn, pdf_dir, content, project_id, max_total_bytes, resolved)
 }
@@ -461,6 +473,18 @@ mod tests {
         external: Option<(String, i64)>,
     ) -> impl Fn(&[u8]) -> Result<(PaperMetadata, Option<(String, i64)>)> {
         move |_| Ok((m.clone(), external.clone()))
+    }
+
+    /// The fail-fast guard rejects a bad project BEFORE the network phase —
+    /// the regression here would be surfaces paying for the resolve first.
+    #[test]
+    fn precheck_import_pdf_rejects_missing_project_and_passes_none() {
+        let conn = mem();
+        assert!(matches!(
+            precheck_import_pdf(&conn, Some(999)),
+            Err(CoreError::ProjectNotFound(999))
+        ));
+        assert!(precheck_import_pdf(&conn, None).is_ok());
     }
 
     #[test]

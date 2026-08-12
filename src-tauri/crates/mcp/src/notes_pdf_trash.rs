@@ -519,6 +519,14 @@ impl Server {
         let max_pdf_bytes = config::UserSettings::load()
             .map_err(core_err)?
             .pdf_save_limit_bytes();
+        // Fail-fast pre-read guard: a bad project_id fails before the network
+        // resolve burns rate-limit/subprocess budget; commit re-checks.
+        self.with_conn(|conn| {
+            paper_import::precheck_import_pdf(conn, p.project_id).map_err(|e| match e {
+                e @ CoreError::ProjectNotFound(_) => invalid(e.to_string()),
+                e => core_err(e),
+            })
+        })?;
         // Core's two-phase import: resolve (network) outside the lock, commit
         // (quota re-check, membership guard, rollback matrix) under it.
         let resolved =
