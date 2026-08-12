@@ -6,10 +6,8 @@ import {
   JOIN_SLOW_HINT,
   listReceived,
   sharingAvailable,
-  type SharedSummary,
-} from "../../api/share";
+  type SharedSummary, shareErrText } from "../../api/share";
 import { useSlowHint } from "../../hooks/useSlowHint";
-import { errText } from "../../lib/errText";
 import { listProjects } from "../../api/projects";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/input";
@@ -87,7 +85,7 @@ export function SharingSection() {
       queryClient.invalidateQueries({ queryKey: ["share", "published"] });
       if (alive.current) setTicket(t);
     } catch (e) {
-      if (alive.current) setShareErr(errText(e, "Unexpected sharing error"));
+      if (alive.current) setShareErr(shareErrText(e));
     } finally {
       if (alive.current) setGenerating(false);
     }
@@ -119,7 +117,7 @@ export function SharingSection() {
         if (res.pending) setJoinPending(res.reason);
       }
     } catch (e) {
-      if (alive.current) setJoinErr(errText(e, "Unexpected sharing error"));
+      if (alive.current) setJoinErr(shareErrText(e));
     } finally {
       if (alive.current) setJoining(false);
     }
