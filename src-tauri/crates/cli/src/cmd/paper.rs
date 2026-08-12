@@ -9,7 +9,6 @@ use crate::output::{as_source_id, fail, output};
 use linxiv_core::config;
 use linxiv_core::models::PaperMetadata;
 use linxiv_core::service::{paper as svc_paper, project as svc_project};
-use linxiv_core::sources::arxiv_downloads;
 
 #[derive(Subcommand)]
 pub enum PaperCmd {
@@ -69,27 +68,15 @@ pub enum PaperCmd {
     },
 }
 
-/// Fetch one paper's TeX source and store it, returning the chars indexed —
-/// `None` when an empty extract was withheld to protect an existing body.
-///
-/// An empty result is normally stored rather than skipped: arXiv serves PDF-only
-/// submissions from the same `/src/` path, so writing "" marks the paper
-/// DOWNLOADED_SOURCE and stops the backfill re-fetching it on every run.
-/// `should_store_full_text` carves out the one case where that would lose data.
-///
-/// Always indexes the paper's latest version — the source URL is derived from
-/// that version's PDF link, so an older version would need a different URL.
+/// Fetch one paper's TeX source and store it — `service::paper`'s two-phase
+/// ingest (always the paper's latest version; the source URL is derived from
+/// that version's PDF link).
 async fn ingest_source(
     ctx: &mut Ctx,
     paper: &linxiv_core::models::PaperDetails,
-) -> linxiv_core::error::Result<Option<usize>> {
-    let url = svc_paper::source_fetch_url(paper)?;
-    let text = arxiv_downloads::fetch_source_text(url, &config::data_dir()).await?;
-    if !svc_paper::should_store_full_text(paper, &text) {
-        return Ok(None);
-    }
-    svc_paper::set_full_text(&mut ctx.conn, &paper.source_id, paper.version, &text)?;
-    Ok(Some(text.chars().count()))
+) -> linxiv_core::error::Result<svc_paper::FullTextReceipt> {
+    let fetched = svc_paper::fetch_full_text(paper, &config::data_dir()).await?;
+    fetched.commit(&mut ctx.conn)
 }
 
 /// `_resolve_paper_or_exit`: load a paper or fail with the not-found error.
@@ -265,36 +252,21 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Body of `PaperCmd::FetchSource`: skip-or-fetch, returning the reported JSON.
+/// Body of `PaperCmd::FetchSource`: skip-or-fetch, returning the shared receipt.
 async fn fetch_source_result(
     ctx: &mut Ctx,
     paper: &linxiv_core::models::PaperDetails,
     force: bool,
 ) -> serde_json::Value {
-    if paper.downloaded_source && !force {
-        return json!({
-            "source_id": paper.source_id,
-            "version": paper.version,
-            "indexed": false,
-            "reason": "source already indexed; pass --force to re-fetch",
-        });
-    }
-    let version = paper.version;
-    match ingest_source(ctx, paper).await {
-        Ok(Some(chars)) => json!({
-            "source_id": paper.source_id,
-            "version": version,
-            "indexed": true,
-            "chars": chars,
-        }),
-        Ok(None) => json!({
-            "source_id": paper.source_id,
-            "version": version,
-            "indexed": false,
-            "reason": "re-fetch produced no TeX; kept the text already indexed",
-        }),
-        Err(e) => fail(e),
-    }
+    let receipt = if paper.downloaded_source && !force {
+        svc_paper::FullTextReceipt::already_indexed(paper)
+    } else {
+        match ingest_source(ctx, paper).await {
+            Ok(r) => r,
+            Err(e) => fail(e),
+        }
+    };
+    serde_json::to_value(&receipt).unwrap_or_else(|e| fail(e))
 }
 
 /// Body of `PaperCmd::IndexSources`: walk the unfetched work list and ingest
@@ -327,11 +299,15 @@ async fn index_sources_result(ctx: &mut Ctx, limit: usize) -> serde_json::Value 
         }
         attempted += 1;
         match ingest_source(ctx, &paper).await {
-            Ok(Some(chars)) => {
+            Ok(r) if r.indexed => {
                 indexed += 1;
-                eprintln!("[full-text] {} — {chars} chars", paper.source_id);
+                eprintln!(
+                    "[full-text] {} — {} chars",
+                    paper.source_id,
+                    r.chars.unwrap_or(0)
+                );
             }
-            Ok(None) => skipped += 1,
+            Ok(_) => skipped += 1,
             Err(e) => failed.push(json!({
                 "source_id": paper.source_id,
                 "error": e.to_string(),
@@ -395,7 +371,8 @@ mod tests {
         let fetched = resolve_paper_or_exit(&ctx, "arxiv:skip1");
         let v = fetch_source_result(&mut ctx, &fetched, false).await;
         assert_eq!(v["indexed"], false);
-        assert!(v["reason"].as_str().unwrap().contains("--force"));
+        // The reason is single-sourced from core (route wording: force=true).
+        assert!(v["reason"].as_str().unwrap().contains("force"));
         let unchanged = svc_paper::get(&ctx.conn, &paper("arxiv:skip1"))
             .unwrap()
             .unwrap();

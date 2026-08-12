@@ -11,6 +11,7 @@ pub mod paper;
 pub mod paper_import;
 pub mod project;
 pub mod reading_list;
+pub mod stats;
 pub mod tag;
 pub mod trash;
 pub mod vault;

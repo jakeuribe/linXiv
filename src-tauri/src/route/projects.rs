@@ -3,7 +3,6 @@
 //! and the exact JSON envelopes / status codes `app.py` returned. Core binding
 //! follows `mcp/src/projects_tags.rs`.
 
-use std::collections::HashSet;
 use std::path::Path;
 
 use rusqlite::Connection;
@@ -14,7 +13,6 @@ use linxiv_core::error::CoreError;
 use linxiv_core::formats;
 use linxiv_core::models::{PaperDetails, ProjectDetails, ProjectIn, ProjectUpdateIn, Status};
 use linxiv_core::service::export_import;
-use linxiv_core::service::paper as svc_paper;
 use linxiv_core::service::project::{self, Project, Projects};
 
 use crate::route::{path_i64, ApiError, ReqCtx};
@@ -107,16 +105,7 @@ fn export_text(
     };
     let content = state.with_conn(|conn| -> Result<String, ApiError> {
         let proj = project::get_required(conn, project_fk)?;
-        let ids: HashSet<String> = svc_paper::sfks_to_source_ids(conn, &proj.source_fks)?
-            .into_iter()
-            .collect();
-        // Iterate the latest-papers view in its order, keeping the project's papers
-        // (matches app.py's `[p for p in list_paper_details(latest) if id in ids]`).
-        let papers: Vec<_> = svc_paper::list_papers(conn, true, None, 0, None)?
-            .into_iter()
-            .filter(|p| ids.contains(&p.source_id))
-            .collect();
-        Ok(fmt(&papers))
+        Ok(fmt(&project::export_papers(conn, &proj.source_fks)?))
     })?;
     std::fs::write(dest, content).map_err(|e| ApiError::new(500, e.to_string()))?;
     Ok(json!({ "ok": true }))

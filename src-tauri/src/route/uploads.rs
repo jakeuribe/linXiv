@@ -18,12 +18,9 @@ use serde_json::{json, Value};
 
 use linxiv_core::config;
 use linxiv_core::error::CoreError;
-use linxiv_core::formats::bibtex_import;
 use linxiv_core::service::export_import::{self, OnConflict};
 use linxiv_core::service::paper::{self as svc_paper, pdf_on_disk_name};
 use linxiv_core::service::paper_import;
-use linxiv_core::service::project as svc_project;
-use linxiv_core::sources::pdf_metadata::resolve_pdf_metadata;
 
 use crate::route::{ApiError, ReqCtx};
 use crate::state::AppState;
@@ -126,29 +123,26 @@ async fn import_pdf(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
         return Err(ApiError::new(400, "File does not appear to be a valid PDF"));
     }
     let pdf_dir = state.pdf_dir.clone();
-    let data_dir = config::data_dir();
-    // `pdf_save_limit_mb` — a user-configurable TOTAL-storage cap, layered under the fixed
-    // 100 MB per-upload ceiling above. Checked here BEFORE the (expensive) pdfium metadata
-    // resolve so an over-quota upload isn't fully parsed first; core's `import_pdf`
-    // re-checks it before any FS/DB write.
+    // `pdf_save_limit_mb` — a user-configurable TOTAL-storage cap, layered under
+    // the fixed 100 MB per-upload ceiling above (DI'd here; core never reads config).
     let max_pdf_bytes = config::UserSettings::load()?.pdf_save_limit_bytes();
-    paper_import::check_pdf_storage_quota(&pdf_dir, content.len(), max_pdf_bytes)?;
     // ProjectNotFound → 404, ProjectDeleted/PaperLink → 400 flow through `?`. NOTE:
     // resolve_pdf_metadata degrades a pdfium extraction failure to empty metadata
     // (it never errors), so app.py's PdfImportError → 422 path is unreachable here —
     // a %PDF-but-corrupt file saves a minimal paper + 200 where app.py returns 422.
     // Matching that needs core to surface PdfImport from the resolver (deferred).
-    let resolved = resolve_pdf_metadata(&content, &data_dir).await?;
+    let resolved =
+        paper_import::resolve_import_pdf(&pdf_dir, &content, max_pdf_bytes, &config::data_dir())
+            .await?;
     let result = state.with_conn(|conn| {
-        paper_import::import_pdf(conn, &pdf_dir, &content, project_id, max_pdf_bytes, |_| {
-            Ok(resolved.clone())
-        })
+        paper_import::commit_import_pdf(conn, &pdf_dir, &content, project_id, max_pdf_bytes, resolved)
     })?;
     Ok(json!({ "source_id": result.source_id, "title": result.title }))
 }
 
-/// `POST /api/papers/import/bibtex` — `api_import_bibtex`. Optional `project_id`
-/// links the imported papers; the project guard runs before parsing/saving.
+/// `POST /api/papers/import/bibtex` — `api_import_bibtex`. `service::paper_import`
+/// owns guard order, parse and link; `?` maps ProjectNotFound → 404, the
+/// ProjectDeleted/BadRequest/PaperLink refusals → 400.
 fn import_bibtex(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     #[derive(Deserialize)]
     struct Body {
@@ -158,34 +152,8 @@ fn import_bibtex(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> 
     let b: Body = ctx.parse_body()?;
     let content = decode_b64(&b.file_b64)?;
     let text = String::from_utf8_lossy(&content).into_owned();
-    state.with_conn(|conn| -> Result<Value, ApiError> {
-        if let Some(pid) = b.project_id {
-            svc_project::ensure_membership_writable(conn, pid).map_err(|e| match e {
-                CoreError::ProjectDeleted(m) => ApiError::new(400, m),
-                other => other.into(),
-            })?;
-        }
-        let metas = bibtex_import(&text)
-            .map_err(|m| ApiError::new(400, format!("BibTeX parse error: {m}")))?;
-        let saved = metas
-            .iter()
-            .map(|m| Ok(svc_paper::save_paper_metadata(conn, m, None)?.0))
-            .collect::<Result<Vec<String>, ApiError>>()?;
-        if let Some(pid) = b.project_id {
-            if !saved.is_empty() {
-                svc_project::link_imported(conn, pid, &saved).map_err(|e| {
-                    ApiError::new(
-                        400,
-                        format!(
-                            "{} paper(s) were imported but could not be linked: {e}",
-                            saved.len()
-                        ),
-                    )
-                })?;
-            }
-        }
-        Ok(json!({ "saved_count": saved.len(), "source_ids": saved }))
-    })
+    let receipt = state.with_conn(|conn| paper_import::import_bibtex(conn, &text, b.project_id))?;
+    crate::route::to_value(&receipt)
 }
 
 /// `POST /api/projects/import/preview` — `api_import_preview`. `preview_import`

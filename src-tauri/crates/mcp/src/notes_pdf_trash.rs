@@ -23,7 +23,6 @@ use linxiv_core::service::{
     editor_project as svc_editor, files as svc_files, note as svc_note, paper as svc_paper,
     paper_import, project as svc_project,
 };
-use linxiv_core::sources::pdf_metadata::resolve_pdf_metadata;
 
 use crate::util::{core_err, guard_err, invalid, json_ok};
 use crate::Server;
@@ -515,42 +514,25 @@ impl Server {
         Parameters(p): Parameters<ImportPdfParams>,
     ) -> Result<String, ErrorData> {
         let pdf_dir = self.pdf_dir.clone();
-        let data_dir = config::data_dir();
-        // Pre-read guard: convert a missing project to the MCP ValueError before
-        // touching the file (matches the Python ordering).
-        if let Some(pid) = p.project_id {
-            self.with_conn(
-                |conn| match svc_project::ensure_membership_writable(conn, pid) {
-                    Err(e @ CoreError::ProjectNotFound(_)) => Err(invalid(e.to_string())),
-                    Err(e) => Err(core_err(e)),
-                    Ok(()) => Ok(()),
-                },
-            )?;
-        }
         let content =
             std::fs::read(&p.file).map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        // `pdf_save_limit_mb` total-storage quota BEFORE the (expensive) pdfium
-        // metadata resolve — no point fully parsing a PDF that's about to be
-        // rejected; core's `import_pdf` re-checks it before any FS/DB write.
         let max_pdf_bytes = config::UserSettings::load()
             .map_err(core_err)?
             .pdf_save_limit_bytes();
-        paper_import::check_pdf_storage_quota(&pdf_dir, content.len(), max_pdf_bytes)
-            .map_err(core_err)?;
-        // Resolve metadata (network) OUTSIDE the lock, then do the sync DB+FS
-        // import under it — mirrors `import_pdf_default` without holding the
-        // mutex across the await.
-        let resolved = resolve_pdf_metadata(&content, &data_dir)
-            .await
-            .map_err(core_err)?;
+        // Core's two-phase import: resolve (network) outside the lock, commit
+        // (quota re-check, membership guard, rollback matrix) under it.
+        let resolved =
+            paper_import::resolve_import_pdf(&pdf_dir, &content, max_pdf_bytes, &config::data_dir())
+                .await
+                .map_err(core_err)?;
         self.with_conn(|conn| {
-            match paper_import::import_pdf(
+            match paper_import::commit_import_pdf(
                 conn,
                 &pdf_dir,
                 &content,
                 p.project_id,
                 max_pdf_bytes,
-                |_| Ok(resolved.clone()),
+                resolved,
             ) {
                 Ok(result) => json_ok(&result),
                 Err(e @ CoreError::ProjectNotFound(_)) => Err(invalid(e.to_string())),
