@@ -11,7 +11,7 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_router, ErrorData};
 use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::json;
 
 use linxiv_core::error::CoreError;
 use linxiv_core::models::{ProjectDetails, ProjectIn, ProjectUpdateIn, Status, TagIn};
@@ -639,7 +639,7 @@ mod tests {
             }))
             .await
             .unwrap();
-        let out: Value = serde_json::from_str(&out).unwrap();
+        let out: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(out["ok"], json!(false));
         assert_eq!(out["added"], json!(["arxiv:1"]));
         assert_eq!(out["failed"], json!(["arxiv:nope"]));
