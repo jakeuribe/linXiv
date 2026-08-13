@@ -318,9 +318,12 @@ export default function GraphPage() {
                   type="button"
                   key={project.id}
                   onClick={() =>
+                    project.id !== null &&
                     addToProjectMutation.mutate({ projectId: project.id, sourceIds: selectedSourceIds })
                   }
-                  disabled={addToProjectMutation.isPending}
+                  // ProjectOut.id is optional in Rust (ProjectDetails doubles
+                  // as the write shape); a stored project always has one.
+                  disabled={addToProjectMutation.isPending || project.id === null}
                   className="w-full text-left px-3 py-2 rounded-md border border-border hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] text-text text-sm transition-colors disabled:opacity-50"
                 >
                   {project.name}

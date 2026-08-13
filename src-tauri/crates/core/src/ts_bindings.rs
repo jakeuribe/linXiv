@@ -116,9 +116,23 @@ mod tests {
             return;
         }
         let have = std::fs::read_to_string(BINDINGS).unwrap_or_default();
-        assert_eq!(
-            have, want,
-            "src/types/generated.ts is stale — run `npm run types:gen`"
+        if have == want {
+            return;
+        }
+        // Report the first differing line, not two full files: `assert_eq!` on
+        // 150 lines of TypeScript prints an escaped blob nobody can read.
+        let (n, checked_in, generated) = have
+            .lines()
+            .map(Some)
+            .chain(std::iter::repeat(None))
+            .zip(want.lines().map(Some).chain(std::iter::repeat(None)))
+            .enumerate()
+            .find(|(_, (a, b))| a != b)
+            .map(|(i, (a, b))| (i + 1, a.unwrap_or("<eof>"), b.unwrap_or("<eof>")))
+            .expect("contents differ, so some line differs");
+        panic!(
+            "src/types/generated.ts is stale — run `npm run types:gen`\n\
+             line {n}:\n  checked in: {checked_in}\n  generated:  {generated}"
         );
     }
 }

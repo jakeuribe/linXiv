@@ -1,6 +1,7 @@
 import { save, open } from "@tauri-apps/plugin-dialog";
 import { join as pathJoin } from "@tauri-apps/api/path";
 import { apiFetch, BASE_URL, bytesToBase64, isTauri } from "./client";
+import type { BibtexImportReceipt } from "../types/api";
 
 async function fileToBase64(file: File): Promise<string> {
   return bytesToBase64(new Uint8Array(await file.arrayBuffer()));
@@ -134,10 +135,10 @@ export async function exportObsidian(projectId: number, projectName?: string): P
 export async function importBibtex(
   file: File,
   projectId?: number
-): Promise<{ saved_count: number; source_ids: string[] }> {
+): Promise<BibtexImportReceipt> {
   if (isTauri) {
     const file_b64 = await fileToBase64(file);
-    return apiFetch<{ saved_count: number; source_ids: string[] }>(
+    return apiFetch<BibtexImportReceipt>(
       "/api/papers/import/bibtex",
       {
         method: "POST",
@@ -150,7 +151,7 @@ export async function importBibtex(
   const path = projectId
     ? `/api/papers/import/bibtex?project_id=${projectId}`
     : "/api/papers/import/bibtex";
-  return apiFetch<{ saved_count: number; source_ids: string[] }>(path, { method: "POST", body: fd });
+  return apiFetch<BibtexImportReceipt>(path, { method: "POST", body: fd });
 }
 
 export async function importPdf(

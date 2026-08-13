@@ -1,81 +1,75 @@
+// The wire types the frontend consumes.
+//
+// Everything backed by a canonical serializer in linxiv-core is GENERATED into
+// ./generated.ts (CONTEXT.md § Serializer Convention); this file only aliases
+// those to the frontend's vocabulary and hand-writes the shapes that have no
+// single Rust struct to generate from. Each hand-written one says why — if the
+// reason goes away, delete it here and add a `#[derive(TS)]` there.
 import type { ThemeColors, ColorAlphas } from "../lib/theme";
+import type {
+  PaperDetails,
+  ProjectOut,
+  NoteDetails,
+  AnnotationDetails,
+  SearchResultOut,
+  AuthorWithCount,
+  AuthorWithPapers,
+} from "./generated";
 
-export interface Stats {
-  paper_count: number;
-  tag_count: number;
-  category_count: number;
-  pdf_count: number;
-  recent_papers: Paper[];
+export type {
+  PaperDetails,
+  ProjectOut,
+  NoteDetails,
+  AnnotationDetails,
+  SearchResultOut,
+  BasicAuthorDetails,
+  AuthorWithCount,
+  AuthorWithPapers,
+  AuthorPaperPreview,
+  Status,
+  Stats,
+  DoiVersionCandidate,
+  FullTextReceipt,
+  PaperMembershipReceipt,
+  BibtexImportReceipt,
+} from "./generated";
+
+// Frontend names for the generated serializers. The Rust name is the model,
+// the alias is what the UI has always called it.
+export type Paper = PaperDetails;
+export type Project = ProjectOut;
+export type Note = NoteDetails;
+export type Annotation = AnnotationDetails;
+export type SearchResult = SearchResultOut;
+export type Author = AuthorWithCount;
+export type AuthorDetail = AuthorWithPapers;
+
+// --- Not generated ---------------------------------------------------------
+
+// `GET /api/settings` returns `UserSettings::all()` — a free-form JSON object
+// seeded from crates/core/assets/default_settings.json, plus the mailto env
+// keys overlaid by route/settings.rs. There is no Rust struct, so the index
+// signature is the honest type, not an escape hatch: the keys below are the
+// ones the app actually reads.
+export interface Settings {
+  pdf_save_limit_mb: number;
+  theme_overrides: Partial<ThemeColors>;
+  theme_override_alphas: ColorAlphas;
+  search_history_enabled?: boolean;
+  search_history_max?: number;
+  tex_rendering_enabled?: boolean;
+  full_text_worker_enabled?: boolean;
+  home_feed_url?: string;
+  rss_cache_retention_days?: number;
+  update_check_frequency?: string;
+  /** Overlaid from the process env by route/settings.rs, never persisted here. */
+  CROSSREF_MAILTO?: string;
+  OPENALEX_MAILTO?: string;
+  [key: string]: unknown;
 }
 
-export interface Paper {
-  source_id: string;
-  source_fk: number;
-  version: number;
-  title: string;
-  summary: string | null;
-  authors: string[];
-  published: string | null;
-  updated: string | null;
-  url: string | null;
-  doi: string | null;
-  category: string | null;
-  categories?: string[];
-  journal_ref: string | null;
-  comment: string | null;
-  tags: string[];
-  has_pdf: boolean;
-  pdf_path: string | null;
-  source: string | null;
-  // True once the arXiv TeX source has been fetched into the full-text index.
-  downloaded_source: boolean;
-}
-
-// Another paper root sharing this one's DOI (same work, different source).
-export interface DoiVersionCandidate {
-  source_fk: number;
-  source_id: string;
-  title: string;
-  source: string | null;
-  published: string | null;
-  doi: string;
-}
-
-export interface Project {
-  id: number;
-  name: string;
-  description: string;
-  color_hex: string | null;
-  project_tags: string[];
-  source_ids: string[];
-  status: string;
-  paper_count?: number;
-  /** Persisted share identity (uuid v4); null until first publish. */
-  share_id?: string | null;
-}
-
-export interface Note {
-  id: number;
-  source_fk: number;
-  project_id: number | null;
-  title: string;
-  content: string;
-  created_at: string | null;
-  updated_at: string | null;
-}
-
-// PDF highlight annotation. `anchor` is opaque JSON (see lib/pdfAnchor); `comment`
-// is the written comment ("" = highlight-only).
-export interface Annotation {
-  id: number;
-  source_fk: number;
-  project_id: number | null;
-  anchor: string;
-  comment: string;
-  created_at: string | null;
-  updated_at: string | null;
-}
-
+// `GET /api/graph` builds its payload as a `serde_json::Value` in
+// crates/core/src/graph.rs — no struct to derive on.
 export interface GraphData {
   nodes: GraphNode[];
   edges: GraphEdge[];
@@ -95,32 +89,9 @@ export interface GraphEdge {
   type?: string;
 }
 
-export interface SearchResult {
-  source_id: string;
-  version: number;
-  title: string;
-  summary: string;
-  authors: string[];
-  published: string;
-  paper_url: string;
-  primary_category: string;
-  entry_id: string;
-}
-
-export interface Settings {
-  pdf_save_limit_mb: number;
-  theme_overrides: Partial<ThemeColors>;
-  theme_override_alphas: ColorAlphas;
-  search_history_enabled?: boolean;
-  search_history_max?: number;
-  tex_rendering_enabled?: boolean;
-  full_text_worker_enabled?: boolean;
-  home_feed_url?: string;
-  rss_cache_retention_days?: number;
-  update_check_frequency?: string;
-  [key: string]: unknown;
-}
-
+// sources/feed.rs::FeedEntry has a matching Rust struct, but the response is
+// assembled inline in route/feed.rs (`title` + entries + saved ids), so only
+// half of this pair could be generated.
 export interface FeedEntry {
   title: string;
   link: string;
@@ -137,6 +108,9 @@ export interface FeedResponse {
   saved_arxiv_ids: string[];
 }
 
+// storage/queries/rss.rs::FilterRule types `field`/`action` as bare `String`
+// (the values are validated on write in service/feed.rs, not by the type), so
+// generating this would REPLACE the unions below with `string`.
 export interface FeedFilterRule {
   rule_id: number;
   field: "TITLE" | "SUMMARY" | "AUTHOR";
@@ -145,6 +119,8 @@ export interface FeedFilterRule {
   enabled: boolean;
 }
 
+// `GET /api/papers/sfk/{fk}/versions` projects PaperDetailsAll into an inline
+// `json!` in route/papers.rs — an ADR-0010 reach-past, not a serializer.
 export interface PaperVersionSummary {
   version: number;
   published: string | null;
@@ -158,31 +134,11 @@ export interface PaperVersionsResponse {
   versions: PaperVersionSummary[];
 }
 
+// Request-side only: the search form's clause rows. route/search.rs takes them
+// as an untyped `Vec<Map<String, Value>>`.
 export interface Clause {
   operator: "AND" | "OR" | "AND NOT";
   field: "all" | "ti" | "au" | "abs";
   value: string;
   uid: string;
-}
-
-export interface Author {
-  author_id: number;
-  full_name: string | null;
-  first_name: string | null;
-  last_name: string | null;
-  orcid: string | null;
-  paper_count?: number;
-}
-
-export interface AuthorPaperPreview {
-  paper_id: number;
-  source_id: string;
-  source_fk: number;
-  version: number;
-  title: string | null;
-}
-
-export interface AuthorDetail extends Author {
-  paper_count: number;
-  papers: AuthorPaperPreview[];
 }

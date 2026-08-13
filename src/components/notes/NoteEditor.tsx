@@ -71,7 +71,10 @@ export function NoteEditor({
     try {
       const trimmedTitle = title.trim();
       const trimmedContent = content.trim();
-      if (initialNote) {
+      // NoteDetails.id is null only for a note that has not been inserted yet,
+      // which an editor loaded from the API never sees — update if we have one,
+      // otherwise fall through to create.
+      if (initialNote && initialNote.id !== null) {
         await updateNote(initialNote.id, {
           title: trimmedTitle,
           content: trimmedContent,

@@ -11,10 +11,8 @@ export function SearchSection() {
     queryFn: getSettings,
   });
 
-  const rawSettings = settings as Record<string, unknown> | undefined;
-  const historyEnabled = rawSettings?.search_history_enabled !== false;
-  const historyMax =
-    typeof rawSettings?.search_history_max === "number" ? rawSettings.search_history_max : 200;
+  const historyEnabled = settings?.search_history_enabled !== false;
+  const historyMax = settings?.search_history_max ?? 200;
 
   const [maxInput, setMaxInput] = useState("200");
   const [populated, setPopulated] = useState(false);

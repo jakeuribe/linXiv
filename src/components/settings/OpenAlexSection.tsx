@@ -16,8 +16,8 @@ export function OpenAlexSection() {
   const [populated, setPopulated] = useState(false);
   useEffect(() => {
     if (settings && !populated) {
-      if (typeof (settings as Record<string, unknown>)["OPENALEX_MAILTO"] === "string") {
-        setOpenalexEmail((settings as Record<string, unknown>)["OPENALEX_MAILTO"] as string);
+      if (settings.OPENALEX_MAILTO) {
+        setOpenalexEmail(settings.OPENALEX_MAILTO);
       }
       setPopulated(true);
     }
