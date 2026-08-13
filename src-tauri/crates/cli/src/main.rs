@@ -139,21 +139,19 @@ async fn main() {
             println!(
                 "{}",
                 tokio::task::spawn_blocking(move || {
-                    linxiv_core::sources::pdf_metadata::extract_pdf_metadata_json(&bytes)
+                    linxiv_core::service::paper_import::extract_pdf_metadata_json(&bytes)
                 })
                 .await
                 .unwrap_or_else(|e| output::fail(e))
             );
         }
         // Bypasses Ctx::open()/init_db so restore works even on a broken DB.
-        Commands::Restore { src } => {
-            match db_admin::restore_closed(&src) {
-                Ok(()) => output::output(&serde_json::json!({
-                    "restored": config::db_path().to_string_lossy()
-                })),
-                Err(e) => output::fail(e),
-            }
-        }
+        Commands::Restore { src } => match db_admin::restore_closed(&src) {
+            Ok(()) => output::output(&serde_json::json!({
+                "restored": config::db_path().to_string_lossy()
+            })),
+            Err(e) => output::fail(e),
+        },
         command => {
             // Lazy: open the DB/data-dir once before dispatch (cheap, no network).
             let mut ctx = Ctx::open().unwrap_or_else(|e| output::fail(e));

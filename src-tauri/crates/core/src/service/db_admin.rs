@@ -97,7 +97,9 @@ pub fn restore_in_place(conn: &mut Connection, src: &Path) -> Result<()> {
     *conn = storage::open(&db_path)
         .and_then(|fresh| storage::init_db(&fresh).map(|()| fresh))
         .map_err(|e| {
-            CoreError::Internal(format!("could not reopen the database — restart linXiv: {e}"))
+            CoreError::Internal(format!(
+                "could not reopen the database — restart linXiv: {e}"
+            ))
         })?;
     result
 }
@@ -136,7 +138,9 @@ mod tests {
         // A refused restore still hands back a usable connection.
         let missing = dir.join("nope.db");
         assert!(restore_in_place(&mut conn, &missing).is_err());
-        assert!(conn.query_row("SELECT v FROM t", [], |r| r.get::<_, String>(0)).is_ok());
+        assert!(conn
+            .query_row("SELECT v FROM t", [], |r| r.get::<_, String>(0))
+            .is_ok());
 
         std::env::remove_var("LINXIV_DATA_DIR");
         let _ = std::fs::remove_dir_all(&dir);

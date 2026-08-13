@@ -1417,22 +1417,22 @@ mod tests {
         assert!(valid_share_id("plain-id_123"));
 
         for bad in [
-            "",                       // empty — joins to the share_dir itself
-            "..",                     // parent
-            "../etc/passwd",          // classic traversal
-            "..\\windows\\system32",  // traversal, Windows separator
-            "a/../../b",              // traversal mid-string
-            "a..b",                   // any embedded `..`, conservatively
-            ".",                      // current dir
-            ".hidden",                // any leading dot
-            "sub/dir",                // separator
-            "sub\\dir",               // separator, Windows
-            "/etc/passwd",            // absolute, Unix
-            "C:evil",                 // Windows drive-relative — join() escapes
-            "C:\\Windows",            // absolute, Windows
-            "\\\\server\\share",      // UNC
-            "..\u{202e}gnp.exe",      // RTL override still carries `..`
-            "\u{ff0e}\u{ff0e}/etc",   // fullwidth dots: not `..`, but `/` catches it
+            "",                      // empty — joins to the share_dir itself
+            "..",                    // parent
+            "../etc/passwd",         // classic traversal
+            "..\\windows\\system32", // traversal, Windows separator
+            "a/../../b",             // traversal mid-string
+            "a..b",                  // any embedded `..`, conservatively
+            ".",                     // current dir
+            ".hidden",               // any leading dot
+            "sub/dir",               // separator
+            "sub\\dir",              // separator, Windows
+            "/etc/passwd",           // absolute, Unix
+            "C:evil",                // Windows drive-relative — join() escapes
+            "C:\\Windows",           // absolute, Windows
+            "\\\\server\\share",     // UNC
+            "..\u{202e}gnp.exe",     // RTL override still carries `..`
+            "\u{ff0e}\u{ff0e}/etc",  // fullwidth dots: not `..`, but `/` catches it
         ] {
             assert!(!valid_share_id(bad), "must reject {bad:?}");
         }

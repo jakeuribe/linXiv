@@ -490,7 +490,9 @@ impl Server {
         let UpdateSettingParams { key, value } = params.0;
         let mut settings = UserSettings::load().map_err(map_core)?;
         // The parse-or-string rule lives in core (`set_from_str`), not here.
-        let parsed = settings.set_from_str(key.clone(), value).map_err(map_core)?;
+        let parsed = settings
+            .set_from_str(key.clone(), value)
+            .map_err(map_core)?;
         json_ok(&json!({ key: parsed }))
     }
 }

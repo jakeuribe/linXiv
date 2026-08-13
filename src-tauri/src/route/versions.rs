@@ -9,9 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use linxiv_core::config;
 use linxiv_core::service::version_monitor as svc;
-use linxiv_core::sources::arxiv;
 
 use crate::route::{ApiError, ReqCtx};
 use crate::state::AppState;
@@ -68,7 +66,7 @@ async fn check(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
         return Ok(json!({ "checked": 0, "new_versions": [] }));
     }
     let ids: Vec<String> = candidates.iter().map(|c| c.source_id.clone()).collect();
-    let fetched = arxiv::fetch_by_ids(&ids, &config::data_dir()).await?;
+    let fetched = svc::fetch_latest(&ids).await?;
     let found = state.with_conn(|conn| svc::apply_results(conn, &candidates, &fetched))?;
     Ok(json!({ "checked": candidates.len(), "new_versions": found }))
 }

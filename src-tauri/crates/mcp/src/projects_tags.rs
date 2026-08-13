@@ -44,7 +44,9 @@ fn get_project(conn: &rusqlite::Connection, id: i64) -> Result<Option<ProjectDet
 
 /// Existence guard — core's `get_required` owns the not-found wording.
 fn ensure_project(conn: &rusqlite::Connection, id: i64) -> Result<(), ErrorData> {
-    project::get_required(conn, id).map(|_| ()).map_err(guard_err)
+    project::get_required(conn, id)
+        .map(|_| ())
+        .map_err(guard_err)
 }
 
 /// Shared body of add_paper_to_project / remove_paper_from_project — core's
@@ -403,8 +405,7 @@ impl Server {
     ) -> Result<String, ErrorData> {
         let ProjectTagsParams { project_id, tags } = _params.0;
         self.with_conn(|conn| {
-            let updated =
-                project::add_project_tags(conn, project_id, &tags).map_err(guard_err)?;
+            let updated = project::add_project_tags(conn, project_id, &tags).map_err(guard_err)?;
             jval(json!({ "project_id": project_id, "tags": updated }))
         })
     }

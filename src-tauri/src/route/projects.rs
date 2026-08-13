@@ -195,7 +195,10 @@ fn patch(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError
     // Core owns the parse and the message; the 400 is kept so the frontend's
     // handling of this response is unchanged (Validation would otherwise be 422).
     let status = match b.status.as_deref() {
-        Some(s) => Some(s.parse::<Status>().map_err(|e| ApiError::new(400, e.to_string()))?),
+        Some(s) => Some(
+            s.parse::<Status>()
+                .map_err(|e| ApiError::new(400, e.to_string()))?,
+        ),
         None => None,
     };
     // color: only touched when the key was explicitly sent (app.py model_fields_set).

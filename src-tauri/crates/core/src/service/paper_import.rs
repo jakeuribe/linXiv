@@ -182,6 +182,13 @@ pub async fn resolve_import_pdf(
     crate::sources::pdf_metadata::resolve_pdf_metadata(content, data_dir).await
 }
 
+/// PDF bytes → the metadata JSON record the out-of-process `pdf-meta` worker
+/// prints. Pure and offline (pdfium only); here so the CLI worker has a service
+/// front door instead of reaching into `sources::` (ADR-0010).
+pub fn extract_pdf_metadata_json(bytes: &[u8]) -> String {
+    crate::sources::pdf_metadata::extract_pdf_metadata_json(bytes)
+}
+
 /// Phase 2, under the caller's DB lock: the sync import (quota re-check,
 /// membership guard when a project is targeted, rollback matrix) with the
 /// already-resolved metadata. Thin over `import_pdf`, so its seam — and the

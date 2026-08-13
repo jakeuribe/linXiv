@@ -5,11 +5,12 @@
 //! (`save_paper_metadata`, the same INSERT-OR-IGNORE-per-version write refetch uses).
 //!
 //! The pass itself is orchestrated by the caller (route): `stale_candidates`
-//! → one batched `sources::arxiv::fetch_by_ids` → `apply_results`. Keeping the
-//! network hop outside means everything here is sync + unit-testable offline.
+//! → one batched `fetch_latest` → `apply_results`. Everything but that one
+//! network hop is sync + unit-testable offline.
 
 use rusqlite::Connection;
 
+use crate::config;
 use crate::error::Result;
 use crate::models::PaperMetadata;
 use crate::storage::db::transaction;
@@ -18,6 +19,13 @@ pub use crate::storage::queries::version_check::{
     ack, list_new_versions, record_check, stale_candidates, Candidate, NewVersion,
     MAX_VERSION_CHECK_BATCH,
 };
+
+/// Latest arXiv metadata for many roots in ONE rate-limited request. Batched and
+/// arXiv-only, so it stays outside `PaperSource`; consumers get it here rather
+/// than reaching into `sources::arxiv` (ADR-0010). Hold no DB lock across it.
+pub async fn fetch_latest(source_ids: &[String]) -> Result<Vec<PaperMetadata>> {
+    crate::sources::arxiv::fetch_by_ids(source_ids, &config::data_dir()).await
+}
 
 /// Process one candidate: check root status. For roots that are active and
 /// resolvable, save any newer version and record the check (with the new version
