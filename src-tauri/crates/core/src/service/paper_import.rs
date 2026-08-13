@@ -194,9 +194,14 @@ pub fn commit_import_pdf(
     max_total_bytes: u64,
     resolved: ResolvedPdf,
 ) -> Result<PaperImportResult> {
-    import_pdf(conn, pdf_dir, content, project_id, max_total_bytes, move |_| {
-        Ok(resolved.clone())
-    })
+    import_pdf(
+        conn,
+        pdf_dir,
+        content,
+        project_id,
+        max_total_bytes,
+        move |_| Ok(resolved.clone()),
+    )
 }
 
 /// Both phases against one directly-held connection (the CLI's shape — no mutex
@@ -211,7 +216,14 @@ pub async fn import_pdf_default(
 ) -> Result<PaperImportResult> {
     precheck_import_pdf(conn, project_id)?;
     let resolved = resolve_import_pdf(pdf_dir, content, max_total_bytes, data_dir).await?;
-    commit_import_pdf(conn, pdf_dir, content, project_id, max_total_bytes, resolved)
+    commit_import_pdf(
+        conn,
+        pdf_dir,
+        content,
+        project_id,
+        max_total_bytes,
+        resolved,
+    )
 }
 
 /// Receipt for a BibTeX import — the route's `/api/papers/import/bibtex` shape,

@@ -182,7 +182,12 @@ mod tests {
             svc_paper::list_papers_sorted(&conn, true, None, 0, None, PaperSort::Published, true)
                 .unwrap();
         let row = serde_json::to_value(&papers[0]).unwrap();
-        let keys: Vec<&str> = row.as_object().unwrap().keys().map(String::as_str).collect();
+        let keys: Vec<&str> = row
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
         assert_eq!(
             keys,
             [

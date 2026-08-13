@@ -187,8 +187,8 @@ pub fn adopt_share_id(conn: &Connection, project_fk: i64, share_id: &str) -> Res
             "share id {share_id} already claimed by another live project"
         )));
     }
-    let stored =
-        pq::ensure_share_id(conn, project_fk, share_id)?.ok_or(CoreError::ProjectNotFound(project_fk))?;
+    let stored = pq::ensure_share_id(conn, project_fk, share_id)?
+        .ok_or(CoreError::ProjectNotFound(project_fk))?;
     if stored != share_id {
         tracing::warn!(
             "adopt_share_id: project {project_fk} already has SHARE_ID {stored}; archive share id {share_id} not adopted"
@@ -240,7 +240,8 @@ pub fn create(conn: &mut Connection, project: &ProjectIn) -> Result<i64> {
 /// sync and the field UPDATE are separate transactions, so a failure between them leaves
 /// tags changed and fields not.
 pub fn update(conn: &mut Connection, upd: &ProjectUpdateIn) -> Result<()> {
-    let mut p = pq::get_project(conn, upd.project_fk, false)?.ok_or(CoreError::ProjectNotFound(upd.project_fk))?;
+    let mut p = pq::get_project(conn, upd.project_fk, false)?
+        .ok_or(CoreError::ProjectNotFound(upd.project_fk))?;
     if p.status == Status::Deleted && upd.status != Some(Status::Active) {
         return Err(CoreError::ProjectDeleted(
             "cannot update a deleted project".into(),
@@ -394,10 +395,12 @@ pub fn export_papers(conn: &Connection, source_fks: &[i64]) -> Result<Vec<PaperD
     let ids: HashSet<String> = crate::service::paper::sfks_to_source_ids(conn, source_fks)?
         .into_iter()
         .collect();
-    Ok(crate::service::paper::list_papers(conn, true, None, 0, None)?
-        .into_iter()
-        .filter(|p| ids.contains(&p.source_id))
-        .collect())
+    Ok(
+        crate::service::paper::list_papers(conn, true, None, 0, None)?
+            .into_iter()
+            .filter(|p| ids.contains(&p.source_id))
+            .collect(),
+    )
 }
 
 /// Receipt for the single-paper membership ops — one shape for all three

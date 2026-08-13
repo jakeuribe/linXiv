@@ -631,9 +631,15 @@ mod tests {
 
     #[test]
     fn source_id_constructors_round_trip() {
-        assert_eq!(strip_namespace(&arxiv_source_id("2204.12985")), "2204.12985");
+        assert_eq!(
+            strip_namespace(&arxiv_source_id("2204.12985")),
+            "2204.12985"
+        );
         assert_eq!(strip_namespace(&openalex_source_id("W123")), "W123");
-        assert_eq!(strip_namespace(&doi_source_id("10.1000/xyz")), "10.1000/xyz");
+        assert_eq!(
+            strip_namespace(&doi_source_id("10.1000/xyz")),
+            "10.1000/xyz"
+        );
         assert_eq!(strip_namespace(&local_source_id("deadbeef")), "deadbeef");
         assert!(is_arxiv_source_id(&arxiv_source_id("2204.12985")));
         assert!(!is_arxiv_source_id(&openalex_source_id("W123")));
@@ -641,7 +647,10 @@ mod tests {
         assert!(!is_arxiv_source_id(&local_source_id("deadbeef")));
         // removeprefix semantics: at most one leading prefix comes off.
         assert_eq!(strip_provider_prefix("doi:doi:1", DOI_ID_PREFIX), "doi:1");
-        assert_eq!(strip_provider_prefix("10.1000/xyz", DOI_ID_PREFIX), "10.1000/xyz");
+        assert_eq!(
+            strip_provider_prefix("10.1000/xyz", DOI_ID_PREFIX),
+            "10.1000/xyz"
+        );
     }
 
     #[test]
