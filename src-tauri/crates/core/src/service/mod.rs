@@ -13,6 +13,7 @@ pub mod paper_import;
 pub mod project;
 pub mod reading_list;
 pub mod search_state;
+pub mod source;
 pub mod stats;
 pub mod tag;
 pub mod trash;

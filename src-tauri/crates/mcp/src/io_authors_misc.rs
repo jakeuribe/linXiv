@@ -27,7 +27,7 @@ use linxiv_core::service::export_import::{self as svc_ei, OnConflict};
 use linxiv_core::service::paper as svc_paper;
 use linxiv_core::service::paper_import as svc_paper_import;
 use linxiv_core::service::project::{self as svc_project};
-use linxiv_core::sources::doi_resolve;
+use linxiv_core::service::source as svc_source;
 
 use crate::Server;
 
@@ -247,7 +247,7 @@ impl Server {
 
     #[tool(description = "Resolve a DOI to paper metadata without saving it to the library.")]
     pub async fn resolve_doi(&self, params: Parameters<DoiParams>) -> Result<String, ErrorData> {
-        let meta = doi_resolve::resolve_doi(&params.0.doi, &config::data_dir())
+        let meta = svc_source::resolve_doi(&params.0.doi)
             .await
             .map_err(map_core)?;
         json_ok(&meta)
@@ -255,7 +255,7 @@ impl Server {
 
     #[tool(description = "Resolve a DOI and save the resulting paper to the local library.")]
     pub async fn save_doi(&self, params: Parameters<DoiParams>) -> Result<String, ErrorData> {
-        let meta = doi_resolve::resolve_doi(&params.0.doi, &config::data_dir())
+        let meta = svc_source::resolve_doi(&params.0.doi)
             .await
             .map_err(map_core)?;
         self.with_conn(|conn| svc_paper::save_paper_metadata(conn, &meta, None))

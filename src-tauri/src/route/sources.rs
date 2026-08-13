@@ -12,11 +12,9 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use linxiv_core::config;
 use linxiv_core::error::CoreError;
 use linxiv_core::models::{strip_namespace, PaperMetadata, SearchResultOut};
-use linxiv_core::service::paper as svc_paper;
-use linxiv_core::sources::{crossref, doi_resolve, fetch as svc_fetch};
+use linxiv_core::service::{paper as svc_paper, source as svc_source};
 
 use crate::route::{ApiError, ReqCtx};
 use crate::state::AppState;
@@ -34,8 +32,6 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
         _ => None,
     }
 }
-
-use linxiv_core::config::openalex_mailto as mailto;
 
 /// `api/app.py`'s `except Exception: 502` for the search/fetch source calls.
 fn upstream_502(e: CoreError) -> ApiError {
@@ -127,16 +123,9 @@ async fn arxiv_search(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiEr
     }
     let max_results = check_max_results(b.max_results)?;
     check_sort("arxiv", &b.sort)?;
-    let results = svc_fetch::search(
-        "arxiv",
-        b.query.trim(),
-        max_results,
-        &b.sort,
-        &config::data_dir(),
-        &mailto(),
-    )
-    .await
-    .map_err(upstream_502)?;
+    let results = svc_source::search("arxiv", b.query.trim(), max_results, &b.sort)
+        .await
+        .map_err(upstream_502)?;
 
     let saved = saved_ids(state, &results, b.save)?;
 
@@ -157,7 +146,7 @@ async fn arxiv_fetch(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiErr
     if b.source_id.is_empty() {
         return Err(ApiError::new(422, "source_id must not be empty"));
     }
-    let meta = svc_fetch::fetch_by_id("arxiv", b.source_id.trim(), &config::data_dir(), &mailto())
+    let meta = svc_source::fetch_by_id("arxiv", b.source_id.trim())
         .await
         .map_err(|e| match e {
             CoreError::ArxivNotFound(m) => ApiError::new(404, m),
@@ -190,16 +179,9 @@ async fn openalex_search(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, Ap
     }
     let max_results = check_max_results(b.max_results)?;
     check_sort("openalex", &b.sort)?;
-    let results = svc_fetch::search(
-        "openalex",
-        b.query.trim(),
-        max_results,
-        &b.sort,
-        &config::data_dir(),
-        &mailto(),
-    )
-    .await
-    .map_err(upstream_502)?;
+    let results = svc_source::search("openalex", b.query.trim(), max_results, &b.sort)
+        .await
+        .map_err(upstream_502)?;
     let saved = saved_ids(state, &results, false)?;
     let results: Vec<SearchResultOut> = results.into_iter().map(SearchResultOut::from).collect();
     Ok(json!({ "results": results, "saved_source_ids": saved }))
@@ -216,24 +198,20 @@ async fn openalex_save(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiE
     if b.source_id.is_empty() {
         return Err(ApiError::new(422, "source_id must not be empty"));
     }
-    let meta = svc_fetch::fetch_by_id(
-        "openalex",
-        b.source_id.trim(),
-        &config::data_dir(),
-        &mailto(),
-    )
-    .await
-    .map_err(|e| match e {
-        CoreError::OpenAlexNotFound(m) => ApiError::new(404, m),
-        CoreError::OpenAlexInput(m) => ApiError::new(400, m),
-        other => ApiError::new(502, other.to_string()),
-    })?;
+    let meta = svc_source::fetch_by_id("openalex", b.source_id.trim())
+        .await
+        .map_err(|e| match e {
+            CoreError::OpenAlexNotFound(m) => ApiError::new(404, m),
+            CoreError::OpenAlexInput(m) => ApiError::new(400, m),
+            other => ApiError::new(502, other.to_string()),
+        })?;
     let (stored, _) = state.with_conn(|conn| svc_paper::save_paper_metadata(conn, &meta, None))?;
     Ok(json!({ "saved": true, "source_id": strip_namespace(&stored) }))
 }
 
-/// `POST /api/crossref/search` — same envelope as the openalex arm. CrossRef title
-/// search is relevance-only, so a `sort` in the body is ignored rather than validated.
+/// `POST /api/crossref/search` — same envelope as the openalex arm. The wire body
+/// carries no `sort`, so this arm pins relevance; a transport failure is a 502
+/// rather than an empty result list.
 async fn crossref_search(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     #[derive(Deserialize)]
     struct Body {
@@ -246,9 +224,7 @@ async fn crossref_search(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
         return Err(ApiError::new(422, "query must not be empty"));
     }
     let max_results = check_max_results(b.max_results)?;
-    // Not svc_fetch::search: its crossref arm swallows every transport/HTTP failure
-    // into an empty Vec, so an outage would render as "no results" instead of a 502.
-    let results = crossref::search_by_title_checked(b.query.trim(), max_results as u32)
+    let results = svc_source::search("crossref", b.query.trim(), max_results, "relevance")
         .await
         .map_err(upstream_502)?;
     let results: Vec<SearchResultOut> = results.into_iter().map(SearchResultOut::from).collect();
@@ -266,7 +242,7 @@ async fn doi_resolve_route(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     if b.doi.is_empty() {
         return Err(ApiError::new(422, "doi must not be empty"));
     }
-    let meta = doi_resolve::resolve_doi(b.doi.trim(), &config::data_dir()).await?;
+    let meta = svc_source::resolve_doi(b.doi.trim()).await?;
     Ok(json!({ "metadata": meta_json(&meta)? }))
 }
 
@@ -280,7 +256,7 @@ async fn doi_save_route(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, Api
     if b.doi.is_empty() {
         return Err(ApiError::new(422, "doi must not be empty"));
     }
-    let meta = doi_resolve::resolve_doi(b.doi.trim(), &config::data_dir()).await?;
+    let meta = svc_source::resolve_doi(b.doi.trim()).await?;
     state.with_conn(|conn| svc_paper::save_paper_metadata(conn, &meta, None))?;
     Ok(json!({ "metadata": meta_json(&meta)?, "saved": true }))
 }

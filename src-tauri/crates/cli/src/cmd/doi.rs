@@ -3,9 +3,7 @@
 use clap::Subcommand;
 use serde_json::json;
 
-use linxiv_core::config;
-use linxiv_core::service::paper as svc_paper;
-use linxiv_core::sources::doi_resolve::resolve_doi;
+use linxiv_core::service::{paper as svc_paper, source as svc_source};
 
 use crate::ctx::Ctx;
 use crate::output::{fail, output};
@@ -21,12 +19,10 @@ pub enum DoiCmd {
 pub async fn run(cmd: DoiCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
     let (DoiCmd::Resolve { doi } | DoiCmd::Save { doi }) = &cmd;
     // The `[doi] {e}` prefix line + error JSON mirror Python's two-line stderr on failure.
-    let meta = resolve_doi(doi, &config::data_dir())
-        .await
-        .unwrap_or_else(|e| {
-            eprintln!("[doi] {e}");
-            fail(e)
-        });
+    let meta = svc_source::resolve_doi(doi).await.unwrap_or_else(|e| {
+        eprintln!("[doi] {e}");
+        fail(e)
+    });
     match cmd {
         // cmd_doi_resolve: dump metadata.
         DoiCmd::Resolve { .. } => output(&meta),

@@ -18,12 +18,10 @@ use serde_json::Value;
 use linxiv_core::error::CoreError;
 use linxiv_core::models::{PaperMetadata, SearchResultOut};
 use linxiv_core::service::paper::{self as svc_paper, PaperSort};
-use linxiv_core::sources::fetch as svc_fetch;
+use linxiv_core::service::source as svc_source;
 use linxiv_core::{config, service::project as svc_project};
 
 use crate::Server;
-
-use linxiv_core::config::openalex_mailto as mailto;
 
 use crate::util::{core_err, invalid, json_ok};
 
@@ -178,16 +176,9 @@ impl Server {
         }): Parameters<SearchPapersParams>,
     ) -> Result<String, ErrorData> {
         // Python `source.search(query, max_results)` defaults sort="relevance".
-        let results = svc_fetch::search(
-            &source,
-            &query,
-            max_results as u32,
-            "relevance",
-            &config::data_dir(),
-            &mailto(),
-        )
-        .await
-        .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+        let results = svc_source::search(&source, &query, max_results as u32, "relevance")
+            .await
+            .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
         // The canonical search wire shape all three surfaces emit (ADR-0011).
         let results: Vec<SearchResultOut> =
             results.into_iter().map(SearchResultOut::from).collect();
@@ -201,7 +192,7 @@ impl Server {
         &self,
         Parameters(FetchPaperParams { paper_id, source }): Parameters<FetchPaperParams>,
     ) -> Result<String, ErrorData> {
-        let meta = svc_fetch::fetch_by_id(&source, &paper_id, &config::data_dir(), &mailto())
+        let meta = svc_source::fetch_by_id(&source, &paper_id)
             .await
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
         self.with_conn(|conn| svc_paper::save_paper_metadata(conn, &meta, None))
