@@ -97,11 +97,6 @@ fn export_text(
     Ok(json!({ "ok": true }))
 }
 
-/// `Status(s)` — the three lifecycle strings, else None (caller decides the error).
-fn status_from_str(s: &str) -> Option<Status> {
-    serde_json::from_value(Value::String(s.into())).ok()
-}
-
 /// Canonical project wire shape — `service::project::to_out` (SERIALIZER 3;
 /// identical bytes on route, CLI and MCP). Shared with the tag-detail scan.
 pub(crate) fn project_out(conn: &Connection, p: ProjectDetails) -> Result<Value, ApiError> {
@@ -114,12 +109,13 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let out = state.with_conn(|conn| -> Result<Vec<Value>, ApiError> {
         let filter = match status.as_str() {
             "all" => Projects::default(),
-            s => match status_from_str(s) {
-                Some(st) => Projects {
+            // app.py parity: an unparseable filter matches nothing, it is not a 400.
+            s => match s.parse::<Status>() {
+                Ok(st) => Projects {
                     status: Some(st),
                     ..Default::default()
                 },
-                None => return Ok(Vec::new()),
+                Err(_) => return Ok(Vec::new()),
             },
         };
         let mut out = Vec::new();
@@ -196,8 +192,10 @@ fn patch(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError
     }
     let b: Body = ctx.parse_body()?;
 
-    let status = match b.status {
-        Some(s) => Some(status_from_str(&s).ok_or_else(|| ApiError::new(400, "Invalid status"))?),
+    // Core owns the parse and the message; the 400 is kept so the frontend's
+    // handling of this response is unchanged (Validation would otherwise be 422).
+    let status = match b.status.as_deref() {
+        Some(s) => Some(s.parse::<Status>().map_err(|e| ApiError::new(400, e.to_string()))?),
         None => None,
     };
     // color: only touched when the key was explicitly sent (app.py model_fields_set).
@@ -429,7 +427,11 @@ mod tests {
         .await
         .unwrap_err();
         assert_eq!(err.status, 400);
-        assert_eq!(err.detail, "Invalid status");
+        // Single-sourced from `Status: FromStr` — route, CLI and MCP word it alike.
+        assert_eq!(
+            err.detail,
+            "Invalid status 'nope'. Use 'active', 'archived', or 'deleted'."
+        );
     }
 
     #[tokio::test]

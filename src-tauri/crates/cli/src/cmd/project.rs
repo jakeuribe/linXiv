@@ -13,21 +13,11 @@ use linxiv_core::service::{export_import, project};
 use crate::ctx::Ctx;
 use crate::output::{as_source_id, fail, output};
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
-pub enum ProjectStatus {
-    Active,
-    Archived,
-    Deleted,
-}
-
-impl ProjectStatus {
-    fn to_status(self) -> Status {
-        match self {
-            ProjectStatus::Active => Status::Active,
-            ProjectStatus::Archived => Status::Archived,
-            ProjectStatus::Deleted => Status::Deleted,
-        }
-    }
+/// clap's `--status` parser. Core's `Status: FromStr` is the one parse and the one
+/// message, so the CLI no longer carries its own copy of the three strings; clap
+/// still lists them in `--help` via `value_parser`'s possible values.
+fn status_arg(s: &str) -> anyhow::Result<Status> {
+    s.parse::<Status>().map_err(Into::into)
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -49,8 +39,9 @@ impl OnConflict {
 pub enum ProjectCmd {
     /// List projects
     List {
-        #[arg(long, value_enum)]
-        status: Option<ProjectStatus>,
+        /// active, archived, or deleted
+        #[arg(long, value_parser = status_arg)]
+        status: Option<Status>,
     },
     /// Get project details
     Get { project_id: i64 },
@@ -78,8 +69,9 @@ pub enum ProjectCmd {
         /// Project tags (replaces existing; pass no values to clear)
         #[arg(long, num_args = 0..)]
         tags: Option<Vec<String>>,
-        #[arg(long, value_enum)]
-        status: Option<ProjectStatus>,
+        /// active, archived, or deleted
+        #[arg(long, value_parser = status_arg)]
+        status: Option<Status>,
     },
     /// Soft-delete a project
     Delete { project_id: i64 },
@@ -161,15 +153,14 @@ fn membership_or_exit(
 pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
     match cmd {
         ProjectCmd::List { status } => {
-            let core_status = status.map(|s| s.to_status());
             let mut projects = project::get_many(
                 &ctx.conn,
                 &project::Projects {
-                    status: core_status,
+                    status,
                     ..Default::default()
                 },
             )?;
-            if core_status.is_none() {
+            if status.is_none() {
                 projects.retain(|p| p.status != Status::Deleted);
             }
             let rows = projects
@@ -230,7 +221,7 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                     description,
                     color,
                     project_tags: tags,
-                    status: status.map(|s| s.to_status()),
+                    status,
                 },
             ) {
                 fail(e);

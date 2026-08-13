@@ -127,6 +127,20 @@ pub fn get(conn: &Connection, paper: &Paper) -> Result<Option<PaperDetails>> {
 /// Fetch every stored version, display fields from the latest. Key resolution
 /// shares [`resolve_source_id`] with delete/restore/hard-delete. (`get` stays
 /// paper_id-first: its paper_id key selects an exact version row by PK.)
+/// `get` where absence is an error: the one place the paper not-found contract
+/// comes from (`CoreError::PaperNotFound` — route 404, CLI exit 1, MCP tool error
+/// all word it identically). Mirrors `project::get_required`.
+pub fn get_required(conn: &Connection, source_id: &str) -> Result<PaperDetails> {
+    get(
+        conn,
+        &Paper {
+            source_id: Some(source_id.to_string()),
+            ..Default::default()
+        },
+    )?
+    .ok_or_else(|| CoreError::PaperNotFound(source_id.to_string()))
+}
+
 pub fn get_all(conn: &Connection, paper: &Paper) -> Result<Option<PaperDetailsAll>> {
     let Some(source_id) = resolve_source_id(conn, paper)? else {
         return Ok(None);
@@ -243,7 +257,26 @@ pub fn add_paper_tags(
     source_id: &str,
     tags: &[String],
 ) -> Result<Vec<String>> {
-    store::add_paper_tags(conn, source_id, tags)
+    not_found_as_paper(store::add_paper_tags(conn, source_id, tags), source_id)
+}
+
+/// Remove `tags` from a paper across both halves of dual tag storage. Returns the
+/// remaining list. Symmetric with [`add_paper_tags`].
+pub fn remove_paper_tags(
+    conn: &mut Connection,
+    source_id: &str,
+    tags: &[String],
+) -> Result<Vec<String>> {
+    not_found_as_paper(store::remove_paper_tags(conn, source_id, tags), source_id)
+}
+
+/// Restate storage's generic miss as the typed, id-carrying variant so every
+/// surface words a tag write against an unknown paper identically.
+fn not_found_as_paper<T>(r: Result<T>, source_id: &str) -> Result<T> {
+    r.map_err(|e| match e {
+        CoreError::NotFound(_) => CoreError::PaperNotFound(source_id.to_string()),
+        other => other,
+    })
 }
 
 /// Re-write a paper's metadata in-place (migrating SOURCE_ID if it changed).

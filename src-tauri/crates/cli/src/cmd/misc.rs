@@ -4,10 +4,10 @@
 use std::path::PathBuf;
 
 use clap::Subcommand;
-use serde_json::{json, Value};
+use serde_json::json;
 
+use linxiv_core::service::db_admin;
 use linxiv_core::service::paper as svc_paper;
-use linxiv_core::storage;
 
 use crate::ctx::Ctx;
 use crate::output::output;
@@ -41,9 +41,7 @@ pub async fn settings(cmd: SettingsCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
     match cmd {
         SettingsCmd::Get => output(&ctx.settings.all()),
         SettingsCmd::Update { key, value } => {
-            let parsed: Value =
-                serde_json::from_str(&value).unwrap_or_else(|_| Value::String(value.clone()));
-            ctx.settings.set(key.clone(), parsed.clone())?;
+            let parsed = ctx.settings.set_from_str(key.clone(), value)?;
             output(&json!({ key: parsed }));
         }
     }
@@ -51,7 +49,7 @@ pub async fn settings(cmd: SettingsCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
 }
 
 pub async fn backup(dest: PathBuf, ctx: &mut Ctx) -> anyhow::Result<()> {
-    output(&storage::backup(&ctx.conn, &dest)?);
+    output(&db_admin::backup(&ctx.conn, &dest)?);
     Ok(())
 }
 
@@ -84,7 +82,7 @@ mod tests {
         drop(ctx);
         std::fs::write(&db_path, b"not a database").unwrap();
 
-        storage::restore(&dest, &db_path).unwrap();
+        db_admin::restore_closed(&dest).unwrap();
 
         let restored = Connection::open(&db_path).unwrap();
         let v: String = restored

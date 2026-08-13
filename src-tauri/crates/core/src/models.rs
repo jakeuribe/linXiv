@@ -340,6 +340,24 @@ pub enum Status {
     Deleted,
 }
 
+/// The one parse of a user-supplied status string, and the one message a bad one
+/// gets. Route, CLI and MCP all come through here (ADR 0010 — locality).
+impl std::str::FromStr for Status {
+    type Err = crate::error::CoreError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "active" => Ok(Status::Active),
+            "archived" => Ok(Status::Archived),
+            "deleted" => Ok(Status::Deleted),
+            _ => Err(crate::error::CoreError::Validation(format!(
+                "Invalid status {}. Use 'active', 'archived', or 'deleted'.",
+                crate::formats::pyrepr(s)
+            ))),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ProjectDetails {
     #[serde(default)]

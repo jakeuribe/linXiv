@@ -123,6 +123,28 @@ pub fn get_required(conn: &Connection, project_fk: i64) -> Result<ProjectDetails
     .ok_or(CoreError::ProjectNotFound(project_fk))
 }
 
+/// Link `tags` to a project, creating any that don't exist yet. Guards existence
+/// first so CLI and MCP stop each doing it by hand. Returns the resulting tags.
+pub fn add_project_tags(
+    conn: &mut Connection,
+    project_fk: i64,
+    tags: &[String],
+) -> Result<Vec<String>> {
+    get_required(conn, project_fk)?;
+    tq::add_project_tags(conn, project_fk, tags)
+}
+
+/// Unlink `tags` from a project (the TAG rows themselves survive). Returns the
+/// remaining tags. Symmetric with [`add_project_tags`].
+pub fn remove_project_tags(
+    conn: &mut Connection,
+    project_fk: i64,
+    tags: &[String],
+) -> Result<Vec<String>> {
+    get_required(conn, project_fk)?;
+    tq::remove_project_tags(conn, project_fk, tags)
+}
+
 /// The single mapping point to the canonical wire shape (`models::ProjectOut`,
 /// SERIALIZER 3): resolves `source_fks` to namespaced source ids and renders
 /// `color` as `#rrggbb`. All three surfaces serialize projects through here.

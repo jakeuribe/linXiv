@@ -18,22 +18,13 @@ use linxiv_core::models::{ProjectDetails, ProjectIn, ProjectUpdateIn, Status, Ta
 use linxiv_core::service::paper::{self, Paper};
 use linxiv_core::service::project::{self, Project, Projects};
 use linxiv_core::service::tag::{self, Tag};
-use linxiv_core::storage::queries::{paper as paperq, tag as tagq};
 
-use crate::util::core_err;
+use crate::util::{core_err, guard_err};
 use crate::Server;
 
-/// Python `_SvcStatus(status)` — the three lifecycle strings, else a `ValueError`.
+/// Python `_SvcStatus(status)` — core owns the three-string parse and its message.
 fn parse_status(s: &str) -> Result<Status, ErrorData> {
-    match s {
-        "active" => Ok(Status::Active),
-        "archived" => Ok(Status::Archived),
-        "deleted" => Ok(Status::Deleted),
-        _ => Err(ErrorData::invalid_params(
-            format!("Invalid status {s:?}. Use 'active', 'archived', or 'deleted'."),
-            None,
-        )),
-    }
+    s.parse::<Status>().map_err(guard_err)
 }
 
 /// Serialize a value into the tool's text response (compact JSON string).
@@ -51,23 +42,9 @@ fn get_project(conn: &rusqlite::Connection, id: i64) -> Result<Option<ProjectDet
     project::get(conn, &proj(id)).map_err(core_err)
 }
 
+/// Existence guard — core's `get_required` owns the not-found wording.
 fn ensure_project(conn: &rusqlite::Connection, id: i64) -> Result<(), ErrorData> {
-    get_project(conn, id)?
-        .map(|_| ())
-        .ok_or_else(|| crate::util::guard_err(CoreError::ProjectNotFound(id)))
-}
-
-fn ensure_paper(conn: &rusqlite::Connection, paper_id: &str) -> Result<(), ErrorData> {
-    paper::get(
-        conn,
-        &Paper {
-            source_id: Some(paper_id.to_string()),
-            ..Default::default()
-        },
-    )
-    .map_err(core_err)?
-    .map(|_| ())
-    .ok_or_else(|| crate::util::guard_err(CoreError::PaperNotFound(paper_id.to_string())))
+    project::get_required(conn, id).map(|_| ()).map_err(guard_err)
 }
 
 /// Shared body of add_paper_to_project / remove_paper_from_project — core's
@@ -426,8 +403,8 @@ impl Server {
     ) -> Result<String, ErrorData> {
         let ProjectTagsParams { project_id, tags } = _params.0;
         self.with_conn(|conn| {
-            ensure_project(conn, project_id)?;
-            let updated = tagq::add_project_tags(conn, project_id, &tags).map_err(core_err)?;
+            let updated =
+                project::add_project_tags(conn, project_id, &tags).map_err(guard_err)?;
             jval(json!({ "project_id": project_id, "tags": updated }))
         })
     }
@@ -439,8 +416,8 @@ impl Server {
     ) -> Result<String, ErrorData> {
         let ProjectTagsParams { project_id, tags } = _params.0;
         self.with_conn(|conn| {
-            ensure_project(conn, project_id)?;
-            let updated = tagq::remove_project_tags(conn, project_id, &tags).map_err(core_err)?;
+            let updated =
+                project::remove_project_tags(conn, project_id, &tags).map_err(guard_err)?;
             jval(json!({ "project_id": project_id, "tags": updated }))
         })
     }
@@ -491,8 +468,7 @@ impl Server {
     ) -> Result<String, ErrorData> {
         let PaperTagsParams { paper_id, tags } = _params.0;
         self.with_conn(|conn| {
-            ensure_paper(conn, &paper_id)?;
-            let updated = paperq::add_paper_tags(conn, &paper_id, &tags).map_err(core_err)?;
+            let updated = paper::add_paper_tags(conn, &paper_id, &tags).map_err(guard_err)?;
             jval(json!({ "paper_id": paper_id, "tags": updated }))
         })
     }
@@ -504,8 +480,7 @@ impl Server {
     ) -> Result<String, ErrorData> {
         let PaperTagsParams { paper_id, tags } = _params.0;
         self.with_conn(|conn| {
-            ensure_paper(conn, &paper_id)?;
-            let updated = paperq::remove_paper_tags(conn, &paper_id, &tags).map_err(core_err)?;
+            let updated = paper::remove_paper_tags(conn, &paper_id, &tags).map_err(guard_err)?;
             jval(json!({ "paper_id": paper_id, "tags": updated }))
         })
     }

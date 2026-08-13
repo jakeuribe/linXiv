@@ -133,6 +133,16 @@ impl UserSettings {
         self.save()
     }
 
+    /// Set an override from a raw command-line/tool string: parsed as JSON when it
+    /// is valid JSON, else stored verbatim as a string. Returns what was stored so
+    /// the caller can echo it. The one home for the rule (`linxiv settings update`
+    /// and MCP `update_setting` each used to spell it out).
+    pub fn set_from_str(&mut self, key: impl Into<String>, raw: String) -> Result<Value> {
+        let parsed = serde_json::from_str::<Value>(&raw).unwrap_or(Value::String(raw));
+        self.set(key, parsed.clone())?;
+        Ok(parsed)
+    }
+
     /// Persist only the overrides (pretty-printed, like the Python `json.dumps(indent=2)` writer).
     pub fn save(&self) -> Result<()> {
         let path = data_dir().join(USER_SETTINGS_FILE);

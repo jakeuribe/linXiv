@@ -101,19 +101,3 @@ pub async fn run(cmd: TrashCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
     }
     Ok(())
 }
-
-/// `_resolve_project_or_exit`: None -> `{"error": "Project {id} not found"}` + exit(1).
-pub(crate) fn resolve_project_or_exit(
-    ctx: &Ctx,
-    project_id: i64,
-) -> anyhow::Result<linxiv_core::models::ProjectDetails> {
-    match svc_project::get(
-        &ctx.conn,
-        &Project {
-            project_fk: Some(project_id),
-        },
-    )? {
-        Some(d) => Ok(d),
-        None => fail(linxiv_core::error::CoreError::ProjectNotFound(project_id)),
-    }
-}

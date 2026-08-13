@@ -37,7 +37,8 @@ use linxiv_core::models::{
     ProjectIn, ProjectUpdateIn,
 };
 use linxiv_core::service::{
-    annotation as annotation_svc, note as note_svc, paper as paper_svc, project as project_svc,
+    annotation as annotation_svc, author as author_svc, note as note_svc, paper as paper_svc,
+    project as project_svc,
 };
 
 pub use model::{SharedAnnotation, SharedNote, SharedPaper, SharedProject, SharedSummary};
@@ -130,11 +131,10 @@ pub fn build_shared_project(conn: &Connection, project_id: i64) -> Result<Shared
                 ..Default::default()
             },
         )? {
-            let author_orcids =
-                linxiv_core::storage::queries::author::get_paper_authors(conn, p.paper_id)?
-                    .into_iter()
-                    .map(|a| a.orcid)
-                    .collect();
+            let author_orcids = author_svc::get_paper_authors(conn, p.paper_id)?
+                .into_iter()
+                .map(|a| a.orcid)
+                .collect();
             out.push(SharedPaper {
                 source_id: p.source_id,
                 version: p.version,

@@ -79,18 +79,12 @@ async fn ingest_source(
     fetched.commit(&mut ctx.conn)
 }
 
-/// `_resolve_paper_or_exit`: load a paper or fail with the not-found error.
+/// `_resolve_paper_or_exit`: load a paper or fail with core's not-found wording.
 pub(super) fn resolve_paper_or_exit(
     ctx: &Ctx,
     source_id: &str,
 ) -> linxiv_core::models::PaperDetails {
-    match svc_paper::get(&ctx.conn, &paper(source_id)) {
-        Ok(Some(p)) => p,
-        Ok(None) => fail(linxiv_core::error::CoreError::PaperNotFound(
-            source_id.to_string(),
-        )),
-        Err(e) => fail(e),
-    }
+    svc_paper::get_required(&ctx.conn, source_id).unwrap_or_else(|e| fail(e))
 }
 
 fn paper(source_id: &str) -> svc_paper::Paper {

@@ -7,7 +7,7 @@ use anyhow::Result;
 use rusqlite::Connection;
 
 use linxiv_core::config;
-use linxiv_core::storage;
+use linxiv_core::service::db_admin;
 
 /// Process-wide handles a command needs: the open DB plus the resolved data paths.
 pub struct Ctx {
@@ -21,8 +21,7 @@ impl Ctx {
     /// settings. Mirrors `linxiv_cli.py::main` startup (init_data_dir → init_db).
     pub fn open() -> Result<Self> {
         config::init_data_dir()?;
-        let conn = storage::open(&config::db_path())?;
-        storage::init_db(&conn)?;
+        let conn = db_admin::open_app_db()?;
         let settings = config::UserSettings::load()?;
         Ok(Self {
             conn,
