@@ -235,7 +235,7 @@ pub async fn import_pdf_default(
 
 /// Receipt for a BibTeX import — the route's `/api/papers/import/bibtex` shape,
 /// emitted by all three surfaces.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct BibtexImportReceipt {
     pub saved_count: usize,
     pub source_ids: Vec<String>,

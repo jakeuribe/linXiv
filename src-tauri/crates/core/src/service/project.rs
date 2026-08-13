@@ -427,7 +427,7 @@ pub fn export_papers(conn: &Connection, source_fks: &[i64]) -> Result<Vec<PaperD
 
 /// Receipt for the single-paper membership ops — one shape for all three
 /// surfaces (`ok` + ids + the project's post-op paper count).
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, ts_rs::TS)]
 pub struct PaperMembershipReceipt {
     pub ok: bool,
     pub project_id: i64,

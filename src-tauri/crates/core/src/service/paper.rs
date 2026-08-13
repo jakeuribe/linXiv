@@ -662,14 +662,17 @@ pub fn should_store_full_text(paper: &PaperDetails, extracted: &str) -> bool {
 
 /// Receipt for one full-text ingest attempt — the wire shape route, CLI and MCP
 /// all emit (`{source_id, version, indexed}` + `chars` or `reason`).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct FullTextReceipt {
     pub source_id: String,
     pub version: i64,
     pub indexed: bool,
+    // ts(optional) mirrors skip_serializing_if: the key is absent, not null.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub chars: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub reason: Option<&'static str>,
 }
 

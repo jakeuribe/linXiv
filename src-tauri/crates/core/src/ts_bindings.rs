@@ -92,6 +92,9 @@ pub(crate) fn render() -> String {
     out.push_str(&decl::<AuthorWithPapers>());
     out.push_str(&decl::<crate::service::stats::Stats>());
     out.push_str(&decl::<crate::storage::queries::paper::DoiVersionCandidate>());
+    out.push_str(&decl::<crate::service::paper::FullTextReceipt>());
+    out.push_str(&decl::<crate::service::project::PaperMembershipReceipt>());
+    out.push_str(&decl::<crate::service::paper_import::BibtexImportReceipt>());
     out
 }
 
