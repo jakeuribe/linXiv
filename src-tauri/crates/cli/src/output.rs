@@ -37,13 +37,11 @@ pub fn validate_arxiv_id(source_id: &str) {
     }
 }
 
-/// `_as_source_id`: prefix a bare id with its namespace; already-prefixed ids pass through.
-pub fn as_source_id(raw: &str, source: &str) -> String {
-    if raw.contains(':') {
-        raw.to_string()
-    } else {
-        format!("{source}:{raw}")
-    }
+/// Replaces `_as_source_id`, which prefixed every bare id with `arxiv:` and so made
+/// DOI- and BibTeX-imported papers unaddressable from the CLI. Core matches the id
+/// verbatim first, then under each provider namespace.
+pub fn as_source_id(conn: &rusqlite::Connection, raw: &str) -> String {
+    linxiv_core::service::paper::canonical_source_id(conn, raw)
 }
 
 /// Resolve an optional CLI paper id to its SOURCE_FK; `Err(NotFound)` on a miss
@@ -53,10 +51,7 @@ pub fn resolve_source_fk(
     raw: Option<String>,
 ) -> anyhow::Result<Option<i64>> {
     Ok(match raw {
-        Some(raw) => Some(linxiv_core::service::paper::resolve_source_fk(
-            conn,
-            &as_source_id(&raw, "arxiv"),
-        )?),
+        Some(raw) => Some(linxiv_core::service::paper::resolve_source_fk(conn, &raw)?),
         None => None,
     })
 }

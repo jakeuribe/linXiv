@@ -30,7 +30,7 @@ pub async fn run(cmd: TrashCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         }
         // cmd_trash_restore -> _do_paper_restore
         TrashCmd::Restore { source_id } => {
-            let source_id = as_source_id(&source_id, "arxiv");
+            let source_id = as_source_id(&ctx.conn, &source_id);
             svc_paper::require_trashed(&ctx.conn, &source_id).unwrap_or_else(|e| fail(e));
             let (pdf_path, project_fks) = svc_paper::restore(
                 &mut ctx.conn,
@@ -48,7 +48,7 @@ pub async fn run(cmd: TrashCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         }
         // cmd_trash_hard_delete -> require_trashed guard then _do_paper_hard_delete
         TrashCmd::HardDelete { source_id } => {
-            let source_id = as_source_id(&source_id, "arxiv");
+            let source_id = as_source_id(&ctx.conn, &source_id);
             svc_paper::require_trashed(&ctx.conn, &source_id).unwrap_or_else(|e| fail(e));
             // _do_paper_hard_delete: get_paper_root None -> not found; here unreachable
             // after the guard, but mirror the message off hard_delete's None return.

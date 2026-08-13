@@ -119,17 +119,14 @@ pub fn get(conn: &Connection, paper: &Paper) -> Result<Option<PaperDetails>> {
         return paper_by_source_fk(conn, sfk); // version ignored
     }
     if let Some(sid) = paper.source_id.as_deref() {
-        return store::get_paper(conn, sid, paper.version);
+        return store::get_paper(conn, &canonical_source_id(conn, sid), paper.version);
     }
     Ok(None)
 }
 
-/// Fetch every stored version, display fields from the latest. Key resolution
-/// shares [`resolve_source_id`] with delete/restore/hard-delete. (`get` stays
-/// paper_id-first: its paper_id key selects an exact version row by PK.)
-/// `get` where absence is an error: the one place the paper not-found contract
-/// comes from (`CoreError::PaperNotFound` — route 404, CLI exit 1, MCP tool error
-/// all word it identically). Mirrors `project::get_required`.
+/// `get` by source_id where absence is an error: the one place the paper not-found
+/// contract comes from (`CoreError::PaperNotFound` — route 404, CLI exit 1, MCP tool
+/// error all word it identically). Mirrors `project::get_required`.
 pub fn get_required(conn: &Connection, source_id: &str) -> Result<PaperDetails> {
     get(
         conn,
@@ -141,6 +138,9 @@ pub fn get_required(conn: &Connection, source_id: &str) -> Result<PaperDetails> 
     .ok_or_else(|| CoreError::PaperNotFound(source_id.to_string()))
 }
 
+/// Fetch every stored version, display fields from the latest. Key resolution
+/// shares [`resolve_source_id`] with delete/restore/hard-delete. (`get` stays
+/// paper_id-first: its paper_id key selects an exact version row by PK.)
 pub fn get_all(conn: &Connection, paper: &Paper) -> Result<Option<PaperDetailsAll>> {
     let Some(source_id) = resolve_source_id(conn, paper)? else {
         return Ok(None);
@@ -364,8 +364,8 @@ pub fn search_library(conn: &Connection, query: &str, limit: i64) -> Result<Vec<
 
 /// Resolve a `Paper` to its text source_id. Order: source_id → source_fk → paper_id.
 fn resolve_source_id(conn: &Connection, paper: &Paper) -> Result<Option<String>> {
-    if let Some(sid) = paper.source_id.clone() {
-        return Ok(Some(sid));
+    if let Some(sid) = paper.source_id.as_deref() {
+        return Ok(Some(canonical_source_id(conn, sid)));
     }
     if let Some(sfk) = paper.source_fk {
         return store::get_source_id(conn, sfk);
@@ -510,14 +510,47 @@ pub fn ensure_paper_root(conn: &mut Connection, source_id: &str) -> Result<i64> 
     store::ensure_paper_root(conn, source_id)
 }
 
+/// The provider namespaces a user-typed bare id could belong to, tried in order.
+/// arXiv first: it is the overwhelmingly common case and the only one the CLI used
+/// to assume.
+const ID_PREFIXES: [&str; 4] = [
+    crate::models::ARXIV_ID_PREFIX,
+    crate::models::DOI_ID_PREFIX,
+    crate::models::OPENALEX_ID_PREFIX,
+    crate::models::LOCAL_ID_PREFIX,
+];
+
+/// Map a user-supplied paper id onto the `source_id` actually stored.
+///
+/// A verbatim match always wins; only then is `raw` tried under each provider
+/// namespace, so `2204.12985` finds `arxiv:2204.12985` and `10.1000/alpha` finds
+/// either the bare row a pre-namespacing BibTeX import wrote or `doi:10.1000/alpha`.
+/// Unresolvable ids come back unchanged, so callers keep whatever not-found or
+/// empty-result behaviour they already had.
+pub fn canonical_source_id(conn: &Connection, raw: &str) -> String {
+    let raw = raw.trim();
+    if store::get_paper_root(conn, raw).is_ok_and(|r| r.is_some()) {
+        return raw.to_string();
+    }
+    if !raw.contains(':') {
+        for prefix in ID_PREFIXES {
+            let candidate = format!("{prefix}{raw}");
+            if store::get_paper_root(conn, &candidate).is_ok_and(|r| r.is_some()) {
+                return candidate;
+            }
+        }
+    }
+    raw.to_string()
+}
+
 /// SOURCE_FK for an existing paper root — the fail-if-absent counterpart to
 /// [`ensure_paper_root`]. `PaperNotFound` (404) when the paper is not in the
 /// library; the message is the variant's Display, same on every surface.
 pub fn resolve_source_fk(conn: &Connection, source_id: &str) -> Result<i64> {
-    let sid = source_id.trim();
-    store::get_paper_root(conn, sid)?
+    let sid = canonical_source_id(conn, source_id);
+    store::get_paper_root(conn, &sid)?
         .map(|root| root.source_fk)
-        .ok_or_else(|| CoreError::PaperNotFound(sid.to_string()))
+        .ok_or(CoreError::PaperNotFound(sid))
 }
 
 /// PAPER_ROOTS row for a source_id, or None — the Option-returning sibling of
@@ -764,6 +797,37 @@ mod tests {
         let fk = ensure_paper_root(&mut conn, "arxiv:1").unwrap();
         // The id is trimmed before lookup, like the route's ensure call site.
         assert_eq!(resolve_source_fk(&conn, " arxiv:1 ").unwrap(), fk);
+    }
+
+    /// Every surface must be able to address a paper by the id the user knows,
+    /// namespaced or not — the CLI used to assume `arxiv:` and lost DOI/BibTeX rows.
+    #[test]
+    fn canonical_source_id_tries_verbatim_then_each_namespace() {
+        let mut conn = mem();
+        for sid in ["arxiv:2204.12985", "doi:10.1000/beta", "10.1000/alpha"] {
+            ensure_paper_root(&mut conn, sid).unwrap();
+        }
+        // bare arXiv id -> the namespaced root
+        assert_eq!(canonical_source_id(&conn, "2204.12985"), "arxiv:2204.12985");
+        // bare DOI -> the namespaced root
+        assert_eq!(
+            canonical_source_id(&conn, "10.1000/beta"),
+            "doi:10.1000/beta"
+        );
+        // a pre-namespacing bare row still resolves verbatim, not as `arxiv:...`
+        assert_eq!(canonical_source_id(&conn, "10.1000/alpha"), "10.1000/alpha");
+        // already namespaced ids pass straight through
+        assert_eq!(
+            canonical_source_id(&conn, "arxiv:2204.12985"),
+            "arxiv:2204.12985"
+        );
+        // nothing matches -> unchanged, so callers keep their own not-found path
+        assert_eq!(canonical_source_id(&conn, "nope"), "nope");
+        // and the lookup seam sees the same resolution
+        assert_eq!(resolve_source_fk(&conn, "10.1000/beta").unwrap(), {
+            let root = store::get_paper_root(&conn, "doi:10.1000/beta").unwrap();
+            root.unwrap().source_fk
+        });
     }
 
     // Two versions of one paper. Returns (source_fk, paper_id_v1, paper_id_v2).

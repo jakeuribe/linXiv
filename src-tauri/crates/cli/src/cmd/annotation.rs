@@ -54,7 +54,7 @@ pub async fn run(cmd: AnnotationCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             comment,
             project_id,
         } => {
-            let source_id = as_source_id(&source_id, "arxiv");
+            let source_id = as_source_id(&ctx.conn, &source_id);
             let source_fk = svc_paper::resolve_source_fk(conn, &source_id)?;
             let id = svc_ann::create(
                 conn,

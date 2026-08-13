@@ -53,21 +53,21 @@ pub async fn run(cmd: TagCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
     match cmd {
         // cmd_tag_add: prefix the id, UNION tags onto the paper; a miss is not found.
         TagCmd::Add { source_id, tags } => {
-            let source_id = as_source_id(&source_id, "arxiv");
+            let source_id = as_source_id(&ctx.conn, &source_id);
             let updated = svc_paper::add_paper_tags(&mut ctx.conn, &source_id, &tags)
                 .unwrap_or_else(|e| fail(e));
             output(&json!({ "source_id": source_id, "tags": updated }));
         }
         // cmd_tag_remove
         TagCmd::Remove { source_id, tags } => {
-            let source_id = as_source_id(&source_id, "arxiv");
+            let source_id = as_source_id(&ctx.conn, &source_id);
             let updated = svc_paper::remove_paper_tags(&mut ctx.conn, &source_id, &tags)
                 .unwrap_or_else(|e| fail(e));
             output(&json!({ "source_id": source_id, "tags": updated }));
         }
         // cmd_tag_list: missing paper -> empty list (no error), matching get_paper_tags.
         TagCmd::List { source_id } => {
-            let source_id = as_source_id(&source_id, "arxiv");
+            let source_id = as_source_id(&ctx.conn, &source_id);
             let tags = svc_paper::get(
                 &ctx.conn,
                 &Paper {

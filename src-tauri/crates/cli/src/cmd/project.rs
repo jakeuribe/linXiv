@@ -284,7 +284,7 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             project_id,
             source_id,
         } => {
-            let source_id = as_source_id(&source_id, "arxiv");
+            let source_id = as_source_id(&ctx.conn, &source_id);
             output(&membership_or_exit(project::add_paper(
                 &ctx.conn, project_id, &source_id,
             ))?);
@@ -301,7 +301,7 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             let mut seen = std::collections::HashSet::new();
             let source_ids: Vec<String> = source_ids
                 .iter()
-                .map(|s| as_source_id(s, "arxiv"))
+                .map(|s| as_source_id(&ctx.conn, s))
                 .filter(|s| seen.insert(s.clone()))
                 .collect();
             let failed = match project::add_papers(&ctx.conn, project_id, &source_ids) {
@@ -323,7 +323,7 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             project_id,
             source_id,
         } => {
-            let source_id = as_source_id(&source_id, "arxiv");
+            let source_id = as_source_id(&ctx.conn, &source_id);
             output(&membership_or_exit(project::remove_paper(
                 &ctx.conn, project_id, &source_id,
             ))?);
