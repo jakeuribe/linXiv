@@ -13,6 +13,7 @@
 
 use chrono::{NaiveDate, NaiveDateTime};
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -152,7 +153,7 @@ fn is_orcid_shaped(s: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Search-result wire shape. D16: distinct from `PaperDetails`; do not unify.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct SearchResultOut {
     pub source_id: String,
     pub version: i64,
@@ -194,7 +195,7 @@ impl From<PaperMetadata> for SearchResultOut {
 /// Full paper view. D16: distinct from `SearchResultOut`; do not unify.
 /// `published`/`updated` are `Option<NaiveDate>` -> ISO string or `null`,
 /// matching `to_dict`'s `.isoformat() if d else None`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct PaperDetails {
     pub paper_id: i64,
     pub source_id: String,
@@ -229,8 +230,10 @@ pub struct PaperDetails {
     #[serde(default)]
     pub source: Option<String>,
     /// Search-index payload, not a display field: megabytes of TeX per paper
-    /// once ingestion runs.
+    /// once ingestion runs. `ts(skip)` mirrors `skip_serializing` — ts-rs's
+    /// serde-compat only understands the unconditional `skip`.
     #[serde(default, skip_serializing)]
+    #[ts(skip)]
     pub full_text: Option<String>,
     #[serde(default)]
     pub downloaded_source: bool,
@@ -277,7 +280,7 @@ pub struct PaperDetailsAll {
 // Authors (service/models/author.py)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct BasicAuthorDetails {
     pub author_id: i64,
     #[serde(default)]
@@ -291,7 +294,7 @@ pub struct BasicAuthorDetails {
 }
 
 /// `AuthorWithCount(BasicAuthorDetails)` — flattened base + `paper_count`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct AuthorWithCount {
     #[serde(flatten)]
     pub base: BasicAuthorDetails,
@@ -306,7 +309,7 @@ pub struct TagWithCount {
     pub paper_count: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct AuthorPaperPreview {
     pub paper_id: i64,
     pub source_id: String,
@@ -318,7 +321,7 @@ pub struct AuthorPaperPreview {
 
 /// `{**author, paper_count, papers}` — the author-detail composite every surface
 /// (route GET/PATCH, `linxiv author get`, MCP `get_author`) emits.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct AuthorWithPapers {
     #[serde(flatten)]
     pub base: BasicAuthorDetails,
@@ -331,7 +334,7 @@ pub struct AuthorWithPapers {
 // ---------------------------------------------------------------------------
 
 /// Literal["active","archived","deleted"] — validates at deserialize.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
     #[default]
@@ -390,7 +393,7 @@ pub struct ProjectDetails {
 // deliberately NOT Serialize so no surface can bypass this shape. Produced only
 // via `service::project::to_out`, which resolves `source_fks` → namespaced
 // `source_ids` and renders `color` as `color_hex`.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct ProjectOut {
     pub id: Option<i64>,
     pub name: String,
@@ -410,7 +413,7 @@ pub struct ProjectOut {
 // Note (service/models/note.py) — `note_id` serializes as "id"
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct NoteDetails {
     #[serde(rename = "id")]
     pub note_id: Option<i64>,
@@ -436,7 +439,7 @@ pub struct NoteDetails {
 // frontend renderer reads its structure); COMMENT defaults "".
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct AnnotationDetails {
     #[serde(rename = "id")]
     pub annotation_id: i64,

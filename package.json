@@ -11,6 +11,8 @@
     "build": "tsc && vite build",
     "pretest": "node -e \"if(!require('node:fs').globSync('src/**/*.test.ts').length)throw Error('no test files matched src/**/*.test.ts')\"",
     "test": "node --experimental-transform-types --test \"src/**/*.test.ts\"",
+    "types:gen": "cd src-tauri && UPDATE_BINDINGS=1 cargo test -p linxiv-core ts_bindings",
+    "types:check": "cd src-tauri && cargo test -p linxiv-core ts_bindings",
     "preview": "vite preview",
     "pretauri": "npm run submodules",
     "tauri": "tauri",

@@ -7,10 +7,11 @@ use crate::models::PaperDetails;
 use crate::service::{paper, tag};
 use rusqlite::Connection;
 use serde::Serialize;
+use ts_rs::TS;
 
 /// `GET /api/stats` wire shape. `recent_papers` is the 10 newest latest-version
 /// rows, full `PaperDetails`.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, TS)]
 pub struct Stats {
     pub paper_count: usize,
     pub tag_count: usize,

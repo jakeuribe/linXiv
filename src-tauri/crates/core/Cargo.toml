@@ -47,5 +47,10 @@ unicode-normalization = "0.1"
 # RAII cleanup plus a unique dir per call. Was already present as a dev-dependency.
 tempfile = "3"
 
+# TypeScript codegen for the wire types: `#[derive(TS)]` on the canonical
+# serializers, rendered into the checked-in src/types/generated.ts by the
+# ts_bindings test. Derive-only at runtime — nothing here runs in the app.
+ts-rs = { version = "12", features = ["chrono-impl"] }
+
 [dev-dependencies]
 wiremock = "0.6"
