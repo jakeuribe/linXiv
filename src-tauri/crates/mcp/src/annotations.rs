@@ -66,7 +66,9 @@ impl Server {
         self.with_conn(|conn| {
             let source_fk =
                 svc_paper::resolve_source_fk(conn, &p.paper_id).map_err(|e| match e {
-                    e @ CoreError::PaperNotFound(_) => invalid(format!("{e}. Run fetch_paper first.")),
+                    e @ CoreError::PaperNotFound(_) => {
+                        invalid(format!("{e}. Run fetch_paper first."))
+                    }
                     other => core_err(other),
                 })?;
             let id = svc_ann::create(

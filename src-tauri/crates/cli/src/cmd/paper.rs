@@ -122,7 +122,9 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             let source_id = as_source_id(&source_id, "arxiv");
             match svc_paper::get_all(&ctx.conn, &paper(&source_id))? {
                 Some(all) => output(&all),
-                None => fail(linxiv_core::error::CoreError::PaperNotFound(source_id.clone())),
+                None => fail(linxiv_core::error::CoreError::PaperNotFound(
+                    source_id.clone(),
+                )),
             }
         }
 
@@ -215,7 +217,9 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                     "ok": true,
                     "removed_from_projects": removed,
                 })),
-                None => fail(linxiv_core::error::CoreError::PaperNotFound(source_id.clone())),
+                None => fail(linxiv_core::error::CoreError::PaperNotFound(
+                    source_id.clone(),
+                )),
             }
         }
 

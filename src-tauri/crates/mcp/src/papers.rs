@@ -393,50 +393,51 @@ impl Server {
         }): Parameters<RepairPaperParams>,
     ) -> Result<String, ErrorData> {
         // Keyed by the stable paper root so the fix survives a source_id rename.
-        let updated = self.with_conn(|conn| {
-            let source_fk = match svc_paper::resolve_source_fk(conn, &paper_id) {
-                Ok(fk) => fk,
-                Err(e) => return Ok(Err(crate::util::guard_err(e))),
-            };
-            // Date validated after the existence check, matching Python ordering.
-            let published_date = match svc_paper::parse_published(&published) {
-                Ok(d) => d,
-                Err(e) => return Ok(Err(ErrorData::invalid_params(e.to_string(), None))),
-            };
-            // Python `existing.version if existing else 1`.
-            let version = svc_paper::get(conn, &paper_key(&paper_id))?
-                .map(|p| p.version)
-                .unwrap_or(1);
-            let meta = PaperMetadata {
-                source_id: paper_id.clone(),
-                version,
-                title: title.clone(),
-                authors: authors.clone(),
-                published: published_date,
-                updated: None,
-                summary: summary.clone(),
-                category: category.clone(),
-                categories: None,
-                doi: doi.clone(),
-                journal_ref: None,
-                comment: None,
-                url: url.clone(),
-                // Python `tags or None`: an empty list becomes None.
-                tags: tags.clone().filter(|t| !t.is_empty()),
-                source: None,
-                author_orcids: None,
-            };
-            // Validation lives in the service so every front door refuses the same input.
-            if let Err(e) = svc_paper::repair_paper(conn, source_fk, &meta) {
-                return match e {
-                    CoreError::Validation(m) => Ok(Err(invalid(m))),
-                    other => Err(other),
+        let updated = self
+            .with_conn(|conn| {
+                let source_fk = match svc_paper::resolve_source_fk(conn, &paper_id) {
+                    Ok(fk) => fk,
+                    Err(e) => return Ok(Err(crate::util::guard_err(e))),
                 };
-            }
-            // Route parity: return the repaired paper's full `PaperDetails`.
-            Ok(Ok(svc_paper::get(conn, &paper_key(&paper_id))?))
-        })
-        .map_err(core_err)??;
+                // Date validated after the existence check, matching Python ordering.
+                let published_date = match svc_paper::parse_published(&published) {
+                    Ok(d) => d,
+                    Err(e) => return Ok(Err(ErrorData::invalid_params(e.to_string(), None))),
+                };
+                // Python `existing.version if existing else 1`.
+                let version = svc_paper::get(conn, &paper_key(&paper_id))?
+                    .map(|p| p.version)
+                    .unwrap_or(1);
+                let meta = PaperMetadata {
+                    source_id: paper_id.clone(),
+                    version,
+                    title: title.clone(),
+                    authors: authors.clone(),
+                    published: published_date,
+                    updated: None,
+                    summary: summary.clone(),
+                    category: category.clone(),
+                    categories: None,
+                    doi: doi.clone(),
+                    journal_ref: None,
+                    comment: None,
+                    url: url.clone(),
+                    // Python `tags or None`: an empty list becomes None.
+                    tags: tags.clone().filter(|t| !t.is_empty()),
+                    source: None,
+                    author_orcids: None,
+                };
+                // Validation lives in the service so every front door refuses the same input.
+                if let Err(e) = svc_paper::repair_paper(conn, source_fk, &meta) {
+                    return match e {
+                        CoreError::Validation(m) => Ok(Err(invalid(m))),
+                        other => Err(other),
+                    };
+                }
+                // Route parity: return the repaired paper's full `PaperDetails`.
+                Ok(Ok(svc_paper::get(conn, &paper_key(&paper_id))?))
+            })
+            .map_err(core_err)??;
         let updated = updated.ok_or_else(|| ErrorData::internal_error("Repair failed", None))?;
         json_ok(&updated)
     }

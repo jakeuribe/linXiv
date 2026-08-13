@@ -140,7 +140,9 @@ impl Server {
         self.with_conn(|conn| {
             let source_fk =
                 svc_paper::resolve_source_fk(conn, &p.paper_id).map_err(|e| match e {
-                    e @ CoreError::PaperNotFound(_) => invalid(format!("{e}. Run fetch_paper first.")),
+                    e @ CoreError::PaperNotFound(_) => {
+                        invalid(format!("{e}. Run fetch_paper first."))
+                    }
                     other => core_err(other),
                 })?;
             let note_id = svc_note::create(
@@ -514,10 +516,14 @@ impl Server {
         })?;
         // Core's two-phase import: resolve (network) outside the lock, commit
         // (quota re-check, membership guard, rollback matrix) under it.
-        let resolved =
-            paper_import::resolve_import_pdf(&pdf_dir, &content, max_pdf_bytes, &config::data_dir())
-                .await
-                .map_err(core_err)?;
+        let resolved = paper_import::resolve_import_pdf(
+            &pdf_dir,
+            &content,
+            max_pdf_bytes,
+            &config::data_dir(),
+        )
+        .await
+        .map_err(core_err)?;
         self.with_conn(|conn| {
             match paper_import::commit_import_pdf(
                 conn,

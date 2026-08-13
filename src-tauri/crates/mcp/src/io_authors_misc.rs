@@ -23,9 +23,9 @@ use linxiv_core::config::{self, UserSettings};
 use linxiv_core::error::CoreError;
 use linxiv_core::service::author::{self as svc_author, Author};
 use linxiv_core::service::export_import::{self as svc_ei, OnConflict};
+use linxiv_core::service::paper as svc_paper;
 use linxiv_core::service::paper_import as svc_paper_import;
 use linxiv_core::service::project::{self as svc_project};
-use linxiv_core::service::paper as svc_paper;
 use linxiv_core::sources::doi_resolve;
 use linxiv_core::storage;
 

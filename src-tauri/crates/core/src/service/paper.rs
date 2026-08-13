@@ -624,7 +624,10 @@ impl FullTextReceipt {
 /// resolve the source URL, download the tarball, extract the TeX. Hand the
 /// result to [`FetchedFullText::commit`] under the caller's lock (two-phase so
 /// no surface holds its connection mutex across the network await).
-pub async fn fetch_full_text(paper: &PaperDetails, data_dir: &std::path::Path) -> Result<FetchedFullText> {
+pub async fn fetch_full_text(
+    paper: &PaperDetails,
+    data_dir: &std::path::Path,
+) -> Result<FetchedFullText> {
     let url = source_fetch_url(paper)?.to_string();
     let text = crate::sources::arxiv_downloads::fetch_source_text(&url, data_dir).await?;
     Ok(FetchedFullText {
@@ -1042,8 +1045,16 @@ mod tests {
         let mut conn = mem();
         let (fk, _v1, _v2) = seed_two_versions(&mut conn);
         // Active (never-trashed) and unknown papers both 404 out of trash-only ops.
-        assert_eq!(require_trashed(&conn, "arxiv:A").unwrap_err().http_status(), 404);
-        assert_eq!(require_trashed(&conn, "arxiv:nope").unwrap_err().http_status(), 404);
+        assert_eq!(
+            require_trashed(&conn, "arxiv:A").unwrap_err().http_status(),
+            404
+        );
+        assert_eq!(
+            require_trashed(&conn, "arxiv:nope")
+                .unwrap_err()
+                .http_status(),
+            404
+        );
         delete(
             &mut conn,
             &Paper {
@@ -1466,7 +1477,9 @@ mod tests {
 
         let hits = search_library(&conn, "zephyranthes", 10).unwrap();
         assert_eq!(
-            hits.iter().map(|p| p.source_id.as_str()).collect::<Vec<_>>(),
+            hits.iter()
+                .map(|p| p.source_id.as_str())
+                .collect::<Vec<_>>(),
             ["arxiv:ftA", "arxiv:ntB"]
         );
     }

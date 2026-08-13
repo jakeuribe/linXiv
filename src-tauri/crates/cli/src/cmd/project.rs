@@ -158,7 +158,6 @@ fn membership_or_exit(
     }
 }
 
-
 pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
     match cmd {
         ProjectCmd::List { status } => {
@@ -296,9 +295,7 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         } => {
             let source_id = as_source_id(&source_id, "arxiv");
             output(&membership_or_exit(project::add_paper(
-                &ctx.conn,
-                project_id,
-                &source_id,
+                &ctx.conn, project_id, &source_id,
             ))?);
         }
 
@@ -337,9 +334,7 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         } => {
             let source_id = as_source_id(&source_id, "arxiv");
             output(&membership_or_exit(project::remove_paper(
-                &ctx.conn,
-                project_id,
-                &source_id,
+                &ctx.conn, project_id, &source_id,
             ))?);
         }
 

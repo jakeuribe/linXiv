@@ -172,7 +172,9 @@ pub async fn run(cmd: PdfCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                 },
             )? {
                 Some(all) => all,
-                None => fail(linxiv_core::error::CoreError::PaperNotFound(source_id.clone())),
+                None => fail(linxiv_core::error::CoreError::PaperNotFound(
+                    source_id.clone(),
+                )),
             };
             for ver in &all.versions {
                 let path = svc_files::pdf_path(
