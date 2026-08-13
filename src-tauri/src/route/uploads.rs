@@ -138,7 +138,14 @@ async fn import_pdf(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
         paper_import::resolve_import_pdf(&pdf_dir, &content, max_pdf_bytes, &config::data_dir())
             .await?;
     let result = state.with_conn(|conn| {
-        paper_import::commit_import_pdf(conn, &pdf_dir, &content, project_id, max_pdf_bytes, resolved)
+        paper_import::commit_import_pdf(
+            conn,
+            &pdf_dir,
+            &content,
+            project_id,
+            max_pdf_bytes,
+            resolved,
+        )
     })?;
     Ok(json!({ "source_id": result.source_id, "title": result.title }))
 }
