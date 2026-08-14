@@ -143,7 +143,7 @@ async fn every_adapter_names_the_provider_its_records_carry() {
     // CONTEXT.md § Provider: PAPER_META.PROVIDER must equal the fetching module.
     assert_eq!(Arxiv::new(std::env::temp_dir()).name(), "arxiv");
     assert_eq!(OpenAlex::new("").name(), "openalex");
-    assert_eq!(CrossRef.name(), "crossref");
+    assert_eq!(CrossRef::new("").name(), "crossref");
 }
 
 #[tokio::test]
@@ -176,7 +176,7 @@ async fn real_adapters_refuse_bad_input_without_leaving_the_process() {
 
     // CrossRef no longer ignores `sort`: a key it cannot honour is refused
     // rather than silently dropped.
-    let err = CrossRef
+    let err = CrossRef::new("me@example.org")
         .search("attention", 5, "lastUpdated")
         .await
         .unwrap_err();

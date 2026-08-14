@@ -65,24 +65,30 @@ pub fn vault_dir() -> PathBuf {
     data_dir().join("vaults")
 }
 
-/// OpenAlex polite-pool address (`OPENALEX_MAILTO`); CR/LF are stripped downstream
-/// in `openalex::user_agent`, matching `OpenAlexSource`.
+/// OpenAlex polite-pool address (`OPENALEX_MAILTO`).
+pub fn openalex_mailto() -> String {
+    mailto_setting("OPENALEX_MAILTO")
+}
+
+/// CrossRef polite-pool address (`CROSSREF_MAILTO`).
+pub fn crossref_mailto() -> String {
+    mailto_setting("CROSSREF_MAILTO")
+}
+
+/// A polite-pool address; CR/LF are stripped downstream in
+/// `sources::http::polite_user_agent`.
 ///
 /// The env var wins; a user-settings override is the fallback. Only the app sets the
 /// env var (`PATCH /api/env`), and it sets it on its own process — so without this
 /// fallback the CLI and MCP server, which run as separate processes, read the value
-/// as empty no matter what was configured, and `settings update OPENALEX_MAILTO`
-/// wrote a key nothing ever read.
-pub fn openalex_mailto() -> String {
-    match std::env::var("OPENALEX_MAILTO") {
+/// as empty no matter what was configured, and `settings update <KEY>` wrote a key
+/// nothing ever read.
+fn mailto_setting(key: &str) -> String {
+    match std::env::var(key) {
         Ok(v) if !v.is_empty() => v,
         _ => UserSettings::load()
             .ok()
-            .and_then(|s| {
-                s.get("OPENALEX_MAILTO")
-                    .and_then(Value::as_str)
-                    .map(String::from)
-            })
+            .and_then(|s| s.get(key).and_then(Value::as_str).map(String::from))
             .unwrap_or_default(),
     }
 }

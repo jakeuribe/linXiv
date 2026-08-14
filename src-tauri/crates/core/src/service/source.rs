@@ -4,8 +4,8 @@
 //! `sources::` at all).
 //!
 //! The config read lives here rather than in `sources::`, which stays pure DI.
-//! `config::openalex_mailto()` prefers the env var and falls back to user
-//! settings, so the CLI and MCP processes keep the polite pool.
+//! `config::{openalex,crossref}_mailto()` prefer the env var and fall back to
+//! user settings, so the CLI and MCP processes keep the polite pools.
 //!
 //! Every call here is network I/O: `.await` it with no DB lock held, then commit
 //! through `service::paper::save_paper_metadata`.
@@ -33,7 +33,11 @@ pub async fn fetch_by_id(source: &str, paper_id: &str) -> Result<PaperMetadata> 
                 .fetch_by_id(paper_id)
                 .await
         }
-        "crossref" => CrossRef.fetch_by_id(paper_id).await,
+        "crossref" => {
+            CrossRef::new(config::crossref_mailto())
+                .fetch_by_id(paper_id)
+                .await
+        }
         other => Err(unknown_source(other)),
     }
 }
@@ -57,7 +61,11 @@ pub async fn search(
                 .search(query, max_results, sort)
                 .await
         }
-        "crossref" => CrossRef.search(query, max_results, sort).await,
+        "crossref" => {
+            CrossRef::new(config::crossref_mailto())
+                .search(query, max_results, sort)
+                .await
+        }
         other => Err(unknown_source(other)),
     }
 }
@@ -65,7 +73,7 @@ pub async fn search(
 /// DOI → metadata via the three-strategy ladder. Outside `PaperSource` on
 /// purpose: one operation spanning several Providers, not a Provider of its own.
 pub async fn resolve_doi(doi: &str) -> Result<PaperMetadata> {
-    doi_resolve::resolve_doi(doi, &config::data_dir()).await
+    doi_resolve::resolve_doi(doi, &config::data_dir(), &config::crossref_mailto()).await
 }
 
 /// Every record CrossRef and OpenAlex hold for one DOI, plus whether either
@@ -73,10 +81,9 @@ pub async fn resolve_doi(doi: &str) -> Result<PaperMetadata> {
 /// an ORCID backfill pass. Order is CrossRef first: `service::orcid_backfill`
 /// takes the first ORCID it finds.
 pub async fn orcid_records_for_doi(doi: &str) -> (Vec<PaperMetadata>, bool) {
-    let mailto = config::openalex_mailto();
     fold_doi_results(
-        crossref::fetch_by_doi_checked(doi).await,
-        openalex::fetch_by_doi(doi, &mailto).await,
+        crossref::fetch_by_doi_checked(doi, &config::crossref_mailto()).await,
+        openalex::fetch_by_doi(doi, &config::openalex_mailto()).await,
     )
 }
 

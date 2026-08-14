@@ -172,6 +172,9 @@ pub fn precheck_import_pdf(conn: &Connection, project_id: Option<i64>) -> Result
 /// the `pdf_save_limit_mb` quota precheck (fail before the expensive pdfium
 /// parse; `import_pdf` re-checks it under the lock) and the network metadata
 /// resolve. Hand the result to [`commit_import_pdf`] under the caller's lock.
+///
+/// The CrossRef polite-pool address is read here, at the service seam, for the
+/// same reason `service::source` reads it: `sources::` stays pure DI.
 pub async fn resolve_import_pdf(
     pdf_dir: &Path,
     content: &[u8],
@@ -179,7 +182,12 @@ pub async fn resolve_import_pdf(
     data_dir: &Path,
 ) -> Result<ResolvedPdf> {
     check_pdf_storage_quota(pdf_dir, content.len(), max_total_bytes)?;
-    crate::sources::pdf_metadata::resolve_pdf_metadata(content, data_dir).await
+    crate::sources::pdf_metadata::resolve_pdf_metadata(
+        content,
+        data_dir,
+        &crate::config::crossref_mailto(),
+    )
+    .await
 }
 
 /// PDF bytes → the metadata JSON record the out-of-process `pdf-meta` worker
