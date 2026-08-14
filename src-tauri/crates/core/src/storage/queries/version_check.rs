@@ -102,3 +102,286 @@ pub fn ack(conn: &Connection, source_fk: i64) -> Result<bool> {
     )?;
     Ok(n > 0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::{self, db};
+
+    /// Insert an active root + one PAPER row per version. Returns the SOURCE_FK.
+    fn seed_root(conn: &Connection, source_id: &str, versions: &[i64]) -> i64 {
+        conn.execute(
+            "INSERT INTO PAPER_ROOTS (SOURCE_ID) VALUES (?1)",
+            [source_id],
+        )
+        .unwrap();
+        let fk = conn.last_insert_rowid();
+        for v in versions {
+            conn.execute(
+                "INSERT INTO PAPER (SOURCE_ID, VERSION, TITLE, SOURCE_FK)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![source_id, v, format!("{source_id} v{v}"), fk],
+            )
+            .unwrap();
+        }
+        fk
+    }
+
+    fn candidate_ids(conn: &Connection) -> Vec<String> {
+        stale_candidates(conn, MAX_VERSION_CHECK_BATCH)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.source_id)
+            .collect()
+    }
+
+    /// The `GLOB 'arxiv:*'` filter is an ANCHORED, CASE-SENSITIVE prefix match.
+    ///
+    /// This is the test that fails if anyone "simplifies" GLOB back to
+    /// `LIKE 'arxiv:%'`: SQLite's LIKE is ASCII-case-insensitive, so the
+    /// `ARXIV:` / `arXiv:` roots below would start being polled as arXiv papers.
+    /// The `doi:` row carries `arxiv:` mid-string to pin that the match is
+    /// anchored (a bare `%arxiv:%` / `*arxiv:*` would sweep it in), and the
+    /// `arxiv-sanity:` / `arxivlike:` rows pin that the colon is part of the
+    /// prefix rather than the start of a wildcard run.
+    #[test]
+    fn stale_candidates_matches_arxiv_prefix_anchored_and_case_sensitively() {
+        let conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+
+        seed_root(&conn, "arxiv:2401.00001", &[1]);
+        for reject in [
+            "ARXIV:2401.00002",             // LIKE would match this; GLOB must not
+            "arXiv:2401.00003",             // the canonical arXiv branding spelling
+            "doi:10.1000/arxiv:2401.00004", // contains the prefix, doesn't start with it
+            "arxiv-sanity:2401.00005",      // near-miss prefix, no colon after `arxiv`
+            "arxivlike:2401.00006",         // near-miss prefix, no separator at all
+            "openalex:W123",
+            "local:deadbeef",
+            ":arxiv:2401.00007", // prefix present but not at position 0
+        ] {
+            seed_root(&conn, reject, &[1]);
+        }
+
+        assert_eq!(candidate_ids(&conn), vec!["arxiv:2401.00001".to_string()]);
+    }
+
+    /// GLOB's own metacharacters (`*`, `?`, `[…]`) live in the PATTERN, never in
+    /// the data — a stored id containing them is matched literally, and a stored
+    /// id is never treated as a pattern itself.
+    #[test]
+    fn stale_candidates_treats_wildcard_chars_in_data_literally() {
+        let conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+
+        seed_root(&conn, "arxiv:*", &[1]); // in-prefix: matched, but only literally
+        seed_root(&conn, "arxi?:2401.00001", &[1]); // `?` must not stand in for `v`
+        seed_root(&conn, "[a]rxiv:2401.00002", &[1]); // `[…]` must not act as a class
+
+        assert_eq!(candidate_ids(&conn), vec!["arxiv:*".to_string()]);
+    }
+
+    /// Deleted roots and roots with no stored PAPER row (nothing to compare a
+    /// poll result against) are both excluded; `known_version` is the newest
+    /// stored version, not the first or the count.
+    #[test]
+    fn stale_candidates_excludes_deleted_and_versionless_roots() {
+        let conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+
+        seed_root(&conn, "arxiv:kept", &[1, 3, 2]);
+        seed_root(&conn, "arxiv:no-versions", &[]);
+        let deleted = seed_root(&conn, "arxiv:deleted", &[1]);
+        conn.execute(
+            "UPDATE PAPER_ROOTS SET STATUS = 'deleted' WHERE SOURCE_FK = ?1",
+            [deleted],
+        )
+        .unwrap();
+
+        let got = stale_candidates(&conn, MAX_VERSION_CHECK_BATCH).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].source_id, "arxiv:kept");
+        assert_eq!(
+            got[0].known_version, 3,
+            "known_version must be MAX(VERSION)"
+        );
+    }
+
+    /// Never-checked roots come first, then the stalest LAST_CHECKED_AT; ties
+    /// (including the never-checked bucket) break on SOURCE_FK so the rotation
+    /// is deterministic rather than whatever order the join happens to emit.
+    #[test]
+    fn stale_candidates_orders_never_checked_first_then_stalest() {
+        let conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+
+        let recent = seed_root(&conn, "arxiv:recent", &[1]);
+        let old = seed_root(&conn, "arxiv:old", &[1]);
+        let fresh_a = seed_root(&conn, "arxiv:fresh-a", &[1]);
+        let fresh_b = seed_root(&conn, "arxiv:fresh-b", &[1]);
+
+        // datetime('now') has second resolution, so pin the timestamps explicitly
+        // rather than relying on two record_check calls landing apart.
+        for (fk, at) in [
+            (recent, "2026-01-02 00:00:00"),
+            (old, "2026-01-01 00:00:00"),
+        ] {
+            record_check(&conn, fk, None).unwrap();
+            conn.execute(
+                "UPDATE VERSION_CHECK SET LAST_CHECKED_AT = ?2 WHERE SOURCE_FK = ?1",
+                params![fk, at],
+            )
+            .unwrap();
+        }
+
+        let got: Vec<i64> = stale_candidates(&conn, MAX_VERSION_CHECK_BATCH)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.source_fk)
+            .collect();
+        assert_eq!(got, vec![fresh_a, fresh_b, old, recent]);
+    }
+
+    /// `limit` is clamped into `1..=MAX_VERSION_CHECK_BATCH` — a caller passing 0
+    /// or a negative must still make progress, and one passing a huge number must
+    /// not drag the whole library into a single poll pass.
+    #[test]
+    fn stale_candidates_clamps_limit() {
+        let conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        for i in 0..3 {
+            seed_root(&conn, &format!("arxiv:{i}"), &[1]);
+        }
+
+        assert_eq!(stale_candidates(&conn, 0).unwrap().len(), 1);
+        assert_eq!(stale_candidates(&conn, -7).unwrap().len(), 1);
+        assert_eq!(stale_candidates(&conn, 2).unwrap().len(), 2);
+        assert_eq!(stale_candidates(&conn, i64::MAX).unwrap().len(), 3);
+    }
+
+    /// A repeat check bumps LAST_CHECKED_AT but must not silently drop a flag the
+    /// user hasn't acknowledged yet (the COALESCE in the upsert) — that's the
+    /// difference between "you have a new version" and a badge that vanishes on
+    /// the next poll pass.
+    #[test]
+    fn record_check_upserts_and_preserves_unacked_flag() {
+        let conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        let fk = seed_root(&conn, "arxiv:2401.00001", &[1, 2]);
+
+        record_check(&conn, fk, None).unwrap();
+        let flag: Option<i64> = conn
+            .query_row("SELECT NEW_VERSION FROM VERSION_CHECK", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(flag, None);
+
+        record_check(&conn, fk, Some(2)).unwrap();
+        conn.execute(
+            "UPDATE VERSION_CHECK SET LAST_CHECKED_AT = '2026-01-01 00:00:00'",
+            [],
+        )
+        .unwrap();
+
+        // A later no-discovery pass keeps the un-acked 2 and still bumps the clock.
+        record_check(&conn, fk, None).unwrap();
+        let (flag, checked): (Option<i64>, String) = conn
+            .query_row(
+                "SELECT NEW_VERSION, LAST_CHECKED_AT FROM VERSION_CHECK",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(flag, Some(2), "an un-acked flag must survive a quiet pass");
+        assert_ne!(checked, "2026-01-01 00:00:00");
+
+        // Exactly one row per root: the ON CONFLICT is an update, not an insert.
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM VERSION_CHECK", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
+    }
+
+    /// The badge list shows only un-acked discoveries on active roots whose new
+    /// version was actually captured as a PAPER row, newest check first.
+    #[test]
+    fn list_new_versions_filters_and_orders() {
+        let conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+
+        let a = seed_root(&conn, "arxiv:a", &[1, 2]);
+        let b = seed_root(&conn, "arxiv:b", &[1, 5]);
+        let acked = seed_root(&conn, "arxiv:acked", &[1, 2]);
+        let deleted = seed_root(&conn, "arxiv:deleted", &[1, 2]);
+        let uncaptured = seed_root(&conn, "arxiv:uncaptured", &[1]);
+
+        for (fk, v, at) in [
+            (a, 2, "2026-01-01 00:00:00"),
+            (b, 5, "2026-01-02 00:00:00"),
+            (acked, 2, "2026-01-03 00:00:00"),
+            (deleted, 2, "2026-01-04 00:00:00"),
+            (uncaptured, 2, "2026-01-05 00:00:00"), // flagged, no PAPER row at v2
+        ] {
+            record_check(&conn, fk, Some(v)).unwrap();
+            conn.execute(
+                "UPDATE VERSION_CHECK SET LAST_CHECKED_AT = ?2 WHERE SOURCE_FK = ?1",
+                params![fk, at],
+            )
+            .unwrap();
+        }
+        assert!(ack(&conn, acked).unwrap());
+        conn.execute(
+            "UPDATE PAPER_ROOTS SET STATUS = 'deleted' WHERE SOURCE_FK = ?1",
+            [deleted],
+        )
+        .unwrap();
+
+        let got = list_new_versions(&conn).unwrap();
+        assert_eq!(
+            got.iter().map(|n| n.source_id.as_str()).collect::<Vec<_>>(),
+            vec!["arxiv:b", "arxiv:a"],
+            "newest check first; acked / deleted / uncaptured excluded"
+        );
+        assert_eq!(got[0].version, 5);
+        assert_eq!(got[0].source_fk, b);
+        assert_eq!(
+            got[0].title, "arxiv:b v5",
+            "title comes from the new version"
+        );
+    }
+
+    #[test]
+    fn ack_clears_once_and_reports_whether_it_did() {
+        let conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        let fk = seed_root(&conn, "arxiv:2401.00001", &[1, 2]);
+
+        assert!(!ack(&conn, fk).unwrap(), "no VERSION_CHECK row yet");
+        record_check(&conn, fk, None).unwrap();
+        assert!(!ack(&conn, fk).unwrap(), "row exists but nothing flagged");
+
+        record_check(&conn, fk, Some(2)).unwrap();
+        assert!(ack(&conn, fk).unwrap());
+        assert!(!ack(&conn, fk).unwrap(), "second ack is a no-op");
+        assert!(list_new_versions(&conn).unwrap().is_empty());
+        assert!(!ack(&conn, 9999).unwrap(), "unknown root");
+    }
+
+    /// VERSION_CHECK rows are per-root bookkeeping, not user data: hard-deleting
+    /// the root must take the poll state with it (ON DELETE CASCADE), or the next
+    /// root to reuse that SOURCE_FK inherits a stale flag.
+    #[test]
+    fn version_check_row_cascades_with_its_root() {
+        let conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        let fk = seed_root(&conn, "arxiv:2401.00001", &[1, 2]);
+        record_check(&conn, fk, Some(2)).unwrap();
+
+        conn.execute("DELETE FROM PAPER_ROOTS WHERE SOURCE_FK = ?1", [fk])
+            .unwrap();
+
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM VERSION_CHECK", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
+    }
+}
