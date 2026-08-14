@@ -3,8 +3,8 @@
 //! union-parameter match.
 //!
 //! Each adapter carries its own configuration — arXiv's `data_dir` (the
-//! `.arxiv_ratelimit` pacing file `sources::http` keeps there), OpenAlex's
-//! polite-pool `mailto` — so a caller no longer passes every Provider's
+//! `.arxiv_ratelimit` pacing file `sources::http` keeps there), OpenAlex's and
+//! CrossRef's polite-pool `mailto` — so a caller no longer passes every Provider's
 //! parameters regardless of which one it picked. Construction stays DI: nothing
 //! here reads `config`, that happens once at the service seam
 //! (`service::source`).
@@ -109,8 +109,18 @@ impl PaperSource for OpenAlex {
     }
 }
 
-/// CrossRef. No configuration — no key, no pool, one host.
-pub struct CrossRef;
+/// CrossRef. Holds the polite-pool address; empty means the anonymous pool.
+pub struct CrossRef {
+    mailto: String,
+}
+
+impl CrossRef {
+    pub fn new(mailto: impl Into<String>) -> Self {
+        Self {
+            mailto: mailto.into(),
+        }
+    }
+}
 
 impl PaperSource for CrossRef {
     fn name(&self) -> &'static str {
@@ -122,9 +132,11 @@ impl PaperSource for CrossRef {
     /// the not-found one keeping the message `fetch.rs` used to build inline.
     async fn fetch_by_id(&self, paper_id: &str) -> Result<PaperMetadata> {
         let doi = strip_provider_prefix(paper_id, DOI_ID_PREFIX);
-        crossref::fetch_by_doi_checked(doi).await?.ok_or_else(|| {
-            CoreError::Validation(format!("CrossRef: no record found for DOI '{paper_id}'"))
-        })
+        crossref::fetch_by_doi_checked(doi, &self.mailto)
+            .await?
+            .ok_or_else(|| {
+                CoreError::Validation(format!("CrossRef: no record found for DOI '{paper_id}'"))
+            })
     }
 
     async fn search(
@@ -133,6 +145,6 @@ impl PaperSource for CrossRef {
         max_results: u32,
         sort: &str,
     ) -> Result<Vec<PaperMetadata>> {
-        crossref::search_by_title_checked(query, max_results, sort).await
+        crossref::search_by_title_checked(query, max_results, sort, &self.mailto).await
     }
 }

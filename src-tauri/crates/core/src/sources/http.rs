@@ -32,6 +32,21 @@ const MAX_REDIRECTS: usize = 10;
 pub(crate) const USER_AGENT: &str =
     "linXiv/0.2 (+https://github.com/jakeuribe/linXiv; mailto:jake.uribe@gmail.com)";
 
+/// Base UA for the polite pools (OpenAlex and CrossRef both key off the mailto).
+const POLITE_USER_AGENT: &str = "linXiv/1.0";
+
+/// Polite-pool UA: `linXiv/1.0 (mailto:<addr>)`, or the bare UA when no address.
+/// CR/LF stripped so a tainted mailto — it comes from a user-editable settings
+/// field — can't inject extra request headers.
+pub(crate) fn polite_user_agent(mailto: &str) -> String {
+    let addr: String = mailto.chars().filter(|&c| c != '\r' && c != '\n').collect();
+    if addr.is_empty() {
+        POLITE_USER_AGENT.to_string()
+    } else {
+        format!("{POLITE_USER_AGENT} (mailto:{addr})")
+    }
+}
+
 /// Shared, sensibly-configured async client (UA + timeouts). Cheap to clone.
 ///
 /// Redirects are disabled at the client level: `get_guarded` follows them by
@@ -257,6 +272,17 @@ mod tests {
     use super::*;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn polite_ua_carries_mailto_and_strips_crlf() {
+        assert_eq!(polite_user_agent(""), "linXiv/1.0");
+        assert_eq!(polite_user_agent("me@x.io"), "linXiv/1.0 (mailto:me@x.io)");
+        // CR/LF stripped so a tainted address can't inject a header break.
+        assert_eq!(
+            polite_user_agent("me@x.io\r\nX-Evil: 1"),
+            "linXiv/1.0 (mailto:me@x.ioX-Evil: 1)"
+        );
+    }
 
     #[test]
     fn host_allow_exact_and_subdomain() {
