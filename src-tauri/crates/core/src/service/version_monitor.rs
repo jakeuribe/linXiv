@@ -92,35 +92,7 @@ pub fn apply_results(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{db::open_in_memory, init_db};
-    use chrono::NaiveDate;
-
-    fn mem() -> Connection {
-        let conn = open_in_memory().unwrap();
-        init_db(&conn).unwrap();
-        conn
-    }
-
-    fn meta(source_id: &str, version: i64) -> PaperMetadata {
-        PaperMetadata {
-            source_id: source_id.into(),
-            version,
-            title: format!("Title of {source_id} v{version}"),
-            authors: vec!["Alice".into()],
-            published: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            updated: None,
-            summary: "s".into(),
-            category: Some("cs.LG".into()),
-            categories: Some(vec!["cs.LG".into()]),
-            doi: None,
-            journal_ref: None,
-            comment: None,
-            url: None,
-            tags: None,
-            source: Some("arxiv".into()),
-            author_orcids: None,
-        }
-    }
+    use crate::test_support::{db, meta};
 
     fn save(conn: &mut Connection, source_id: &str, version: i64) {
         store::save_paper_metadata(conn, &meta(source_id, version), None).unwrap();
@@ -135,7 +107,7 @@ mod tests {
 
     #[test]
     fn stale_candidates_selects_arxiv_never_checked_then_oldest() {
-        let mut conn = mem();
+        let mut conn = db();
         save(&mut conn, "arxiv:a", 1);
         save(&mut conn, "arxiv:b", 2);
         save(&mut conn, "arxiv:c", 1);
@@ -168,7 +140,7 @@ mod tests {
 
     #[test]
     fn apply_results_captures_only_newer_and_rotates_all() {
-        let mut conn = mem();
+        let mut conn = db();
         save(&mut conn, "arxiv:up", 1);
         save(&mut conn, "arxiv:same", 3);
         save(&mut conn, "arxiv:silent", 1); // arXiv returns nothing for it
@@ -208,7 +180,7 @@ mod tests {
 
     #[test]
     fn apply_results_skips_deleted_candidates_no_fk_crash() {
-        let mut conn = mem();
+        let mut conn = db();
         save(&mut conn, "arxiv:live", 1);
         save(&mut conn, "arxiv:deleted", 1);
 
@@ -236,7 +208,7 @@ mod tests {
     /// too, instead of being left committed with the flag never set.
     #[test]
     fn save_and_record_check_are_one_atomic_transaction() {
-        let mut conn = mem();
+        let mut conn = db();
         save(&mut conn, "arxiv:x", 1);
         let good_fk = fk(&conn, "arxiv:x");
         let bad_fk = good_fk + 999; // no matching PAPER_ROOTS row -> FK violation

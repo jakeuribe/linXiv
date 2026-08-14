@@ -233,7 +233,7 @@ pub fn count_paper_links(conn: &Connection, author_id: i64) -> Result<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{db::open_in_memory, init_db};
+    use crate::test_support::db;
     use rusqlite::params;
 
     // One active paper root, two linked authors. Returns (paper_id, bob, alice).
@@ -277,15 +277,9 @@ mod tests {
         (pid, bob, alice)
     }
 
-    fn mem() -> Connection {
-        let conn = open_in_memory().unwrap();
-        init_db(&conn).unwrap();
-        conn
-    }
-
     #[test]
     fn get_resolves_by_id_then_orcid() {
-        let conn = mem();
+        let conn = db();
         let (_pid, bob, alice) = seed(&conn);
 
         // by id
@@ -339,7 +333,7 @@ mod tests {
 
     #[test]
     fn get_many_filters() {
-        let conn = mem();
+        let conn = db();
         let (pid, bob, _alice) = seed(&conn);
 
         // all, ordered by full name -> Alice, Bob
@@ -409,7 +403,7 @@ mod tests {
 
     #[test]
     fn create_update_delete() {
-        let mut conn = mem();
+        let mut conn = db();
         let id = create(
             &conn,
             &AuthorIn {
@@ -496,7 +490,7 @@ mod tests {
 
     #[test]
     fn merge_repoints_papers_and_removes_duplicate() {
-        let mut conn = mem();
+        let mut conn = db();
         // Shared paper (both authors) + one paper each, to exercise dedupe.
         let (shared, bob, alice) = seed(&conn);
         conn.execute("INSERT INTO PAPER_ROOTS (SOURCE_ID) VALUES ('arxiv:2')", [])
@@ -553,7 +547,7 @@ mod tests {
 
     #[test]
     fn links_previews_and_counts() {
-        let conn = mem();
+        let conn = db();
         let (pid, bob, _alice) = seed(&conn);
 
         assert_eq!(count_paper_links(&conn, bob).unwrap(), 1);
@@ -576,7 +570,7 @@ mod tests {
     /// Wire-shape pin: the composite is the flattened author + paper_count + papers.
     #[test]
     fn author_with_papers_wire_shape() {
-        let conn = mem();
+        let conn = db();
         let (_pid, bob, _alice) = seed(&conn);
         let v = serde_json::to_value(get_with_papers(&conn, bob).unwrap().unwrap()).unwrap();
         let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
@@ -606,7 +600,7 @@ mod tests {
 
     #[test]
     fn delete_rejects_missing_and_still_linked_authors() {
-        let conn = mem();
+        let conn = db();
         let (pid, bob, _alice) = seed(&conn);
 
         assert_eq!(
@@ -623,7 +617,7 @@ mod tests {
 
     #[test]
     fn update_fields_rejects_missing_author_and_empty_patch() {
-        let conn = mem();
+        let conn = db();
         let (_pid, bob, _alice) = seed(&conn);
 
         let e = update_fields(&conn, 99_999, Some("X"), None, None, None).unwrap_err();
