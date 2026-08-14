@@ -330,9 +330,7 @@ export default function PaperDetailPage() {
   }
 
   function handleDeleteNote(note: Note) {
-    // NoteDetails.id is optional in Rust (it doubles as the insert shape); a
-    // note listed from the API is already stored, so it always has one.
-    if (!deleteNoteMutation.isPending && note.id !== null) {
+    if (!deleteNoteMutation.isPending) {
       deleteNoteMutation.mutate(note.id);
     }
   }

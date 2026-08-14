@@ -17,7 +17,7 @@ fn note_from_row(row: &Row) -> rusqlite::Result<NoteDetails> {
     let created: String = row.get("CREATED_AT")?;
     let updated: String = row.get("UPDATED_AT")?;
     Ok(NoteDetails {
-        note_id: row.get::<_, Option<i64>>("NOTE_SK")?,
+        note_id: row.get("NOTE_SK")?,
         uuid: row
             .get::<_, Option<String>>("NOTE_UUID")?
             .unwrap_or_default(),
@@ -318,7 +318,7 @@ mod tests {
         assert_eq!(n.project_id, Some(10));
         assert_eq!(n.title, "proj");
         assert_eq!(n.content, "project note");
-        assert!(n.note_id.is_some());
+        assert!(n.note_id > 0);
         assert_eq!(
             n.created_at,
             Some(

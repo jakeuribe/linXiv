@@ -338,7 +338,7 @@ mod tests {
             source: None,
             full_text: None,
             downloaded_source: false,
-            source_fk: None,
+            source_fk: 1,
         }
     }
 

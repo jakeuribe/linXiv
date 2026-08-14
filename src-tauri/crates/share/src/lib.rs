@@ -379,14 +379,11 @@ pub fn import_shared_project(conn: &mut Connection, sp: &SharedProject) -> Resul
             }
             let title = truncate_text(&n.title);
             let content = truncate_text(&n.body);
-            if let Some(note_id) = e
-                .note_id
-                .filter(|_| e.title != title || e.content != content)
-            {
+            if e.title != title || e.content != content {
                 note_svc::update(
                     conn,
                     &NoteUpdateIn {
-                        note_id,
+                        note_id: e.note_id,
                         title: Some(title),
                         content: Some(content),
                     },
