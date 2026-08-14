@@ -61,10 +61,7 @@ export const PaperCard = memo(function PaperCard({
       <button
         type="button"
         aria-label={`Open ${paper.title}`}
-        // PaperDetails.source_fk is optional in Rust (it doubles as a write
-        // shape); a row read back from the API always carries its root id.
-        disabled={paper.source_fk === null}
-        onClick={() => paper.source_fk !== null && onNavigate(paper.source_fk)}
+        onClick={() => onNavigate(paper.source_fk)}
         className="flex-1 text-left hover:brightness-110 cursor-pointer min-w-0"
       >
         {/* Meta row: category · arXiv id · venue/year · status badge */}

@@ -139,7 +139,7 @@ mod tests {
             }],
             projects: vec![TrashedProjectRow {
                 project: crate::models::ProjectOut {
-                    id: Some(5),
+                    id: 5,
                     name: "P".into(),
                     description: String::new(),
                     color_hex: None,

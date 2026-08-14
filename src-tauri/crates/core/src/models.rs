@@ -237,8 +237,9 @@ pub struct PaperDetails {
     pub full_text: Option<String>,
     #[serde(default)]
     pub downloaded_source: bool,
-    #[serde(default)]
-    pub source_fk: Option<i64>,
+    /// Never null: PAPER.SOURCE_FK is NOT NULL and every reader selects from
+    /// the `papers` view.
+    pub source_fk: i64,
 }
 
 /// Aggregate view of a paper across all stored versions (PaperDetailsAll).
@@ -395,7 +396,9 @@ pub struct ProjectDetails {
 // `source_ids` and renders `color` as `color_hex`.
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct ProjectOut {
-    pub id: Option<i64>,
+    /// Never null: `ProjectDetails.id` is optional only because that struct
+    /// doubles as the pre-insert shape; `to_out` refuses a row without an id.
+    pub id: i64,
     pub name: String,
     pub description: String,
     pub color_hex: Option<String>,
@@ -415,8 +418,9 @@ pub struct ProjectOut {
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct NoteDetails {
+    /// NOTE_SK is the primary key; a read row always has one.
     #[serde(rename = "id")]
-    pub note_id: Option<i64>,
+    pub note_id: i64,
     /// Stable identity (uuid v4) surviving export/import + share.
     #[serde(default)]
     pub uuid: String,
@@ -761,7 +765,7 @@ mod tests {
     #[test]
     fn note_id_field_serializes_as_id() {
         let n = NoteDetails {
-            note_id: Some(7),
+            note_id: 7,
             uuid: "u-7".into(),
             source_fk: 1,
             paper_id_fk: None,
@@ -779,7 +783,7 @@ mod tests {
     #[test]
     fn project_out_wire_shape_is_pinned() {
         let p = ProjectOut {
-            id: Some(5),
+            id: 5,
             name: "n".into(),
             description: String::new(),
             color_hex: Some("#00ff00".into()),

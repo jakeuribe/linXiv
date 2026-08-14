@@ -23,7 +23,11 @@ export type PaperDetails = {
   pdf_path: string | null,
   source: string | null,
   downloaded_source: boolean,
-  source_fk: number | null,
+  /**
+   * Never null: PAPER.SOURCE_FK is NOT NULL and every reader selects from
+   * the `papers` view.
+   */
+  source_fk: number,
 };
 
 export type SearchResultOut = {
@@ -47,7 +51,11 @@ export type SearchResultOut = {
 export type Status = "active" | "archived" | "deleted";
 
 export type ProjectOut = {
-  id: number | null,
+  /**
+   * Never null: `ProjectDetails.id` is optional only because that struct
+   * doubles as the pre-insert shape; `to_out` refuses a row without an id.
+   */
+  id: number,
   name: string,
   description: string,
   color_hex: string | null,
@@ -62,7 +70,10 @@ export type ProjectOut = {
 };
 
 export type NoteDetails = {
-  id: number | null,
+  /**
+   * NOTE_SK is the primary key; a read row always has one.
+   */
+  id: number,
   /**
    * Stable identity (uuid v4) surviving export/import + share.
    */

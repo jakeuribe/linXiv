@@ -106,7 +106,7 @@ fn is_editor_project(meta: &HashMap<String, String>) -> bool {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct EditorProjectSummary {
-    pub note_id: Option<i64>,
+    pub note_id: i64,
     pub project_name: String,
     pub main_file: String,
     pub source_fk: i64,
@@ -121,7 +121,7 @@ fn to_summary(note: &NoteDetails, meta: &HashMap<String, String>) -> EditorProje
         .filter(|s| !s.is_empty())
         .cloned()
         .or_else(|| Some(note.title.clone()).filter(|s| !s.is_empty()))
-        .unwrap_or_else(|| format!("project {}", note.note_id.unwrap_or_default()));
+        .unwrap_or_else(|| format!("project {}", note.note_id));
     let main_file = meta
         .get("mainFile")
         .filter(|s| !s.is_empty())
@@ -459,8 +459,7 @@ mod tests {
             .into_iter()
             .find(|n| n.title == "plain")
             .unwrap()
-            .note_id
-            .unwrap();
+            .note_id;
         let stray = vault.path().join(format!("note_{plain_id}"));
         std::fs::create_dir_all(&stray).unwrap();
 
@@ -564,8 +563,8 @@ mod tests {
             .into_iter()
             .find(|n| n.title == "plain")
             .unwrap();
-        assert!(get_meta(&conn, plain.note_id.unwrap()).unwrap().is_none());
-        assert!(get_doc(&conn, Path::new("/nope"), plain.note_id.unwrap())
+        assert!(get_meta(&conn, plain.note_id).unwrap().is_none());
+        assert!(get_doc(&conn, Path::new("/nope"), plain.note_id)
             .unwrap()
             .is_none());
     }

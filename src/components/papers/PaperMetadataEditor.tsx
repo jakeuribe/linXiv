@@ -47,13 +47,6 @@ export function PaperMetadataEditor({
       setError("At least one author is required.");
       return;
     }
-    // Repair is keyed by source_fk. PaperDetails leaves it optional in Rust
-    // (the struct doubles as a write shape), but every paper read back from
-    // the API has one — bail rather than PATCH a made-up id.
-    if (paper.source_fk === null) {
-      setError("This paper has no stable id to repair.");
-      return;
-    }
     setSubmitting(true);
     setError(null);
     try {
