@@ -79,18 +79,12 @@ async fn ingest_source(
     fetched.commit(&mut ctx.conn)
 }
 
-/// `_resolve_paper_or_exit`: load a paper or fail with the not-found error.
+/// `_resolve_paper_or_exit`: load a paper or fail with core's not-found wording.
 pub(super) fn resolve_paper_or_exit(
     ctx: &Ctx,
     source_id: &str,
 ) -> linxiv_core::models::PaperDetails {
-    match svc_paper::get(&ctx.conn, &paper(source_id)) {
-        Ok(Some(p)) => p,
-        Ok(None) => fail(linxiv_core::error::CoreError::PaperNotFound(
-            source_id.to_string(),
-        )),
-        Err(e) => fail(e),
-    }
+    svc_paper::get_required(&ctx.conn, source_id).unwrap_or_else(|e| fail(e))
 }
 
 fn paper(source_id: &str) -> svc_paper::Paper {
@@ -104,14 +98,14 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
     match cmd {
         // cmd_paper_get: resolve-or-exit, then dump the details dict.
         PaperCmd::Get { source_id } => {
-            let source_id = as_source_id(&source_id, "arxiv");
+            let source_id = as_source_id(&ctx.conn, &source_id);
             let details = resolve_paper_or_exit(ctx, &source_id);
             output(&details);
         }
 
         // cmd_paper_delete: ensure it exists, soft-delete, report the id.
         PaperCmd::Delete { source_id } => {
-            let source_id = as_source_id(&source_id, "arxiv");
+            let source_id = as_source_id(&ctx.conn, &source_id);
             resolve_paper_or_exit(ctx, &source_id);
             svc_paper::delete(&mut ctx.conn, &paper(&source_id))?;
             output(&json!({ "deleted": source_id }));
@@ -119,7 +113,7 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
 
         // cmd_paper_versions: all stored versions, or not-found.
         PaperCmd::Versions { source_id } => {
-            let source_id = as_source_id(&source_id, "arxiv");
+            let source_id = as_source_id(&ctx.conn, &source_id);
             match svc_paper::get_all(&ctx.conn, &paper(&source_id))? {
                 Some(all) => output(&all),
                 None => fail(linxiv_core::error::CoreError::PaperNotFound(
@@ -140,7 +134,7 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             url,
             tags,
         } => {
-            let source_id = as_source_id(&source_id, "arxiv");
+            let source_id = as_source_id(&ctx.conn, &source_id);
             let source_fk =
                 svc_paper::resolve_source_fk(&ctx.conn, &source_id).unwrap_or_else(|e| fail(e));
             // `existing.version if existing is not None else 1`.
@@ -180,7 +174,7 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
 
         // cmd_paper_restore: only valid from trash; returns pdf path + project links.
         PaperCmd::Restore { source_id } => {
-            let source_id = as_source_id(&source_id, "arxiv");
+            let source_id = as_source_id(&ctx.conn, &source_id);
             svc_paper::require_trashed(&ctx.conn, &source_id).unwrap_or_else(|e| fail(e));
             let (pdf_path, project_fks) = svc_paper::restore(&mut ctx.conn, &paper(&source_id))?;
             output(&linxiv_core::service::trash::RestoredPaper {
@@ -193,7 +187,7 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
 
         // cmd_paper_hard_delete: permanently remove an existing paper.
         PaperCmd::HardDelete { source_id } => {
-            let source_id = as_source_id(&source_id, "arxiv");
+            let source_id = as_source_id(&ctx.conn, &source_id);
             svc_paper::resolve_source_fk(&ctx.conn, &source_id).unwrap_or_else(|e| fail(e));
             svc_paper::hard_delete(&mut ctx.conn, &paper(&source_id))?;
             output(&linxiv_core::service::trash::HardDeletedPaper {
@@ -210,7 +204,7 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
 
         // cmd_paper_remove_from_all: drop the paper from every project it's in.
         PaperCmd::RemoveFromAllProjects { source_id } => {
-            let source_id = as_source_id(&source_id, "arxiv");
+            let source_id = as_source_id(&ctx.conn, &source_id);
             match svc_project::remove_paper_from_all_projects_by_id(&mut ctx.conn, &source_id)? {
                 // One envelope across route/CLI/MCP; the caller already knows the id.
                 Some(removed) => output(&json!({
@@ -226,7 +220,7 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         // GET /api/papers/sfk/{fk}/doi-candidates keys off SOURCE_FK; resolve the
         // CLI's source_id to its root first. Empty when the paper has no DOI.
         PaperCmd::DoiCandidates { source_id } => {
-            let source_id = as_source_id(&source_id, "arxiv");
+            let source_id = as_source_id(&ctx.conn, &source_id);
             let source_fk =
                 svc_paper::resolve_source_fk(&ctx.conn, &source_id).unwrap_or_else(|e| fail(e));
             let candidates = svc_paper::find_doi_version_candidates(&ctx.conn, source_fk)?;
@@ -235,7 +229,7 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
 
         // The write half of `paper search`: pull the TeX tarball, extract, index.
         PaperCmd::FetchSource { source_id, force } => {
-            let source_id = as_source_id(&source_id, "arxiv");
+            let source_id = as_source_id(&ctx.conn, &source_id);
             let paper = resolve_paper_or_exit(ctx, &source_id);
             output(&fetch_source_result(ctx, &paper, force).await);
         }

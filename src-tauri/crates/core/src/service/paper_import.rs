@@ -182,6 +182,13 @@ pub async fn resolve_import_pdf(
     crate::sources::pdf_metadata::resolve_pdf_metadata(content, data_dir).await
 }
 
+/// PDF bytes → the metadata JSON record the out-of-process `pdf-meta` worker
+/// prints. Pure and offline (pdfium only); here so the CLI worker has a service
+/// front door instead of reaching into `sources::` (ADR-0010).
+pub fn extract_pdf_metadata_json(bytes: &[u8]) -> String {
+    crate::sources::pdf_metadata::extract_pdf_metadata_json(bytes)
+}
+
 /// Phase 2, under the caller's DB lock: the sync import (quota re-check,
 /// membership guard when a project is targeted, rollback matrix) with the
 /// already-resolved metadata. Thin over `import_pdf`, so its seam — and the
@@ -228,7 +235,7 @@ pub async fn import_pdf_default(
 
 /// Receipt for a BibTeX import — the route's `/api/papers/import/bibtex` shape,
 /// emitted by all three surfaces.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct BibtexImportReceipt {
     pub saved_count: usize,
     pub source_ids: Vec<String>,
@@ -456,6 +463,37 @@ mod tests {
         let conn = open_in_memory().unwrap();
         init_db(&conn).unwrap();
         conn
+    }
+
+    /// The storage cap, at the three points that matter. Only `.pdf` files count
+    /// toward it (`files::pdf_storage_bytes`), and the comparison is `>`, so landing
+    /// exactly on the limit is allowed.
+    #[test]
+    fn check_pdf_storage_quota_at_under_and_over_the_limit() {
+        let dir = tempdir().unwrap();
+        let pdf_dir = dir.path();
+        // 60 bytes of existing PDFs, plus a non-PDF that must not be counted.
+        std::fs::write(pdf_dir.join("a.pdf"), vec![0u8; 40]).unwrap();
+        std::fs::write(pdf_dir.join("b.pdf"), vec![0u8; 20]).unwrap();
+        std::fs::write(pdf_dir.join("notes.txt"), vec![0u8; 5_000]).unwrap();
+
+        // under: 60 + 30 = 90 < 100
+        assert!(check_pdf_storage_quota(pdf_dir, 30, 100).is_ok());
+        // exactly at the limit: 60 + 40 = 100, not over
+        assert!(check_pdf_storage_quota(pdf_dir, 40, 100).is_ok());
+        // over: 60 + 41 = 101
+        let err = check_pdf_storage_quota(pdf_dir, 41, 100).unwrap_err();
+        assert_eq!(err.http_status(), 413);
+        let msg = err.to_string();
+        assert!(msg.contains("101"), "reports the would-be total: {msg}");
+        assert!(msg.contains("60"), "reports what is already stored: {msg}");
+
+        // A zero limit rejects even an empty write once anything is stored.
+        assert!(check_pdf_storage_quota(pdf_dir, 0, 0).is_err());
+        // An empty/absent pdf_dir starts the count at zero.
+        let empty = tempdir().unwrap();
+        assert!(check_pdf_storage_quota(empty.path(), 100, 100).is_ok());
+        assert!(check_pdf_storage_quota(empty.path(), 101, 100).is_err());
     }
 
     fn meta(source_id: &str, version: i64) -> PaperMetadata {

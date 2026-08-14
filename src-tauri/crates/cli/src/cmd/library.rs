@@ -3,10 +3,9 @@
 
 use clap::{Args, ValueEnum};
 
-use linxiv_core::config;
 use linxiv_core::models::SearchResultOut;
 use linxiv_core::service::paper::{self as svc_paper, PaperSort};
-use linxiv_core::sources::fetch as svc_fetch;
+use linxiv_core::service::source as svc_source;
 
 use crate::ctx::Ctx;
 use crate::output::{fail, output, render_paper, validate_arxiv_id};
@@ -18,8 +17,6 @@ pub enum Source {
     Openalex,
     Crossref,
 }
-
-use linxiv_core::config::openalex_mailto as mailto;
 
 #[derive(Args)]
 pub struct SearchArgs {
@@ -78,13 +75,11 @@ pub enum Dir {
 // `[search] {e}` prefix line + error JSON mirror Python's two-line stderr on failure.
 pub async fn search(args: SearchArgs, _ctx: &mut Ctx) -> anyhow::Result<()> {
     // Python `source.search` defaults sort="relevance"; the CLI never overrides it.
-    let results = match svc_fetch::search(
+    let results = match svc_source::search(
         args.source.to_possible_value().unwrap().get_name(),
         &args.query,
         args.max as u32,
         "relevance",
-        &config::data_dir(),
-        &mailto(),
     )
     .await
     {
@@ -104,11 +99,9 @@ pub async fn fetch(args: FetchArgs, ctx: &mut Ctx) -> anyhow::Result<()> {
     if matches!(args.source, Source::Arxiv) {
         validate_arxiv_id(&args.source_id);
     }
-    let meta = match svc_fetch::fetch_by_id(
+    let meta = match svc_source::fetch_by_id(
         args.source.to_possible_value().unwrap().get_name(),
         &args.source_id,
-        &config::data_dir(),
-        &mailto(),
     )
     .await
     {

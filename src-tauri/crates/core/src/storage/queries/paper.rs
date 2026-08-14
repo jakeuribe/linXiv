@@ -1008,7 +1008,7 @@ pub fn get_paper_root(conn: &Connection, source_id: &str) -> Result<Option<Paper
 /// Another paper root sharing this root's DOI — same underlying work resolved
 /// independently by a different source (e.g. arXiv vs OpenAlex/Crossref).
 /// Local struct (no model; models.rs out of scope this phase).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct DoiVersionCandidate {
     pub source_fk: i64,
     pub source_id: String,

@@ -3,14 +3,11 @@
 use clap::Subcommand;
 use serde_json::json;
 
-use linxiv_core::error::CoreError;
 use linxiv_core::models::TagIn;
 use linxiv_core::service::paper::{self as svc_paper, Paper};
+use linxiv_core::service::project as svc_project;
 use linxiv_core::service::tag::{self as svc_tag, Tag};
-use linxiv_core::storage::queries::paper as paperq;
-use linxiv_core::storage::queries::tag as tagq;
 
-use crate::cmd::trash::resolve_project_or_exit;
 use crate::ctx::Ctx;
 use crate::output::{as_source_id, fail, output};
 
@@ -54,27 +51,23 @@ pub enum TagCmd {
 
 pub async fn run(cmd: TagCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
     match cmd {
-        // cmd_tag_add: prefix the id, UNION tags onto the paper; KeyError -> not found.
+        // cmd_tag_add: prefix the id, UNION tags onto the paper; a miss is not found.
         TagCmd::Add { source_id, tags } => {
-            let source_id = as_source_id(&source_id, "arxiv");
-            match paperq::add_paper_tags(&mut ctx.conn, &source_id, &tags) {
-                Ok(updated) => output(&json!({ "source_id": source_id, "tags": updated })),
-                Err(CoreError::NotFound(_)) => fail(CoreError::PaperNotFound(source_id.clone())),
-                Err(e) => return Err(e.into()),
-            }
+            let source_id = as_source_id(&ctx.conn, &source_id);
+            let updated = svc_paper::add_paper_tags(&mut ctx.conn, &source_id, &tags)
+                .unwrap_or_else(|e| fail(e));
+            output(&json!({ "source_id": source_id, "tags": updated }));
         }
         // cmd_tag_remove
         TagCmd::Remove { source_id, tags } => {
-            let source_id = as_source_id(&source_id, "arxiv");
-            match paperq::remove_paper_tags(&mut ctx.conn, &source_id, &tags) {
-                Ok(updated) => output(&json!({ "source_id": source_id, "tags": updated })),
-                Err(CoreError::NotFound(_)) => fail(CoreError::PaperNotFound(source_id.clone())),
-                Err(e) => return Err(e.into()),
-            }
+            let source_id = as_source_id(&ctx.conn, &source_id);
+            let updated = svc_paper::remove_paper_tags(&mut ctx.conn, &source_id, &tags)
+                .unwrap_or_else(|e| fail(e));
+            output(&json!({ "source_id": source_id, "tags": updated }));
         }
         // cmd_tag_list: missing paper -> empty list (no error), matching get_paper_tags.
         TagCmd::List { source_id } => {
-            let source_id = as_source_id(&source_id, "arxiv");
+            let source_id = as_source_id(&ctx.conn, &source_id);
             let tags = svc_paper::get(
                 &ctx.conn,
                 &Paper {
@@ -111,21 +104,22 @@ pub async fn run(cmd: TagCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             )?;
             output(&json!({ "deleted_tag_id": tag_id }));
         }
-        // cmd_tag_add_project: resolve-or-exit, then add.
+        // cmd_tag_add_project: the service fn owns the resolve-or-fail guard.
         TagCmd::AddProject { project_id, tags } => {
-            resolve_project_or_exit(ctx, project_id)?;
-            let updated = tagq::add_project_tags(&mut ctx.conn, project_id, &tags)?;
+            let updated = svc_project::add_project_tags(&mut ctx.conn, project_id, &tags)
+                .unwrap_or_else(|e| fail(e));
             output(&json!({ "project_id": project_id, "tags": updated }));
         }
         // cmd_tag_remove_project
         TagCmd::RemoveProject { project_id, tags } => {
-            resolve_project_or_exit(ctx, project_id)?;
-            let updated = tagq::remove_project_tags(&mut ctx.conn, project_id, &tags)?;
+            let updated = svc_project::remove_project_tags(&mut ctx.conn, project_id, &tags)
+                .unwrap_or_else(|e| fail(e));
             output(&json!({ "project_id": project_id, "tags": updated }));
         }
         // cmd_tag_list_project: tags come off the resolved project's details.
         TagCmd::ListProject { project_id } => {
-            let details = resolve_project_or_exit(ctx, project_id)?;
+            let details =
+                svc_project::get_required(&ctx.conn, project_id).unwrap_or_else(|e| fail(e));
             output(&json!({ "project_id": project_id, "tags": details.project_tags }));
         }
     }

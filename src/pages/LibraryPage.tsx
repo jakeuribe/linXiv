@@ -504,8 +504,10 @@ export default function LibraryPage() {
                 <button
                   type="button"
                   key={project.id}
-                  onClick={() => handleAddToProject(project.id)}
-                  disabled={addToProjectMutation.isPending}
+                  onClick={() => project.id !== null && handleAddToProject(project.id)}
+                  // ProjectOut.id is optional in Rust (ProjectDetails doubles
+                  // as the write shape); a stored project always has one.
+                  disabled={addToProjectMutation.isPending || project.id === null}
                   className="w-full text-left px-3 py-2 rounded-md border border-border hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] text-text text-sm transition-colors disabled:opacity-50"
                 >
                   {project.name}

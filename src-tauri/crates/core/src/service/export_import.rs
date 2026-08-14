@@ -1406,6 +1406,42 @@ mod tests {
         assert_eq!(relational, 2);
     }
 
+    /// SECURITY BOUNDARY. `route/share.rs` joins share ids onto `share_dir` at six
+    /// call sites, so anything this accepts becomes a path component. The
+    /// commit_adopts/rejects pair below only exercises it through the importer;
+    /// this pins the validator itself.
+    #[test]
+    fn valid_share_id_rejects_everything_that_could_escape_share_dir() {
+        // A real share id — a uuid v4 — is the only shape that must pass.
+        assert!(valid_share_id("3f2b8c1a-9d4e-4f6a-8b2c-1d5e7f9a0b3c"));
+        assert!(valid_share_id("plain-id_123"));
+
+        for bad in [
+            "",                      // empty — joins to the share_dir itself
+            "..",                    // parent
+            "../etc/passwd",         // classic traversal
+            "..\\windows\\system32", // traversal, Windows separator
+            "a/../../b",             // traversal mid-string
+            "a..b",                  // any embedded `..`, conservatively
+            ".",                     // current dir
+            ".hidden",               // any leading dot
+            "sub/dir",               // separator
+            "sub\\dir",              // separator, Windows
+            "/etc/passwd",           // absolute, Unix
+            "C:evil",                // Windows drive-relative — join() escapes
+            "C:\\Windows",           // absolute, Windows
+            "\\\\server\\share",     // UNC
+            "..\u{202e}gnp.exe",     // RTL override still carries `..`
+            "\u{ff0e}\u{ff0e}/etc",  // fullwidth dots: not `..`, but `/` catches it
+        ] {
+            assert!(!valid_share_id(bad), "must reject {bad:?}");
+        }
+
+        // Documented gap, not an escape: unicode lookalikes with no separator and no
+        // ASCII `..` are accepted as opaque names. They stay inside share_dir.
+        assert!(valid_share_id("\u{ff0e}\u{ff0e}"));
+    }
+
     #[test]
     fn commit_adopts_valid_share_id() {
         let mut conn = mem();

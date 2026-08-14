@@ -61,7 +61,7 @@ pub async fn run(cmd: NoteCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             if let Some(pid) = project_id {
                 svc_project::get_required(conn, pid).unwrap_or_else(|e| fail(e));
             }
-            let source_id = as_source_id(&source_id, "arxiv");
+            let source_id = as_source_id(&ctx.conn, &source_id);
             let source_fk = svc_paper::resolve_source_fk(conn, &source_id)?;
             let note_id = svc_note::create(
                 conn,

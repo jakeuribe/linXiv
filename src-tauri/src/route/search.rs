@@ -1,12 +1,11 @@
 //! `/api/search/{history,state}` — `api/app.py` 763–801. Autocomplete suggestions
-//! plus the single saved search-page state. Backed by the `search_history` /
-//! `search_state` storage modules; the enabled flag + max cap come from settings.
+//! plus the single saved search-page state. `service::search_state` owns the
+//! history side-effect and the settings gate; this module is query/body parsing.
 
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
-use linxiv_core::config::UserSettings;
-use linxiv_core::storage::queries::{search_history, search_state};
+use linxiv_core::service::search_state::{self as svc_search, SavedSearch};
 
 use crate::route::{ApiError, ReqCtx};
 use crate::state::AppState;
@@ -36,14 +35,13 @@ fn history(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
             }
         },
     };
-    let suggestions =
-        state.with_conn(|conn| search_history::get_suggestions(conn, prefix, limit))?;
+    let suggestions = state.with_conn(|conn| svc_search::suggestions(conn, prefix, limit))?;
     Ok(json!({ "suggestions": suggestions }))
 }
 
 /// `GET /api/search/state` — `api_search_state_get`. `{state: null|obj}`.
 fn get_state(state: &AppState) -> Result<Value, ApiError> {
-    let st = state.with_conn(|conn| search_state::load_state(conn))?;
+    let st = state.with_conn(|conn| svc_search::load(conn))?;
     Ok(json!({ "state": st.unwrap_or(Value::Null) }))
 }
 
@@ -71,42 +69,19 @@ fn default_max_results() -> i64 {
     25
 }
 
-/// `POST /api/search/state` — `api_search_state_save`. Records each non-empty
-/// clause value to history (gated on the enabled flag), then saves the state.
+/// `POST /api/search/state` — `api_search_state_save`. The history recording and
+/// its settings gate live in `service::search_state::save`.
 fn save(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let body: SearchStateBody = ctx.parse_body()?;
-
-    let settings = UserSettings::load()?;
-    let enabled = settings
-        .get("search_history_enabled")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
-    let max_history = settings
-        .get("search_history_max")
-        .and_then(Value::as_i64)
-        .unwrap_or(200);
-
-    state.with_conn(|conn| -> Result<(), ApiError> {
-        if enabled {
-            for clause in &body.clauses {
-                if let Some(term) = clause.get("value").and_then(Value::as_str) {
-                    if !term.trim().is_empty() {
-                        search_history::add_term(conn, term, max_history)?;
-                    }
-                }
-            }
-        }
-        search_state::save_state(
-            conn,
-            &json!(body.clauses),
-            &body.source,
-            body.max_results,
-            &Value::Array(body.results),
-            &json!(body.saved_ids),
-            body.sort_prefs.map(Value::Object).as_ref(),
-        )?;
-        Ok(())
-    })?;
+    let saved = SavedSearch {
+        clauses: body.clauses,
+        source: body.source,
+        max_results: body.max_results,
+        results: body.results,
+        saved_ids: body.saved_ids,
+        sort_prefs: body.sort_prefs,
+    };
+    state.with_conn(|conn| svc_search::save(conn, &saved))?;
     Ok(json!({ "ok": true }))
 }
 

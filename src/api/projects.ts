@@ -1,5 +1,5 @@
 import { apiFetch } from "./client.ts";
-import type { Project } from "../types/api";
+import type { PaperMembershipReceipt, Project } from "../types/api";
 
 export async function listProjects(
   status = "active"
@@ -58,12 +58,7 @@ export async function restoreProject(id: number): Promise<{ ok: boolean }> {
 }
 
 /** Core's PaperMembershipReceipt — shared by add and remove. */
-export interface PaperMembershipReceipt {
-  ok: boolean;
-  project_id: number;
-  paper_id: string;
-  paper_count: number;
-}
+export type { PaperMembershipReceipt } from "../types/api";
 
 export async function addPaperToProject(
   projectId: number,

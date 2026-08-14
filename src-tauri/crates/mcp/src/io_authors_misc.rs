@@ -22,12 +22,12 @@ use serde_json::{json, Value};
 use linxiv_core::config::{self, UserSettings};
 use linxiv_core::error::CoreError;
 use linxiv_core::service::author::{self as svc_author, Author};
+use linxiv_core::service::db_admin;
 use linxiv_core::service::export_import::{self as svc_ei, OnConflict};
 use linxiv_core::service::paper as svc_paper;
 use linxiv_core::service::paper_import as svc_paper_import;
 use linxiv_core::service::project::{self as svc_project};
-use linxiv_core::sources::doi_resolve;
-use linxiv_core::storage;
+use linxiv_core::service::source as svc_source;
 
 use crate::Server;
 
@@ -56,39 +56,10 @@ fn project_papers(
 
 use linxiv_core::formats::with_default_ext;
 
-/// Canonicalize a path's parent, keeping the filename, so a not-yet-existing
-/// destination still compares against the live DB. Port of `route/storage.rs`.
-fn canon_or_raw(path: &Path) -> PathBuf {
-    path.parent()
-        .and_then(|p| p.canonicalize().ok())
-        .zip(path.file_name())
-        .map(|(canon_parent, fname)| canon_parent.join(fname))
-        .unwrap_or_else(|| path.to_path_buf())
-}
-
-/// Guard from `route/storage.rs::reject_live_db`: refuse a relative path, or one
-/// that resolves to the live database file itself.
+/// Refuse a relative/non-UTF-8 path or one that resolves to the live database —
+/// `db_admin` owns the rule, this maps its refusals to `invalid_params`.
 fn reject_live_db(path: &Path, field: &str, role: &str) -> Result<(), ErrorData> {
-    if !path.is_absolute() {
-        return Err(ErrorData::invalid_params(
-            format!("{field} must be absolute"),
-            None,
-        ));
-    }
-    let (a, b) = (canon_or_raw(path), canon_or_raw(&config::db_path()));
-    // Case-insensitive comparison only on case-insensitive filesystems.
-    let same = if cfg!(windows) || cfg!(target_os = "macos") {
-        a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
-    } else {
-        a == b
-    };
-    if same {
-        return Err(ErrorData::invalid_params(
-            format!("{role} is the live database itself — choose another file"),
-            None,
-        ));
-    }
-    Ok(())
+    db_admin::reject_live_db(path, field, role).map_err(map_core)
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -276,7 +247,7 @@ impl Server {
 
     #[tool(description = "Resolve a DOI to paper metadata without saving it to the library.")]
     pub async fn resolve_doi(&self, params: Parameters<DoiParams>) -> Result<String, ErrorData> {
-        let meta = doi_resolve::resolve_doi(&params.0.doi, &config::data_dir())
+        let meta = svc_source::resolve_doi(&params.0.doi)
             .await
             .map_err(map_core)?;
         json_ok(&meta)
@@ -284,7 +255,7 @@ impl Server {
 
     #[tool(description = "Resolve a DOI and save the resulting paper to the local library.")]
     pub async fn save_doi(&self, params: Parameters<DoiParams>) -> Result<String, ErrorData> {
-        let meta = doi_resolve::resolve_doi(&params.0.doi, &config::data_dir())
+        let meta = svc_source::resolve_doi(&params.0.doi)
             .await
             .map_err(map_core)?;
         self.with_conn(|conn| svc_paper::save_paper_metadata(conn, &meta, None))
@@ -441,7 +412,7 @@ impl Server {
         let conn = self.conn_handle();
         let info = blocking(move || {
             let guard = conn.lock().expect("db connection mutex poisoned");
-            storage::backup(&guard, &dest).map_err(map_core)
+            db_admin::backup(&guard, &dest).map_err(map_core)
         })
         .await??;
         json_ok(&info)
@@ -459,36 +430,13 @@ impl Server {
         reject_live_db(&src, "src", "source")?;
         let db_path = config::db_path();
         // Validate the snapshot before parking the live connection.
-        storage::validate_backup_source(&src).map_err(map_core)?;
-        // spawn_blocking for the same reason as backup_database: this holds the
-        // mutex across two full-file copies and a rename.
+        db_admin::validate_backup_source(&src).map_err(map_core)?;
+        // spawn_blocking for the same reason as backup_database: `restore_in_place`
+        // holds the mutex across two full-file copies and a rename.
         let handle = self.conn_handle();
         blocking(move || -> Result<String, ErrorData> {
             let mut guard = handle.lock().expect("db connection mutex poisoned");
-            let conn = &mut *guard;
-            // Park this server's handle on an in-memory DB so core's
-            // `ensure_no_live_connections` only has to refuse OTHER processes.
-            let parked = storage::open_in_memory().map_err(map_core)?;
-            let live = std::mem::replace(conn, parked);
-            if let Err((returned, e)) = live.close() {
-                *conn = returned;
-                return Err(ErrorData::internal_error(
-                    format!("could not close the live database: {e}"),
-                    None,
-                ));
-            }
-            let result = storage::restore(&src, &db_path).map_err(map_core);
-            // Reopen whatever now sits at db_path — the server needs a working
-            // handle even when the restore itself was refused.
-            *conn = storage::open(&db_path)
-                .and_then(|fresh| storage::init_db(&fresh).map(|()| fresh))
-                .map_err(|e| {
-                    ErrorData::internal_error(
-                        format!("could not reopen the database — restart linXiv: {e}"),
-                        None,
-                    )
-                })?;
-            result?;
+            db_admin::restore_in_place(&mut guard, &src).map_err(map_core)?;
             json_ok(&json!({ "ok": true, "restored": db_path.to_string_lossy() }))
         })
         .await?
@@ -540,11 +488,10 @@ impl Server {
         params: Parameters<UpdateSettingParams>,
     ) -> Result<String, ErrorData> {
         let UpdateSettingParams { key, value } = params.0;
-        // Parse the value as JSON when valid, else store it verbatim as a string.
-        let parsed = serde_json::from_str::<Value>(&value).unwrap_or(Value::String(value));
         let mut settings = UserSettings::load().map_err(map_core)?;
-        settings
-            .set(key.clone(), parsed.clone())
+        // The parse-or-string rule lives in core (`set_from_str`), not here.
+        let parsed = settings
+            .set_from_str(key.clone(), value)
             .map_err(map_core)?;
         json_ok(&json!({ key: parsed }))
     }
@@ -553,6 +500,8 @@ impl Server {
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
+
+    use linxiv_core::storage;
 
     use super::*;
 

@@ -65,7 +65,7 @@ struct ImportedPdf {
 pub async fn run(cmd: PdfCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
     match cmd {
         PdfCmd::Path { source_id, version } => {
-            let source_id = as_source_id(&source_id, "arxiv");
+            let source_id = as_source_id(&ctx.conn, &source_id);
             let paper = super::paper::resolve_paper_or_exit(ctx, &source_id);
             // Python `args.version if args.version else paper.version` — 0/None fall back.
             let version = version.filter(|&v| v != 0).unwrap_or(paper.version);
@@ -86,7 +86,7 @@ pub async fn run(cmd: PdfCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             url,
             version,
         } => {
-            let source_id = as_source_id(&source_id, "arxiv");
+            let source_id = as_source_id(&ctx.conn, &source_id);
             let paper = super::paper::resolve_paper_or_exit(ctx, &source_id);
             // An explicit --version must name a stored version. mark_pdf_saved below
             // updates no rows otherwise, and refusing after the download would leave
@@ -163,7 +163,7 @@ pub async fn run(cmd: PdfCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         // DELETE /api/pdfs/{source_id}: drop every version's local file, keeping
         // the paper row. `delete_pdf` refuses paths outside the managed dir.
         PdfCmd::Delete { source_id } => {
-            let source_id = as_source_id(&source_id, "arxiv");
+            let source_id = as_source_id(&ctx.conn, &source_id);
             let all = match svc_paper::get_all(
                 &ctx.conn,
                 &svc_paper::Paper {

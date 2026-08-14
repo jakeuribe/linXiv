@@ -2,8 +2,9 @@
 //!
 //! The pure parser (`parse_work` + the JATS tag-stripper + date-parts handling)
 //! is the load-bearing piece and is fixture-tested below. `doi_resolve` reuses
-//! `parse_work`. The async fetch wrappers route through `sources::http`
-//! (integration-tested once the http unit lands).
+//! `parse_work`. The async fetch wrappers route through `sources::http` and are
+//! wiremock-tested below; the `PaperSource` adapter over them is covered in
+//! `tests/paper_source.rs`.
 //!
 //! Plan §5.4. No auth required; `api.crossref.org` only.
 
@@ -230,12 +231,26 @@ async fn fetch_by_doi_checked_at(
     Ok(parse_doi_body(&body, doi))
 }
 
-/// Search CrossRef by title. Empty vec on any error.
+/// `(sort, order)` query values for the public sort keys — CrossRef's `score` is
+/// its relevance metric. Unknown keys are refused rather than silently dropped
+/// (the `PaperSource` contract); `search_by_title` pins "relevance" itself.
+fn sort_params(sort: &str) -> Result<(&'static str, &'static str)> {
+    Ok(match sort {
+        "relevance" => ("score", "desc"),
+        "newest" => ("published", "desc"),
+        "oldest" => ("published", "asc"),
+        "citations" => ("is-referenced-by-count", "desc"),
+        other => {
+            return Err(CoreError::Validation(format!(
+                "CrossRef: unknown sort '{other}'"
+            )))
+        }
+    })
+}
+
+/// Search CrossRef by title, relevance-ordered. Empty vec on any error.
 pub async fn search_by_title(title: &str, limit: u32) -> Vec<PaperMetadata> {
-    let Ok(url) = reqwest::Url::parse_with_params(
-        CROSSREF_BASE,
-        [("query.title", title), ("rows", &limit.to_string())],
-    ) else {
+    let Ok(url) = search_url(title, limit, "relevance") else {
         return Vec::new();
     };
     let Ok(resp) = http::get_guarded(url.as_str(), ALLOW).await else {
@@ -250,15 +265,30 @@ pub async fn search_by_title(title: &str, limit: u32) -> Vec<PaperMetadata> {
     parse_search_body(&body)
 }
 
+/// The `/works` title-search URL for one `(title, limit, sort)`.
+fn search_url(title: &str, limit: u32, sort: &str) -> Result<reqwest::Url> {
+    let (sort_by, order) = sort_params(sort)?;
+    reqwest::Url::parse_with_params(
+        CROSSREF_BASE,
+        [
+            ("query.title", title),
+            ("rows", &limit.to_string()),
+            ("sort", sort_by),
+            ("order", order),
+        ],
+    )
+    .map_err(|e| CoreError::Upstream(format!("CrossRef search failed: {e}")))
+}
+
 /// `search_by_title` that reports transport/HTTP failures instead of folding them
 /// into an empty result, so a caller can tell "CrossRef is down" from "no matches".
 /// Same relationship to `search_by_title` as `fetch_by_doi_checked` has to `fetch_by_doi`.
-pub async fn search_by_title_checked(title: &str, limit: u32) -> Result<Vec<PaperMetadata>> {
-    let url = reqwest::Url::parse_with_params(
-        CROSSREF_BASE,
-        [("query.title", title), ("rows", &limit.to_string())],
-    )
-    .map_err(|e| CoreError::Upstream(format!("CrossRef search failed: {e}")))?;
+pub async fn search_by_title_checked(
+    title: &str,
+    limit: u32,
+    sort: &str,
+) -> Result<Vec<PaperMetadata>> {
+    let url = search_url(title, limit, sort)?;
     let resp = http::get_guarded(url.as_str(), ALLOW).await?;
     if resp.status() != reqwest::StatusCode::OK {
         return Err(CoreError::Upstream(format!(
@@ -446,6 +476,26 @@ mod tests {
         // empty body / no items -> empty.
         assert!(parse_search_body(br#"{"message":{"items":[]}}"#).is_empty());
         assert!(parse_search_body(b"garbage").is_empty());
+    }
+
+    // ---- sort (honoured, not ignored — the PaperSource contract) ----
+    #[test]
+    fn search_url_carries_sort_and_order() {
+        let url = search_url("attention", 5, "newest").unwrap();
+        let q: Vec<(String, String)> = url
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        assert!(q.contains(&("sort".into(), "published".into())), "{q:?}");
+        assert!(q.contains(&("order".into(), "desc".into())), "{q:?}");
+        assert_eq!(sort_params("oldest").unwrap(), ("published", "asc"));
+        assert_eq!(sort_params("relevance").unwrap(), ("score", "desc"));
+    }
+
+    #[test]
+    fn unknown_sort_is_refused_not_ignored() {
+        let err = search_url("attention", 5, "bogus").unwrap_err();
+        assert!(matches!(err, CoreError::Validation(_)), "got {err}");
     }
 
     // ---- fetch_by_doi_checked: 404-vs-failure distinction the backfill route relies on ----

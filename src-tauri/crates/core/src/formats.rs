@@ -241,7 +241,13 @@ pub fn bibtex_import(text: &str) -> Result<Vec<PaperMetadata>, String> {
         let url = field(&entry, "url");
         let published = parse_year(&entry);
         out.push(PaperMetadata {
-            source_id: doi.clone().unwrap_or_else(|| key.clone()),
+            // ADR 0002 / CONTEXT.md § source_id: always namespaced. A DOI keys the
+            // root under `doi:`; an entry without one is unidentified, so its BibTeX
+            // key goes under `local:`.
+            source_id: match &doi {
+                Some(d) => crate::models::doi_source_id(d),
+                None => crate::models::local_source_id(&key),
+            },
             version: 1,
             title,
             authors,
@@ -361,15 +367,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(metas.len(), 1);
-        assert_eq!(metas[0].source_id, "10.1/x"); // doi wins over key
+        assert_eq!(metas[0].source_id, "doi:10.1/x"); // doi wins over key
         assert_eq!(
             metas[0].authors,
             vec!["John Smith".to_string(), "Jane Doe".to_string()]
         );
         assert_eq!(metas[0].source.as_deref(), Some("bibtex"));
-        // no year/doi → key as source_id, 1900-01-01 fallback
+        // no year/doi → the key under the `local:` namespace, 1900-01-01 fallback
         let m2 = &bibtex_import("@misc{k, title={T}}").unwrap()[0];
-        assert_eq!(m2.source_id, "k");
+        assert_eq!(m2.source_id, "local:k");
         assert_eq!(m2.published, NaiveDate::from_ymd_opt(1900, 1, 1).unwrap());
     }
 
