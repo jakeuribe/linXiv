@@ -759,7 +759,7 @@ pub fn full_text_backfill_count(conn: &Connection) -> Result<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{db::open_in_memory, init_db};
+    use crate::test_support::db;
 
     fn meta(source_id: &str, version: i64, category: &str, tags: &[&str]) -> PaperMetadata {
         PaperMetadata {
@@ -782,17 +782,11 @@ mod tests {
         }
     }
 
-    fn mem() -> Connection {
-        let conn = open_in_memory().unwrap();
-        init_db(&conn).unwrap();
-        conn
-    }
-
     /// The fail-if-absent half of the pair every Note/Annotation consumer shares:
     /// resolving an unknown paper errors instead of creating a root.
     #[test]
     fn resolve_source_fk_fails_without_creating_a_root() {
-        let mut conn = mem();
+        let mut conn = db();
         let err = resolve_source_fk(&conn, "arxiv:404").unwrap_err();
         assert_eq!(err.http_status(), 404);
         assert!(store::get_paper_root(&conn, "arxiv:404").unwrap().is_none());
@@ -806,7 +800,7 @@ mod tests {
     /// namespaced or not — the CLI used to assume `arxiv:` and lost DOI/BibTeX rows.
     #[test]
     fn canonical_source_id_tries_verbatim_then_each_namespace() {
-        let mut conn = mem();
+        let mut conn = db();
         for sid in ["arxiv:2204.12985", "doi:10.1000/beta", "10.1000/alpha"] {
             ensure_paper_root(&mut conn, sid).unwrap();
         }
@@ -864,7 +858,7 @@ mod tests {
 
     #[test]
     fn get_dispatch_priority_and_version_handling() {
-        let mut conn = mem();
+        let mut conn = db();
         let (fk, v1, v2) = seed_two_versions(&mut conn);
 
         // source_fk -> latest version.
@@ -956,7 +950,7 @@ mod tests {
 
     #[test]
     fn get_all_aggregates_across_versions_each_dispatch() {
-        let mut conn = mem();
+        let mut conn = db();
         let (fk, v1, _v2) = seed_two_versions(&mut conn);
 
         for key in [
@@ -999,7 +993,7 @@ mod tests {
 
     #[test]
     fn get_many_filters() {
-        let mut conn = mem();
+        let mut conn = db();
         save_paper_metadata(&mut conn, &meta("arxiv:A", 1, "cs.LG", &["ml"]), None).unwrap();
         save_paper_metadata(&mut conn, &meta("arxiv:B", 1, "math.CO", &["theory"]), None).unwrap();
         let fk_a = ensure_paper_root(&mut conn, "arxiv:A").unwrap();
@@ -1080,7 +1074,7 @@ mod tests {
 
     #[test]
     fn upsert_roundtrip_and_categories_and_by_tag() {
-        let mut conn = mem();
+        let mut conn = db();
         let p = PaperIn {
             title: "Manual".into(),
             published: NaiveDate::from_ymd_opt(2024, 5, 1).unwrap(),
@@ -1126,7 +1120,7 @@ mod tests {
 
     #[test]
     fn get_papers_by_tag_tiebreaks_same_date_by_paper_id_desc() {
-        let mut conn = mem();
+        let mut conn = db();
         // Two papers share the same published date (version 1 -> 2024-01-01) and tag.
         save_paper_metadata(&mut conn, &meta("arxiv:A", 1, "cs.LG", &["shared"]), None).unwrap();
         save_paper_metadata(&mut conn, &meta("arxiv:B", 1, "cs.LG", &["shared"]), None).unwrap();
@@ -1142,7 +1136,7 @@ mod tests {
 
     #[test]
     fn require_trashed_rejects_active_and_missing_papers() {
-        let mut conn = mem();
+        let mut conn = db();
         let (fk, _v1, _v2) = seed_two_versions(&mut conn);
         // Active (never-trashed) and unknown papers both 404 out of trash-only ops.
         assert_eq!(
@@ -1168,7 +1162,7 @@ mod tests {
 
     #[test]
     fn delete_restore_hard_delete_resolve_via_keys() {
-        let mut conn = mem();
+        let mut conn = db();
         let (fk, v1, _v2) = seed_two_versions(&mut conn);
         // Link to a project so restore returns its membership.
         conn.execute(
@@ -1231,7 +1225,7 @@ mod tests {
 
     #[test]
     fn pdf_and_fulltext_setters() {
-        let mut conn = mem();
+        let mut conn = db();
         save_paper_metadata(&mut conn, &meta("arxiv:p", 1, "cs.LG", &[]), None).unwrap();
 
         set_has_pdf(&conn, "arxiv:p", 1, true).unwrap();
@@ -1285,7 +1279,7 @@ mod tests {
     #[test]
     fn set_full_text_feeds_search_full_text() {
         use crate::storage::queries::search::search_full_text;
-        let mut conn = mem();
+        let mut conn = db();
         save_paper_metadata(&mut conn, &meta("arxiv:ft", 1, "cs.LG", &[]), None).unwrap();
         assert!(search_full_text(&conn, "zephyranthes", 10)
             .unwrap()
@@ -1328,7 +1322,7 @@ mod tests {
     /// indexes — `extract_source` returns "" for a corrupt download too.
     #[test]
     fn should_store_full_text_refuses_to_clobber_with_empty() {
-        let mut conn = mem();
+        let mut conn = db();
         save_paper_metadata(&mut conn, &meta("arxiv:clob", 1, "cs.LG", &[]), None).unwrap();
         let key = Paper {
             source_id: Some("arxiv:clob".into()),
@@ -1354,7 +1348,7 @@ mod tests {
 
     #[test]
     fn backfill_candidates_lists_only_unfetched_papers() {
-        let mut conn = mem();
+        let mut conn = db();
         let fetchable = |sid: &str| PaperMetadata {
             url: Some(format!("http://arxiv.org/pdf/{sid}v1")),
             ..meta(sid, 1, "cs.LG", &[])
@@ -1383,7 +1377,7 @@ mod tests {
         // Everything source_fetch_url would refuse has to stay off the list:
         // the backfill would hand each one to the fetcher on every rebuild, and
         // the count backing the UI's progress line would never reach zero.
-        let mut conn = mem();
+        let mut conn = db();
         let other_provider = PaperMetadata {
             url: Some("http://arxiv.org/pdf/1234v1".into()),
             source: Some("openalex".into()),
@@ -1413,7 +1407,7 @@ mod tests {
         // The work-list SQL and source_fetch_url must answer "is this arXiv"
         // identically on rows where the id namespace and the PROVIDER column
         // disagree — otherwise backfill queues papers the fetcher then skips.
-        let mut conn = mem();
+        let mut conn = db();
         let row = |sid: &str, provider: &str, url: &str| PaperMetadata {
             url: Some(url.into()),
             source: Some(provider.into()),
@@ -1469,7 +1463,7 @@ mod tests {
 
     #[test]
     fn source_fetch_url_takes_arxiv_pdf_links_only() {
-        let mut conn = mem();
+        let mut conn = db();
         let fetch_url_of = |conn: &Connection, sid: &str| {
             let p = get(
                 conn,
@@ -1513,7 +1507,7 @@ mod tests {
 
     #[test]
     fn root_and_id_helpers() {
-        let mut conn = mem();
+        let mut conn = db();
         save_paper_metadata(&mut conn, &meta("arxiv:v", 1, "cs.LG", &[]), None).unwrap();
         let fk = ensure_paper_root(&mut conn, "arxiv:v").unwrap();
         assert_eq!(
@@ -1530,7 +1524,7 @@ mod tests {
     // tokenization misses (substring) must still come back.
     #[test]
     fn search_library_merges_note_substring_hits() {
-        let mut conn = mem();
+        let mut conn = db();
         save_paper_metadata(&mut conn, &meta("arxiv:N", 1, "cs.LG", &[]), None).unwrap();
         ensure_paper_root(&mut conn, "arxiv:N").unwrap();
         conn.execute(
@@ -1556,7 +1550,7 @@ mod tests {
     // content the FTS tokenizer can't reach. Both must return, FTS hit first.
     #[test]
     fn search_library_returns_full_text_and_note_hits_together() {
-        let mut conn = mem();
+        let mut conn = db();
         save_paper_metadata(&mut conn, &meta("arxiv:ftA", 1, "cs.LG", &[]), None).unwrap();
         set_full_text(&mut conn, "arxiv:ftA", 1, "a study of zephyranthes blooms").unwrap();
 
@@ -1587,7 +1581,7 @@ mod tests {
     // Repair input rules live behind the service seam, not in one caller.
     #[test]
     fn repair_paper_validates_and_normalizes() {
-        let mut conn = mem();
+        let mut conn = db();
         save_paper_metadata(&mut conn, &meta("arxiv:R", 1, "cs.LG", &[]), None).unwrap();
         let fk = ensure_paper_root(&mut conn, "arxiv:R").unwrap();
 

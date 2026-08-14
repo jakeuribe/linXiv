@@ -451,19 +451,12 @@ fn unique_token() -> String {
 mod tests {
     use super::*;
     use crate::service::paper;
-    use crate::storage::{db::open_in_memory, init_db};
-    use chrono::NaiveDate;
+    use crate::test_support::{db, meta};
     use tempfile::tempdir;
 
     /// A generous cap for tests that aren't exercising the size limit itself —
     /// every fixture PDF here is a few bytes.
     const NO_LIMIT: u64 = 1_000_000;
-
-    fn mem() -> Connection {
-        let conn = open_in_memory().unwrap();
-        init_db(&conn).unwrap();
-        conn
-    }
 
     /// The storage cap, at the three points that matter. Only `.pdf` files count
     /// toward it (`files::pdf_storage_bytes`), and the comparison is `>`, so landing
@@ -496,27 +489,6 @@ mod tests {
         assert!(check_pdf_storage_quota(empty.path(), 101, 100).is_err());
     }
 
-    fn meta(source_id: &str, version: i64) -> PaperMetadata {
-        PaperMetadata {
-            source_id: source_id.into(),
-            version,
-            title: format!("Title of {source_id} v{version}"),
-            authors: vec!["Alice".into()],
-            published: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            updated: None,
-            summary: "s".into(),
-            category: Some("cs.LG".into()),
-            categories: Some(vec!["cs.LG".into()]),
-            doi: None,
-            journal_ref: None,
-            comment: None,
-            url: None,
-            tags: None,
-            source: Some("arxiv".into()),
-            author_orcids: None,
-        }
-    }
-
     /// Resolver that hands back a fixed (meta, external).
     fn resolver(
         m: PaperMetadata,
@@ -529,7 +501,7 @@ mod tests {
     /// the regression here would be surfaces paying for the resolve first.
     #[test]
     fn precheck_import_pdf_rejects_missing_project_and_passes_none() {
-        let conn = mem();
+        let conn = db();
         assert!(matches!(
             precheck_import_pdf(&conn, Some(999)),
             Err(CoreError::ProjectNotFound(999))
@@ -539,7 +511,7 @@ mod tests {
 
     #[test]
     fn happy_path_new_paper_writes_db_and_file() {
-        let mut conn = mem();
+        let mut conn = db();
         let dir = tempdir().unwrap();
         let res = import_pdf(
             &mut conn,
@@ -582,7 +554,7 @@ mod tests {
 
     #[test]
     fn import_pdf_within_total_storage_limit_is_saved() {
-        let mut conn = mem();
+        let mut conn = db();
         let dir = tempdir().unwrap();
         // Existing PDFs consume part of the total-storage quota.
         let seed = b"already-saved pdf bytes";
@@ -603,7 +575,7 @@ mod tests {
 
     #[test]
     fn import_pdf_over_total_storage_limit_is_rejected_and_writes_nothing() {
-        let mut conn = mem();
+        let mut conn = db();
         let dir = tempdir().unwrap();
         // Existing PDFs consume most of the quota; the new file alone would fit,
         // but existing + new pushes the TOTAL over → rejected.
@@ -643,7 +615,7 @@ mod tests {
 
     #[test]
     fn resolve_failure_is_pdf_import_and_leaves_nothing() {
-        let mut conn = mem();
+        let mut conn = db();
         let dir = tempdir().unwrap();
         let bad = |_: &[u8]| Err(CoreError::Internal("corrupt pdf".into()));
         let err = import_pdf(&mut conn, dir.path(), b"junk", None, NO_LIMIT, bad).unwrap_err();
@@ -657,7 +629,7 @@ mod tests {
 
     #[test]
     fn adopt_existing_active_root_dedupes_identity() {
-        let mut conn = mem();
+        let mut conn = db();
         let dir = tempdir().unwrap();
         // Pre-existing arxiv root + v1.
         paper::save_paper_metadata(&mut conn, &meta("arxiv:2204.0001", 1), None).unwrap();
@@ -685,7 +657,7 @@ mod tests {
         // "Imported earlier" case: the arxiv root does NOT yet exist when the PDF
         // is imported. The import keys on the resolved arxiv identity, not the
         // content hash.
-        let mut conn = mem();
+        let mut conn = db();
         let dir = tempdir().unwrap();
 
         let res = import_pdf(
@@ -715,7 +687,7 @@ mod tests {
 
     #[test]
     fn reimport_preserves_existing_pdf_on_disk() {
-        let mut conn = mem();
+        let mut conn = db();
         let dir = tempdir().unwrap();
         paper::save_paper_metadata(&mut conn, &meta("arxiv:keep", 1), None).unwrap();
         // A PDF already sits at the canonical path with known bytes.
@@ -746,7 +718,7 @@ mod tests {
 
     #[test]
     fn rollback_brand_new_root_hard_deletes() {
-        let mut conn = mem();
+        let mut conn = db();
         let dir = tempdir().unwrap();
         block_final_path(dir.path(), "local_newv1.pdf");
 
@@ -785,7 +757,7 @@ mod tests {
 
     #[test]
     fn rollback_restored_deleted_root_re_soft_deletes() {
-        let mut conn = mem();
+        let mut conn = db();
         let dir = tempdir().unwrap();
         // A soft-deleted root with NO version (so pre_existing_version is false
         // and the failure-injection dir doesn't trip preserve-existing).
@@ -815,7 +787,7 @@ mod tests {
         // Wiring check: the convenience entry resolves first (junk bytes extract
         // no arXiv/DOI/title, so enrichment makes no network call), then mints a
         // deterministic local:<sha> identity (None external).
-        let mut conn = mem();
+        let mut conn = db();
         let dir = tempdir().unwrap();
         let data_dir = tempdir().unwrap();
         let res = import_pdf_default(
@@ -843,7 +815,7 @@ mod tests {
 
     #[test]
     fn project_link_membership_guards() {
-        let mut conn = mem();
+        let mut conn = db();
         let dir = tempdir().unwrap();
 
         // Missing project → ProjectNotFound, before any import work.

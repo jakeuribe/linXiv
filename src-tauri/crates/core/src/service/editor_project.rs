@@ -325,14 +325,7 @@ pub fn delete_note(conn: &rusqlite::Connection, vault_dir: &Path, note_id: i64) 
 mod tests {
     use super::*;
     use crate::error::CoreError;
-    use crate::storage::db::open_in_memory;
-    use crate::storage::init_db;
-
-    fn db() -> rusqlite::Connection {
-        let conn = open_in_memory().unwrap();
-        init_db(&conn).unwrap();
-        conn
-    }
+    use crate::test_support::db;
 
     #[test]
     fn parse_frontmatter_variants() {
