@@ -36,10 +36,19 @@ pub(crate) const USER_AGENT: &str =
 const POLITE_USER_AGENT: &str = "linXiv/1.0";
 
 /// Polite-pool UA: `linXiv/1.0 (mailto:<addr>)`, or the bare UA when no address.
-/// CR/LF stripped so a tainted mailto — it comes from a user-editable settings
-/// field — can't inject extra request headers.
+///
+/// The mailto comes from a user-editable settings field, so it is reduced to
+/// visible ASCII: CR/LF would inject extra headers, and anything outside
+/// 0x20..=0x7E (a pasted NBSP, an accented address) is rejected by
+/// `HeaderValue`, which would poison the RequestBuilder and fail *every*
+/// request to that pool — silently, where a caller maps the error to an empty
+/// result.
 pub(crate) fn polite_user_agent(mailto: &str) -> String {
-    let addr: String = mailto.chars().filter(|&c| c != '\r' && c != '\n').collect();
+    let addr: String = mailto
+        .chars()
+        .filter(|&c| (' '..='~').contains(&c))
+        .collect();
+    let addr = addr.trim();
     if addr.is_empty() {
         POLITE_USER_AGENT.to_string()
     } else {
@@ -282,6 +291,37 @@ mod tests {
             polite_user_agent("me@x.io\r\nX-Evil: 1"),
             "linXiv/1.0 (mailto:me@x.ioX-Evil: 1)"
         );
+    }
+
+    /// Every UA this builds must survive `HeaderValue`, or the RequestBuilder is
+    /// poisoned and *all* requests to that pool fail — silently, where the caller
+    /// maps the error to an empty result.
+    #[test]
+    fn polite_ua_is_always_a_valid_header_value() {
+        for raw in [
+            "",
+            "me@x.io",
+            "me@x.io\r\nX-Evil: 1",
+            "me@uni.es\u{00A0}",  // trailing NBSP: the copy-paste-off-a-webpage case
+            "jos\u{00E9}@uni.es", // accented address
+            "a\u{0007}b@x.io",    // control char
+            "\u{00A0}\u{00A0}",   // nothing but non-ASCII -> must fall back to bare
+            "  me@x.io  ",
+        ] {
+            let ua = polite_user_agent(raw);
+            assert!(
+                reqwest::header::HeaderValue::try_from(&ua).is_ok(),
+                "UA from {raw:?} is not a valid header value: {ua:?}"
+            );
+        }
+        // The common paste artifact keeps the address rather than losing the pool.
+        assert_eq!(
+            polite_user_agent("me@uni.es\u{00A0}"),
+            "linXiv/1.0 (mailto:me@uni.es)"
+        );
+        assert_eq!(polite_user_agent("  me@x.io  "), "linXiv/1.0 (mailto:me@x.io)");
+        // Nothing usable left -> bare UA, not a mangled empty mailto.
+        assert_eq!(polite_user_agent("\u{00A0}\u{00A0}"), "linXiv/1.0");
     }
 
     #[test]
