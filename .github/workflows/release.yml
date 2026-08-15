@@ -150,8 +150,8 @@ jobs:
           triple="$(rustc -vV | sed -n 's/^host: //p')"
           exe=""; case "$triple" in *windows*) exe=".exe" ;; esac
           mkdir -p raw-binaries
-          cp "src-tauri/target/release/linxiv-app$exe" "raw-binaries/linxiv-app-$triple$exe"
-          cp "src-tauri/target/release/linxiv-cli$exe" "raw-binaries/linxiv-cli-$triple$exe"
+          cp "src-tauri/target/release/linxiv-app$exe" "raw-binaries/raw-linxiv-app-$triple$exe"
+          cp "src-tauri/target/release/linxiv-cli$exe" "raw-binaries/raw-linxiv-cli-$triple$exe"
 
       - name: Hand the raw binaries to the upload job
         uses: actions/upload-artifact@v4
