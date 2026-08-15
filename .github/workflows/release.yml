@@ -144,17 +144,6 @@ jobs:
       # installer for their platform had to step over developer artifacts to
       # find it. Hand them to a job that runs after the whole matrix instead,
       # so every installer is already up before the first binary lands.
-      # The `raw-` prefix is load-bearing, not decoration. GitHub lists release
-      # assets in case-insensitive filename order and ignores upload time, so
-      # `linxiv-app-*` and `linxiv-cli-*` sorted between the rpm (hyphens) and
-      # every other bundle (underscores, which sort after hyphens) — dropping
-      # developer artifacts into the middle of the installer list. `r` sorts
-      # after `l`, so these now land at the bottom where they belong.
-      #
-      # Renaming these breaks linxiv-dev/linxiv-pypi, which downloads them by
-      # exact name to build its wheels. That repo now accepts either spelling
-      # (it can be re-run against old tags, which still carry the bare names),
-      # so land the change there before tagging a release from here.
       - name: Stage raw app/CLI binaries
         shell: bash
         run: |
