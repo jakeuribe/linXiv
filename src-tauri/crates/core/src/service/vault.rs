@@ -100,7 +100,7 @@ pub fn safe_path(vault_root: &Path, relpath: &str) -> Result<PathBuf> {
         .split('/')
         .filter(|p| !p.is_empty() && *p != ".")
         .collect();
-    if parts.iter().any(|p| *p == "..") {
+    if parts.contains(&"..") {
         return Err(CoreError::BadRequest(
             "path traversal is not allowed".into(),
         ));
@@ -463,6 +463,50 @@ mod tests {
             list_dir(root, "does/not/exist").unwrap(),
             FsResult::List { entries: vec![] }
         );
+    }
+
+    #[test]
+    fn make_dir_rejects_escapes() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        let outside = dir.path().parent().unwrap().join("linxiv_escape_probe");
+        for bad in [
+            "../linxiv_escape_probe",
+            "/tmp/linxiv_escape_probe",
+            "a/../../linxiv_escape_probe",
+            "..\\linxiv_escape_probe",
+        ] {
+            assert!(
+                matches!(make_dir(root, bad), Err(CoreError::BadRequest(_))),
+                "must reject {bad}"
+            );
+        }
+        assert!(!outside.exists(), "nothing was created outside the root");
+    }
+
+    #[test]
+    fn make_dir_creates_nested_and_is_idempotent() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        assert_eq!(make_dir(root, "a/b/c").unwrap(), FsResult::Ok);
+        assert!(root.join("a/b/c").is_dir());
+        // create_dir_all => re-mkdir of an existing dir is a no-op, not an error.
+        assert_eq!(make_dir(root, "a/b/c").unwrap(), FsResult::Ok);
+        // ...including the vault root itself, which make_dir does not guard
+        // against the way write_file/remove_entry do.
+        assert_eq!(make_dir(root, "").unwrap(), FsResult::Ok);
+        assert!(root.is_dir());
+    }
+
+    #[test]
+    fn make_dir_errors_when_a_file_holds_the_path() {
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join("a.tex"), "x").unwrap();
+        assert!(matches!(
+            make_dir(root, "a.tex"),
+            Err(CoreError::Internal(_))
+        ));
     }
 
     #[test]

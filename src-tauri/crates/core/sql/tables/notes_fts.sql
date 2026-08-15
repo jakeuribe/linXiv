@@ -1,5 +1,5 @@
--- FTS5 index over note TITLE + NOTE (content). Mirrors papers_fts, except sync
--- is done with triggers on the NOTE table (papers_fts is synced by hand in Rust).
+-- FTS5 index over note TITLE + NOTE (content). Mirrors papers_fts: sync is done
+-- with triggers, here on the NOTE table, there on PAPER_META.
 -- source_fk is UNINDEXED — carried only so search can join back to the paper.
 -- rowid == NOTE_SK so a note's index row is addressable for update/delete.
 CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(title, note, source_fk UNINDEXED);

@@ -173,7 +173,7 @@ fn decode_latex_accents(s: &str) -> String {
             // aren't mistaken for `\o` + "int"; a boundary space is the terminator
             // and is swallowed too, not printed (`S\o rensen` -> "Sørensen").
             if let Some(lig) = ligature {
-                if chars.get(i + 2).map_or(true, |c| !c.is_ascii_alphabetic()) {
+                if !chars.get(i + 2).is_some_and(|c| c.is_ascii_alphabetic()) {
                     out.push(lig);
                     i += 2;
                     if chars.get(i) == Some(&' ') {

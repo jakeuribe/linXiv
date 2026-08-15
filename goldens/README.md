@@ -47,12 +47,22 @@ A changed `.json` means the CLI's output contract changed — treat that as a
 deliberate decision, not noise. `--version` is intentionally uncaptured; it
 bumps every release.
 
-## Caveat: nothing runs these
+## What runs these
 
-**No test or CI job compares `goldens/cli/` against the CLI.** Drift is
-silent — it has already accumulated once (missing commands and settings keys
-were backfilled by hand). Wiring a runner is tracked in TODO.md
-("Nothing runs the CLI goldens", Surface parity section).
+`src-tauri/crates/cli/tests/goldens.rs` — it runs under the ordinary
+`cargo test -p linxiv-cli`, so drift breaks the build instead of accumulating
+silently (it accumulated once before the runner existed: missing commands and
+settings keys were backfilled by hand).
+
+- every `.json` golden: byte-compared against the command's stdout, each with
+  its own fresh temp `LINXIV_DATA_DIR`;
+- every `.txt` golden: the argparse command set must match clap's `Commands:`
+  **both ways** (a new subcommand missing from the golden fails too), and every
+  long flag the golden names must still appear in `--help`.
+
+Failures name the command, the golden path, and the first differing line. When
+a `.json` golden fails, decide whether the CLI or the golden is wrong — do not
+reflexively regenerate.
 
 ## Corpus
 

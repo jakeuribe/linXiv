@@ -93,9 +93,7 @@ fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
             },
         )?;
         // Canonical create envelope: the full NoteDetails serialization.
-        Ok(crate::route::to_value(&svc_note::get_required(
-            conn, note_id,
-        )?)?)
+        crate::route::to_value(&svc_note::get_required(conn, note_id)?)
     })
 }
 
@@ -119,9 +117,7 @@ fn update(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
         )?;
         // No row matched -> get_required raises the shared 404; else the
         // canonical update envelope is the full NoteDetails serialization.
-        Ok(crate::route::to_value(&svc_note::get_required(
-            conn, note_id,
-        )?)?)
+        crate::route::to_value(&svc_note::get_required(conn, note_id)?)
     })
 }
 
@@ -132,9 +128,9 @@ fn delete(state: &AppState, id: &str) -> Result<Value, ApiError> {
         if !svc_editor::delete_note(conn, &state.vault_root, note_id)? {
             return Err(svc_note::not_found(note_id).into());
         }
-        Ok(crate::route::to_value(&svc_note::DeletedNote {
+        crate::route::to_value(&svc_note::DeletedNote {
             deleted_note_id: note_id,
-        })?)
+        })
     })
 }
 

@@ -39,6 +39,10 @@ const TABLE_DDL: &[&str] = &[
 const VIEW_DDL: &[&str] = &[
     include_str!("../../sql/views/author_paper_counts.sql"),
     include_str!("../../sql/views/papers.sql"),
+    // After papers.sql: paper_index_text selects from `papers`. Carries the
+    // papers_fts sync triggers, which read that view — see the file header for
+    // why they cannot ride along with the table in TABLE_DDL.
+    include_str!("../../sql/views/paper_index_text.sql"),
 ];
 
 /// Create all bundled tables (FK-safe order). FTS5 + JSON1 are compiled in via
@@ -137,6 +141,73 @@ mod tests {
         assert!(!has_column(&conn, "PAPER_ROOTS", "STATUS"));
         // It did still create the tables that were genuinely missing.
         assert!(has_column(&conn, "PAPER", "SOURCE_FK"));
+    }
+
+    /// The papers_fts sync triggers need no migration of their own: unlike a
+    /// column added to an existing table (which `CREATE TABLE IF NOT EXISTS`
+    /// cannot reconcile — see `apply_tables_does_not_reconcile_columns_onto_
+    /// existing_tables`), a trigger is its own `CREATE ... IF NOT EXISTS`
+    /// statement, here in paper_index_text.sql, and apply_views runs on EVERY
+    /// open. This pins that: a DB that predates them has them after one init_db,
+    /// or search silently stops tracking the library on every existing install.
+    #[test]
+    fn existing_db_gains_the_papers_fts_sync_triggers() {
+        let legacy = legacy_conn();
+        crate::storage::init_db(&legacy).unwrap();
+
+        let triggers: Vec<String> = legacy
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'papers_fts%' ORDER BY name")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            triggers,
+            [
+                "papers_fts_meta_ad",
+                "papers_fts_meta_ai",
+                "papers_fts_meta_au"
+            ]
+        );
+    }
+
+    /// Existing installs must get an *edited* trigger body, not just their first
+    /// one. `CREATE TRIGGER IF NOT EXISTS` no-ops against a trigger that already
+    /// exists, so it would pin every shipped DB to whatever body it saw first —
+    /// silently, and only on upgraded installs. `paper_index_text.sql` drops
+    /// before creating, exactly like the view beside it; swap that back to
+    /// `IF NOT EXISTS` and this goes red.
+    #[test]
+    fn an_edited_trigger_body_reaches_an_already_initialised_db() {
+        let conn = crate::storage::db::open_in_memory().unwrap();
+        crate::storage::init_db(&conn).unwrap();
+
+        // Stand in for "the shipped body changed": replace it with a decoy.
+        conn.execute_batch(
+            "DROP TRIGGER papers_fts_meta_ai;
+             CREATE TRIGGER papers_fts_meta_ai AFTER INSERT ON PAPER_META
+             BEGIN SELECT 'stale body'; END;",
+        )
+        .unwrap();
+
+        crate::storage::init_db(&conn).unwrap();
+
+        let sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'papers_fts_meta_ai'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            !sql.contains("stale body"),
+            "re-init left the decoy body in place: {sql}"
+        );
+        assert!(
+            sql.contains("paper_index_text"),
+            "re-init did not restore the shipped body: {sql}"
+        );
     }
 
     /// THE ORDERING INVARIANT: tables → migrations → views.
@@ -250,6 +321,7 @@ mod tests {
                 "author_paper_counts",
                 "deleted_papers",
                 "latest_papers",
+                "paper_index_text",
                 "papers"
             ]
         );

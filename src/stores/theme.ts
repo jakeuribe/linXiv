@@ -3,6 +3,7 @@ import { persist } from "zustand/middleware";
 import { applyTheme, VALID_HEX } from "../lib/theme";
 import type { ColorAlphas, PresetName, ThemeColors, ThemeMode } from "../lib/theme";
 import { pushThemeToEditor, EDITOR_ORIGIN } from "../pages/editorConfig";
+import { migrateTheme } from "./migrations.ts";
 
 const STORAGE_KEY = "linxiv-theme";
 
@@ -161,28 +162,7 @@ export const useThemeStore = create<ThemeState>()(
     {
       name: STORAGE_KEY,
       version: 3,
-      migrate(stored: unknown, version: number) {
-        const s = { ...(stored as Record<string, unknown>) };
-        if (version === 0) {
-          delete s.glassEffects;
-        }
-        if (version <= 1) {
-          // overrideAlphas and customPalettes were introduced in v2; neither field existed before.
-          s.overrideAlphas = {};
-          s.customPalettes = [];
-        }
-        if (version <= 2) {
-          delete s.glassIntensity;
-          delete s.glassTintColor;
-          delete s.glassTintAlpha;
-          if (Array.isArray(s.customPalettes)) {
-            s.customPalettes = (s.customPalettes as Record<string, unknown>[]).map(
-              ({ glassIntensity: _gi, glassTintColor: _gtc, glassTintAlpha: _gta, ...rest }) => rest
-            );
-          }
-        }
-        return s;
-      },
+      migrate: migrateTheme,
       onRehydrateStorage: () => (state) => {
         if (state) {
           applyTheme(state.preset, state.mode, state.overrides, state.overrideAlphas);
