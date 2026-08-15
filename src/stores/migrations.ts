@@ -43,7 +43,7 @@ export interface UiPersisted {
 
 /** ui store, v1 -> v7. */
 export function migrateUi(persisted: unknown, fromVersion: number): Partial<UiPersisted> {
-  const state = (persisted ?? {}) as Partial<UiPersisted>;
+  const state = { ...(persisted as Partial<UiPersisted>) };
   if (fromVersion < 1) {
     state.sidebarPages = { ...DEFAULT_SIDEBAR_PAGES, ...state.sidebarPages };
   }

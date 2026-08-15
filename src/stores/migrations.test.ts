@@ -123,9 +123,9 @@ test("theme v2 -> v3 preserves alphas and palettes while stripping glass fields"
 
 test("theme v2 -> v3 does not mutate the stored blob", () => {
   const stored = themeV2();
-  migrateTheme(stored, 2);
-  assert.equal(stored.glassIntensity, 0.2);
-  assert.equal(stored.customPalettes[0].glassIntensity, 0.5);
+  const migrated = migrateTheme(stored, 2);
+  assert.notEqual(migrated, stored as unknown, "returns a copy, not the stored object");
+  assert.deepStrictEqual(stored, themeV2());
 });
 
 test("theme v2 -> v3 tolerates a non-array customPalettes", () => {
@@ -163,14 +163,16 @@ test("theme migrate keeps unknown keys it does not know about", () => {
 // ui store: v1 -> v7
 // ---------------------------------------------------------------------------
 
-const fullUi = () => ({
+// Shared across the tests below without defensive copying: migrateUi copies on
+// entry, so no call can disturb it for the next one.
+const fullUi = {
   sidebarCollapsed: true,
   sidebarPages: { graph: false, search: true, doi: true, tags: true, notes: true },
   exportMethods: { lxproj: false, bibtex: true, obsidian: true },
   zoom: 1.5,
   density: "compact" as const,
   hideSingleAuthors: true,
-});
+};
 
 test("ui v0 -> v7 fills every field from defaults", () => {
   assert.deepStrictEqual(migrateUi({ sidebarCollapsed: true }, 0), {
@@ -236,19 +238,19 @@ test("ui v3 -> v7 keeps the saved zoom and seeds the v4/v5 fields", () => {
 
 test("ui v1/v2 -> v7 resets a saved zoom to the default (zoom is a v3 field)", () => {
   // Documents current behaviour: a pre-v3 blob carrying `zoom` loses it.
-  assert.equal(migrateUi({ ...fullUi() }, 1).zoom, DEFAULT_ZOOM);
-  assert.equal(migrateUi({ ...fullUi() }, 2).zoom, DEFAULT_ZOOM);
+  assert.equal(migrateUi(fullUi, 1).zoom, DEFAULT_ZOOM);
+  assert.equal(migrateUi(fullUi, 2).zoom, DEFAULT_ZOOM);
 });
 
 test("ui v4 -> v7 keeps hideSingleAuthors and backfills density", () => {
-  const migrated = migrateUi({ ...fullUi() }, 4);
+  const migrated = migrateUi(fullUi, 4);
   assert.equal(migrated.hideSingleAuthors, true);
   assert.equal(migrated.zoom, 1.5);
   assert.equal(migrated.density, DEFAULT_DENSITY, "density is a v5 field, so it resets");
 });
 
 test("ui v5 -> v7 keeps density and backfills the shared page key", () => {
-  const migrated = migrateUi({ ...fullUi() }, 5);
+  const migrated = migrateUi(fullUi, 5);
   assert.equal(migrated.density, "compact");
   assert.deepStrictEqual(migrated.sidebarPages, {
     ...DEFAULT_SIDEBAR_PAGES,
@@ -278,18 +280,18 @@ test("ui migrate handles undefined / null / empty blobs at every version", () =>
     hideSingleAuthors: false,
     density: DEFAULT_DENSITY,
   };
-  // Fresh blob per call: migrateUi mutates the object it is handed, so a reused
-  // literal would carry the previous call's backfill into the next assertion.
-  for (const blob of [() => undefined, () => null, () => ({})]) {
-    assert.deepStrictEqual(migrateUi(blob(), 0), backfilled);
-    assert.deepStrictEqual(migrateUi(blob(), 1), backfilled);
-    assert.deepStrictEqual(migrateUi(blob(), 6), { sidebarPages: DEFAULT_SIDEBAR_PAGES });
+  // The same blob is reused across all three calls: migrateUi copies on entry,
+  // so no call's backfill can leak into the next assertion.
+  for (const blob of [undefined, null, {}]) {
+    assert.deepStrictEqual(migrateUi(blob, 0), backfilled);
+    assert.deepStrictEqual(migrateUi(blob, 1), backfilled);
+    assert.deepStrictEqual(migrateUi(blob, 6), { sidebarPages: DEFAULT_SIDEBAR_PAGES });
   }
 });
 
 test("ui migrate leaves a current/future version untouched", () => {
   for (const version of [7, 8, 99]) {
-    assert.deepStrictEqual(migrateUi({ ...fullUi() }, version), fullUi());
+    assert.deepStrictEqual(migrateUi(fullUi, version), fullUi);
   }
 });
 
@@ -298,13 +300,11 @@ test("ui migrate keeps unknown keys it does not know about", () => {
   assert.equal(migrated.somethingNew, 42);
 });
 
-test("ui migrate mutates the persisted object in place", () => {
-  // Documents current behaviour: unlike the theme migration, this one writes
-  // back into the blob it was handed and returns that same reference.
+test("ui migrate does not mutate the persisted object", () => {
   const stored = { sidebarPages: { graph: false } };
   const migrated = migrateUi(stored, 6);
-  assert.equal(migrated, stored as unknown);
-  assert.deepStrictEqual(stored.sidebarPages, { ...DEFAULT_SIDEBAR_PAGES, graph: false });
+  assert.notEqual(migrated, stored as unknown, "returns a copy, not the stored object");
+  assert.deepStrictEqual(stored, { sidebarPages: { graph: false } });
 });
 
 test("ui migrate tolerates a non-object sidebarPages", () => {
