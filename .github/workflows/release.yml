@@ -154,15 +154,66 @@ jobs:
 
       # Raw per-platform binaries for the linxiv PyPI wheels
       # (linxiv-dev/linxiv-pypi downloads these by tag and bundles them).
-      # tauri-action created the draft release above; gh finds drafts by tag.
+      #
+      # These are NOT uploaded here. A release asset list is ordered by upload
+      # time, and every matrix job would slot its two raw binaries in among its
+      # own installers -- so the page read deb, rpm, AppImage, two binaries,
+      # dmg, two binaries, msi, exe, two binaries. Someone looking for the
+      # installer for their platform had to step over developer artifacts to
+      # find it. Hand them to a job that runs after the whole matrix instead,
+      # so every installer is already up before the first binary lands.
+      - name: Stage raw app/CLI binaries
+        shell: bash
+        run: |
+          triple="$(rustc -vV | sed -n 's/^host: //p')"
+          exe=""; case "$triple" in *windows*) exe=".exe" ;; esac
+          mkdir -p raw-binaries
+          cp "src-tauri/target/release/linxiv-app$exe" "raw-binaries/linxiv-app-$triple$exe"
+          cp "src-tauri/target/release/linxiv-cli$exe" "raw-binaries/linxiv-cli-$triple$exe"
+
+      - name: Hand the raw binaries to the upload job
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-binaries-${{ matrix.platform }}
+          path: raw-binaries/
+          if-no-files-found: error
+          retention-days: 1
+
+  # Runs only once every build job has finished, which is what puts the raw
+  # binaries at the BOTTOM of the release asset list rather than interleaved.
+  # Keep this job last: anything uploaded after it lands below it too.
+  upload-raw-binaries:
+    name: Upload raw binaries
+    needs: build
+    # fail-fast is off above so one broken platform still ships the others'
+    # installers. Run on a partial matrix for the same reason: withholding
+    # every binary because one runner died would be worse than the old
+    # per-job upload this replaces.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Collect every platform's binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: raw-binaries-*
+          merge-multiple: true
+          path: raw-binaries
+
+      # tauri-action created the draft release; gh finds drafts by tag.
+      # No checkout here, so gh needs the repo named explicitly.
       - name: Upload raw app/CLI binaries to the release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
-          triple="$(rustc -vV | sed -n 's/^host: //p')"
-          exe=""; case "$triple" in *windows*) exe=".exe" ;; esac
-          cp "src-tauri/target/release/linxiv-app$exe" "linxiv-app-$triple$exe"
-          cp "src-tauri/target/release/linxiv-cli$exe" "linxiv-cli-$triple$exe"
-          gh release upload "$GITHUB_REF_NAME" \
-            "linxiv-app-$triple$exe" "linxiv-cli-$triple$exe" --clobber
+          shopt -s nullglob
+          files=(raw-binaries/*)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::warning::no raw binaries were produced — every build job failed"
+            exit 0
+          fi
+          printf '%s\n' "${files[@]}"
+          gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
