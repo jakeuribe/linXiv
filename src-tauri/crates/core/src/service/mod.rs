@@ -1,8 +1,10 @@
 //! Service layer — Phase 2 ports of `service/*.py`.
 pub mod annotation;
 pub mod author;
+pub mod db_admin;
 pub mod editor_project;
 pub mod export_import;
+pub mod feed;
 pub mod files;
 pub mod note;
 pub mod orcid_backfill;
@@ -10,6 +12,10 @@ pub mod paper;
 pub mod paper_import;
 pub mod project;
 pub mod reading_list;
+pub mod search_state;
+pub mod source;
+pub mod stats;
 pub mod tag;
+pub mod trash;
 pub mod vault;
 pub mod version_monitor;

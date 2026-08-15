@@ -103,11 +103,15 @@ pub fn augmented_graph_data(conn: &Connection, exclude_single_authors: bool) -> 
     Ok(json!({ "nodes": out_nodes, "edges": edges }))
 }
 
+/// Paper nodes as `(source_fk, node, tags)` — tags ride alongside the node JSON
+/// so tag edges can be built after the nodes are emitted.
+type PaperNodesWithTags = Vec<(i64, Value, Vec<String>)>;
+
 /// `(paper_nodes [(source_fk, node, tags)], author_nodes, edges)` — `get_graph_data`.
 fn graph_data(
     conn: &Connection,
     exclude_single_authors: bool,
-) -> Result<(Vec<(i64, Value, Vec<String>)>, Vec<Value>, Vec<Value>)> {
+) -> Result<(PaperNodesWithTags, Vec<Value>, Vec<Value>)> {
     let mut paper_stmt = conn.prepare(PAPER_NODES_SQL)?;
     let mut rows = paper_stmt.query([])?;
     let mut paper_nodes = Vec::new();

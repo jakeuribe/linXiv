@@ -21,7 +21,8 @@ use rmcp::{tool_handler, ServerHandler, ServiceExt};
 use rusqlite::Connection;
 use tracing_subscriber::EnvFilter;
 
-use linxiv_core::{config, storage};
+use linxiv_core::config;
+use linxiv_core::service::db_admin;
 
 /// Shared MCP server state. Holds the single SQLite connection (guarded by a
 /// `Mutex`, opened once at startup) plus the managed PDF root, and the
@@ -40,8 +41,7 @@ impl Server {
     /// top of `linxiv_mcp.py`.
     pub fn new() -> anyhow::Result<Self> {
         config::init_data_dir()?;
-        let conn = storage::open(&config::db_path())?;
-        storage::init_db(&conn)?;
+        let conn = db_admin::open_app_db()?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             pdf_dir: config::pdf_dir(),

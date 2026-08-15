@@ -16,6 +16,7 @@ import {
 import { HighlightLayer, type PageHighlight } from "./HighlightLayer";
 import { PagePill } from "./PagePill";
 import { submitOnCtrlEnter } from "../../lib/submitShortcut";
+import { invalidateAnnotationQueries } from "../../lib/paperMutations";
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/build/pdf.worker.min.mjs",
@@ -124,7 +125,7 @@ export function PdfReader({ file, sourceId, version, projectId, errorUrl }: PdfR
         project_id: projectId ?? null,
       }),
     onSuccess: (data, v) => {
-      qc.invalidateQueries({ queryKey: ["annotations"] });
+      invalidateAnnotationQueries(qc);
       // Open the comment popup on the fresh highlight so a comment can be added
       // right away — a highlight and its comment are one gesture, not two screens.
       const pos = clampToViewport(v.left, v.top, 280, 220);
@@ -138,7 +139,7 @@ export function PdfReader({ file, sourceId, version, projectId, errorUrl }: PdfR
     mutationFn: (v: { id: number; comment: string }) =>
       updateAnnotation(v.id, v.comment),
     onSuccess: (_data, v) => {
-      qc.invalidateQueries({ queryKey: ["annotations"] });
+      invalidateAnnotationQueries(qc);
       // close only the popup we edited, never one reopened mid-flight
       setPopup((p) => (p?.id === v.id ? null : p));
     },
@@ -146,7 +147,7 @@ export function PdfReader({ file, sourceId, version, projectId, errorUrl }: PdfR
   const deleteMut = useMutation({
     mutationFn: (id: number) => deleteAnnotation(id),
     onSuccess: (_data, id) => {
-      qc.invalidateQueries({ queryKey: ["annotations"] });
+      invalidateAnnotationQueries(qc);
       setPopup((p) => (p?.id === id ? null : p));
     },
   });

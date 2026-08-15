@@ -611,15 +611,7 @@ fn get_received(share: &ShareState, id: &str) -> Result<Value, ApiError> {
         "description": sp.description,
         "color": sp.color,
         "tags": sp.tags,
-        "papers": sp.papers.iter().map(|p| json!({
-            "source_id": p.source_id,
-            "version": p.version,
-            "title": p.title,
-            "summary": p.summary,
-            "authors": p.authors,
-            "tags": p.tags,
-            "has_pdf": p.pdf_blob.is_some(),
-        })).collect::<Vec<_>>(),
+        "papers": sp.papers.iter().map(|p| p.to_summary_value()).collect::<Vec<_>>(),
         "notes": sp.notes.iter().map(|n| json!({
             "id": n.uuid,
             "title": n.title,

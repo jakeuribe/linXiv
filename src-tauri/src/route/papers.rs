@@ -10,10 +10,10 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use linxiv_core::config;
+use linxiv_core::error::CoreError;
 use linxiv_core::models::PaperMetadata;
 use linxiv_core::service::paper::{self as svc_paper, Paper};
 use linxiv_core::service::project as svc_project;
-use linxiv_core::sources::arxiv_downloads;
 
 use crate::route::{path_i64, ApiError, ReqCtx};
 use crate::state::AppState;
@@ -62,7 +62,7 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
 fn versions(state: &AppState, fk: &str) -> Result<Value, ApiError> {
     let source_fk = path_i64(fk)?;
     let all = state.with_conn(|conn| svc_paper::get_all(conn, &sfk_key(source_fk)))?;
-    let all = all.ok_or_else(|| ApiError::new(404, "Paper not found"))?;
+    let all = all.ok_or(CoreError::PaperNotFound(source_fk.to_string()))?;
     let versions: Vec<Value> = all
         .versions
         .iter()
@@ -88,7 +88,7 @@ fn doi_candidates(state: &AppState, fk: &str) -> Result<Value, ApiError> {
     let source_fk = path_i64(fk)?;
     let candidates = state.with_conn(|conn| -> Result<_, ApiError> {
         if svc_paper::get_source_id(conn, source_fk)?.is_none() {
-            return Err(ApiError::new(404, "Paper not found"));
+            return Err(CoreError::PaperNotFound(source_fk.to_string()).into());
         }
         Ok(svc_paper::find_doi_version_candidates(conn, source_fk)?)
     })?;
@@ -105,7 +105,7 @@ fn by_sfk(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
         let paper = if let Some(version) = version {
             // version branch: resolve source_id first, then the pinned version.
             let source_id = svc_paper::get_source_id(conn, source_fk)?
-                .ok_or_else(|| ApiError::new(404, "Paper not found"))?;
+                .ok_or_else(|| CoreError::PaperNotFound(source_fk.to_string()))?;
             let key = Paper {
                 source_id: Some(source_id),
                 version: Some(version),
@@ -115,7 +115,7 @@ fn by_sfk(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
                 .ok_or_else(|| ApiError::new(404, format!("Version {version} not stored")))?
         } else {
             svc_paper::get(conn, &sfk_key(source_fk))?
-                .ok_or_else(|| ApiError::new(404, "Paper not found"))?
+                .ok_or_else(|| CoreError::PaperNotFound(source_fk.to_string()))?
         };
         to_value(&paper)
     })
@@ -151,30 +151,12 @@ async fn fetch_full_text(
 ) -> Result<Value, ApiError> {
     let paper = state
         .with_conn(|conn| svc_paper::get(conn, &sid_key(source_id)))?
-        .ok_or_else(|| ApiError::new(404, "Paper not found"))?;
+        .ok_or_else(|| CoreError::PaperNotFound(source_id.to_string()))?;
     if paper.downloaded_source && !ctx.q_bool("force") {
-        return Ok(json!({
-            "source_id": paper.source_id,
-            "version": paper.version,
-            "indexed": false,
-            "reason": "source already indexed; pass force=true to re-fetch",
-        }));
+        return to_value(&svc_paper::FullTextReceipt::already_indexed(&paper));
     }
-    let (sid, version) = (paper.source_id.clone(), paper.version);
-    match ingest_full_text(state, &paper).await? {
-        Some(chars) => Ok(json!({
-            "source_id": sid,
-            "version": version,
-            "indexed": true,
-            "chars": chars,
-        })),
-        None => Ok(json!({
-            "source_id": sid,
-            "version": version,
-            "indexed": false,
-            "reason": "re-fetch produced no TeX; kept the text already indexed",
-        })),
-    }
+    let receipt = ingest_full_text(state, &paper).await?;
+    to_value(&receipt)
 }
 
 /// `GET /api/papers/full-text-pending` — how many stored arXiv papers have no
@@ -184,31 +166,21 @@ fn full_text_pending(state: &AppState) -> Result<Value, ApiError> {
     Ok(json!({ "pending": pending }))
 }
 
-/// Download + extract + store one paper's TeX, returning the stored char count.
-/// `Ok(None)` means the extract came back empty and a body is already indexed,
-/// so nothing was written. Shared by the route above and `full_text_worker`.
+/// Download + extract + store one paper's TeX (`service::paper`'s two-phase
+/// ingest: fetch outside the lock, commit under it). Shared by the route above
+/// and `full_text_worker`.
 pub(crate) async fn ingest_full_text(
     state: &AppState,
     paper: &linxiv_core::models::PaperDetails,
-) -> Result<Option<usize>, ApiError> {
-    // Resolve the URL (and drop the connection) before the await — with_conn's
-    // guard must never span it.
-    let url = svc_paper::source_fetch_url(paper)?.to_string();
-    let text = arxiv_downloads::fetch_source_text(&url, &config::data_dir()).await?;
-    if !svc_paper::should_store_full_text(paper, &text) {
-        return Ok(None);
-    }
-    // arXiv serves PDF-only submissions from the same `/src/` path, so an empty
-    // extract still marks the paper DOWNLOADED_SOURCE; `force` fetches again.
-    state
-        .with_conn(|conn| svc_paper::set_full_text(conn, &paper.source_id, paper.version, &text))?;
-    Ok(Some(text.chars().count()))
+) -> Result<svc_paper::FullTextReceipt, ApiError> {
+    let fetched = svc_paper::fetch_full_text(paper, &config::data_dir()).await?;
+    Ok(state.with_conn(|conn| fetched.commit(conn))?)
 }
 
 /// `GET /api/papers/{source_id}` — `api_get_paper`. Bare `to_dict()`.
 fn get_one(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
     let paper = state.with_conn(|conn| svc_paper::get(conn, &sid_key(source_id)))?;
-    let paper = paper.ok_or_else(|| ApiError::new(404, "Paper not found"))?;
+    let paper = paper.ok_or_else(|| CoreError::PaperNotFound(source_id.to_string()))?;
     to_value(&paper)
 }
 
@@ -216,7 +188,7 @@ fn get_one(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
 fn delete(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
     state.with_conn(|conn| -> Result<(), ApiError> {
         if svc_paper::get(conn, &sid_key(source_id))?.is_none() {
-            return Err(ApiError::new(404, "Paper not found"));
+            return Err(CoreError::PaperNotFound(source_id.to_string()).into());
         }
         svc_paper::delete(conn, &sid_key(source_id))?;
         Ok(())
@@ -231,7 +203,7 @@ fn repair(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     let b: RepairBody = ctx.parse_body()?;
     state.with_conn(|conn| -> Result<Value, ApiError> {
         let paper = svc_paper::get(conn, &sfk_key(source_fk))?
-            .ok_or_else(|| ApiError::new(404, "Paper not found"))?;
+            .ok_or_else(|| CoreError::PaperNotFound(source_fk.to_string()))?;
         // Date validated after the existence check, matching MCP and Python.
         let published = svc_paper::parse_published(&b.published)?;
         let meta = PaperMetadata {
@@ -267,7 +239,7 @@ fn remove_from_projects(state: &AppState, fk: &str) -> Result<Value, ApiError> {
     let source_fk = path_i64(fk)?;
     let removed =
         state.with_conn(|conn| svc_project::remove_paper_from_all_projects(conn, source_fk))?;
-    Ok(json!({ "ok": true, "removed_from": removed }))
+    Ok(json!({ "ok": true, "removed_from_projects": removed }))
 }
 
 /// `PaperRepairBody` (`src/api/papers.ts`). `published` stays a `String` so the
@@ -344,7 +316,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.status, 404);
-        assert_eq!(err.detail, "Paper not found");
+        assert_eq!(err.detail, "Paper arxiv:nope not found");
     }
 
     #[tokio::test]
@@ -353,7 +325,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.status, 404);
-        assert_eq!(err.detail, "Paper not found");
+        assert_eq!(err.detail, "Paper arxiv:nope not found");
     }
 
     fn meta(source_id: &str, doi: Option<&str>) -> PaperMetadata {
@@ -382,7 +354,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.status, 404);
-        assert_eq!(err.detail, "Paper not found");
+        assert_eq!(err.detail, "Paper arxiv:nope not found");
 
         // An arXiv paper saved without a `/pdf/` URL → refused as unfetchable.
         let mut no_url = meta("arxiv:2", None);
@@ -481,7 +453,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.status, 404);
-        assert_eq!(err.detail, "Paper not found");
+        assert_eq!(err.detail, "Paper 999 not found");
     }
 
     #[tokio::test]
@@ -522,7 +494,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.status, 404);
-        assert_eq!(err.detail, "Paper not found");
+        assert_eq!(err.detail, "Paper 999 not found");
     }
 
     #[tokio::test]
@@ -533,15 +505,15 @@ mod tests {
                 .await
                 .unwrap_err()
                 .detail,
-            "Paper not found"
+            "Paper 999 not found"
         );
-        // version branch: unknown sfk -> "Paper not found" (source_id resolves to None).
+        // version branch: unknown sfk is the typed miss (source_id resolves to None).
         assert_eq!(
             req(&st, "GET", "/api/papers/sfk/999?version=2", None)
                 .await
                 .unwrap_err()
                 .detail,
-            "Paper not found"
+            "Paper 999 not found"
         );
     }
 
@@ -639,7 +611,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.status, 404);
-        assert_eq!(err.detail, "Paper not found");
+        assert_eq!(err.detail, "Paper 999 not found");
     }
 
     #[tokio::test]
@@ -722,7 +694,7 @@ mod tests {
             req(&state(), "DELETE", "/api/papers/sfk/999/projects", None)
                 .await
                 .unwrap(),
-            json!({ "ok": true, "removed_from": [] })
+            json!({ "ok": true, "removed_from_projects": [] })
         );
     }
 }

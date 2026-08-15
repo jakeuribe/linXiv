@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { apiFetch } from "./client";
 
 export interface SavedPdf {
@@ -20,4 +21,9 @@ export async function deleteSavedPdf(
     `/api/pdfs/${encodeURIComponent(sourceId)}`,
     { method: "DELETE" },
   );
+}
+
+/** Open a stored PDF in the OS default viewer (Tauri only). */
+export async function openPdfInSystem(path: string): Promise<void> {
+  return invoke("open_pdf_in_system", { path });
 }

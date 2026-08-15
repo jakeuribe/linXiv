@@ -9,8 +9,6 @@ use crate::output::{as_source_id, fail, output};
 use linxiv_core::config;
 use linxiv_core::models::PaperMetadata;
 use linxiv_core::service::{paper as svc_paper, project as svc_project};
-use linxiv_core::sources::arxiv_downloads;
-use linxiv_core::storage;
 
 #[derive(Subcommand)]
 pub enum PaperCmd {
@@ -70,42 +68,23 @@ pub enum PaperCmd {
     },
 }
 
-/// Fetch one paper's TeX source and store it, returning the chars indexed —
-/// `None` when an empty extract was withheld to protect an existing body.
-///
-/// An empty result is normally stored rather than skipped: arXiv serves PDF-only
-/// submissions from the same `/src/` path, so writing "" marks the paper
-/// DOWNLOADED_SOURCE and stops the backfill re-fetching it on every run.
-/// `should_store_full_text` carves out the one case where that would lose data.
-///
-/// Always indexes the paper's latest version — the source URL is derived from
-/// that version's PDF link, so an older version would need a different URL.
+/// Fetch one paper's TeX source and store it — `service::paper`'s two-phase
+/// ingest (always the paper's latest version; the source URL is derived from
+/// that version's PDF link).
 async fn ingest_source(
     ctx: &mut Ctx,
     paper: &linxiv_core::models::PaperDetails,
-) -> linxiv_core::error::Result<Option<usize>> {
-    let url = svc_paper::source_fetch_url(paper)?;
-    let text = arxiv_downloads::fetch_source_text(url, &config::data_dir()).await?;
-    if !svc_paper::should_store_full_text(paper, &text) {
-        return Ok(None);
-    }
-    svc_paper::set_full_text(&mut ctx.conn, &paper.source_id, paper.version, &text)?;
-    Ok(Some(text.chars().count()))
+) -> linxiv_core::error::Result<svc_paper::FullTextReceipt> {
+    let fetched = svc_paper::fetch_full_text(paper, &config::data_dir()).await?;
+    fetched.commit(&mut ctx.conn)
 }
 
-/// `_resolve_paper_or_exit`: load a paper or fail with the not-found error.
+/// `_resolve_paper_or_exit`: load a paper or fail with core's not-found wording.
 pub(super) fn resolve_paper_or_exit(
     ctx: &Ctx,
     source_id: &str,
 ) -> linxiv_core::models::PaperDetails {
-    match svc_paper::get(&ctx.conn, &paper(source_id)) {
-        Ok(Some(p)) => p,
-        Ok(None) => fail(format!(
-            "Paper {} not found in DB",
-            crate::output::pyrepr(source_id)
-        )),
-        Err(e) => fail(e),
-    }
+    svc_paper::get_required(&ctx.conn, source_id).unwrap_or_else(|e| fail(e))
 }
 
 fn paper(source_id: &str) -> svc_paper::Paper {
@@ -119,14 +98,14 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
     match cmd {
         // cmd_paper_get: resolve-or-exit, then dump the details dict.
         PaperCmd::Get { source_id } => {
-            let source_id = as_source_id(&source_id, "arxiv");
+            let source_id = as_source_id(&ctx.conn, &source_id);
             let details = resolve_paper_or_exit(ctx, &source_id);
             output(&details);
         }
 
         // cmd_paper_delete: ensure it exists, soft-delete, report the id.
         PaperCmd::Delete { source_id } => {
-            let source_id = as_source_id(&source_id, "arxiv");
+            let source_id = as_source_id(&ctx.conn, &source_id);
             resolve_paper_or_exit(ctx, &source_id);
             svc_paper::delete(&mut ctx.conn, &paper(&source_id))?;
             output(&json!({ "deleted": source_id }));
@@ -134,12 +113,11 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
 
         // cmd_paper_versions: all stored versions, or not-found.
         PaperCmd::Versions { source_id } => {
-            let source_id = as_source_id(&source_id, "arxiv");
+            let source_id = as_source_id(&ctx.conn, &source_id);
             match svc_paper::get_all(&ctx.conn, &paper(&source_id))? {
                 Some(all) => output(&all),
-                None => fail(format!(
-                    "Paper {} not found in DB",
-                    crate::output::pyrepr(&source_id)
+                None => fail(linxiv_core::error::CoreError::PaperNotFound(
+                    source_id.clone(),
                 )),
             }
         }
@@ -156,14 +134,9 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             url,
             tags,
         } => {
-            let source_id = as_source_id(&source_id, "arxiv");
-            let root = match storage::queries::paper::get_paper_root(&ctx.conn, &source_id)? {
-                Some(r) => r,
-                None => fail(format!(
-                    "Paper {} not found",
-                    crate::output::pyrepr(&source_id)
-                )),
-            };
+            let source_id = as_source_id(&ctx.conn, &source_id);
+            let source_fk =
+                svc_paper::resolve_source_fk(&ctx.conn, &source_id).unwrap_or_else(|e| fail(e));
             // `existing.version if existing is not None else 1`.
             let version = svc_paper::get(&ctx.conn, &paper(&source_id))?
                 .map(|e| e.version)
@@ -190,37 +163,37 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                 author_orcids: None,
             };
             // repair_paper normalizes and validates (blank title, no authors, empty DOI).
-            match svc_paper::repair_paper(&mut ctx.conn, root.source_fk, &meta) {
+            match svc_paper::repair_paper(&mut ctx.conn, source_fk, &meta) {
                 Ok(()) => {}
                 Err(e @ linxiv_core::error::CoreError::Validation(_)) => fail(e.to_string()),
                 Err(e) => return Err(e.into()),
             }
-            output(&json!({ "repaired": source_id }));
+            // Route parity (`PUT /api/papers/sfk/{fk}`): the repaired PaperDetails.
+            output(&resolve_paper_or_exit(ctx, &source_id));
         }
 
         // cmd_paper_restore: only valid from trash; returns pdf path + project links.
         PaperCmd::Restore { source_id } => {
-            let source_id = as_source_id(&source_id, "arxiv");
+            let source_id = as_source_id(&ctx.conn, &source_id);
             svc_paper::require_trashed(&ctx.conn, &source_id).unwrap_or_else(|e| fail(e));
             let (pdf_path, project_fks) = svc_paper::restore(&mut ctx.conn, &paper(&source_id))?;
-            output(&json!({
-                "restored": source_id,
-                "pdf_path": pdf_path,
-                "project_fks": project_fks,
-            }));
+            output(&linxiv_core::service::trash::RestoredPaper {
+                ok: true,
+                restored: source_id,
+                pdf_path,
+                project_fks,
+            });
         }
 
         // cmd_paper_hard_delete: permanently remove an existing paper.
         PaperCmd::HardDelete { source_id } => {
-            let source_id = as_source_id(&source_id, "arxiv");
-            if storage::queries::paper::get_paper_root(&ctx.conn, &source_id)?.is_none() {
-                fail(format!(
-                    "Paper {} not found",
-                    crate::output::pyrepr(&source_id)
-                ));
-            }
+            let source_id = as_source_id(&ctx.conn, &source_id);
+            svc_paper::resolve_source_fk(&ctx.conn, &source_id).unwrap_or_else(|e| fail(e));
             svc_paper::hard_delete(&mut ctx.conn, &paper(&source_id))?;
-            output(&json!({ "hard_deleted": source_id }));
+            output(&linxiv_core::service::trash::HardDeletedPaper {
+                ok: true,
+                hard_deleted: source_id,
+            });
         }
 
         // cmd_paper_search: `svc_paper.search_papers` — the shared FTS + note-content
@@ -231,15 +204,15 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
 
         // cmd_paper_remove_from_all: drop the paper from every project it's in.
         PaperCmd::RemoveFromAllProjects { source_id } => {
-            let source_id = as_source_id(&source_id, "arxiv");
+            let source_id = as_source_id(&ctx.conn, &source_id);
             match svc_project::remove_paper_from_all_projects_by_id(&mut ctx.conn, &source_id)? {
+                // One envelope across route/CLI/MCP; the caller already knows the id.
                 Some(removed) => output(&json!({
-                    "source_id": source_id,
+                    "ok": true,
                     "removed_from_projects": removed,
                 })),
-                None => fail(format!(
-                    "Paper {} not found",
-                    crate::output::pyrepr(&source_id)
+                None => fail(linxiv_core::error::CoreError::PaperNotFound(
+                    source_id.clone(),
                 )),
             }
         }
@@ -247,21 +220,16 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         // GET /api/papers/sfk/{fk}/doi-candidates keys off SOURCE_FK; resolve the
         // CLI's source_id to its root first. Empty when the paper has no DOI.
         PaperCmd::DoiCandidates { source_id } => {
-            let source_id = as_source_id(&source_id, "arxiv");
-            let root = match storage::queries::paper::get_paper_root(&ctx.conn, &source_id)? {
-                Some(r) => r,
-                None => fail(format!(
-                    "Paper {} not found",
-                    crate::output::pyrepr(&source_id)
-                )),
-            };
-            let candidates = svc_paper::find_doi_version_candidates(&ctx.conn, root.source_fk)?;
+            let source_id = as_source_id(&ctx.conn, &source_id);
+            let source_fk =
+                svc_paper::resolve_source_fk(&ctx.conn, &source_id).unwrap_or_else(|e| fail(e));
+            let candidates = svc_paper::find_doi_version_candidates(&ctx.conn, source_fk)?;
             output(&json!({ "candidates": candidates }));
         }
 
         // The write half of `paper search`: pull the TeX tarball, extract, index.
         PaperCmd::FetchSource { source_id, force } => {
-            let source_id = as_source_id(&source_id, "arxiv");
+            let source_id = as_source_id(&ctx.conn, &source_id);
             let paper = resolve_paper_or_exit(ctx, &source_id);
             output(&fetch_source_result(ctx, &paper, force).await);
         }
@@ -275,36 +243,21 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Body of `PaperCmd::FetchSource`: skip-or-fetch, returning the reported JSON.
+/// Body of `PaperCmd::FetchSource`: skip-or-fetch, returning the shared receipt.
 async fn fetch_source_result(
     ctx: &mut Ctx,
     paper: &linxiv_core::models::PaperDetails,
     force: bool,
 ) -> serde_json::Value {
-    if paper.downloaded_source && !force {
-        return json!({
-            "source_id": paper.source_id,
-            "version": paper.version,
-            "indexed": false,
-            "reason": "source already indexed; pass --force to re-fetch",
-        });
-    }
-    let version = paper.version;
-    match ingest_source(ctx, paper).await {
-        Ok(Some(chars)) => json!({
-            "source_id": paper.source_id,
-            "version": version,
-            "indexed": true,
-            "chars": chars,
-        }),
-        Ok(None) => json!({
-            "source_id": paper.source_id,
-            "version": version,
-            "indexed": false,
-            "reason": "re-fetch produced no TeX; kept the text already indexed",
-        }),
-        Err(e) => fail(e),
-    }
+    let receipt = if paper.downloaded_source && !force {
+        svc_paper::FullTextReceipt::already_indexed(paper)
+    } else {
+        match ingest_source(ctx, paper).await {
+            Ok(r) => r,
+            Err(e) => fail(e),
+        }
+    };
+    serde_json::to_value(&receipt).unwrap_or_else(|e| fail(e))
 }
 
 /// Body of `PaperCmd::IndexSources`: walk the unfetched work list and ingest
@@ -337,11 +290,15 @@ async fn index_sources_result(ctx: &mut Ctx, limit: usize) -> serde_json::Value 
         }
         attempted += 1;
         match ingest_source(ctx, &paper).await {
-            Ok(Some(chars)) => {
+            Ok(r) if r.indexed => {
                 indexed += 1;
-                eprintln!("[full-text] {} — {chars} chars", paper.source_id);
+                eprintln!(
+                    "[full-text] {} — {} chars",
+                    paper.source_id,
+                    r.chars.unwrap_or(0)
+                );
             }
-            Ok(None) => skipped += 1,
+            Ok(_) => skipped += 1,
             Err(e) => failed.push(json!({
                 "source_id": paper.source_id,
                 "error": e.to_string(),
@@ -361,6 +318,7 @@ async fn index_sources_result(ctx: &mut Ctx, limit: usize) -> serde_json::Value 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use linxiv_core::storage;
     use std::env;
 
     fn arxiv_meta(source_id: &str, url: &str) -> PaperMetadata {
@@ -404,7 +362,8 @@ mod tests {
         let fetched = resolve_paper_or_exit(&ctx, "arxiv:skip1");
         let v = fetch_source_result(&mut ctx, &fetched, false).await;
         assert_eq!(v["indexed"], false);
-        assert!(v["reason"].as_str().unwrap().contains("--force"));
+        // The reason is single-sourced from core (route wording: force=true).
+        assert!(v["reason"].as_str().unwrap().contains("force"));
         let unchanged = svc_paper::get(&ctx.conn, &paper("arxiv:skip1"))
             .unwrap()
             .unwrap();

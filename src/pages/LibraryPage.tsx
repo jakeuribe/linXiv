@@ -5,11 +5,11 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { Upload, FileText, SearchX, FilterX } from "lucide-react";
 import { listPapers, deletePaper, searchLibrary } from "../api/papers";
 import type { PaperSort } from "../api/papers";
-import { listProjects, addPapers, createProjectWithPapers } from "../api/projects";
+import { listProjects } from "../api/projects";
 import {
   invalidatePaperQueries,
-  invalidateProjectMembershipQueries,
-  partialFailureMessage,
+  addToProjectMutationOptions,
+  createProjectMutationOptions,
 } from "../lib/paperMutations";
 import { useSelectionStore } from "../stores/selection";
 import { useLibraryStore } from "../stores/library";
@@ -25,6 +25,7 @@ import { PaperCard } from "../components/papers/PaperCard";
 import { SelectionBar } from "../components/papers/SelectionBar";
 import { ImportDialog } from "../components/import/ImportDialog";
 import { EmptyState } from "../components/ui/empty-state";
+import { errText } from "../lib/errText";
 
 const PAPER_FETCH_LIMIT = 5000;
 const VIRTUALIZER_ESTIMATE_HEIGHT = 120;
@@ -132,63 +133,28 @@ export default function LibraryPage() {
     },
     onError: (err) => {
       setDeleteError(
-        err instanceof Error ? err.message : "Failed to delete papers"
+        errText(err, "Failed to delete papers")
       );
     },
   });
 
-  const addToProjectMutation = useMutation({
-    mutationFn: addPapers,
-    onMutate: () => {
-      setProjectPickerError(null);
-    },
-    onSettled: () => {
-      invalidateProjectMembershipQueries(queryClient);
-    },
-    onSuccess: (failedIds, { sourceIds }) => {
-      if (failedIds.length > 0) {
-        // Re-select only the failures so a retry can't re-add the rest.
-        selectAll(failedIds);
-        setProjectPickerError(partialFailureMessage(failedIds.length, sourceIds.length));
-        return;
-      }
+  const projectPickerUi = {
+    setError: setProjectPickerError,
+    selectFailures: selectAll,
+    onDone: () => {
       setProjectPickerOpen(false);
-      setProjectPickerError(null);
       clear();
     },
-    onError: (err) => {
-      setProjectPickerError(
-        err instanceof Error ? err.message : "Failed to add papers to project"
-      );
-    },
-  });
+    clearName: () => setNewProjectName(""),
+  };
 
-  const createProjectMutation = useMutation({
-    mutationFn: createProjectWithPapers,
-    // Invalidate in onSettled, not onSuccess: the project may have been
-    // created even when the mutation rejects (e.g. a paper-add request fails).
-    onSettled: () => {
-      invalidateProjectMembershipQueries(queryClient);
-    },
-    onSuccess: (failedIds) => {
-      // The project exists either way — clear the name so a retry can't
-      // create a duplicate.
-      setNewProjectName("");
-      if (failedIds.length > 0) {
-        selectAll(failedIds);
-        setProjectPickerError(
-          `Project created, but ${failedIds.length} paper${failedIds.length !== 1 ? "s" : ""} could not be added`
-        );
-        return;
-      }
-      setProjectPickerOpen(false);
-      setProjectPickerError(null);
-      clear();
-    },
-    onError: (err) => {
-      setProjectPickerError(err instanceof Error ? err.message : "Failed to create project");
-    },
-  });
+  const addToProjectMutation = useMutation(
+    addToProjectMutationOptions(queryClient, projectPickerUi)
+  );
+
+  const createProjectMutation = useMutation(
+    createProjectMutationOptions(queryClient, projectPickerUi)
+  );
 
   const allPapers = papersData?.papers ?? [];
 
@@ -286,7 +252,7 @@ export default function LibraryPage() {
     return (
       <div className="flex items-center justify-center h-full">
         <p className="text-sm" style={{ color: "var(--color-danger)" }}>
-          {error instanceof Error ? error.message : "Failed to load papers"}
+          {errText(error, "Failed to load papers")}
         </p>
       </div>
     );
@@ -475,8 +441,6 @@ export default function LibraryPage() {
         open={importOpen}
         onClose={() => setImportOpen(false)}
         onDone={(newProjectIds) => {
-          queryClient.invalidateQueries({ queryKey: ["papers"] });
-          queryClient.invalidateQueries({ queryKey: ["stats"] });
           if (newProjectIds.length === 1) {
             navigate(`/projects/${newProjectIds[0]}`);
           }

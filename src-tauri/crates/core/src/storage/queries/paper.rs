@@ -156,9 +156,8 @@ impl PaperSort {
     }
 }
 
-/// Shared SQL + bind params for the list-papers filter/order/pagination, used by
-/// `list_papers` here and the CLI's raw-row `cmd_list`.
-pub fn list_papers_sql(
+/// SQL + bind params for the list-papers filter/order/pagination.
+fn list_papers_sql(
     latest_only: bool,
     limit: Option<i64>,
     offset: i64,
@@ -274,6 +273,12 @@ fn ensure_paper_root_row(tx: &Transaction, source_id: &str) -> Result<i64> {
              UPDATED_AT = datetime('now') WHERE SOURCE_ID = ?",
             [source_id],
         )?;
+        // Soft delete drops the FTS row but keeps FULL_TEXT, and STATUS lives on
+        // PAPER_ROOTS — no PAPER_META write happens here, so no trigger fires.
+        // Re-deriving is the un-delete's job. Without this, re-adding a trashed
+        // paper whose version is already stored leaves it active, with a body,
+        // and absent from search permanently.
+        refresh_fts(tx, source_id)?;
     }
     Ok(fk)
 }
@@ -580,15 +585,31 @@ pub fn get_source_id(conn: &Connection, source_fk: i64) -> Result<Option<String>
 }
 
 /// `service/paper.py::sfks_to_source_ids` — resolve SOURCE_FKs to SOURCE_IDs,
-/// dropping any that do not exist.
+/// dropping any that do not exist. Input order is preserved.
+///
+/// Batched: project listings resolve every paper of every project through
+/// here, so this must not be a query per fk. Chunked to stay under SQLite's
+/// bound-variable limit.
 pub fn sfks_to_source_ids(conn: &Connection, source_fks: &[i64]) -> Result<Vec<String>> {
-    let mut out = Vec::new();
-    for &sfk in source_fks {
-        if let Some(sid) = get_source_id(conn, sfk)? {
-            out.push(sid);
+    let mut by_fk = std::collections::HashMap::with_capacity(source_fks.len());
+    for chunk in source_fks.chunks(900) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let sql = format!(
+            "SELECT SOURCE_FK, SOURCE_ID FROM PAPER_ROOTS WHERE SOURCE_FK IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (fk, sid) = row?;
+            by_fk.insert(fk, sid);
         }
     }
-    Ok(out)
+    Ok(source_fks
+        .iter()
+        .filter_map(|fk| by_fk.get(fk).cloned())
+        .collect())
 }
 
 /// `repair_paper` — in-place metadata repair keyed by the stable SOURCE_FK,
@@ -777,43 +798,29 @@ pub fn full_text_backfill_count(conn: &Connection) -> Result<i64> {
     )
 }
 
-/// Newest stored body for a paper that has any text in it, across all versions.
+/// Re-derive a paper's FTS row from `paper_index_text`, dropping it when the view
+/// yields nothing (no version holds text, or the root is soft-deleted). Byte-for-
+/// byte the same two statements the PAPER_META triggers run — same view, so the
+/// hand-called path and the automatic one cannot disagree about what is indexed.
 ///
-/// The `papers_fts` row is keyed by SOURCE_ID while `FULL_TEXT` is per version,
-/// and a new version starts with a NULL body — so "the latest version's text" is
-/// not the same thing as "the text this paper is searchable by". Every writer of
-/// the FTS row resolves it through here so they cannot disagree.
-fn newest_indexed_text(tx: &Transaction, source_id: &str) -> Result<Option<String>> {
-    Ok(tx
-        .query_row(
-            "SELECT m.FULL_TEXT FROM PAPER p JOIN PAPER_META m USING (PAPER_ID) \
-             WHERE p.SOURCE_ID = ? AND COALESCE(m.FULL_TEXT, '') != '' \
-             ORDER BY p.VERSION DESC LIMIT 1",
-            [source_id],
-            |r| r.get::<_, Option<String>>(0),
-        )
-        .optional()?
-        .flatten())
-}
-
-/// Point the FTS row at `newest_indexed_text`, dropping it when no version holds
-/// any text. FTS5 has no UPDATE, hence DELETE then INSERT.
+/// Only for the writes the triggers cannot see: a SOURCE_ID rename (the index key
+/// itself moves) and an undelete. Writers of FULL_TEXT need not call this — the
+/// trigger has already run by the time their UPDATE returns.
 fn refresh_fts(tx: &Transaction, source_id: &str) -> Result<()> {
     tx.execute("DELETE FROM papers_fts WHERE paper_id = ?", [source_id])?;
-    if let Some(text) = newest_indexed_text(tx, source_id)? {
-        tx.execute(
-            "INSERT INTO papers_fts(paper_id, full_text) VALUES (?, ?)",
-            params![source_id, text],
-        )?;
-    }
+    tx.execute(
+        "INSERT INTO papers_fts(paper_id, full_text) \
+         SELECT source_id, full_text FROM paper_index_text WHERE source_id = ?",
+        [source_id],
+    )?;
     Ok(())
 }
 
-/// `set_full_text` — store extracted TeX, mark DOWNLOADED_SOURCE, refresh the FTS
-/// index. No-op if the version does not exist.
+/// `set_full_text` — store extracted TeX and mark DOWNLOADED_SOURCE. No-op if the
+/// version does not exist. The FTS index follows by trigger, not from here.
 ///
 /// Empty text marks the version fetched without taking the paper out of search:
-/// `refresh_fts` falls back to whatever older version still holds a body. A
+/// `paper_index_text` falls back to whatever older version still holds a body. A
 /// version bump whose tarball extracts empty (PDF-only or corrupt) is the common
 /// way this happens, and `should_store_full_text` cannot see it — it is handed
 /// one version.
@@ -836,7 +843,7 @@ pub fn set_full_text(
             "UPDATE PAPER_META SET FULL_TEXT = ?, DOWNLOADED_SOURCE = 1 WHERE PAPER_ID = ?",
             params![full_text, pid],
         )?;
-        refresh_fts(tx, source_id)
+        Ok(())
     })
 }
 
@@ -993,7 +1000,7 @@ pub fn get_paper_root(conn: &Connection, source_id: &str) -> Result<Option<Paper
 /// Another paper root sharing this root's DOI — same underlying work resolved
 /// independently by a different source (e.g. arXiv vs OpenAlex/Crossref).
 /// Local struct (no model; models.rs out of scope this phase).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct DoiVersionCandidate {
     pub source_fk: i64,
     pub source_id: String,
@@ -1605,6 +1612,165 @@ mod tests {
                 "arxiv:ft"
             ),
             1
+        );
+    }
+
+    /// THE INVARIANT: papers_fts is derived from FULL_TEXT, so a writer that
+    /// stores text WITHOUT going through `set_full_text` still cannot desync
+    /// search. Every write below is a raw statement of exactly the shape the
+    /// index used to depend on nobody writing; drop either trigger (or the
+    /// soft-delete gate) from `paper_index_text.sql` and this test goes red.
+    #[test]
+    fn raw_full_text_writes_cannot_desync_the_index() {
+        let mut conn = open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        save_paper_metadata(&mut conn, &meta("arxiv:raw", 1), None).unwrap();
+        let matches = |conn: &Connection, body: &str| {
+            count(
+                conn,
+                "SELECT COUNT(*) FROM papers_fts WHERE papers_fts MATCH ? AND paper_id = 'arxiv:raw'",
+                body,
+            )
+        };
+        let set_text = |conn: &Connection, version: i64, text: Option<&str>| {
+            conn.execute(
+                "UPDATE PAPER_META SET FULL_TEXT = ? WHERE PAPER_ID IN \
+                 (SELECT PAPER_ID FROM PAPER WHERE SOURCE_ID = 'arxiv:raw' AND VERSION = ?)",
+                params![text, version],
+            )
+            .unwrap();
+        };
+
+        // UPDATE: the body lands in the index without anyone asking it to.
+        set_text(&conn, 1, Some("smuggled tex"));
+        assert_eq!(matches(&conn, "smuggled"), 1);
+
+        // INSERT: a v2 written with text takes over — one row per paper, newest wins.
+        save_paper_metadata(&mut conn, &meta("arxiv:raw", 2), None).unwrap();
+        let v2: i64 = conn
+            .query_row(
+                "SELECT PAPER_ID FROM PAPER WHERE SOURCE_ID = 'arxiv:raw' AND VERSION = 2",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        conn.execute("DELETE FROM PAPER_META WHERE PAPER_ID = ?", [v2])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO PAPER_META (PAPER_ID, PUBLISHED, FULL_TEXT) \
+             VALUES (?, '2024-01-01', 'second tex')",
+            [v2],
+        )
+        .unwrap();
+        assert_eq!(matches(&conn, "second"), 1);
+        assert_eq!(matches(&conn, "smuggled"), 0);
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM papers_fts WHERE paper_id = ?",
+                "arxiv:raw"
+            ),
+            1
+        );
+
+        // Clearing the newest body falls back to the older version that still has one.
+        set_text(&conn, 2, None);
+        assert_eq!(matches(&conn, "smuggled"), 1);
+
+        // ...and clearing every body takes the paper out of search entirely.
+        set_text(&conn, 1, Some(""));
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM papers_fts WHERE paper_id = ?",
+                "arxiv:raw"
+            ),
+            0
+        );
+
+        // A soft-deleted paper keeps its FULL_TEXT, so re-deriving must NOT put it
+        // back into search — the STATUS gate lives in `paper_index_text`.
+        soft_delete_paper(&mut conn, "arxiv:raw").unwrap();
+        set_text(&conn, 1, Some("resurrected tex"));
+        assert_eq!(matches(&conn, "resurrected"), 0);
+    }
+
+    /// Dropping a version's meta row changes which body is newest, so the index
+    /// has to follow. Delete `papers_fts_meta_ad` and this goes red: search keeps
+    /// answering with a body whose row no longer exists.
+    #[test]
+    fn deleting_the_newest_meta_row_falls_back_to_an_older_body() {
+        let mut conn = open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        let matches = |conn: &Connection, body: &str| {
+            count(
+                conn,
+                "SELECT COUNT(*) FROM papers_fts WHERE papers_fts MATCH ? AND paper_id = 'arxiv:del'",
+                body,
+            )
+        };
+        let set_text = |conn: &Connection, version: i64, text: &str| {
+            conn.execute(
+                "UPDATE PAPER_META SET FULL_TEXT = ? WHERE PAPER_ID IN \
+                 (SELECT PAPER_ID FROM PAPER WHERE SOURCE_ID = 'arxiv:del' AND VERSION = ?)",
+                params![text, version],
+            )
+            .unwrap();
+        };
+
+        save_paper_metadata(&mut conn, &meta("arxiv:del", 1), None).unwrap();
+        set_text(&conn, 1, "older body");
+        save_paper_metadata(&mut conn, &meta("arxiv:del", 2), None).unwrap();
+        set_text(&conn, 2, "newer body");
+        assert_eq!(matches(&conn, "newer"), 1);
+        assert_eq!(matches(&conn, "older"), 0);
+
+        conn.execute(
+            "DELETE FROM PAPER_META WHERE PAPER_ID IN \
+             (SELECT PAPER_ID FROM PAPER WHERE SOURCE_ID = 'arxiv:del' AND VERSION = 2)",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(matches(&conn, "older"), 1, "index did not fall back");
+        assert_eq!(matches(&conn, "newer"), 0, "deleted body still searchable");
+    }
+
+    /// Re-adding a trashed paper whose version is already stored: `INSERT OR
+    /// IGNORE` no-ops, so `write_paper_version_in_tx` returns before any
+    /// PAPER_META write and no trigger fires. The un-delete in
+    /// `ensure_paper_root_row` has to re-derive, or the paper comes back active,
+    /// with a body, and permanently absent from search.
+    #[test]
+    fn readding_a_trashed_paper_returns_it_to_search() {
+        let mut conn = open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        let indexed = |conn: &Connection| {
+            count(
+                conn,
+                "SELECT COUNT(*) FROM papers_fts WHERE paper_id = ?",
+                "arxiv:trash",
+            )
+        };
+
+        save_paper_metadata(&mut conn, &meta("arxiv:trash", 1), None).unwrap();
+        conn.execute(
+            "UPDATE PAPER_META SET FULL_TEXT = 'kept body' WHERE PAPER_ID IN \
+             (SELECT PAPER_ID FROM PAPER WHERE SOURCE_ID = 'arxiv:trash')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(indexed(&conn), 1);
+
+        soft_delete_paper(&mut conn, "arxiv:trash").unwrap();
+        assert_eq!(indexed(&conn), 0, "trashed paper must leave the index");
+
+        // Re-fetching the SAME version — the no-op path, not a new version.
+        save_paper_metadata(&mut conn, &meta("arxiv:trash", 1), None).unwrap();
+        assert_eq!(
+            indexed(&conn),
+            1,
+            "re-added paper is active with a stored body but absent from search"
         );
     }
 

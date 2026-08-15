@@ -7,14 +7,25 @@ export interface TrashedPaper {
   authors: string[] | null;
   published: string | null;
   deleted_at: string | null;
+  pdf_path: string | null;
   had_pdf: boolean;
+  project_fks: number[];
 }
 
 export interface TrashedProject {
   id: number;
   name: string;
-  deleted_at: string | null;
+  description: string;
+  color_hex: string | null;
+  project_tags: string[];
+  source_ids: string[];
   paper_count: number;
+  status: string;
+  created_at: string | null;
+  updated_at: string | null;
+  archived_at: string | null;
+  share_id: string | null;
+  deleted_at: string | null;
 }
 
 export async function listTrash(): Promise<{ papers: TrashedPaper[]; projects: TrashedProject[] }> {
@@ -22,6 +33,8 @@ export async function listTrash(): Promise<{ papers: TrashedPaper[]; projects: T
 }
 
 export interface RestorePaperResult {
+  ok: boolean;
+  restored: string;
   pdf_path: string | null;
   project_fks: number[];
 }

@@ -4,11 +4,17 @@ import assert from "node:assert/strict";
 import { QueryClient } from "@tanstack/react-query";
 import {
   PAPER_QUERY_KEYS,
+  PAPER_MUTATION_QUERY_KEYS,
+  PROJECT_MUTATION_QUERY_KEYS,
+  PROJECT_MEMBERSHIP_QUERY_KEYS,
   invalidatePaperQueries,
   invalidateProjectMembershipQueries,
   forgetPurgedPapers,
   partialFailureMessage,
+  addToProjectMutationOptions,
+  createProjectMutationOptions,
   type ReadingStatusRemover,
+  type ProjectPickerActions,
 } from "./paperMutations.ts";
 
 /** Seeds one cached entry per key and returns the keys left stale afterwards. */
@@ -54,6 +60,19 @@ test("invalidation matches nested keys by prefix", async () => {
   assert.ok(!stale.has(JSON.stringify(["settings"])));
 });
 
+// Each registry set is the union of what its call sites used to invalidate —
+// these pin the members a single divergent site contributed, so a future trim
+// can't silently reintroduce the per-page divergence.
+test("registry sets keep their union members", () => {
+  for (const key of ["saved-pdfs", "tags", "tag", "stats", "paper"]) {
+    assert.ok(PAPER_MUTATION_QUERY_KEYS.includes(key), `${key} missing from paper mutation set`);
+  }
+  for (const key of ["trash", "tags", "tag", "project"]) {
+    assert.ok(PROJECT_MUTATION_QUERY_KEYS.includes(key), `${key} missing from project mutation set`);
+  }
+  assert.ok(PROJECT_MEMBERSHIP_QUERY_KEYS.includes("papers"), "papers missing from membership set");
+});
+
 test("project membership invalidation stays narrow", async () => {
   const stale = await staleAfter(
     [["projects"], ["project", "3"], ["graph"], ["stats"]],
@@ -78,4 +97,72 @@ test("purging papers drops their persisted reading status", () => {
 test("partial-failure message reports the failed count against the total", () => {
   assert.equal(partialFailureMessage(2, 5), "2 of 5 papers could not be added");
   assert.equal(partialFailureMessage(1, 1), "1 of 1 paper could not be added");
+});
+
+/** Records every ProjectPickerActions call for asserting against. */
+function fakePicker() {
+  const calls = {
+    errors: [] as (string | null)[],
+    selected: [] as string[][],
+    done: 0,
+    namesCleared: 0,
+  };
+  const ui: ProjectPickerActions = {
+    setError: (m) => calls.errors.push(m),
+    selectFailures: (ids) => calls.selected.push(ids),
+    onDone: () => calls.done++,
+    clearName: () => calls.namesCleared++,
+  };
+  return { ui, calls };
+}
+
+// The defect: Library threw on partial failure while Graph re-selected the
+// failures. One contract now: report + re-select, never throw.
+test("add-to-project partial failure re-selects failures and stays open", () => {
+  const { ui, calls } = fakePicker();
+  const opts = addToProjectMutationOptions(new QueryClient(), ui);
+
+  opts.onSuccess?.(["arxiv:2"], { projectId: 1, sourceIds: ["arxiv:1", "arxiv:2"] }, undefined);
+
+  assert.deepEqual(calls.selected, [["arxiv:2"]]);
+  assert.deepEqual(calls.errors, ["1 of 2 papers could not be added"]);
+  assert.equal(calls.done, 0);
+});
+
+test("add-to-project full success closes the picker", () => {
+  const { ui, calls } = fakePicker();
+  const opts = addToProjectMutationOptions(new QueryClient(), ui);
+
+  opts.onSuccess?.([], { projectId: 1, sourceIds: ["arxiv:1"] }, undefined);
+
+  assert.equal(calls.done, 1);
+  assert.deepEqual(calls.selected, []);
+  assert.deepEqual(calls.errors, [null]);
+});
+
+test("create-project clears the name even on partial failure", () => {
+  const { ui, calls } = fakePicker();
+  const opts = createProjectMutationOptions(new QueryClient(), ui);
+
+  opts.onSuccess?.(["arxiv:1"], { name: "p", sourceIds: ["arxiv:1"] }, undefined);
+
+  assert.equal(calls.namesCleared, 1);
+  assert.deepEqual(calls.selected, [["arxiv:1"]]);
+  assert.deepEqual(calls.errors, ["Project created, but 1 paper could not be added"]);
+  assert.equal(calls.done, 0);
+
+  opts.onSuccess?.([], { name: "p", sourceIds: ["arxiv:1"] }, undefined);
+  assert.equal(calls.namesCleared, 2);
+  assert.equal(calls.done, 1);
+});
+
+test("mutation errors surface as picker messages", () => {
+  const { ui, calls } = fakePicker();
+  const add = addToProjectMutationOptions(new QueryClient(), ui);
+  const create = createProjectMutationOptions(new QueryClient(), ui);
+
+  add.onError?.(new Error("boom"), { projectId: 1, sourceIds: [] }, undefined);
+  create.onError?.(new Error("bang"), { name: "p", sourceIds: [] }, undefined);
+
+  assert.deepEqual(calls.errors, ["boom", "bang"]);
 });

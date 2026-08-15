@@ -43,6 +43,7 @@ import { Dialog } from "../components/ui/dialog";
 import { formSubmitOnCtrlEnter } from "../lib/submitShortcut";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
+import { errText } from "../lib/errText";
 
 // ---- Editor-plugin install gate (plan §4.3, ADR 0017 §Lifecycle) ------------
 // In DEV the editor comes from its own dev server — no plugin, no gate. In PROD
@@ -334,7 +335,7 @@ export default function EditorPage() {
       // editor's idempotency guard distinguishes a real switch from a re-send.
       bridgeRef.current?.sendDocOpen({ ...doc, projectId: noteId });
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errText(e, String(e)));
     }
   }, []);
   // Keep a ref so the bridge's once-constructed onReady handler calls the latest.
@@ -376,7 +377,7 @@ export default function EditorPage() {
       setProjects(ps);
       return ps;
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errText(e, String(e)));
       return [];
     }
   }, []);
@@ -393,7 +394,7 @@ export default function EditorPage() {
       await refreshProjects();
       openProject(created.noteId);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errText(e, String(e)));
     }
   }, [newProjectName, refreshProjects, openProject]);
 

@@ -4,12 +4,12 @@
 //! Bodies use `self.with_conn(|conn| ...)`; export tools also use
 //! `self.pdf_dir`. Call `linxiv_core::service::{export_import, author, paper,
 //! tag}`, `::sources` for DOI resolution, and `linxiv_core::config::UserSettings`
-//! for the settings tools. `import_bibtex` delegates to `linxiv_core::formats`.
-//! Replicate the Python dict shapes EXACTLY, e.g. export returns
-//! `{"path", "project_id"}`, get_stats returns
-//! `{"paper_count", "tag_count", "category_count", "pdf_count"}`, save_doi
-//! returns `{"source_id", "version", "title"}`. Map `ValueError` to
-//! `Err(ErrorData::invalid_params(msg, None))` with the exact message.
+//! for the settings tools. `import_bibtex` and `get_stats` emit core's shared
+//! receipts (`service::paper_import::BibtexImportReceipt`, `service::stats::Stats`).
+//! Replicate the Python dict shapes EXACTLY elsewhere, e.g. export returns
+//! `{"path", "project_id"}`; save_doi returns the route's `{"metadata", "saved"}`
+//! envelope. Map `ValueError` to `Err(ErrorData::invalid_params(msg, None))`
+//! with the exact message.
 
 use std::path::{Path, PathBuf};
 
@@ -22,11 +22,12 @@ use serde_json::{json, Value};
 use linxiv_core::config::{self, UserSettings};
 use linxiv_core::error::CoreError;
 use linxiv_core::service::author::{self as svc_author, Author};
+use linxiv_core::service::db_admin;
 use linxiv_core::service::export_import::{self as svc_ei, OnConflict};
-use linxiv_core::service::project::{self as svc_project, Project};
-use linxiv_core::service::{paper as svc_paper, tag as svc_tag};
-use linxiv_core::sources::doi_resolve;
-use linxiv_core::storage;
+use linxiv_core::service::paper as svc_paper;
+use linxiv_core::service::paper_import as svc_paper_import;
+use linxiv_core::service::project::{self as svc_project};
+use linxiv_core::service::source as svc_source;
 
 use crate::Server;
 
@@ -48,62 +49,17 @@ fn project_papers(
     conn: &rusqlite::Connection,
     project_id: i64,
 ) -> Result<Vec<linxiv_core::models::PaperDetails>, ErrorData> {
-    let details = svc_project::get(
-        conn,
-        &Project {
-            project_fk: Some(project_id),
-        },
-    )
-    .map_err(map_core)?
-    .ok_or_else(|| ErrorData::invalid_params(format!("Project {project_id} not found."), None))?;
-    if details.source_fks.is_empty() {
-        return Ok(Vec::new());
-    }
-    svc_paper::get_many(
-        conn,
-        &svc_paper::Papers {
-            source_fks: Some(details.source_fks),
-            ..Default::default()
-        },
-    )
-    .map_err(map_core)
+    let details = svc_project::get_required(conn, project_id).map_err(guard_err)?;
+    // One resolution for every surface: library order (ADR-0011, route wins).
+    svc_project::export_papers(conn, &details.source_fks).map_err(map_core)
 }
 
 use linxiv_core::formats::with_default_ext;
 
-/// Canonicalize a path's parent, keeping the filename, so a not-yet-existing
-/// destination still compares against the live DB. Port of `route/storage.rs`.
-fn canon_or_raw(path: &Path) -> PathBuf {
-    path.parent()
-        .and_then(|p| p.canonicalize().ok())
-        .zip(path.file_name())
-        .map(|(canon_parent, fname)| canon_parent.join(fname))
-        .unwrap_or_else(|| path.to_path_buf())
-}
-
-/// Guard from `route/storage.rs::reject_live_db`: refuse a relative path, or one
-/// that resolves to the live database file itself.
+/// Refuse a relative/non-UTF-8 path or one that resolves to the live database —
+/// `db_admin` owns the rule, this maps its refusals to `invalid_params`.
 fn reject_live_db(path: &Path, field: &str, role: &str) -> Result<(), ErrorData> {
-    if !path.is_absolute() {
-        return Err(ErrorData::invalid_params(
-            format!("{field} must be absolute"),
-            None,
-        ));
-    }
-    let (a, b) = (canon_or_raw(path), canon_or_raw(&config::db_path()));
-    // Case-insensitive comparison only on case-insensitive filesystems.
-    let same = if cfg!(windows) || cfg!(target_os = "macos") {
-        a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
-    } else {
-        a == b
-    };
-    if same {
-        return Err(ErrorData::invalid_params(
-            format!("{role} is the live database itself — choose another file"),
-            None,
-        ));
-    }
-    Ok(())
+    db_admin::reject_live_db(path, field, role).map_err(map_core)
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -223,16 +179,7 @@ impl Server {
         } = params.0;
         let pdf_dir = self.pdf_dir.clone();
         let path = self.with_conn(|conn| -> Result<String, ErrorData> {
-            svc_project::get(
-                conn,
-                &Project {
-                    project_fk: Some(project_id),
-                },
-            )
-            .map_err(map_core)?
-            .ok_or_else(|| {
-                ErrorData::invalid_params(format!("Project {project_id} not found."), None)
-            })?;
+            svc_project::get_required(conn, project_id).map_err(guard_err)?;
             let out =
                 svc_ei::export_project(conn, project_id, Path::new(&dest), include_pdfs, &pdf_dir)
                     .map_err(map_core)?;
@@ -300,7 +247,7 @@ impl Server {
 
     #[tool(description = "Resolve a DOI to paper metadata without saving it to the library.")]
     pub async fn resolve_doi(&self, params: Parameters<DoiParams>) -> Result<String, ErrorData> {
-        let meta = doi_resolve::resolve_doi(&params.0.doi, &config::data_dir())
+        let meta = svc_source::resolve_doi(&params.0.doi)
             .await
             .map_err(map_core)?;
         json_ok(&meta)
@@ -308,17 +255,13 @@ impl Server {
 
     #[tool(description = "Resolve a DOI and save the resulting paper to the local library.")]
     pub async fn save_doi(&self, params: Parameters<DoiParams>) -> Result<String, ErrorData> {
-        let meta = doi_resolve::resolve_doi(&params.0.doi, &config::data_dir())
+        let meta = svc_source::resolve_doi(&params.0.doi)
             .await
             .map_err(map_core)?;
-        let (source_id, version) = self
-            .with_conn(|conn| svc_paper::save_paper_metadata(conn, &meta, None))
+        self.with_conn(|conn| svc_paper::save_paper_metadata(conn, &meta, None))
             .map_err(map_core)?;
-        json_ok(&json!({
-            "source_id": source_id,
-            "version": version,
-            "title": meta.title,
-        }))
+        // Route parity (`POST /api/doi/save`): the resolved metadata + saved flag.
+        json_ok(&json!({ "metadata": meta, "saved": true }))
     }
 
     #[tool(description = "List all authors in the library with their paper counts.")]
@@ -335,26 +278,14 @@ impl Server {
         params: Parameters<AuthorIdParams>,
     ) -> Result<String, ErrorData> {
         let author_id = params.0.author_id;
-        let value = self.with_conn(|conn| -> Result<Value, ErrorData> {
-            let author = svc_author::get(
-                conn,
-                &Author {
-                    author_id: Some(author_id),
-                    ..Default::default()
-                },
-            )
+        // The canonical AuthorWithPapers composite, shared with route + CLI.
+        let detail = self
+            .with_conn(|conn| svc_author::get_with_papers(conn, author_id))
             .map_err(map_core)?
             .ok_or_else(|| {
                 ErrorData::invalid_params(format!("Author {author_id} not found."), None)
             })?;
-            let previews = svc_author::get_paper_previews(conn, author_id).map_err(map_core)?;
-            let mut value = serde_json::to_value(&author)
-                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-            value["papers"] = serde_json::to_value(&previews)
-                .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-            Ok(value)
-        })?;
-        json_ok(&value)
+        json_ok(&detail)
     }
 
     #[tool(description = "Update an author's fields. At least one field must be provided.")]
@@ -481,7 +412,7 @@ impl Server {
         let conn = self.conn_handle();
         let info = blocking(move || {
             let guard = conn.lock().expect("db connection mutex poisoned");
-            storage::backup(&guard, &dest).map_err(map_core)
+            db_admin::backup(&guard, &dest).map_err(map_core)
         })
         .await??;
         json_ok(&info)
@@ -499,36 +430,13 @@ impl Server {
         reject_live_db(&src, "src", "source")?;
         let db_path = config::db_path();
         // Validate the snapshot before parking the live connection.
-        storage::validate_backup_source(&src).map_err(map_core)?;
-        // spawn_blocking for the same reason as backup_database: this holds the
-        // mutex across two full-file copies and a rename.
+        db_admin::validate_backup_source(&src).map_err(map_core)?;
+        // spawn_blocking for the same reason as backup_database: `restore_in_place`
+        // holds the mutex across two full-file copies and a rename.
         let handle = self.conn_handle();
         blocking(move || -> Result<String, ErrorData> {
             let mut guard = handle.lock().expect("db connection mutex poisoned");
-            let conn = &mut *guard;
-            // Park this server's handle on an in-memory DB so core's
-            // `ensure_no_live_connections` only has to refuse OTHER processes.
-            let parked = storage::open_in_memory().map_err(map_core)?;
-            let live = std::mem::replace(conn, parked);
-            if let Err((returned, e)) = live.close() {
-                *conn = returned;
-                return Err(ErrorData::internal_error(
-                    format!("could not close the live database: {e}"),
-                    None,
-                ));
-            }
-            let result = storage::restore(&src, &db_path).map_err(map_core);
-            // Reopen whatever now sits at db_path — the server needs a working
-            // handle even when the restore itself was refused.
-            *conn = storage::open(&db_path)
-                .and_then(|fresh| storage::init_db(&fresh).map(|()| fresh))
-                .map_err(|e| {
-                    ErrorData::internal_error(
-                        format!("could not reopen the database — restart linXiv: {e}"),
-                        None,
-                    )
-                })?;
-            result?;
+            db_admin::restore_in_place(&mut guard, &src).map_err(map_core)?;
             json_ok(&json!({ "ok": true, "restored": db_path.to_string_lossy() }))
         })
         .await?
@@ -542,66 +450,21 @@ impl Server {
         let ImportBibtexParams { file, project_id } = params.0;
         let text = std::fs::read_to_string(&file)
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
-        let metas = linxiv_core::formats::bibtex_import(&text)
-            .map_err(|m| ErrorData::invalid_params(m, None))?;
-
-        let value = self.with_conn(|conn| -> Result<Value, ErrorData> {
-            // Guard before saving so a missing/deleted project fails the call
-            // before the library is mutated.
-            if let Some(pid) = project_id {
-                match svc_project::ensure_membership_writable(conn, pid) {
-                    Ok(()) => {}
-                    Err(CoreError::ProjectNotFound) => {
-                        return Err(ErrorData::invalid_params(
-                            format!("Project {pid} not found."),
-                            None,
-                        ));
-                    }
-                    Err(e) => return Err(map_core(e)),
-                }
-            }
-            let saved: Vec<(String, i64)> = metas
-                .iter()
-                .map(|meta| svc_paper::save_paper_metadata(conn, meta, None).map_err(map_core))
-                .collect::<Result<_, _>>()?;
-            if let Some(pid) = project_id {
-                if !saved.is_empty() {
-                    let ids: Vec<String> = saved.iter().map(|(s, _)| s.clone()).collect();
-                    if let Err(e) = svc_project::link_imported(conn, pid, &ids) {
-                        return Err(ErrorData::invalid_params(
-                            format!(
-                                "{} paper(s) were imported but could not be linked: {e}",
-                                saved.len()
-                            ),
-                            None,
-                        ));
-                    }
-                }
-            }
-            let papers: Vec<Value> = saved
-                .iter()
-                .map(|(s, v)| json!({ "source_id": s, "version": v }))
-                .collect();
-            Ok(json!({ "imported": saved.len(), "papers": papers }))
-        })?;
-        json_ok(&value)
+        // guard_err: the guard/parse/link refusals are ValueErrors, DB faults internal.
+        let receipt = self
+            .with_conn(|conn| svc_paper_import::import_bibtex(conn, &text, project_id))
+            .map_err(guard_err)?;
+        json_ok(&receipt)
     }
 
     #[tool(
-        description = "Report library statistics: paper, tag, category, and downloaded-PDF counts."
+        description = "Report library statistics: paper, tag, category, and downloaded-PDF counts, \
+                       plus the 10 newest papers."
     )]
     pub async fn get_stats(&self) -> Result<String, ErrorData> {
-        self.with_conn(|conn| -> Result<String, ErrorData> {
-            let papers = svc_paper::list_papers(conn, true, None, 0, None).map_err(map_core)?;
-            let categories = svc_paper::get_categories(conn).map_err(map_core)?;
-            let all_tags = svc_tag::list_all_tags(conn).map_err(map_core)?;
-            let pdf_count = papers.iter().filter(|p| p.has_pdf).count();
-            json_ok(&json!({
-                "paper_count": papers.len(),
-                "tag_count": all_tags.len(),
-                "category_count": categories.len(),
-                "pdf_count": pdf_count,
-            }))
+        self.with_conn(|conn| {
+            let s = linxiv_core::service::stats::stats(conn).map_err(map_core)?;
+            json_ok(&s)
         })
     }
 
@@ -625,11 +488,10 @@ impl Server {
         params: Parameters<UpdateSettingParams>,
     ) -> Result<String, ErrorData> {
         let UpdateSettingParams { key, value } = params.0;
-        // Parse the value as JSON when valid, else store it verbatim as a string.
-        let parsed = serde_json::from_str::<Value>(&value).unwrap_or(Value::String(value));
         let mut settings = UserSettings::load().map_err(map_core)?;
-        settings
-            .set(key.clone(), parsed.clone())
+        // The parse-or-string rule lives in core (`set_from_str`), not here.
+        let parsed = settings
+            .set_from_str(key.clone(), value)
             .map_err(map_core)?;
         json_ok(&json!({ key: parsed }))
     }
@@ -638,6 +500,8 @@ impl Server {
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
+
+    use linxiv_core::storage;
 
     use super::*;
 

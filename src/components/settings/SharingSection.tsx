@@ -6,20 +6,14 @@ import {
   JOIN_SLOW_HINT,
   listReceived,
   sharingAvailable,
-  type SharedSummary,
-} from "../../api/share";
+  type SharedSummary, shareErrText } from "../../api/share";
 import { useSlowHint } from "../../hooks/useSlowHint";
 import { listProjects } from "../../api/projects";
-import { ApiError } from "../../api/client";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/input";
 import { OptionSelect } from "../ui/select";
 import { Spinner } from "../ui/spinner";
 import { SettingGroup, SettingGroupLabel, SettingRow } from "./SettingRow";
-
-function errText(e: unknown): string {
-  return e instanceof ApiError ? e.message : "Unexpected sharing error";
-}
 
 function summaryLine(s: SharedSummary): string {
   return `${s.paper_count} papers · ${s.note_count} notes · ${s.tag_count} tags`;
@@ -91,7 +85,7 @@ export function SharingSection() {
       queryClient.invalidateQueries({ queryKey: ["share", "published"] });
       if (alive.current) setTicket(t);
     } catch (e) {
-      if (alive.current) setShareErr(errText(e));
+      if (alive.current) setShareErr(shareErrText(e));
     } finally {
       if (alive.current) setGenerating(false);
     }
@@ -123,7 +117,7 @@ export function SharingSection() {
         if (res.pending) setJoinPending(res.reason);
       }
     } catch (e) {
-      if (alive.current) setJoinErr(errText(e));
+      if (alive.current) setJoinErr(shareErrText(e));
     } finally {
       if (alive.current) setJoining(false);
     }

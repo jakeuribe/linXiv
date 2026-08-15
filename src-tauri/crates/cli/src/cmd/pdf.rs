@@ -7,7 +7,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use linxiv_core::config;
-use linxiv_core::service::files as svc_files;
+use linxiv_core::service::files::{self as svc_files, PdfLocation};
 use linxiv_core::service::paper as svc_paper;
 use linxiv_core::service::paper_import;
 
@@ -48,14 +48,6 @@ pub enum PdfCmd {
     },
 }
 
-/// `cmd_pdf_path` / `cmd_pdf_download` output dict.
-#[derive(Serialize)]
-struct PdfLocation {
-    source_id: String,
-    version: i64,
-    path: Option<PathBuf>,
-}
-
 /// `cmd_pdf_storage` output dict.
 #[derive(Serialize)]
 struct StorageInfo {
@@ -73,7 +65,7 @@ struct ImportedPdf {
 pub async fn run(cmd: PdfCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
     match cmd {
         PdfCmd::Path { source_id, version } => {
-            let source_id = as_source_id(&source_id, "arxiv");
+            let source_id = as_source_id(&ctx.conn, &source_id);
             let paper = super::paper::resolve_paper_or_exit(ctx, &source_id);
             // Python `args.version if args.version else paper.version` — 0/None fall back.
             let version = version.filter(|&v| v != 0).unwrap_or(paper.version);
@@ -94,7 +86,7 @@ pub async fn run(cmd: PdfCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             url,
             version,
         } => {
-            let source_id = as_source_id(&source_id, "arxiv");
+            let source_id = as_source_id(&ctx.conn, &source_id);
             let paper = super::paper::resolve_paper_or_exit(ctx, &source_id);
             // An explicit --version must name a stored version. mark_pdf_saved below
             // updates no rows otherwise, and refusing after the download would leave
@@ -171,7 +163,7 @@ pub async fn run(cmd: PdfCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         // DELETE /api/pdfs/{source_id}: drop every version's local file, keeping
         // the paper row. `delete_pdf` refuses paths outside the managed dir.
         PdfCmd::Delete { source_id } => {
-            let source_id = as_source_id(&source_id, "arxiv");
+            let source_id = as_source_id(&ctx.conn, &source_id);
             let all = match svc_paper::get_all(
                 &ctx.conn,
                 &svc_paper::Paper {
@@ -180,7 +172,9 @@ pub async fn run(cmd: PdfCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                 },
             )? {
                 Some(all) => all,
-                None => fail(format!("Paper {} not found in DB", pyrepr(&source_id))),
+                None => fail(linxiv_core::error::CoreError::PaperNotFound(
+                    source_id.clone(),
+                )),
             };
             for ver in &all.versions {
                 let path = svc_files::pdf_path(

@@ -36,9 +36,32 @@ pub fn get(conn: &Connection, note: &Note) -> Result<Option<NoteDetails>> {
     }
 }
 
+/// The one "Note {id} not found" error all three surfaces word identically.
+pub fn not_found(note_id: i64) -> CoreError {
+    CoreError::NotFound(format!("Note {note_id} not found"))
+}
+
+/// `get`, but an absent note is a typed `NotFound` error — the shared missing-note
+/// contract for route/CLI/MCP (404 / exit 1 / invalid-params respectively).
+pub fn get_required(conn: &Connection, note_id: i64) -> Result<NoteDetails> {
+    get(
+        conn,
+        &Note {
+            note_id: Some(note_id),
+        },
+    )?
+    .ok_or_else(|| not_found(note_id))
+}
+
+/// Delete-note wire envelope, shared by all three surfaces.
+#[derive(Debug, serde::Serialize)]
+pub struct DeletedNote {
+    pub deleted_note_id: i64,
+}
+
 /// Every note, CREATED_AT ASC.
 pub fn list_all(conn: &Connection) -> Result<Vec<NoteDetails>> {
-    Ok(q::list_all_notes(conn)?)
+    q::list_all_notes(conn)
 }
 
 /// Fetch notes by filter. Invalid combinations raise `Validation` (Python's
@@ -102,10 +125,10 @@ pub fn list_filtered(
 /// Insert a new note. Returns NOTE_SK.
 pub fn create(conn: &Connection, note: &NoteIn) -> Result<i64> {
     let uuid: Option<String> = match &note.uuid {
-        Some(u) => crate::models::resolve_uuid(u, |n| q::uuid_taken(conn, n).map_err(Into::into))?,
+        Some(u) => crate::models::resolve_uuid(u, |n| q::uuid_taken(conn, n))?,
         None => None,
     };
-    Ok(q::create_note(
+    q::create_note(
         conn,
         note.source_fk,
         note.paper_id,
@@ -113,12 +136,12 @@ pub fn create(conn: &Connection, note: &NoteIn) -> Result<i64> {
         &note.title,
         &note.content,
         uuid.as_deref(),
-    )?)
+    )
 }
 
 /// Whether a note with this uuid already exists.
 pub fn uuid_taken(conn: &Connection, uuid: &str) -> Result<bool> {
-    Ok(q::uuid_taken(conn, uuid)?)
+    q::uuid_taken(conn, uuid)
 }
 
 /// Delete a note by note_id. `false` if absent or note_id unset.
@@ -138,23 +161,21 @@ pub fn update(conn: &Connection, note: &NoteUpdateIn) -> Result<bool> {
             "at least one of title or content must be provided".into(),
         ));
     }
-    Ok(q::patch_note(
+    q::patch_note(
         conn,
         note.note_id,
         note.title.as_deref(),
         note.content.as_deref(),
-    )?)
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::db::open_in_memory;
-    use crate::storage::init_db;
+    use crate::test_support::db;
 
     fn setup() -> Connection {
-        let conn = open_in_memory().unwrap();
-        init_db(&conn).unwrap();
+        let conn = db();
         conn.execute(
             "INSERT INTO PAPER_ROOTS (SOURCE_FK, SOURCE_ID) VALUES (1, 'arxiv:1'), (2, 'arxiv:2')",
             [],
@@ -204,6 +225,36 @@ mod tests {
 
         assert!(delete(&conn, &Note { note_id: Some(id) }).unwrap());
         assert!(get(&conn, &Note { note_id: Some(id) }).unwrap().is_none());
+    }
+
+    #[test]
+    fn get_required_returns_note_or_typed_not_found() {
+        let conn = setup();
+        let id = create(
+            &conn,
+            &NoteIn {
+                source_fk: 1,
+                title: "t".into(),
+                content: "c".into(),
+                paper_id: None,
+                project_fk: None,
+                uuid: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(get_required(&conn, id).unwrap().title, "t");
+        let err = get_required(&conn, 999).unwrap_err();
+        assert_eq!(err.http_status(), 404);
+        assert_eq!(err.to_string(), "Note 999 not found");
+    }
+
+    /// Wire-shape pin: the delete envelope is exactly `{"deleted_note_id": n}`.
+    #[test]
+    fn deleted_note_wire_shape() {
+        assert_eq!(
+            serde_json::to_string(&DeletedNote { deleted_note_id: 7 }).unwrap(),
+            r#"{"deleted_note_id":7}"#
+        );
     }
 
     #[test]
@@ -469,6 +520,37 @@ mod tests {
         let got3 = get(&conn, &Note { note_id: Some(id3) }).unwrap().unwrap();
         assert_ne!(got3.uuid.to_lowercase(), fixed_uuid);
         assert!(!got3.uuid.is_empty());
+    }
+
+    /// `uuid_taken` is the collision probe `create` feeds to
+    /// `models::resolve_uuid` — taken => the caller drops the requested uuid.
+    #[test]
+    fn uuid_taken_reports_existing_note_uuids() {
+        let conn = setup();
+        let uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        assert!(!uuid_taken(&conn, uuid).unwrap());
+
+        create(
+            &conn,
+            &NoteIn {
+                source_fk: 1,
+                title: "t".into(),
+                content: "c".into(),
+                paper_id: None,
+                project_fk: None,
+                uuid: Some(uuid.into()),
+            },
+        )
+        .unwrap();
+
+        assert!(uuid_taken(&conn, uuid).unwrap());
+        assert!(!uuid_taken(&conn, "11111111-2222-3333-4444-555555555555").unwrap());
+        // Raw string compare, no normalization here: an uppercase spelling of a
+        // stored uuid reads as free. `resolve_uuid` normalizes BEFORE probing,
+        // which is what makes the collision check case-insensitive in practice.
+        assert!(!uuid_taken(&conn, &uuid.to_uppercase()).unwrap());
+        // Not a uuid at all -> just an absent row, not an error.
+        assert!(!uuid_taken(&conn, "not-a-uuid").unwrap());
     }
 
     /// `note list` and `annotation list` are sibling commands: the same

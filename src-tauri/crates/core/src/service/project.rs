@@ -18,7 +18,7 @@ use chrono::{Duration, Utc};
 use rusqlite::Connection;
 
 use crate::error::{CoreError, Result};
-use crate::models::{ProjectDetails, ProjectIn, ProjectUpdateIn, Status};
+use crate::models::{PaperDetails, ProjectDetails, ProjectIn, ProjectOut, ProjectUpdateIn, Status};
 use crate::storage::db::transaction;
 use crate::storage::queries::{note as nq, paper as paperq, project as pq, tag as tq};
 use crate::storage::query::{self, Q};
@@ -110,6 +110,64 @@ pub fn get(conn: &Connection, project: &Project) -> Result<Option<ProjectDetails
         .transpose()
 }
 
+/// `get` by bare project_fk where absence is an error: the one place the
+/// not-found contract comes from (`CoreError::ProjectNotFound` — route 404,
+/// CLI exit 1, MCP tool error all word it identically).
+pub fn get_required(conn: &Connection, project_fk: i64) -> Result<ProjectDetails> {
+    get(
+        conn,
+        &Project {
+            project_fk: Some(project_fk),
+        },
+    )?
+    .ok_or(CoreError::ProjectNotFound(project_fk))
+}
+
+/// Link `tags` to a project, creating any that don't exist yet. Guards existence
+/// first so CLI and MCP stop each doing it by hand. Returns the resulting tags.
+pub fn add_project_tags(
+    conn: &mut Connection,
+    project_fk: i64,
+    tags: &[String],
+) -> Result<Vec<String>> {
+    get_required(conn, project_fk)?;
+    tq::add_project_tags(conn, project_fk, tags)
+}
+
+/// Unlink `tags` from a project (the TAG rows themselves survive). Returns the
+/// remaining tags. Symmetric with [`add_project_tags`].
+pub fn remove_project_tags(
+    conn: &mut Connection,
+    project_fk: i64,
+    tags: &[String],
+) -> Result<Vec<String>> {
+    get_required(conn, project_fk)?;
+    tq::remove_project_tags(conn, project_fk, tags)
+}
+
+/// The single mapping point to the canonical wire shape (`models::ProjectOut`,
+/// SERIALIZER 3): resolves `source_fks` to namespaced source ids and renders
+/// `color` as `#rrggbb`. All three surfaces serialize projects through here.
+pub fn to_out(conn: &Connection, p: ProjectDetails) -> Result<ProjectOut> {
+    let source_ids = crate::service::paper::sfks_to_source_ids(conn, &p.source_fks)?;
+    Ok(ProjectOut {
+        id: p
+            .id
+            .ok_or_else(|| CoreError::Internal("Project has no id".into()))?,
+        name: p.name,
+        description: p.description,
+        color_hex: p.color.map(color_to_hex),
+        project_tags: p.project_tags,
+        paper_count: source_ids.len(),
+        source_ids,
+        status: p.status,
+        created_at: p.created_at,
+        updated_at: p.updated_at,
+        archived_at: p.archived_at,
+        share_id: p.share_id,
+    })
+}
+
 /// `service/project.py::get_many` — projects matching any combination of the
 /// `Projects` filter fields (with tags).
 pub fn get_many(conn: &Connection, projects: &Projects) -> Result<Vec<ProjectDetails>> {
@@ -137,7 +195,7 @@ pub fn get_many(conn: &Connection, projects: &Projects) -> Result<Vec<ProjectDet
 pub fn ensure_share_id(conn: &Connection, project_fk: i64) -> Result<String> {
     ensure_membership_writable(conn, project_fk)?;
     let candidate = uuid::Uuid::new_v4().to_string();
-    pq::ensure_share_id(conn, project_fk, &candidate)?.ok_or(CoreError::ProjectNotFound)
+    pq::ensure_share_id(conn, project_fk, &candidate)?.ok_or(CoreError::ProjectNotFound(project_fk))
 }
 
 /// Reverse share lookup: the project (if any) whose SHARE_ID equals `share_id`.
@@ -153,8 +211,8 @@ pub fn adopt_share_id(conn: &Connection, project_fk: i64, share_id: &str) -> Res
             "share id {share_id} already claimed by another live project"
         )));
     }
-    let stored =
-        pq::ensure_share_id(conn, project_fk, share_id)?.ok_or(CoreError::ProjectNotFound)?;
+    let stored = pq::ensure_share_id(conn, project_fk, share_id)?
+        .ok_or(CoreError::ProjectNotFound(project_fk))?;
     if stored != share_id {
         tracing::warn!(
             "adopt_share_id: project {project_fk} already has SHARE_ID {stored}; archive share id {share_id} not adopted"
@@ -206,7 +264,8 @@ pub fn create(conn: &mut Connection, project: &ProjectIn) -> Result<i64> {
 /// sync and the field UPDATE are separate transactions, so a failure between them leaves
 /// tags changed and fields not.
 pub fn update(conn: &mut Connection, upd: &ProjectUpdateIn) -> Result<()> {
-    let mut p = pq::get_project(conn, upd.project_fk, false)?.ok_or(CoreError::ProjectNotFound)?;
+    let mut p = pq::get_project(conn, upd.project_fk, false)?
+        .ok_or(CoreError::ProjectNotFound(upd.project_fk))?;
     if p.status == Status::Deleted && upd.status != Some(Status::Active) {
         return Err(CoreError::ProjectDeleted(
             "cannot update a deleted project".into(),
@@ -290,7 +349,7 @@ fn save_fields(conn: &Connection, p: &ProjectDetails) -> Result<()> {
 /// not-deleted), no write. Import flows call this before mutating the library.
 pub fn ensure_membership_writable(conn: &Connection, project_fk: i64) -> Result<()> {
     match pq::get_project(conn, project_fk, false)? {
-        None => Err(CoreError::ProjectNotFound),
+        None => Err(CoreError::ProjectNotFound(project_fk)),
         Some(p) if p.status == Status::Deleted => Err(CoreError::ProjectDeleted(
             "cannot update a deleted project".into(),
         )),
@@ -347,6 +406,73 @@ pub fn remove_papers(
         pq::remove_papers(conn, project_fk, &fks)?;
     }
     Ok(failed)
+}
+
+/// A project's papers for the text exporters, resolved ONE way for every
+/// surface: the latest-papers view in library order, filtered to the project
+/// (the shipped GUI contract — app.py's
+/// `[p for p in list_paper_details(latest) if id in ids]`).
+pub fn export_papers(conn: &Connection, source_fks: &[i64]) -> Result<Vec<PaperDetails>> {
+    if source_fks.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids: HashSet<String> = crate::service::paper::sfks_to_source_ids(conn, source_fks)?
+        .into_iter()
+        .collect();
+    Ok(
+        crate::service::paper::list_papers(conn, true, None, 0, None)?
+            .into_iter()
+            .filter(|p| ids.contains(&p.source_id))
+            .collect(),
+    )
+}
+
+/// Receipt for the single-paper membership ops — one shape for all three
+/// surfaces (`ok` + ids + the project's post-op paper count).
+#[derive(Debug, serde::Serialize, ts_rs::TS)]
+pub struct PaperMembershipReceipt {
+    pub ok: bool,
+    pub project_id: i64,
+    pub paper_id: String,
+    pub paper_count: usize,
+}
+
+/// Add one paper to a project, returning the shared receipt. An id that
+/// resolves to no paper root is `PaperNotFound` (guards per `add_papers`).
+pub fn add_paper(
+    conn: &Connection,
+    project_fk: i64,
+    source_id: &str,
+) -> Result<PaperMembershipReceipt> {
+    membership_receipt(conn, project_fk, source_id, add_papers)
+}
+
+/// Remove one paper from a project — same contract as [`add_paper`].
+pub fn remove_paper(
+    conn: &Connection,
+    project_fk: i64,
+    source_id: &str,
+) -> Result<PaperMembershipReceipt> {
+    membership_receipt(conn, project_fk, source_id, remove_papers)
+}
+
+fn membership_receipt(
+    conn: &Connection,
+    project_fk: i64,
+    source_id: &str,
+    op: fn(&Connection, i64, &[String]) -> Result<Vec<String>>,
+) -> Result<PaperMembershipReceipt> {
+    let failed = op(conn, project_fk, &[source_id.to_string()])?;
+    if !failed.is_empty() {
+        return Err(CoreError::PaperNotFound(source_id.to_string()));
+    }
+    let paper_count = get_required(conn, project_fk)?.source_fks.len();
+    Ok(PaperMembershipReceipt {
+        ok: true,
+        project_id: project_fk,
+        paper_id: source_id.to_string(),
+        paper_count,
+    })
 }
 
 /// `service/project.py::link_imported` — same write path as `add_papers`, but ids come
@@ -433,9 +559,7 @@ pub fn require_trashed(conn: &Connection, project_fk: i64) -> Result<()> {
         },
     )?
     else {
-        return Err(CoreError::NotFound(format!(
-            "Project {project_fk} not found."
-        )));
+        return Err(CoreError::ProjectNotFound(project_fk));
     };
     if d.status != Status::Deleted {
         return Err(CoreError::BadRequest(format!(
@@ -458,7 +582,7 @@ pub fn hard_delete(conn: &mut Connection, project: &Project) -> Result<()> {
 /// (archived_at desc; rows with no timestamp sort last, matching `datetime.min`).
 pub fn list_deleted(conn: &Connection) -> Result<Vec<ProjectDetails>> {
     let mut projects = pq::list_projects(conn, Some(Q::new("STATUS = ?", "deleted")), true)?;
-    projects.sort_by(|a, b| b.archived_at.cmp(&a.archived_at));
+    projects.sort_by_key(|p| std::cmp::Reverse(p.archived_at));
     projects.into_iter().map(|p| fill_tags(conn, p)).collect()
 }
 
@@ -515,11 +639,10 @@ pub fn color_from_hex(hex: &str) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{self, db};
+    use crate::test_support::db;
 
     fn setup() -> Connection {
-        let conn = db::open_in_memory().unwrap();
-        storage::init_db(&conn).unwrap();
+        let conn = db();
         conn.execute_batch(
             "INSERT INTO PAPER_ROOTS (SOURCE_FK, SOURCE_ID, STATUS) VALUES
                  (10, 'arxiv:1', 'active'),
@@ -558,6 +681,25 @@ mod tests {
         assert_eq!(got.source_fks, vec![10, 11]);
         assert_eq!(got.project_tags, vec!["RL", "Vision"]); // ORDER BY label
         assert_eq!(got.status, Status::Active);
+    }
+
+    #[test]
+    fn membership_receipt_counts_and_pins_wire_shape() {
+        let mut conn = setup();
+        let id = create(&mut conn, &pin("Proj", vec![10], vec![])).unwrap();
+
+        let receipt = add_paper(&conn, id, "arxiv:2").unwrap();
+        assert_eq!(
+            serde_json::to_string(&receipt).unwrap(),
+            format!(r#"{{"ok":true,"project_id":{id},"paper_id":"arxiv:2","paper_count":2}}"#)
+        );
+        let receipt = remove_paper(&conn, id, "arxiv:2").unwrap();
+        assert_eq!(receipt.paper_count, 1);
+        // Unresolvable id → the typed miss, nothing changed.
+        assert!(matches!(
+            add_paper(&conn, id, "arxiv:ghost").unwrap_err(),
+            CoreError::PaperNotFound(sid) if sid == "arxiv:ghost"
+        ));
     }
 
     #[test]
@@ -775,7 +917,7 @@ mod tests {
                 },
             )
             .unwrap_err(),
-            CoreError::ProjectNotFound
+            CoreError::ProjectNotFound(_)
         ));
     }
 
@@ -882,7 +1024,7 @@ mod tests {
         ));
         assert!(matches!(
             ensure_membership_writable(&conn, 9999).unwrap_err(),
-            CoreError::ProjectNotFound
+            CoreError::ProjectNotFound(_)
         ));
     }
 
@@ -1040,6 +1182,49 @@ mod tests {
         let share_id_1 = ensure_share_id(&conn, id).unwrap();
         let share_id_2 = ensure_share_id(&conn, id).unwrap();
         assert_eq!(share_id_1, share_id_2);
+    }
+
+    /// Reverse lookup used by the share layer to route an inbound share_id to a
+    /// project. Trashed holders are invisible; archived ones are not.
+    #[test]
+    fn find_by_share_id_hits_live_misses_unknown_and_trashed() {
+        let mut conn = setup();
+        let id = create(&mut conn, &pin("P", vec![], vec![])).unwrap();
+        let share_id = ensure_share_id(&conn, id).unwrap();
+
+        assert_eq!(find_by_share_id(&conn, &share_id).unwrap(), Some(id));
+        assert_eq!(find_by_share_id(&conn, "nobody-holds-this").unwrap(), None);
+        assert_eq!(find_by_share_id(&conn, "").unwrap(), None);
+
+        // Archived still resolves — the query only excludes STATUS = 'deleted'.
+        archive(
+            &conn,
+            &Project {
+                project_fk: Some(id),
+            },
+        )
+        .unwrap();
+        assert_eq!(find_by_share_id(&conn, &share_id).unwrap(), Some(id));
+
+        // Trashed disappears, even though SHARE_ID is still on the row.
+        delete(
+            &conn,
+            &Project {
+                project_fk: Some(id),
+            },
+        )
+        .unwrap();
+        assert_eq!(find_by_share_id(&conn, &share_id).unwrap(), None);
+
+        // ...and comes back on restore.
+        restore(
+            &conn,
+            &Project {
+                project_fk: Some(id),
+            },
+        )
+        .unwrap();
+        assert_eq!(find_by_share_id(&conn, &share_id).unwrap(), Some(id));
     }
 
     #[test]

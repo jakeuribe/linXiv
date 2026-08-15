@@ -25,7 +25,7 @@ use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
 
 use crate::error::{CoreError, Result};
-use crate::models::{strip_namespace, PaperMetadata};
+use crate::models::{arxiv_source_id, strip_namespace, PaperMetadata};
 use crate::service::version_monitor::MAX_VERSION_CHECK_BATCH;
 use tracing::warn;
 
@@ -53,11 +53,11 @@ pub fn parse_arxiv_id(entry_id: &str) -> (String, i64) {
         let digits = &vpart[1..];
         if !base.is_empty() && !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
             if let Ok(v) = digits.parse::<i64>() {
-                return (format!("arxiv:{base}"), v);
+                return (arxiv_source_id(base), v);
             }
         }
     }
-    (format!("arxiv:{raw}"), 1)
+    (arxiv_source_id(raw), 1)
 }
 
 // ---------------------------------------------------------------------------

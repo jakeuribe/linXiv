@@ -2,10 +2,11 @@
 //! `notes_pdf_trash` Fill agent.
 //!
 //! Bodies use `self.with_conn(|conn| ...)`; PDF tools also read `self.pdf_dir`.
-//! Call `linxiv_core::service::{note, files, paper, project}`. Replicate the
-//! Python dict shapes EXACTLY, e.g. get_pdf_path returns
-//! `{"paper_id", "version", "path"}`, get_pdf_storage returns
-//! `{"storage_mb", "pdf_dir"}`, list_trash returns `{"papers", "projects"}`.
+//! Call `linxiv_core::service::{note, files, paper, project}`. Wire shapes are
+//! the canonical core serializers shared with the route/CLI surfaces:
+//! `NoteDetails` (create/get/update), `DeletedNote`, `PdfLocation`
+//! (get_pdf_path/download_pdf), `TrashListing` (list_trash); get_pdf_storage
+//! returns `{"storage_mb", "pdf_dir"}`.
 //! Map Python `ValueError` to `Err(ErrorData::invalid_params(msg, None))` with
 //! the exact message (mind `{paper_id!r}` -> `{paper_id:?}` quoting).
 
@@ -22,8 +23,6 @@ use linxiv_core::service::{
     editor_project as svc_editor, files as svc_files, note as svc_note, paper as svc_paper,
     paper_import, project as svc_project,
 };
-use linxiv_core::sources::pdf_metadata::resolve_pdf_metadata;
-use linxiv_core::storage::queries::paper as store_paper;
 
 use crate::util::{core_err, guard_err, invalid, json_ok};
 use crate::Server;
@@ -141,7 +140,9 @@ impl Server {
         self.with_conn(|conn| {
             let source_fk =
                 svc_paper::resolve_source_fk(conn, &p.paper_id).map_err(|e| match e {
-                    CoreError::NotFound(m) => invalid(format!("{m}. Run fetch_paper first.")),
+                    e @ CoreError::PaperNotFound(_) => {
+                        invalid(format!("{e}. Run fetch_paper first."))
+                    }
                     other => core_err(other),
                 })?;
             let note_id = svc_note::create(
@@ -156,22 +157,8 @@ impl Server {
                 },
             )
             .map_err(core_err)?;
-            match svc_note::get(
-                conn,
-                &svc_note::Note {
-                    note_id: Some(note_id),
-                },
-            )
-            .map_err(core_err)?
-            {
-                Some(n) => json_ok(&n),
-                None => json_ok(&json!({
-                    "id": note_id,
-                    "source_fk": source_fk,
-                    "project_id": p.project_id,
-                    "title": p.title,
-                })),
-            }
+            // Canonical create envelope: the full NoteDetails serialization.
+            json_ok(&svc_note::get_required(conn, note_id).map_err(core_err)?)
         })
     }
 
@@ -181,17 +168,8 @@ impl Server {
         Parameters(p): Parameters<NoteIdParams>,
     ) -> Result<String, ErrorData> {
         self.with_conn(|conn| {
-            match svc_note::get(
-                conn,
-                &svc_note::Note {
-                    note_id: Some(p.note_id),
-                },
-            )
-            .map_err(core_err)?
-            {
-                Some(n) => json_ok(&n),
-                None => json_ok(&Value::Null),
-            }
+            // A missing note is an error (shared contract), never a JSON null.
+            json_ok(&svc_note::get_required(conn, p.note_id).map_err(guard_err)?)
         })
     }
 
@@ -216,7 +194,7 @@ impl Server {
         Parameters(p): Parameters<UpdateNoteParams>,
     ) -> Result<String, ErrorData> {
         self.with_conn(|conn| {
-            let ok = svc_note::update(
+            svc_note::update(
                 conn,
                 &NoteUpdateIn {
                     note_id: p.note_id,
@@ -224,21 +202,10 @@ impl Server {
                     content: p.content.clone(),
                 },
             )
-            .map_err(core_err)?;
-            if !ok {
-                return Err(invalid(format!("Note {} not found.", p.note_id)));
-            }
-            match svc_note::get(
-                conn,
-                &svc_note::Note {
-                    note_id: Some(p.note_id),
-                },
-            )
-            .map_err(core_err)?
-            {
-                Some(n) => json_ok(&n),
-                None => json_ok(&json!({})),
-            }
+            .map_err(guard_err)?;
+            // No row matched -> get_required raises the shared not-found; else
+            // the canonical update envelope is the full NoteDetails serialization.
+            json_ok(&svc_note::get_required(conn, p.note_id).map_err(guard_err)?)
         })
     }
 
@@ -249,9 +216,11 @@ impl Server {
     ) -> Result<String, ErrorData> {
         self.with_conn(|conn| {
             if !svc_editor::delete_note(conn, &config::vault_dir(), p.note_id).map_err(core_err)? {
-                return Err(invalid(format!("Note {} not found.", p.note_id)));
+                return Err(guard_err(svc_note::not_found(p.note_id)));
             }
-            json_ok(&json!({ "deleted": p.note_id }))
+            json_ok(&svc_note::DeletedNote {
+                deleted_note_id: p.note_id,
+            })
         })
     }
 
@@ -302,20 +271,16 @@ impl Server {
                 },
             )
             .map_err(core_err)?
-            .ok_or_else(|| {
-                invalid(format!(
-                    "Paper {} not found in database.",
-                    crate::util::pyrepr(&p.paper_id)
-                ))
-            })?;
+            .ok_or_else(|| crate::util::guard_err(CoreError::PaperNotFound(p.paper_id.clone())))?;
             let ver = paper.version;
             let path =
                 svc_files::pdf_path(&pdf_dir, &paper.source_id, ver, paper.pdf_path.as_deref());
-            json_ok(&json!({
-                "paper_id": p.paper_id,
-                "version": ver,
-                "path": path.map(|p| p.to_string_lossy().into_owned()),
-            }))
+            // Canonical location envelope, shared with `pdf path` and the route.
+            json_ok(&svc_files::PdfLocation {
+                source_id: paper.source_id,
+                version: ver,
+                path,
+            })
         })
     }
 
@@ -337,12 +302,7 @@ impl Server {
                 },
             )
             .map_err(core_err)?
-            .ok_or_else(|| {
-                invalid(format!(
-                    "Paper {} not found in database.",
-                    crate::util::pyrepr(&p.paper_id)
-                ))
-            })
+            .ok_or_else(|| crate::util::guard_err(CoreError::PaperNotFound(p.paper_id.clone())))
             .map(|paper| (paper.source_id, paper.version))
         })?;
         let max_pdf_bytes = config::UserSettings::load()
@@ -355,11 +315,11 @@ impl Server {
         self.with_conn(|conn| {
             svc_paper::mark_pdf_saved(conn, &source_id, &path_str, ver).map_err(core_err)
         })?;
-        json_ok(&json!({
-            "paper_id": p.paper_id,
-            "version": ver,
-            "path": path_str,
-        }))
+        json_ok(&svc_files::PdfLocation {
+            source_id,
+            version: ver,
+            path: Some(path),
+        })
     }
 
     #[tool(
@@ -421,12 +381,7 @@ impl Server {
                 },
             )
             .map_err(core_err)?
-            .ok_or_else(|| {
-                invalid(format!(
-                    "Paper {} not found in database.",
-                    crate::util::pyrepr(&p.paper_id)
-                ))
-            })?;
+            .ok_or_else(|| crate::util::guard_err(CoreError::PaperNotFound(p.paper_id.clone())))?;
             for ver in &all.versions {
                 let path = svc_files::pdf_path(
                     &pdf_dir,
@@ -463,12 +418,8 @@ impl Server {
     #[tool(description = "List all soft-deleted papers and projects currently in the trash.")]
     pub async fn list_trash(&self) -> Result<String, ErrorData> {
         self.with_conn(|conn| {
-            let papers = svc_paper::list_deleted(conn).map_err(core_err)?;
-            let projects = svc_project::list_deleted(conn).map_err(core_err)?;
-            json_ok(&json!({
-                "papers": papers,
-                "projects": projects,
-            }))
+            // Canonical TrashListing envelope (core service::trash).
+            json_ok(&linxiv_core::service::trash::list_trash(conn).map_err(core_err)?)
         })
     }
 
@@ -480,16 +431,9 @@ impl Server {
         Parameters(p): Parameters<PaperIdParams>,
     ) -> Result<String, ErrorData> {
         self.with_conn(|conn| {
+            // require_trashed passing implies the root exists (STATUS='deleted' row),
+            // so no separate existence check — same reasoning as cli/cmd/trash.rs.
             svc_paper::require_trashed(conn, &p.paper_id).map_err(guard_err)?;
-            if store_paper::get_paper_root(conn, &p.paper_id)
-                .map_err(core_err)?
-                .is_none()
-            {
-                return Err(invalid(format!(
-                    "Paper {} not found.",
-                    crate::util::pyrepr(&p.paper_id)
-                )));
-            }
             svc_paper::hard_delete(
                 conn,
                 &svc_paper::Paper {
@@ -498,7 +442,10 @@ impl Server {
                 },
             )
             .map_err(core_err)?;
-            json_ok(&json!({ "hard_deleted": p.paper_id }))
+            json_ok(&linxiv_core::service::trash::HardDeletedPaper {
+                ok: true,
+                hard_deleted: p.paper_id.clone(),
+            })
         })
     }
 
@@ -518,7 +465,10 @@ impl Server {
                 },
             )
             .map_err(core_err)?;
-            json_ok(&json!({ "restored_project_id": p.project_id }))
+            json_ok(&linxiv_core::service::trash::RestoredProject {
+                ok: true,
+                restored_project_id: p.project_id,
+            })
         })
     }
 
@@ -538,7 +488,10 @@ impl Server {
                 },
             )
             .map_err(core_err)?;
-            json_ok(&json!({ "hard_deleted_project_id": p.project_id }))
+            json_ok(&linxiv_core::service::trash::HardDeletedProject {
+                ok: true,
+                hard_deleted_project_id: p.project_id,
+            })
         })
     }
 
@@ -548,50 +501,40 @@ impl Server {
         Parameters(p): Parameters<ImportPdfParams>,
     ) -> Result<String, ErrorData> {
         let pdf_dir = self.pdf_dir.clone();
-        let data_dir = config::data_dir();
-        // Pre-read guard: convert a missing project to the MCP ValueError before
-        // touching the file (matches the Python ordering).
-        if let Some(pid) = p.project_id {
-            self.with_conn(
-                |conn| match svc_project::ensure_membership_writable(conn, pid) {
-                    Err(CoreError::ProjectNotFound) => {
-                        Err(invalid(format!("Project {pid} not found.")))
-                    }
-                    Err(e) => Err(core_err(e)),
-                    Ok(()) => Ok(()),
-                },
-            )?;
-        }
         let content =
             std::fs::read(&p.file).map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-        // `pdf_save_limit_mb` total-storage quota BEFORE the (expensive) pdfium
-        // metadata resolve — no point fully parsing a PDF that's about to be
-        // rejected; core's `import_pdf` re-checks it before any FS/DB write.
         let max_pdf_bytes = config::UserSettings::load()
             .map_err(core_err)?
             .pdf_save_limit_bytes();
-        paper_import::check_pdf_storage_quota(&pdf_dir, content.len(), max_pdf_bytes)
-            .map_err(core_err)?;
-        // Resolve metadata (network) OUTSIDE the lock, then do the sync DB+FS
-        // import under it — mirrors `import_pdf_default` without holding the
-        // mutex across the await.
-        let resolved = resolve_pdf_metadata(&content, &data_dir)
-            .await
-            .map_err(core_err)?;
+        // Fail-fast pre-read guard: a bad project_id fails before the network
+        // resolve burns rate-limit/subprocess budget; commit re-checks.
         self.with_conn(|conn| {
-            match paper_import::import_pdf(
+            paper_import::precheck_import_pdf(conn, p.project_id).map_err(|e| match e {
+                e @ CoreError::ProjectNotFound(_) => invalid(e.to_string()),
+                e => core_err(e),
+            })
+        })?;
+        // Core's two-phase import: resolve (network) outside the lock, commit
+        // (quota re-check, membership guard, rollback matrix) under it.
+        let resolved = paper_import::resolve_import_pdf(
+            &pdf_dir,
+            &content,
+            max_pdf_bytes,
+            &config::data_dir(),
+        )
+        .await
+        .map_err(core_err)?;
+        self.with_conn(|conn| {
+            match paper_import::commit_import_pdf(
                 conn,
                 &pdf_dir,
                 &content,
                 p.project_id,
                 max_pdf_bytes,
-                |_| Ok(resolved.clone()),
+                resolved,
             ) {
                 Ok(result) => json_ok(&result),
-                Err(CoreError::ProjectNotFound) => Err(invalid(format!(
-                    "Project {} not found.",
-                    p.project_id.unwrap_or_default()
-                ))),
+                Err(e @ CoreError::ProjectNotFound(_)) => Err(invalid(e.to_string())),
                 Err(e @ CoreError::PaperLink(_)) => Err(invalid(e.to_string())),
                 Err(e) => Err(core_err(e)),
             }
@@ -675,10 +618,7 @@ mod tests {
             }))
             .await
             .unwrap_err();
-        assert_eq!(
-            err.message.as_ref(),
-            "Paper 'arxiv:nope' not found in database."
-        );
+        assert_eq!(err.message.as_ref(), "Paper arxiv:nope not found");
         std::fs::remove_dir_all(&dir).ok();
     }
 }

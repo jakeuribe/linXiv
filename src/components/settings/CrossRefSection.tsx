@@ -14,8 +14,8 @@ export function CrossRefSection() {
   const [crossrefEmail, setCrossrefEmail] = useState("");
   const [populated, setPopulated] = useState(false);
   if (settings && !populated) {
-    if (typeof (settings as Record<string, unknown>)["CROSSREF_MAILTO"] === "string") {
-      setCrossrefEmail((settings as Record<string, unknown>)["CROSSREF_MAILTO"] as string);
+    if (settings.CROSSREF_MAILTO) {
+      setCrossrefEmail(settings.CROSSREF_MAILTO);
     }
     setPopulated(true);
   }

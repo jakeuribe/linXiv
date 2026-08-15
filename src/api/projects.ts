@@ -1,5 +1,5 @@
-import { apiFetch } from "./client";
-import type { Project } from "../types/api";
+import { apiFetch } from "./client.ts";
+import type { PaperMembershipReceipt, Project } from "../types/api";
 
 export async function listProjects(
   status = "active"
@@ -57,10 +57,13 @@ export async function restoreProject(id: number): Promise<{ ok: boolean }> {
   return updateProject(id, { status: "active" });
 }
 
+/** Core's PaperMembershipReceipt — shared by add and remove. */
+export type { PaperMembershipReceipt } from "../types/api";
+
 export async function addPaperToProject(
   projectId: number,
   sourceId: string
-): Promise<{ ok: boolean }> {
+): Promise<PaperMembershipReceipt> {
   return apiFetch(`/api/projects/${projectId}/papers`, {
     method: "POST",
     body: JSON.stringify({ source_id: sourceId }),
@@ -95,7 +98,7 @@ export async function addPapersToProject(
 export async function removePaperFromProject(
   projectId: number,
   sourceId: string
-): Promise<{ ok: boolean }> {
+): Promise<PaperMembershipReceipt> {
   return apiFetch(
     `/api/projects/${projectId}/papers/${encodeURIComponent(sourceId)}`,
     { method: "DELETE" }

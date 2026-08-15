@@ -1,5 +1,12 @@
 import { ApiError, isTauri } from "./client";
 
+/** Deliberately narrower than lib/errText: only ApiError messages surface in
+ * the sharing UI — any other exception falls back to the generic string
+ * rather than leaking its raw message. */
+export function shareErrText(e: unknown): string {
+  return e instanceof ApiError ? e.message : "Unexpected sharing error";
+}
+
 // The share endpoints live behind their own `share_api` Tauri command (a front
 // door beside `api`, with its own ShareState + iroh node), NOT the main `/api`
 // route. The iroh node only runs in the packaged/desktop app, so these calls go

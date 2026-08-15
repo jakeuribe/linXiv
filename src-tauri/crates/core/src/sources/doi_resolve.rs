@@ -22,7 +22,7 @@ use std::path::Path;
 
 use super::{arxiv, crossref, http};
 use crate::error::{CoreError, Result};
-use crate::models::PaperMetadata;
+use crate::models::{doi_source_id, PaperMetadata};
 
 /// Fields requested from the Semantic Scholar graph API (`_S2_FIELDS`).
 const S2_FIELDS: &str = "title,authors,year,abstract,externalIds,venue,publicationDate,url";
@@ -152,7 +152,7 @@ fn parse_s2(data: &Value, doi: &str) -> Option<PaperMetadata> {
         });
 
     Some(PaperMetadata {
-        source_id: format!("doi:{doi}"),
+        source_id: doi_source_id(doi),
         version: 1,
         title: title.to_string(),
         authors,
@@ -227,10 +227,11 @@ async fn try_semantic_scholar(doi: &str, data_dir: &Path) -> Result<Option<Paper
 }
 
 /// Resolve a DOI to `PaperMetadata`, trying arXiv -> Semantic Scholar ->
-/// CrossRef in order. `data_dir` (DI) feeds the arXiv rate-limit cool-down.
+/// CrossRef in order. `data_dir` (DI) feeds the arXiv rate-limit cool-down and
+/// `mailto` (DI) the CrossRef polite pool.
 /// Errors are user-facing: empty input, a propagated arXiv 429, or "could not
 /// resolve" when every strategy comes up empty.
-pub async fn resolve_doi(doi: &str, data_dir: &Path) -> Result<PaperMetadata> {
+pub async fn resolve_doi(doi: &str, data_dir: &Path, mailto: &str) -> Result<PaperMetadata> {
     let doi = strip_doi_url(doi);
     if doi.is_empty() {
         return Err(CoreError::BadRequest("Please enter a DOI.".to_string()));
@@ -242,7 +243,7 @@ pub async fn resolve_doi(doi: &str, data_dir: &Path) -> Result<PaperMetadata> {
     if let Some(m) = try_semantic_scholar(&doi, data_dir).await? {
         return Ok(m);
     }
-    if let Some(m) = crossref::fetch_by_doi(&doi).await {
+    if let Some(m) = crossref::fetch_by_doi(&doi, mailto).await {
         return Ok(m);
     }
 
@@ -387,7 +388,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_rejects_empty_doi() {
         let dir = tempfile::tempdir().unwrap();
-        let err = resolve_doi("", dir.path())
+        let err = resolve_doi("", dir.path(), "")
             .await
             .expect_err("empty DOI must error");
         assert_eq!(err.http_status(), 400);
@@ -397,7 +398,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_rejects_doi_url_that_strips_to_empty() {
         let dir = tempfile::tempdir().unwrap();
-        let err = resolve_doi("https://doi.org/", dir.path())
+        let err = resolve_doi("https://doi.org/", dir.path(), "")
             .await
             .expect_err("a bare doi.org URL strips to empty");
         assert!(err.to_string().contains("Please enter a DOI"), "got {err}");

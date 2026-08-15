@@ -256,13 +256,7 @@ pub fn build_manifest(
     include_pdfs: bool,
     pdf_dir: &Path,
 ) -> Result<(Manifest, Vec<(String, PathBuf)>)> {
-    let details = project::get(
-        conn,
-        &project::Project {
-            project_fk: Some(project_fk),
-        },
-    )?
-    .ok_or_else(|| CoreError::BadRequest(format!("Project {project_fk} not found")))?;
+    let details = project::get_required(conn, project_fk)?;
 
     let papers = paper::get_many(
         conn,
@@ -745,14 +739,8 @@ pub fn commit_import(
 mod tests {
     use super::*;
     use crate::models::{AnnotationIn, Status};
-    use crate::storage::{self, db};
+    use crate::test_support::db;
     use chrono::NaiveDate;
-
-    fn mem() -> Connection {
-        let conn = db::open_in_memory().unwrap();
-        storage::init_db(&conn).unwrap();
-        conn
-    }
 
     fn meta(source_id: &str, version: i64, title: &str, tags: &[&str]) -> PaperMetadata {
         PaperMetadata {
@@ -818,7 +806,7 @@ mod tests {
 
     #[test]
     fn build_and_commit_round_trip_annotations() {
-        let mut conn = mem();
+        let mut conn = db();
         let tmp = tempfile::tempdir().unwrap();
 
         // Seed a paper + project + a project-scoped annotation on it.
@@ -855,7 +843,7 @@ mod tests {
         assert_eq!(exported_uuid.len(), 36);
 
         // Commit into a fresh DB and confirm the annotation lands project-scoped.
-        let mut conn2 = mem();
+        let mut conn2 = db();
         let new_pid =
             commit_from_manifest(&mut conn2, &m, &[], OnConflict::Merge, tmp.path()).unwrap();
         let anns = annotation::get_many(
@@ -874,7 +862,7 @@ mod tests {
 
     #[test]
     fn build_manifest_round_trips_project_papers_notes_and_pdfs() {
-        let mut conn = mem();
+        let mut conn = db();
         let tmp = tempfile::tempdir().unwrap();
         let pdf_dir = tmp.path();
 
@@ -940,12 +928,12 @@ mod tests {
     }
 
     #[test]
-    fn build_manifest_missing_project_is_bad_request() {
-        let conn = mem();
+    fn build_manifest_missing_project_is_typed_not_found() {
+        let conn = db();
         let tmp = tempfile::tempdir().unwrap();
         assert!(matches!(
             build_manifest(&conn, 999, false, tmp.path()).unwrap_err(),
-            CoreError::BadRequest(_)
+            CoreError::ProjectNotFound(999)
         ));
     }
 
@@ -972,7 +960,7 @@ mod tests {
 
     #[test]
     fn commit_creates_project_links_papers_notes_and_writes_pdf() {
-        let mut conn = mem();
+        let mut conn = db();
         let tmp = tempfile::tempdir().unwrap();
         let pdf_dir = tmp.path();
 
@@ -1055,7 +1043,7 @@ mod tests {
 
         // MERGE: pre-existing paper keeps its stored title, still gets linked.
         {
-            let mut conn = mem();
+            let mut conn = db();
             paper::save_paper_metadata(&mut conn, &meta("arxiv:1", 1, "Stored Title", &[]), None)
                 .unwrap();
             let pid =
@@ -1087,7 +1075,7 @@ mod tests {
         }
         // OVERWRITE: stored paper is repaired to the archive's title.
         {
-            let mut conn = mem();
+            let mut conn = db();
             paper::save_paper_metadata(&mut conn, &meta("arxiv:1", 1, "Stored Title", &[]), None)
                 .unwrap();
             commit_from_manifest(&mut conn, &manifest, &[], OnConflict::Overwrite, tmp.path())
@@ -1110,7 +1098,7 @@ mod tests {
 
     #[test]
     fn commit_restores_soft_deleted_paper_on_merge() {
-        let mut conn = mem();
+        let mut conn = db();
         let tmp = tempfile::tempdir().unwrap();
         paper::save_paper_metadata(&mut conn, &meta("arxiv:1", 1, "T", &[]), None).unwrap();
         paper::delete(
@@ -1133,7 +1121,7 @@ mod tests {
 
     #[test]
     fn commit_rolls_back_project_when_a_paper_cannot_be_linked() {
-        let mut conn = mem();
+        let mut conn = db();
         let tmp = tempfile::tempdir().unwrap();
         // Whitespace in the source_id: it's saved verbatim, but add_papers trims it,
         // so the membership lookup misses -> link fails -> whole project rolled back.
@@ -1170,7 +1158,7 @@ mod tests {
 
     #[test]
     fn import_pdfs_skips_unknown_version_and_removes_file() {
-        let mut conn = mem();
+        let mut conn = db();
         let tmp = tempfile::tempdir().unwrap();
         let pdf_dir = tmp.path();
         paper::save_paper_metadata(&mut conn, &meta("arxiv:1", 1, "T", &[]), None).unwrap();
@@ -1205,7 +1193,7 @@ mod tests {
 
     #[test]
     fn zip_export_then_import_round_trips_to_a_fresh_db() {
-        let mut conn = mem();
+        let mut conn = db();
         let tmp = tempfile::tempdir().unwrap();
         let export_pdf_dir = tmp.path().join("export_pdfs");
         std::fs::create_dir_all(&export_pdf_dir).unwrap();
@@ -1268,7 +1256,7 @@ mod tests {
         assert!(preview.has_pdfs);
 
         // Commit into a FRESH db + fresh pdf dir.
-        let mut conn2 = mem();
+        let mut conn2 = db();
         let import_pdf_dir = tmp.path().join("import_pdfs");
         let new_pid =
             commit_import(&mut conn2, &written, OnConflict::Merge, &import_pdf_dir).unwrap();
@@ -1330,7 +1318,7 @@ mod tests {
 
     #[test]
     fn build_and_commit_round_trip_author_orcids() {
-        let mut conn = mem();
+        let mut conn = db();
         let tmp = tempfile::tempdir().unwrap();
 
         let mut m = meta("arxiv:1", 1, "P", &[]);
@@ -1358,7 +1346,7 @@ mod tests {
         );
 
         // Commit into a fresh DB and confirm AUTHOR_ORCID lands (fill-if-null).
-        let mut conn2 = mem();
+        let mut conn2 = db();
         commit_from_manifest(&mut conn2, &manifest, &[], OnConflict::Merge, tmp.path()).unwrap();
         fn orcid(conn: &Connection, name: &str) -> Option<String> {
             conn.query_row(
@@ -1374,7 +1362,7 @@ mod tests {
 
     #[test]
     fn commit_merge_unions_tags_onto_existing_paper() {
-        let mut conn = mem();
+        let mut conn = db();
         let tmp = tempfile::tempdir().unwrap();
 
         // Pre-existing paper carries tag A.
@@ -1412,9 +1400,45 @@ mod tests {
         assert_eq!(relational, 2);
     }
 
+    /// SECURITY BOUNDARY. `route/share.rs` joins share ids onto `share_dir` at six
+    /// call sites, so anything this accepts becomes a path component. The
+    /// commit_adopts/rejects pair below only exercises it through the importer;
+    /// this pins the validator itself.
+    #[test]
+    fn valid_share_id_rejects_everything_that_could_escape_share_dir() {
+        // A real share id — a uuid v4 — is the only shape that must pass.
+        assert!(valid_share_id("3f2b8c1a-9d4e-4f6a-8b2c-1d5e7f9a0b3c"));
+        assert!(valid_share_id("plain-id_123"));
+
+        for bad in [
+            "",                      // empty — joins to the share_dir itself
+            "..",                    // parent
+            "../etc/passwd",         // classic traversal
+            "..\\windows\\system32", // traversal, Windows separator
+            "a/../../b",             // traversal mid-string
+            "a..b",                  // any embedded `..`, conservatively
+            ".",                     // current dir
+            ".hidden",               // any leading dot
+            "sub/dir",               // separator
+            "sub\\dir",              // separator, Windows
+            "/etc/passwd",           // absolute, Unix
+            "C:evil",                // Windows drive-relative — join() escapes
+            "C:\\Windows",           // absolute, Windows
+            "\\\\server\\share",     // UNC
+            "..\u{202e}gnp.exe",     // RTL override still carries `..`
+            "\u{ff0e}\u{ff0e}/etc",  // fullwidth dots: not `..`, but `/` catches it
+        ] {
+            assert!(!valid_share_id(bad), "must reject {bad:?}");
+        }
+
+        // Documented gap, not an escape: unicode lookalikes with no separator and no
+        // ASCII `..` are accepted as opaque names. They stay inside share_dir.
+        assert!(valid_share_id("\u{ff0e}\u{ff0e}"));
+    }
+
     #[test]
     fn commit_adopts_valid_share_id() {
-        let mut conn = mem();
+        let mut conn = db();
         let tmp = tempfile::tempdir().unwrap();
 
         let share_id = "3f2b8c1a-9d4e-4f6a-8b2c-1d5e7f9a0b3c";
@@ -1441,7 +1465,7 @@ mod tests {
 
     #[test]
     fn commit_rejects_invalid_share_id() {
-        let mut conn = mem();
+        let mut conn = db();
         let tmp = tempfile::tempdir().unwrap();
 
         // Traversal, absolute, and dotfile share_ids must NOT be adopted.
@@ -1472,7 +1496,7 @@ mod tests {
 
     #[test]
     fn commit_rejects_duplicate_share_id() {
-        let mut conn = mem();
+        let mut conn = db();
         let tmp = tempfile::tempdir().unwrap();
 
         let share_id = "7a1c4e2d-6b3f-4a8e-9c0d-2e5f7a9b1c4d";

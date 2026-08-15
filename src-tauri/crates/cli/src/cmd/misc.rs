@@ -4,11 +4,10 @@
 use std::path::PathBuf;
 
 use clap::Subcommand;
-use serde_json::{json, Value};
+use serde_json::json;
 
+use linxiv_core::service::db_admin;
 use linxiv_core::service::paper as svc_paper;
-use linxiv_core::service::tag as svc_tag;
-use linxiv_core::storage;
 
 use crate::ctx::Ctx;
 use crate::output::output;
@@ -25,18 +24,9 @@ pub enum SettingsCmd {
     },
 }
 
-// cmd_stats
+// cmd_stats — `service::stats` owns the envelope (ADR-0011: gained `recent_papers`).
 pub async fn stats(ctx: &mut Ctx) -> anyhow::Result<()> {
-    let papers = svc_paper::list_papers(&ctx.conn, true, None, 0, None)?;
-    let categories = svc_paper::get_categories(&ctx.conn)?;
-    let all_tags = svc_tag::list_all_tags(&ctx.conn)?;
-    let pdf_count = papers.iter().filter(|p| p.has_pdf).count();
-    output(&json!({
-        "paper_count": papers.len(),
-        "tag_count": all_tags.len(),
-        "category_count": categories.len(),
-        "pdf_count": pdf_count,
-    }));
+    output(&linxiv_core::service::stats::stats(&ctx.conn)?);
     Ok(())
 }
 
@@ -51,9 +41,7 @@ pub async fn settings(cmd: SettingsCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
     match cmd {
         SettingsCmd::Get => output(&ctx.settings.all()),
         SettingsCmd::Update { key, value } => {
-            let parsed: Value =
-                serde_json::from_str(&value).unwrap_or_else(|_| Value::String(value.clone()));
-            ctx.settings.set(key.clone(), parsed.clone())?;
+            let parsed = ctx.settings.set_from_str(key.clone(), value)?;
             output(&json!({ key: parsed }));
         }
     }
@@ -61,7 +49,7 @@ pub async fn settings(cmd: SettingsCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
 }
 
 pub async fn backup(dest: PathBuf, ctx: &mut Ctx) -> anyhow::Result<()> {
-    output(&storage::backup(&ctx.conn, &dest)?);
+    output(&db_admin::backup(&ctx.conn, &dest)?);
     Ok(())
 }
 
@@ -94,7 +82,7 @@ mod tests {
         drop(ctx);
         std::fs::write(&db_path, b"not a database").unwrap();
 
-        storage::restore(&dest, &db_path).unwrap();
+        db_admin::restore_closed(&dest).unwrap();
 
         let restored = Connection::open(&db_path).unwrap();
         let v: String = restored

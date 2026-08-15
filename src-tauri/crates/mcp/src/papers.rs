@@ -6,7 +6,8 @@
 //! Python port does). Return `Ok(Json(value))` on success; on the error paths
 //! the Python code raises `ValueError`, so map those to
 //! `Err(ErrorData::invalid_params(msg, None))` with the EXACT message string
-//! (mind Python `{x!r}` quoting, e.g. `format!("Paper {paper_id:?} not found in database.")`).
+//! Misses word themselves via `CoreError::PaperNotFound`'s Display — no
+//! per-surface message building.
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_router, ErrorData};
@@ -15,16 +16,12 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use linxiv_core::error::CoreError;
-use linxiv_core::models::PaperMetadata;
+use linxiv_core::models::{PaperMetadata, SearchResultOut};
 use linxiv_core::service::paper::{self as svc_paper, PaperSort};
-use linxiv_core::sources::arxiv_downloads;
-use linxiv_core::sources::fetch as svc_fetch;
-use linxiv_core::storage::queries::paper as store_paper;
+use linxiv_core::service::source as svc_source;
 use linxiv_core::{config, service::project as svc_project};
 
 use crate::Server;
-
-use linxiv_core::config::openalex_mailto as mailto;
 
 use crate::util::{core_err, invalid, json_ok};
 
@@ -179,16 +176,12 @@ impl Server {
         }): Parameters<SearchPapersParams>,
     ) -> Result<String, ErrorData> {
         // Python `source.search(query, max_results)` defaults sort="relevance".
-        let results = svc_fetch::search(
-            &source,
-            &query,
-            max_results as u32,
-            "relevance",
-            &config::data_dir(),
-            &mailto(),
-        )
-        .await
-        .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+        let results = svc_source::search(&source, &query, max_results as u32, "relevance")
+            .await
+            .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+        // The canonical search wire shape all three surfaces emit (ADR-0011).
+        let results: Vec<SearchResultOut> =
+            results.into_iter().map(SearchResultOut::from).collect();
         json_ok(&results)
     }
 
@@ -199,7 +192,7 @@ impl Server {
         &self,
         Parameters(FetchPaperParams { paper_id, source }): Parameters<FetchPaperParams>,
     ) -> Result<String, ErrorData> {
-        let meta = svc_fetch::fetch_by_id(&source, &paper_id, &config::data_dir(), &mailto())
+        let meta = svc_source::fetch_by_id(&source, &paper_id)
             .await
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
         self.with_conn(|conn| svc_paper::save_paper_metadata(conn, &meta, None))
@@ -258,13 +251,9 @@ impl Server {
     ) -> Result<String, ErrorData> {
         self.with_conn(|conn| {
             if svc_paper::get(conn, &paper_key(&paper_id))?.is_none() {
-                return Ok(Err(ErrorData::invalid_params(
-                    format!(
-                        "Paper {} not found in database.",
-                        crate::util::pyrepr(&paper_id)
-                    ),
-                    None,
-                )));
+                return Ok(Err(crate::util::guard_err(CoreError::PaperNotFound(
+                    paper_id.clone(),
+                ))));
             }
             svc_paper::delete(conn, &paper_key(&paper_id))?;
             Ok(Ok(()))
@@ -312,57 +301,25 @@ impl Server {
         let paper = self
             .with_conn(|conn| svc_paper::get(conn, &paper_key(&paper_id)))
             .map_err(core_err)?
-            .ok_or_else(|| {
-                invalid(format!(
-                    "Paper {} not found in database.",
-                    crate::util::pyrepr(&paper_id)
-                ))
-            })?;
+            .ok_or_else(|| crate::util::guard_err(CoreError::PaperNotFound(paper_id.clone())))?;
         if paper.downloaded_source && !force {
-            return json_ok(&serde_json::json!({
-                "paper_id": paper.source_id,
-                "version": paper.version,
-                "indexed": false,
-                "reason": "source already indexed; pass force=true to re-fetch",
-            }));
+            return json_ok(&svc_paper::FullTextReceipt::already_indexed(&paper));
         }
         // Mirrors io_authors_misc.rs's map_core: BadRequest/Validation/PaperNotFound
         // are user-facing refusals, not server faults.
         let map_fetch_err = |e: CoreError| match e {
             CoreError::BadRequest(m) | CoreError::Validation(m) => invalid(m),
-            CoreError::PaperNotFound => invalid(format!(
-                "Paper {} not found in database.",
-                crate::util::pyrepr(&paper_id)
-            )),
+            e @ CoreError::PaperNotFound(_) => invalid(e.to_string()),
             other => core_err(other),
         };
-        let url = svc_paper::source_fetch_url(&paper)
-            .map_err(map_fetch_err)?
-            .to_string();
-        let text = arxiv_downloads::fetch_source_text(&url, &config::data_dir())
+        // Two-phase ingest from core: fetch outside the lock, commit under it.
+        let fetched = svc_paper::fetch_full_text(&paper, &config::data_dir())
             .await
             .map_err(map_fetch_err)?;
-        let store = svc_paper::should_store_full_text(&paper, &text);
-        let (source_id, version) = (paper.source_id, paper.version);
-        let chars = text.chars().count();
-        if !store {
-            return json_ok(&serde_json::json!({
-                "paper_id": source_id,
-                "version": version,
-                "indexed": false,
-                "reason": "re-fetch produced no TeX; kept the text already indexed",
-            }));
-        }
-        // An empty extract is stored, not dropped: it marks the paper attempted so a
-        // PDF-only submission isn't re-fetched on every run. force=true re-opens it.
-        self.with_conn(|conn| svc_paper::set_full_text(conn, &source_id, version, &text))
+        let receipt = self
+            .with_conn(|conn| fetched.commit(conn))
             .map_err(map_fetch_err)?;
-        json_ok(&serde_json::json!({
-            "paper_id": source_id,
-            "version": version,
-            "indexed": true,
-            "chars": chars,
-        }))
+        json_ok(&receipt)
     }
 
     #[tool(
@@ -401,15 +358,9 @@ impl Server {
     ) -> Result<String, ErrorData> {
         // Keyed by the stable paper root, as the sfk route is.
         let candidates = self.with_conn(|conn| {
-            let root = store_paper::get_paper_root(conn, &paper_id)
-                .map_err(core_err)?
-                .ok_or_else(|| {
-                    invalid(format!(
-                        "Paper {} not found in database.",
-                        crate::util::pyrepr(&paper_id)
-                    ))
-                })?;
-            svc_paper::find_doi_version_candidates(conn, root.source_fk).map_err(core_err)
+            let source_fk =
+                svc_paper::resolve_source_fk(conn, &paper_id).map_err(crate::util::guard_err)?;
+            svc_paper::find_doi_version_candidates(conn, source_fk).map_err(core_err)
         })?;
         json_ok(&serde_json::json!({
             "paper_id": paper_id,
@@ -433,55 +384,53 @@ impl Server {
         }): Parameters<RepairPaperParams>,
     ) -> Result<String, ErrorData> {
         // Keyed by the stable paper root so the fix survives a source_id rename.
-        self.with_conn(|conn| {
-            let Some(root) = store_paper::get_paper_root(conn, &paper_id)? else {
-                return Ok(Err(ErrorData::invalid_params(
-                    format!(
-                        "Paper {} not found in database.",
-                        crate::util::pyrepr(&paper_id)
-                    ),
-                    None,
-                )));
-            };
-            // Date validated after the existence check, matching Python ordering.
-            let published_date = match svc_paper::parse_published(&published) {
-                Ok(d) => d,
-                Err(e) => return Ok(Err(ErrorData::invalid_params(e.to_string(), None))),
-            };
-            // Python `existing.version if existing else 1`.
-            let version = svc_paper::get(conn, &paper_key(&paper_id))?
-                .map(|p| p.version)
-                .unwrap_or(1);
-            let meta = PaperMetadata {
-                source_id: paper_id.clone(),
-                version,
-                title: title.clone(),
-                authors: authors.clone(),
-                published: published_date,
-                updated: None,
-                summary: summary.clone(),
-                category: category.clone(),
-                categories: None,
-                doi: doi.clone(),
-                journal_ref: None,
-                comment: None,
-                url: url.clone(),
-                // Python `tags or None`: an empty list becomes None.
-                tags: tags.clone().filter(|t| !t.is_empty()),
-                source: None,
-                author_orcids: None,
-            };
-            // Validation lives in the service so every front door refuses the same input.
-            if let Err(e) = svc_paper::repair_paper(conn, root.source_fk, &meta) {
-                return match e {
-                    CoreError::Validation(m) => Ok(Err(invalid(m))),
-                    other => Err(other),
+        let updated = self
+            .with_conn(|conn| {
+                let source_fk = match svc_paper::resolve_source_fk(conn, &paper_id) {
+                    Ok(fk) => fk,
+                    Err(e) => return Ok(Err(crate::util::guard_err(e))),
                 };
-            }
-            Ok(Ok(()))
-        })
-        .map_err(core_err)??;
-        json_ok(&serde_json::json!({ "repaired": paper_id }))
+                // Date validated after the existence check, matching Python ordering.
+                let published_date = match svc_paper::parse_published(&published) {
+                    Ok(d) => d,
+                    Err(e) => return Ok(Err(ErrorData::invalid_params(e.to_string(), None))),
+                };
+                // Python `existing.version if existing else 1`.
+                let version = svc_paper::get(conn, &paper_key(&paper_id))?
+                    .map(|p| p.version)
+                    .unwrap_or(1);
+                let meta = PaperMetadata {
+                    source_id: paper_id.clone(),
+                    version,
+                    title: title.clone(),
+                    authors: authors.clone(),
+                    published: published_date,
+                    updated: None,
+                    summary: summary.clone(),
+                    category: category.clone(),
+                    categories: None,
+                    doi: doi.clone(),
+                    journal_ref: None,
+                    comment: None,
+                    url: url.clone(),
+                    // Python `tags or None`: an empty list becomes None.
+                    tags: tags.clone().filter(|t| !t.is_empty()),
+                    source: None,
+                    author_orcids: None,
+                };
+                // Validation lives in the service so every front door refuses the same input.
+                if let Err(e) = svc_paper::repair_paper(conn, source_fk, &meta) {
+                    return match e {
+                        CoreError::Validation(m) => Ok(Err(invalid(m))),
+                        other => Err(other),
+                    };
+                }
+                // Route parity: return the repaired paper's full `PaperDetails`.
+                Ok(Ok(svc_paper::get(conn, &paper_key(&paper_id))?))
+            })
+            .map_err(core_err)??;
+        let updated = updated.ok_or_else(|| ErrorData::internal_error("Repair failed", None))?;
+        json_ok(&updated)
     }
 
     #[tool(description = "Restore a soft-deleted (trashed) paper back into the library.")]
@@ -497,11 +446,12 @@ impl Server {
                 Ok(Ok(svc_paper::restore(conn, &paper_key(&paper_id))?))
             })
             .map_err(core_err)??;
-        json_ok(&serde_json::json!({
-            "restored": paper_id,
-            "pdf_path": pdf_path,
-            "project_fks": project_fks,
-        }))
+        json_ok(&linxiv_core::service::trash::RestoredPaper {
+            ok: true,
+            restored: paper_id,
+            pdf_path,
+            project_fks,
+        })
     }
 
     #[tool(description = "Permanently delete a paper and all its data. Irreversible.")]
@@ -510,17 +460,17 @@ impl Server {
         Parameters(PaperIdParams { paper_id }): Parameters<PaperIdParams>,
     ) -> Result<String, ErrorData> {
         self.with_conn(|conn| {
-            if store_paper::get_paper_root(conn, &paper_id)?.is_none() {
-                return Ok(Err(ErrorData::invalid_params(
-                    format!("Paper {} not found.", crate::util::pyrepr(&paper_id)),
-                    None,
-                )));
+            if let Err(e) = svc_paper::resolve_source_fk(conn, &paper_id) {
+                return Ok(Err(crate::util::guard_err(e)));
             }
             svc_paper::hard_delete(conn, &paper_key(&paper_id))?;
             Ok(Ok(()))
         })
         .map_err(core_err)??;
-        json_ok(&serde_json::json!({ "hard_deleted": paper_id }))
+        json_ok(&linxiv_core::service::trash::HardDeletedPaper {
+            ok: true,
+            hard_deleted: paper_id,
+        })
     }
 
     #[tool(description = "Remove a paper from every project it currently belongs to.")]
@@ -531,14 +481,10 @@ impl Server {
         let removed = self
             .with_conn(|conn| svc_project::remove_paper_from_all_projects_by_id(conn, &paper_id))
             .map_err(core_err)?
-            .ok_or_else(|| {
-                ErrorData::invalid_params(
-                    format!("Paper {} not found.", crate::util::pyrepr(&paper_id)),
-                    None,
-                )
-            })?;
+            .ok_or_else(|| crate::util::guard_err(CoreError::PaperNotFound(paper_id.clone())))?;
+        // One envelope across route/CLI/MCP; the caller already knows the id.
         json_ok(&serde_json::json!({
-            "paper_id": paper_id,
+            "ok": true,
             "removed_from_projects": removed,
         }))
     }
@@ -596,10 +542,7 @@ mod tests {
     async fn fetch_full_text_rejects_before_reaching_the_network() {
         let srv = server();
         let err = fetch(&srv, "arxiv:nope", false).await.unwrap_err();
-        assert_eq!(
-            err.message.as_ref(),
-            "Paper 'arxiv:nope' not found in database."
-        );
+        assert_eq!(err.message.as_ref(), "Paper arxiv:nope not found");
 
         srv.with_conn(|conn| {
             svc_paper::save_paper_metadata(conn, &meta("doi:10.1/z", Some("crossref"), None), None)
@@ -653,7 +596,8 @@ mod tests {
         assert_eq!(one["candidates"].as_array().unwrap().len(), 1);
     }
 
-    /// An unknown id is refused; a paper with no DOI twin lists no candidates.
+    /// An unknown id is refused with the service's typed not-found (no root
+    /// conjured); a paper with no DOI twin lists no candidates.
     #[tokio::test]
     async fn doi_candidates_rejects_unknown_papers() {
         let srv = server();
@@ -663,10 +607,11 @@ mod tests {
             }))
             .await
             .unwrap_err();
-        assert_eq!(
-            err.message.as_ref(),
-            "Paper 'arxiv:nope' not found in database."
-        );
+        assert_eq!(err.message.as_ref(), "Paper arxiv:nope not found");
+        assert!(srv
+            .with_conn(|conn| svc_paper::get_paper_root(conn, "arxiv:nope"))
+            .unwrap()
+            .is_none());
 
         srv.with_conn(|conn| {
             svc_paper::save_paper_metadata(conn, &meta("arxiv:9", Some("arxiv"), None), None)
@@ -696,8 +641,55 @@ mod tests {
 
         let out = fetch(&srv, "arxiv:3", false).await.unwrap();
         assert_eq!(out["indexed"], serde_json::json!(false));
+        // Route-parity envelope: keyed `source_id`, not the old `paper_id`.
+        assert_eq!(out["source_id"], serde_json::json!("arxiv:3"));
+        assert!(out.get("paper_id").is_none(), "stale paper_id key: {out}");
 
         let err = fetch(&srv, "arxiv:3", true).await.unwrap_err();
         assert!(err.message.contains("no arXiv PDF URL"));
+    }
+
+    /// `search_papers` emits `SearchResultOut` (ADR-0011) — pin the exact wire
+    /// shape so this surface can't drift back to raw `PaperMetadata`.
+    #[test]
+    fn search_results_pin_the_canonical_wire_shape() {
+        let mut m = meta("arxiv:2204.12985", Some("arxiv"), Some("http://x"));
+        m.category = Some("cs.LG".into());
+        let v = serde_json::to_value(SearchResultOut::from(m)).unwrap();
+        assert_eq!(
+            serde_json::to_string(&v).unwrap(),
+            r#"{"source_id":"2204.12985","version":1,"title":"T","summary":"S","authors":["A"],"published":"2024-01-01","paper_url":"http://x","primary_category":"cs.LG","entry_id":"arxiv:2204.12985"}"#
+        );
+    }
+
+    /// `repair_paper` returns the repaired paper's full `PaperDetails` (route
+    /// parity), not the old `{"repaired": id}` receipt — and never `full_text`.
+    #[tokio::test]
+    async fn repair_returns_the_updated_paper_details() {
+        let srv = server();
+        srv.with_conn(|conn| {
+            svc_paper::save_paper_metadata(conn, &meta("arxiv:7", Some("arxiv"), None), None)
+        })
+        .unwrap();
+        let out = srv
+            .repair_paper(Parameters(RepairPaperParams {
+                paper_id: "arxiv:7".to_string(),
+                title: "Fixed".to_string(),
+                authors: vec!["B".to_string()],
+                published: "2024-02-02".to_string(),
+                summary: "S2".to_string(),
+                category: None,
+                doi: None,
+                url: None,
+                tags: None,
+            }))
+            .await
+            .unwrap();
+        let out: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(out["source_id"], serde_json::json!("arxiv:7"));
+        assert_eq!(out["title"], serde_json::json!("Fixed"));
+        assert!(out["paper_id"].is_i64(), "missing PaperDetails keys: {out}");
+        assert!(out.get("full_text").is_none(), "leaked full_text: {out}");
+        assert!(out.get("repaired").is_none(), "stale receipt shape: {out}");
     }
 }

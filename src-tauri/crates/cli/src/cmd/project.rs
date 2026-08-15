@@ -3,32 +3,21 @@
 use std::path::Path;
 
 use clap::{Subcommand, ValueEnum};
-use serde::Serialize;
 use serde_json::json;
 
 use linxiv_core::error::Result as CoreResult;
 use linxiv_core::formats::with_default_ext;
-use linxiv_core::models::{PaperDetails, ProjectIn, ProjectUpdateIn, Status};
-use linxiv_core::service::{export_import, paper, project};
+use linxiv_core::models::{ProjectIn, ProjectUpdateIn, Status};
+use linxiv_core::service::{export_import, project};
 
 use crate::ctx::Ctx;
 use crate::output::{as_source_id, fail, output};
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
-pub enum ProjectStatus {
-    Active,
-    Archived,
-    Deleted,
-}
-
-impl ProjectStatus {
-    fn to_status(self) -> Status {
-        match self {
-            ProjectStatus::Active => Status::Active,
-            ProjectStatus::Archived => Status::Archived,
-            ProjectStatus::Deleted => Status::Deleted,
-        }
-    }
+/// clap's `--status` parser. Core's `Status: FromStr` is the one parse and the one
+/// message, so the CLI no longer carries its own copy of the three strings; clap
+/// still lists them in `--help` via `value_parser`'s possible values.
+fn status_arg(s: &str) -> anyhow::Result<Status> {
+    s.parse::<Status>().map_err(Into::into)
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -50,8 +39,9 @@ impl OnConflict {
 pub enum ProjectCmd {
     /// List projects
     List {
-        #[arg(long, value_enum)]
-        status: Option<ProjectStatus>,
+        /// active, archived, or deleted
+        #[arg(long, value_parser = status_arg)]
+        status: Option<Status>,
     },
     /// Get project details
     Get { project_id: i64 },
@@ -79,8 +69,9 @@ pub enum ProjectCmd {
         /// Project tags (replaces existing; pass no values to clear)
         #[arg(long, num_args = 0..)]
         tags: Option<Vec<String>>,
-        #[arg(long, value_enum)]
-        status: Option<ProjectStatus>,
+        /// active, archived, or deleted
+        #[arg(long, value_parser = status_arg)]
+        status: Option<Status>,
     },
     /// Soft-delete a project
     Delete { project_id: i64 },
@@ -133,76 +124,55 @@ pub enum ProjectCmd {
     },
 }
 
-/// `_resolve_project_or_exit`: fetch by id or fail with the exact Python message.
+/// `_resolve_project_or_exit`: fetch by id or exit 1. The not-found wording is
+/// `CoreError::ProjectNotFound` — the same message the route and MCP emit.
 fn resolve_or_exit(ctx: &Ctx, project_id: i64) -> linxiv_core::models::ProjectDetails {
-    match project::get(
-        &ctx.conn,
-        &project::Project {
-            project_fk: Some(project_id),
-        },
-    ) {
-        Ok(Some(p)) => p,
-        Ok(None) => fail(format!("Project {project_id} not found")),
+    match project::get_required(&ctx.conn, project_id) {
+        Ok(p) => p,
         Err(e) => fail(e),
     }
 }
 
-/// Resolve a project's papers, mirroring `get_many(Papers(source_fks=...)) if source_fks else []`.
-fn project_papers(ctx: &Ctx, source_fks: &[i64]) -> CoreResult<Vec<PaperDetails>> {
-    if source_fks.is_empty() {
-        return Ok(Vec::new());
+/// Unwrap a single-paper membership op: user-facing refusals exit 1 with the
+/// shared wording, anything else propagates as a hard error.
+fn membership_or_exit(
+    r: CoreResult<project::PaperMembershipReceipt>,
+) -> anyhow::Result<project::PaperMembershipReceipt> {
+    use linxiv_core::error::CoreError;
+    match r {
+        Ok(receipt) => Ok(receipt),
+        Err(
+            e @ (CoreError::PaperNotFound(_)
+            | CoreError::ProjectNotFound(_)
+            | CoreError::ProjectDeleted(_)),
+        ) => fail(e),
+        Err(e) => Err(e.into()),
     }
-    paper::get_many(
-        &ctx.conn,
-        &paper::Papers {
-            source_fks: Some(source_fks.to_vec()),
-            ..Default::default()
-        },
-    )
 }
 
 pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
     match cmd {
         ProjectCmd::List { status } => {
-            let core_status = status.map(|s| s.to_status());
             let mut projects = project::get_many(
                 &ctx.conn,
                 &project::Projects {
-                    status: core_status,
+                    status,
                     ..Default::default()
                 },
             )?;
-            if core_status.is_none() {
+            if status.is_none() {
                 projects.retain(|p| p.status != Status::Deleted);
             }
-            #[derive(Serialize)]
-            struct ListRow {
-                id: Option<i64>,
-                name: String,
-                description: String,
-                status: Status,
-                paper_count: usize,
-                color: Option<i32>,
-                project_tags: Vec<String>,
-            }
-            let rows: Vec<ListRow> = projects
+            let rows = projects
                 .into_iter()
-                .map(|p| ListRow {
-                    id: p.id,
-                    name: p.name,
-                    description: p.description,
-                    status: p.status,
-                    paper_count: p.source_fks.len(),
-                    color: p.color,
-                    project_tags: p.project_tags,
-                })
-                .collect();
+                .map(|p| project::to_out(&ctx.conn, p))
+                .collect::<CoreResult<Vec<_>>>()?;
             output(&rows);
         }
 
         ProjectCmd::Get { project_id } => {
             let details = resolve_or_exit(ctx, project_id);
-            output(&details);
+            output(&project::to_out(&ctx.conn, details)?);
         }
 
         ProjectCmd::Create {
@@ -251,13 +221,13 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                     description,
                     color,
                     project_tags: tags,
-                    status: status.map(|s| s.to_status()),
+                    status,
                 },
             ) {
                 fail(e);
             }
             let updated = resolve_or_exit(ctx, project_id);
-            output(&updated);
+            output(&project::to_out(&ctx.conn, updated)?);
         }
 
         ProjectCmd::Delete { project_id } => {
@@ -290,7 +260,10 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                     project_fk: Some(project_id),
                 },
             )?;
-            output(&json!({ "restored_project_id": project_id }));
+            output(&linxiv_core::service::trash::RestoredProject {
+                ok: true,
+                restored_project_id: project_id,
+            });
         }
 
         ProjectCmd::HardDelete { project_id } => {
@@ -301,26 +274,20 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                     project_fk: Some(project_id),
                 },
             )?;
-            output(&json!({ "hard_deleted_project_id": project_id }));
+            output(&linxiv_core::service::trash::HardDeletedProject {
+                ok: true,
+                hard_deleted_project_id: project_id,
+            });
         }
 
         ProjectCmd::AddPaper {
             project_id,
             source_id,
         } => {
-            let source_id = as_source_id(&source_id, "arxiv");
-            let failed = match project::add_papers(&ctx.conn, project_id, &[source_id.clone()]) {
-                Ok(failed) => failed,
-                Err(linxiv_core::error::CoreError::ProjectNotFound) => {
-                    fail(format!("Project {project_id} not found"))
-                }
-                Err(e @ linxiv_core::error::CoreError::ProjectDeleted(_)) => fail(e),
-                Err(e) => return Err(e.into()),
-            };
-            if !failed.is_empty() {
-                fail(format!("Paper {source_id} not found in database"));
-            }
-            output(&json!({ "project_id": project_id, "source_id": source_id }));
+            let source_id = as_source_id(&ctx.conn, &source_id);
+            output(&membership_or_exit(project::add_paper(
+                &ctx.conn, project_id, &source_id,
+            ))?);
         }
 
         // POST /api/projects/{id}/papers/bulk: partial success — `failed` holds the
@@ -334,14 +301,12 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             let mut seen = std::collections::HashSet::new();
             let source_ids: Vec<String> = source_ids
                 .iter()
-                .map(|s| as_source_id(s, "arxiv"))
+                .map(|s| as_source_id(&ctx.conn, s))
                 .filter(|s| seen.insert(s.clone()))
                 .collect();
             let failed = match project::add_papers(&ctx.conn, project_id, &source_ids) {
                 Ok(failed) => failed,
-                Err(linxiv_core::error::CoreError::ProjectNotFound) => {
-                    fail(format!("Project {project_id} not found"))
-                }
+                Err(e @ linxiv_core::error::CoreError::ProjectNotFound(_)) => fail(e),
                 Err(e @ linxiv_core::error::CoreError::ProjectDeleted(_)) => fail(e),
                 Err(e) => return Err(e.into()),
             };
@@ -358,19 +323,10 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             project_id,
             source_id,
         } => {
-            let source_id = as_source_id(&source_id, "arxiv");
-            let failed = match project::remove_papers(&ctx.conn, project_id, &[source_id.clone()]) {
-                Ok(failed) => failed,
-                Err(linxiv_core::error::CoreError::ProjectNotFound) => {
-                    fail(format!("Project {project_id} not found"))
-                }
-                Err(e @ linxiv_core::error::CoreError::ProjectDeleted(_)) => fail(e),
-                Err(e) => return Err(e.into()),
-            };
-            if !failed.is_empty() {
-                fail(format!("Paper {source_id} not found in database"));
-            }
-            output(&json!({ "project_id": project_id, "source_id": source_id, "removed": true }));
+            let source_id = as_source_id(&ctx.conn, &source_id);
+            output(&membership_or_exit(project::remove_paper(
+                &ctx.conn, project_id, &source_id,
+            ))?);
         }
 
         ProjectCmd::Export {
@@ -419,7 +375,7 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
 
         ProjectCmd::ExportBibtex { project_id, dest } => {
             let details = resolve_or_exit(ctx, project_id);
-            let papers = project_papers(ctx, &details.source_fks)?;
+            let papers = project::export_papers(&ctx.conn, &details.source_fks)?;
             let bibtex = linxiv_core::formats::bibtex_export(&papers);
             let dest = with_default_ext(&dest, "bib");
             std::fs::write(&dest, bibtex)?;
@@ -428,7 +384,7 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
 
         ProjectCmd::ExportObsidian { project_id, dest } => {
             let details = resolve_or_exit(ctx, project_id);
-            let papers = project_papers(ctx, &details.source_fks)?;
+            let papers = project::export_papers(&ctx.conn, &details.source_fks)?;
             let md = linxiv_core::formats::obsidian_export(&papers);
             let dest = with_default_ext(&dest, "md");
             std::fs::write(&dest, md)?;

@@ -1,5 +1,10 @@
 import { apiFetch, BASE_URL, isTauri } from "./client";
-import type { Paper, PaperVersionsResponse, DoiVersionCandidate } from "../types/api";
+import type {
+  Paper,
+  PaperVersionsResponse,
+  DoiVersionCandidate,
+  FullTextReceipt,
+} from "../types/api";
 
 // The in-process app serves PDF bytes over the `linxiv://` custom scheme (the
 // invoke()-based transport can't stream binary). The webview host form differs by
@@ -72,7 +77,7 @@ export interface PaperRepairBody {
   tags?: string[] | null;
 }
 
-export async function removeFromAllProjects(sfk: number): Promise<{ ok: boolean; removed_from: number[] }> {
+export async function removeFromAllProjects(sfk: number): Promise<{ ok: boolean; removed_from_projects: number[] }> {
   return apiFetch(`/api/papers/sfk/${sfk}/projects`, { method: "DELETE" });
 }
 
@@ -92,13 +97,8 @@ export async function searchLibrary(
   );
 }
 
-export interface FullTextResult {
-  source_id: string;
-  version: number;
-  indexed: boolean;
-  chars?: number;
-  reason?: string;
-}
+/** Core's `FullTextReceipt`. */
+export type { FullTextReceipt as FullTextResult } from "../types/api";
 
 /**
  * Downloads a paper's arXiv TeX source and indexes it, so `searchLibrary` can
@@ -108,8 +108,8 @@ export interface FullTextResult {
 export async function fetchFullText(
   sourceId: string,
   force = false
-): Promise<FullTextResult> {
-  return apiFetch<FullTextResult>(
+): Promise<FullTextReceipt> {
+  return apiFetch<FullTextReceipt>(
     `/api/papers/${encodeURIComponent(sourceId)}/full-text${force ? "?force=true" : ""}`,
     { method: "POST" }
   );

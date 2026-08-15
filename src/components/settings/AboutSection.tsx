@@ -22,6 +22,7 @@ import { Button } from "../ui/button";
 import { OptionSelect } from "../ui/select";
 import { Spinner } from "../ui/spinner";
 import { SettingGroup, SettingGroupLabel, SettingRow } from "./SettingRow";
+import { errText } from "../../lib/errText";
 
 /** How long a check's answer is treated as current, for both refetching and
  *  display. */
@@ -247,7 +248,7 @@ export function AboutSection() {
       await installUpdate(packageKind);
       // installUpdate relaunches the app on success; nothing left to do here.
     } catch (e) {
-      if (alive.current) setInstallError(e instanceof Error ? e.message : "Install failed.");
+      if (alive.current) setInstallError(errText(e, "Install failed."));
     } finally {
       if (alive.current) setInstalling(false);
     }

@@ -5,11 +5,12 @@
 //! (`save_paper_metadata`, the same INSERT-OR-IGNORE-per-version write refetch uses).
 //!
 //! The pass itself is orchestrated by the caller (route): `stale_candidates`
-//! → one batched `sources::arxiv::fetch_by_ids` → `apply_results`. Keeping the
-//! network hop outside means everything here is sync + unit-testable offline.
+//! → one batched `fetch_latest` → `apply_results`. Everything but that one
+//! network hop is sync + unit-testable offline.
 
 use rusqlite::Connection;
 
+use crate::config;
 use crate::error::Result;
 use crate::models::PaperMetadata;
 use crate::storage::db::transaction;
@@ -18,6 +19,13 @@ pub use crate::storage::queries::version_check::{
     ack, list_new_versions, record_check, stale_candidates, Candidate, NewVersion,
     MAX_VERSION_CHECK_BATCH,
 };
+
+/// Latest arXiv metadata for many roots in ONE rate-limited request. Batched and
+/// arXiv-only, so it stays outside `PaperSource`; consumers get it here rather
+/// than reaching into `sources::arxiv` (ADR-0010). Hold no DB lock across it.
+pub async fn fetch_latest(source_ids: &[String]) -> Result<Vec<PaperMetadata>> {
+    crate::sources::arxiv::fetch_by_ids(source_ids, &config::data_dir()).await
+}
 
 /// Process one candidate: check root status. For roots that are active and
 /// resolvable, save any newer version and record the check (with the new version
@@ -84,35 +92,7 @@ pub fn apply_results(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{db::open_in_memory, init_db};
-    use chrono::NaiveDate;
-
-    fn mem() -> Connection {
-        let conn = open_in_memory().unwrap();
-        init_db(&conn).unwrap();
-        conn
-    }
-
-    fn meta(source_id: &str, version: i64) -> PaperMetadata {
-        PaperMetadata {
-            source_id: source_id.into(),
-            version,
-            title: format!("Title of {source_id} v{version}"),
-            authors: vec!["Alice".into()],
-            published: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            updated: None,
-            summary: "s".into(),
-            category: Some("cs.LG".into()),
-            categories: Some(vec!["cs.LG".into()]),
-            doi: None,
-            journal_ref: None,
-            comment: None,
-            url: None,
-            tags: None,
-            source: Some("arxiv".into()),
-            author_orcids: None,
-        }
-    }
+    use crate::test_support::{db, meta};
 
     fn save(conn: &mut Connection, source_id: &str, version: i64) {
         store::save_paper_metadata(conn, &meta(source_id, version), None).unwrap();
@@ -127,7 +107,7 @@ mod tests {
 
     #[test]
     fn stale_candidates_selects_arxiv_never_checked_then_oldest() {
-        let mut conn = mem();
+        let mut conn = db();
         save(&mut conn, "arxiv:a", 1);
         save(&mut conn, "arxiv:b", 2);
         save(&mut conn, "arxiv:c", 1);
@@ -160,7 +140,7 @@ mod tests {
 
     #[test]
     fn apply_results_captures_only_newer_and_rotates_all() {
-        let mut conn = mem();
+        let mut conn = db();
         save(&mut conn, "arxiv:up", 1);
         save(&mut conn, "arxiv:same", 3);
         save(&mut conn, "arxiv:silent", 1); // arXiv returns nothing for it
@@ -200,7 +180,7 @@ mod tests {
 
     #[test]
     fn apply_results_skips_deleted_candidates_no_fk_crash() {
-        let mut conn = mem();
+        let mut conn = db();
         save(&mut conn, "arxiv:live", 1);
         save(&mut conn, "arxiv:deleted", 1);
 
@@ -228,7 +208,7 @@ mod tests {
     /// too, instead of being left committed with the flag never set.
     #[test]
     fn save_and_record_check_are_one_atomic_transaction() {
-        let mut conn = mem();
+        let mut conn = db();
         save(&mut conn, "arxiv:x", 1);
         let good_fk = fk(&conn, "arxiv:x");
         let bad_fk = good_fk + 999; // no matching PAPER_ROOTS row -> FK violation

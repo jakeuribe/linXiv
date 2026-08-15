@@ -12,6 +12,12 @@ import {
 import { Button } from "../ui/button";
 import { Dialog } from "../ui/dialog";
 import { submitOnCtrlEnter } from "../../lib/submitShortcut";
+import {
+  invalidatePaperMutationQueries,
+  invalidateProjectMembershipQueries,
+  invalidateProjectMutationQueries,
+} from "../../lib/paperMutations";
+import { errText } from "../../lib/errText";
 
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -148,21 +154,10 @@ export function ImportDialog({ open, onClose, projectId, onDone }: ImportDialogP
     onClose();
 
     // Imports that produce papers must bust every cache that reads paper data.
-    // Keys mirror PaperDetailPage's post-edit invalidation set.
     const invalidatePaperCaches = () => {
-      // ["paper"] is a prefix that covers ["paper","sfk",...] and ["paper","versions",...].
-      queryClient.invalidateQueries({ queryKey: ["paper"] });
-      queryClient.invalidateQueries({ queryKey: ["papers"] });
-      queryClient.invalidateQueries({ queryKey: ["stats"] });
-      // New papers may introduce new tags, and pinning to a project changes the
-      // project's paper count — bust both so the sidebar/index views refresh.
-      queryClient.invalidateQueries({ queryKey: ["tags"] });
-      queryClient.invalidateQueries({ queryKey: ["tag"] });
-      if (projectId !== undefined) {
-        queryClient.invalidateQueries({ queryKey: ["projects"] });
-        // ProjectDetailPage keys the per-project query with String(id) from useParams.
-        queryClient.invalidateQueries({ queryKey: ["project", String(projectId)] });
-      }
+      invalidatePaperMutationQueries(queryClient);
+      // Pinning to a project changes that project's paper list.
+      if (projectId !== undefined) invalidateProjectMembershipQueries(queryClient);
     };
 
     const newProjectIds: number[] = [];
@@ -183,6 +178,9 @@ export function ImportDialog({ open, onClose, projectId, onDone }: ImportDialogP
           const r = await commitImport(file, onConflict);
           newProjectIds.push(r.project_id);
           result = `Project imported`;
+          // An .lxproj brings both a project and its papers.
+          invalidatePaperMutationQueries(queryClient);
+          invalidateProjectMutationQueries(queryClient);
         } else {
           const _exhaustive: never = kind;
           throw new Error(`Unhandled file kind: ${_exhaustive}`);
@@ -191,7 +189,7 @@ export function ImportDialog({ open, onClose, projectId, onDone }: ImportDialogP
       } catch (err) {
         updateStoreJob(entry.uid, {
           status: "error",
-          error: err instanceof Error ? err.message : String(err),
+          error: errText(err, String(err)),
         });
       }
     }

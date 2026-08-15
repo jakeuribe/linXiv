@@ -11,27 +11,18 @@ use chrono::NaiveDate;
 use serde_json::Value;
 
 use crate::error::{CoreError, Result};
-use crate::models::{date_min, normalize_orcid, PaperMetadata};
+use crate::models::{
+    date_min, normalize_orcid, openalex_source_id, strip_provider_prefix, PaperMetadata,
+    OPENALEX_ID_PREFIX,
+};
 use crate::sources::http;
 
 const BASE_URL: &str = "https://api.openalex.org";
-const USER_AGENT: &str = "linXiv/1.0";
 const ALLOW: &[&str] = &["api.openalex.org"];
 
 /// Fixed `select` field list — only the fields `work_to_metadata` reads.
 const WORK_FIELDS: &str =
     "id,title,authorships,publication_date,doi,primary_topic,abstract_inverted_index";
-
-/// Polite-pool UA: `linXiv/1.0 (mailto:<addr>)`, or bare UA when no address.
-/// CR/LF stripped so a tainted mailto can't inject extra request headers.
-fn user_agent(mailto: &str) -> String {
-    let addr: String = mailto.chars().filter(|&c| c != '\r' && c != '\n').collect();
-    if addr.is_empty() {
-        USER_AGENT.to_string()
-    } else {
-        format!("{USER_AGENT} (mailto:{addr})")
-    }
-}
 
 /// OpenAlex reads `| ! * ?` in `search` as query operators (HTTP 400 on free
 /// text); replace each with a space and collapse the resulting whitespace.
@@ -148,7 +139,7 @@ fn work_to_metadata(work: &Value) -> Result<PaperMetadata> {
     let summary = reconstruct_abstract(work.get("abstract_inverted_index")).unwrap_or_default();
 
     Ok(PaperMetadata {
-        source_id: format!("openalex:{openalex_id}"),
+        source_id: openalex_source_id(openalex_id),
         version: 1,
         title: work
             .get("title")
@@ -211,8 +202,8 @@ async fn search_at(
         return Ok(Vec::new());
     }
     // Polite-pool UA carried as a per-request header (Python sends it on every
-    // request); CR/LF already stripped in `user_agent`.
-    let ua = user_agent(mailto);
+    // request); CR/LF already stripped in `http::polite_user_agent`.
+    let ua = http::polite_user_agent(mailto);
     let url = reqwest::Url::parse_with_params(
         &format!("{base_url}/works"),
         &[
@@ -251,10 +242,7 @@ async fn fetch_by_id_at(
     source_id: &str,
     mailto: &str,
 ) -> Result<PaperMetadata> {
-    let mut bare = source_id
-        .strip_prefix("openalex:")
-        .unwrap_or(source_id)
-        .to_string();
+    let mut bare = strip_provider_prefix(source_id, OPENALEX_ID_PREFIX).to_string();
     // Normalise any URL form (API or landing page) to a bare Work ID.
     if bare.starts_with("http://") || bare.starts_with("https://") {
         bare = bare.rsplit('/').next().unwrap_or("").to_string();
@@ -269,7 +257,7 @@ async fn fetch_by_id_at(
             "Invalid OpenAlex work ID '{bare}': expected 'W' followed by digits."
         )));
     }
-    let ua = user_agent(mailto);
+    let ua = http::polite_user_agent(mailto);
     let url = reqwest::Url::parse_with_params(
         &format!("{base_url}/works/{bare}"),
         &[("select", WORK_FIELDS)],
@@ -308,7 +296,7 @@ async fn fetch_by_doi_at(
     doi: &str,
     mailto: &str,
 ) -> Result<PaperMetadata> {
-    let ua = user_agent(mailto);
+    let ua = http::polite_user_agent(mailto);
     let filter = format!("doi:{doi}");
     let url = reqwest::Url::parse_with_params(
         &format!("{base_url}/works"),
@@ -420,17 +408,9 @@ mod tests {
         assert_eq!(sanitize_search_query("|||"), "");
     }
 
-    // ── user_agent (polite pool, CRLF-stripped) ───────────────────────────
-    #[test]
-    fn user_agent_polite_pool_and_crlf_strip() {
-        assert_eq!(user_agent(""), "linXiv/1.0");
-        assert_eq!(user_agent("me@x.io"), "linXiv/1.0 (mailto:me@x.io)");
-        // CR/LF stripped so a tainted address can't inject a header break.
-        assert_eq!(
-            user_agent("me@x.io\r\nX-Evil: 1"),
-            "linXiv/1.0 (mailto:me@x.ioX-Evil: 1)"
-        );
-    }
+    // The polite-pool UA builder is shared with CrossRef and unit-tested in
+    // `http`; `search_200_parses_results_and_sends_polite_ua` below pins that
+    // OpenAlex actually sends it.
 
     // ── is_work_id ────────────────────────────────────────────────────────
     #[test]

@@ -2,43 +2,29 @@
 //!
 //! Bodies use `self.with_conn(|conn| ...)` and call `linxiv_core::service::project`
 //! and `::tag`. Replicate the Python dict shapes EXACTLY (field names + order),
-//! e.g. delete returns `{"deleted": project_id}`, add_paper_to_project returns
-//! `{"project_id", "paper_id", "paper_count"}`. Map Python `ValueError` paths to
+//! e.g. delete returns `{"deleted": project_id}`; add/remove_paper_to_project
+//! emit core's `PaperMembershipReceipt`. Map Python `ValueError` paths to
 //! `Err(ErrorData::invalid_params(msg, None))` with the exact message string
-//! (e.g. `format!("Project {project_id} not found.")`, status uses `{status:?}`).
+//! Misses word themselves via the typed `CoreError` variants; status uses `{status:?}`.
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_router, ErrorData};
 use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::json;
 
 use linxiv_core::error::CoreError;
 use linxiv_core::models::{ProjectDetails, ProjectIn, ProjectUpdateIn, Status, TagIn};
 use linxiv_core::service::paper::{self, Paper};
 use linxiv_core::service::project::{self, Project, Projects};
 use linxiv_core::service::tag::{self, Tag};
-use linxiv_core::storage::queries::{paper as paperq, tag as tagq};
 
-use crate::util::core_err;
+use crate::util::{core_err, guard_err};
 use crate::Server;
 
-/// Python `f"Project {id} not found."` — a bare int, no quoting.
-fn project_not_found(id: i64) -> ErrorData {
-    ErrorData::invalid_params(format!("Project {id} not found."), None)
-}
-
-/// Python `_SvcStatus(status)` — the three lifecycle strings, else a `ValueError`.
+/// Python `_SvcStatus(status)` — core owns the three-string parse and its message.
 fn parse_status(s: &str) -> Result<Status, ErrorData> {
-    match s {
-        "active" => Ok(Status::Active),
-        "archived" => Ok(Status::Archived),
-        "deleted" => Ok(Status::Deleted),
-        _ => Err(ErrorData::invalid_params(
-            format!("Invalid status {s:?}. Use 'active', 'archived', or 'deleted'."),
-            None,
-        )),
-    }
+    s.parse::<Status>().map_err(guard_err)
 }
 
 /// Serialize a value into the tool's text response (compact JSON string).
@@ -56,50 +42,27 @@ fn get_project(conn: &rusqlite::Connection, id: i64) -> Result<Option<ProjectDet
     project::get(conn, &proj(id)).map_err(core_err)
 }
 
+/// Existence guard — core's `get_required` owns the not-found wording.
 fn ensure_project(conn: &rusqlite::Connection, id: i64) -> Result<(), ErrorData> {
-    get_project(conn, id)?
+    project::get_required(conn, id)
         .map(|_| ())
-        .ok_or_else(|| project_not_found(id))
+        .map_err(guard_err)
 }
 
-fn ensure_paper(conn: &rusqlite::Connection, paper_id: &str) -> Result<(), ErrorData> {
-    paper::get(
-        conn,
-        &Paper {
-            source_id: Some(paper_id.to_string()),
-            ..Default::default()
-        },
-    )
-    .map_err(core_err)?
-    .map(|_| ())
-    .ok_or_else(|| {
-        ErrorData::invalid_params(format!("Paper {paper_id:?} not found in database."), None)
-    })
-}
-
-/// Shared body of add_paper_to_project / remove_paper_from_project.
+/// Shared body of add_paper_to_project / remove_paper_from_project — core's
+/// receipt; misses word themselves via the typed variants' Display.
 fn paper_membership(
     conn: &rusqlite::Connection,
     project_id: i64,
     paper_id: String,
-    op: fn(&rusqlite::Connection, i64, &[String]) -> Result<Vec<String>, CoreError>,
+    op: fn(&rusqlite::Connection, i64, &str) -> Result<project::PaperMembershipReceipt, CoreError>,
 ) -> Result<String, ErrorData> {
-    let failed = match op(conn, project_id, &[paper_id.clone()]) {
-        Ok(f) => f,
-        Err(CoreError::ProjectNotFound) => return Err(project_not_found(project_id)),
-        Err(e) => return Err(core_err(e)),
-    };
-    if !failed.is_empty() {
-        return Err(ErrorData::invalid_params(
-            format!("Paper {paper_id:?} not found in database."),
-            None,
-        ));
+    match op(conn, project_id, &paper_id) {
+        Ok(receipt) => jval(receipt),
+        Err(e @ CoreError::PaperNotFound(_)) => Err(crate::util::guard_err(e)),
+        Err(e @ CoreError::ProjectNotFound(_)) => Err(crate::util::guard_err(e)),
+        Err(e) => Err(core_err(e)),
     }
-    let count = get_project(conn, project_id)?
-        .ok_or_else(|| project_not_found(project_id))?
-        .source_fks
-        .len();
-    jval(json!({ "project_id": project_id, "paper_id": paper_id, "paper_count": count }))
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -227,7 +190,12 @@ impl Server {
                     .filter(|p| p.status != Status::Deleted)
                     .collect(),
             };
-            jval(projects)
+            let out = projects
+                .into_iter()
+                .map(|p| project::to_out(conn, p))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(core_err)?;
+            jval(out)
         })
     }
 
@@ -237,9 +205,11 @@ impl Server {
         _params: Parameters<ProjectIdParams>,
     ) -> Result<String, ErrorData> {
         let id = _params.0.project_id;
-        self.with_conn(|conn| match get_project(conn, id)? {
-            Some(d) => jval(d),
-            None => jval(Value::Null),
+        // Not-found is a tool ERROR (not JSON null), worded by CoreError like
+        // the route's 404 and the CLI's exit-1 body.
+        self.with_conn(|conn| {
+            let d = project::get_required(conn, id).map_err(crate::util::guard_err)?;
+            jval(project::to_out(conn, d).map_err(core_err)?)
         })
     }
 
@@ -259,7 +229,7 @@ impl Server {
             };
             let fk = project::create(conn, &pin).map_err(core_err)?;
             match get_project(conn, fk)? {
-                Some(d) => jval(d),
+                Some(d) => jval(project::to_out(conn, d).map_err(core_err)?),
                 None => jval(json!({ "id": fk, "name": name })),
             }
         })
@@ -296,7 +266,7 @@ impl Server {
             };
             project::update(conn, &upd).map_err(core_err)?;
             match get_project(conn, project_id)? {
-                Some(d) => jval(d),
+                Some(d) => jval(project::to_out(conn, d).map_err(core_err)?),
                 None => jval(json!({})),
             }
         })
@@ -324,7 +294,7 @@ impl Server {
             project_id,
             paper_id,
         } = _params.0;
-        self.with_conn(|conn| paper_membership(conn, project_id, paper_id, project::add_papers))
+        self.with_conn(|conn| paper_membership(conn, project_id, paper_id, project::add_paper))
     }
 
     #[tool(
@@ -350,7 +320,7 @@ impl Server {
         self.with_conn(|conn| {
             let failed = match project::add_papers(conn, project_id, &paper_ids) {
                 Ok(f) => f,
-                Err(CoreError::ProjectNotFound) => return Err(project_not_found(project_id)),
+                Err(e @ CoreError::ProjectNotFound(_)) => return Err(crate::util::guard_err(e)),
                 Err(e @ CoreError::ProjectDeleted(_)) => {
                     return Err(ErrorData::invalid_params(e.to_string(), None))
                 }
@@ -358,7 +328,7 @@ impl Server {
             };
             let added: Vec<&String> = paper_ids.iter().filter(|id| !failed.contains(id)).collect();
             let count = get_project(conn, project_id)?
-                .ok_or_else(|| project_not_found(project_id))?
+                .ok_or_else(|| crate::util::guard_err(CoreError::ProjectNotFound(project_id)))?
                 .source_fks
                 .len();
             jval(json!({
@@ -380,7 +350,7 @@ impl Server {
             project_id,
             paper_id,
         } = _params.0;
-        self.with_conn(|conn| paper_membership(conn, project_id, paper_id, project::remove_papers))
+        self.with_conn(|conn| paper_membership(conn, project_id, paper_id, project::remove_paper))
     }
 
     #[tool(description = "Archive a project (read-only, still visible).")]
@@ -405,7 +375,10 @@ impl Server {
         self.with_conn(|conn| {
             ensure_project(conn, id)?;
             project::restore(conn, &proj(id)).map_err(core_err)?;
-            jval(json!({ "restored_project_id": id }))
+            jval(linxiv_core::service::trash::RestoredProject {
+                ok: true,
+                restored_project_id: id,
+            })
         })
     }
 
@@ -418,7 +391,10 @@ impl Server {
         self.with_conn(|conn| {
             ensure_project(conn, id)?;
             project::hard_delete(conn, &proj(id)).map_err(core_err)?;
-            jval(json!({ "hard_deleted_project_id": id }))
+            jval(linxiv_core::service::trash::HardDeletedProject {
+                ok: true,
+                hard_deleted_project_id: id,
+            })
         })
     }
 
@@ -429,8 +405,7 @@ impl Server {
     ) -> Result<String, ErrorData> {
         let ProjectTagsParams { project_id, tags } = _params.0;
         self.with_conn(|conn| {
-            ensure_project(conn, project_id)?;
-            let updated = tagq::add_project_tags(conn, project_id, &tags).map_err(core_err)?;
+            let updated = project::add_project_tags(conn, project_id, &tags).map_err(guard_err)?;
             jval(json!({ "project_id": project_id, "tags": updated }))
         })
     }
@@ -442,8 +417,8 @@ impl Server {
     ) -> Result<String, ErrorData> {
         let ProjectTagsParams { project_id, tags } = _params.0;
         self.with_conn(|conn| {
-            ensure_project(conn, project_id)?;
-            let updated = tagq::remove_project_tags(conn, project_id, &tags).map_err(core_err)?;
+            let updated =
+                project::remove_project_tags(conn, project_id, &tags).map_err(guard_err)?;
             jval(json!({ "project_id": project_id, "tags": updated }))
         })
     }
@@ -456,7 +431,7 @@ impl Server {
         let id = _params.0.project_id;
         self.with_conn(|conn| match get_project(conn, id)? {
             Some(d) => jval(json!({ "project_id": id, "tags": d.project_tags })),
-            None => Err(project_not_found(id)),
+            None => Err(crate::util::guard_err(CoreError::ProjectNotFound(id))),
         })
     }
 
@@ -494,8 +469,7 @@ impl Server {
     ) -> Result<String, ErrorData> {
         let PaperTagsParams { paper_id, tags } = _params.0;
         self.with_conn(|conn| {
-            ensure_paper(conn, &paper_id)?;
-            let updated = paperq::add_paper_tags(conn, &paper_id, &tags).map_err(core_err)?;
+            let updated = paper::add_paper_tags(conn, &paper_id, &tags).map_err(guard_err)?;
             jval(json!({ "paper_id": paper_id, "tags": updated }))
         })
     }
@@ -507,8 +481,7 @@ impl Server {
     ) -> Result<String, ErrorData> {
         let PaperTagsParams { paper_id, tags } = _params.0;
         self.with_conn(|conn| {
-            ensure_paper(conn, &paper_id)?;
-            let updated = paperq::remove_paper_tags(conn, &paper_id, &tags).map_err(core_err)?;
+            let updated = paper::remove_paper_tags(conn, &paper_id, &tags).map_err(guard_err)?;
             jval(json!({ "paper_id": paper_id, "tags": updated }))
         })
     }
@@ -631,7 +604,7 @@ mod tests {
             }))
             .await
             .unwrap();
-        let out: Value = serde_json::from_str(&out).unwrap();
+        let out: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(out["ok"], json!(false));
         assert_eq!(out["added"], json!(["arxiv:1"]));
         assert_eq!(out["failed"], json!(["arxiv:nope"]));
@@ -644,6 +617,6 @@ mod tests {
             }))
             .await
             .unwrap_err();
-        assert_eq!(err.message.as_ref(), "Project 999 not found.");
+        assert_eq!(err.message.as_ref(), "Project 999 not found");
     }
 }

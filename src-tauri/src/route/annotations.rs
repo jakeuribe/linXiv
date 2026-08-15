@@ -9,7 +9,6 @@ use serde_json::{json, Value};
 use linxiv_core::models::{AnnotationIn, AnnotationUpdateIn};
 use linxiv_core::service::annotation::{self as svc_ann, Annotations};
 use linxiv_core::service::paper as svc_paper;
-use linxiv_core::storage::queries::paper as store_paper;
 
 use crate::route::{path_i64, ApiError, ReqCtx};
 use crate::state::AppState;
@@ -34,7 +33,7 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let project_fk = ctx.q_i64("project_id");
     let all_projects = ctx.q_bool("all_projects");
     state.with_conn(|conn| {
-        let root = match store_paper::get_paper_root(conn, source_id)? {
+        let root = match svc_paper::get_paper_root(conn, source_id)? {
             Some(r) => r,
             None => return Ok(json!({ "annotations": [] })),
         };
@@ -186,6 +185,26 @@ mod tests {
             .await
             .unwrap();
         assert!(listed["annotations"].as_array().unwrap().is_empty());
+    }
+
+    /// Parity with notes: an unknown paper is rejected via the service resolver,
+    /// never conjured into a metadata-less PAPER_ROOTS row.
+    #[tokio::test]
+    async fn create_on_unknown_paper_is_404_and_creates_no_root() {
+        let st = state();
+        let err = req(
+            &st,
+            "POST",
+            "/api/annotations",
+            Some(json!({ "source_id": "arxiv:404", "anchor": ANCHOR })),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status, 404);
+        assert!(st
+            .with_conn(|conn| svc_paper::get_paper_root(conn, "arxiv:404"))
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

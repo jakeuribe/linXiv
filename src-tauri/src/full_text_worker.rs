@@ -143,20 +143,27 @@ async fn run(app: tauri::AppHandle) {
         }
         let sid = paper.source_id.clone();
         match ingest_full_text(&state, &paper).await {
-            Ok(indexed) => {
-                match indexed {
-                    Some(0) => eprintln!("[full-text] {sid} — tarball held no TeX, indexed empty"),
-                    Some(chars) => eprintln!("[full-text] {sid} — {chars} chars"),
+            Ok(receipt) => {
+                match (receipt.indexed, receipt.chars) {
+                    (true, Some(0)) => {
+                        eprintln!("[full-text] {sid} — tarball held no TeX, indexed empty")
+                    }
+                    (true, chars) => {
+                        eprintln!("[full-text] {sid} — {} chars", chars.unwrap_or(0))
+                    }
                     // Nothing was written, so DOWNLOADED_SOURCE is still unset
                     // and the paper is still a candidate — park it rather than
                     // fetch the same tarball again next pass.
-                    None => eprintln!("[full-text] {sid} — empty re-fetch, kept the stored text"),
+                    (false, _) => {
+                        eprintln!("[full-text] {sid} — empty re-fetch, kept the stored text")
+                    }
                 }
                 consecutive_failures = 0;
-                match indexed {
-                    Some(_) => parked.remove(&sid),
-                    None => parked.insert(sid, Park::PERMANENT),
-                };
+                if receipt.indexed {
+                    parked.remove(&sid);
+                } else {
+                    parked.insert(sid, Park::PERMANENT);
+                }
                 nap(GAP).await;
             }
             Err(e) => {

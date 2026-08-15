@@ -7,6 +7,7 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
+use linxiv_core::error::CoreError;
 use linxiv_core::service::files;
 use linxiv_core::service::paper::{self as svc_paper, pdf_on_disk_name, Paper};
 
@@ -78,7 +79,7 @@ fn delete_saved(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
                 ..Default::default()
             },
         )?
-        .ok_or_else(|| ApiError::new(404, "Paper not found"))?;
+        .ok_or_else(|| CoreError::PaperNotFound(source_id.to_string()))?;
         for ver in &all.versions {
             let path = resolve_local_pdf(&pdf_dir, ver.pdf_path.as_deref(), source_id, ver.version);
             if let Some(p) = &path {
@@ -111,11 +112,16 @@ fn pdf_path(state: &AppState, source_id: &str, ctx: &ReqCtx<'_>) -> Result<Value
                 ..Default::default()
             },
         )?
-        .ok_or_else(|| ApiError::new(404, "Paper not found"))?;
+        .ok_or_else(|| CoreError::PaperNotFound(source_id.to_string()))?;
         let ver = version.unwrap_or(paper.version);
         let path = resolve_local_pdf(&pdf_dir, paper.pdf_path.as_deref(), &paper.source_id, ver)
             .ok_or_else(|| ApiError::new(404, "PDF file not found on disk"))?;
-        Ok(json!({ "path": path }))
+        // Canonical location envelope (path is always Some here — missing is 404).
+        crate::route::to_value(&files::PdfLocation {
+            source_id: paper.source_id,
+            version: ver,
+            path: Some(path.into()),
+        })
     })
 }
 
@@ -182,7 +188,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.status, 404);
-        assert_eq!(err.detail, "Paper not found");
+        assert_eq!(err.detail, "Paper 2204.12985 not found");
     }
 
     #[tokio::test]

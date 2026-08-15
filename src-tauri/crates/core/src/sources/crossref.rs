@@ -2,17 +2,20 @@
 //!
 //! The pure parser (`parse_work` + the JATS tag-stripper + date-parts handling)
 //! is the load-bearing piece and is fixture-tested below. `doi_resolve` reuses
-//! `parse_work`. The async fetch wrappers route through `sources::http`
-//! (integration-tested once the http unit lands).
+//! `parse_work`. The async fetch wrappers route through `sources::http` and are
+//! wiremock-tested below; the `PaperSource` adapter over them is covered in
+//! `tests/paper_source.rs`.
 //!
-//! Plan §5.4. No auth required; `api.crossref.org` only.
+//! Plan §5.4. No auth required; `api.crossref.org` only. Every request carries
+//! the polite-pool `User-Agent` built by `http::polite_user_agent` from the
+//! `mailto` DI param (shared with OpenAlex — same header, same CR/LF stripping).
 
 use chrono::NaiveDate;
 use serde_json::Value;
 
 use super::http;
 use crate::error::{CoreError, Result};
-use crate::models::{normalize_orcid, PaperMetadata};
+use crate::models::{doi_source_id, normalize_orcid, PaperMetadata};
 
 const CROSSREF_BASE: &str = "https://api.crossref.org/works";
 /// CrossRef is reached over exactly one host; the http guard enforces it.
@@ -123,7 +126,7 @@ pub fn parse_work(msg: &Value, doi: &str) -> PaperMetadata {
         source_id: if paper_doi.is_empty() {
             String::new()
         } else {
-            format!("doi:{paper_doi}")
+            doi_source_id(&paper_doi)
         },
         version: 1,
         title,
@@ -188,14 +191,15 @@ pub fn parse_search_body(body: &[u8]) -> Vec<PaperMetadata> {
 
 /// Fetch CrossRef metadata for a DOI. `None` on any non-200 / network / parse
 /// error, matching the Python `except Exception: return None`.
-pub async fn fetch_by_doi(doi: &str) -> Option<PaperMetadata> {
-    fetch_by_doi_checked(doi).await.ok().flatten()
+/// `mailto` selects CrossRef's polite pool (DI param, not env).
+pub async fn fetch_by_doi(doi: &str, mailto: &str) -> Option<PaperMetadata> {
+    fetch_by_doi_checked(doi, mailto).await.ok().flatten()
 }
 
 /// Like `fetch_by_doi`, but distinguishes "no work found" (`Ok(None)`) from a
 /// transport/HTTP/malformed-body failure (`Err`).
-pub async fn fetch_by_doi_checked(doi: &str) -> Result<Option<PaperMetadata>> {
-    fetch_by_doi_checked_at(CROSSREF_BASE, ALLOW, doi).await
+pub async fn fetch_by_doi_checked(doi: &str, mailto: &str) -> Result<Option<PaperMetadata>> {
+    fetch_by_doi_checked_at(CROSSREF_BASE, ALLOW, doi, mailto).await
 }
 
 /// `fetch_by_doi_checked` against an injected base URL + host allowlist (the
@@ -204,9 +208,11 @@ async fn fetch_by_doi_checked_at(
     base: &str,
     allow: &[&str],
     doi: &str,
+    mailto: &str,
 ) -> Result<Option<PaperMetadata>> {
     let url = format!("{base}/{doi}");
-    let resp = http::get_guarded(&url, allow).await?;
+    let ua = http::polite_user_agent(mailto);
+    let resp = http::get_guarded_with(&url, allow, &[("User-Agent", &ua)]).await?;
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);
     }
@@ -230,15 +236,30 @@ async fn fetch_by_doi_checked_at(
     Ok(parse_doi_body(&body, doi))
 }
 
-/// Search CrossRef by title. Empty vec on any error.
-pub async fn search_by_title(title: &str, limit: u32) -> Vec<PaperMetadata> {
-    let Ok(url) = reqwest::Url::parse_with_params(
-        CROSSREF_BASE,
-        [("query.title", title), ("rows", &limit.to_string())],
-    ) else {
+/// `(sort, order)` query values for the public sort keys — CrossRef's `score` is
+/// its relevance metric. Unknown keys are refused rather than silently dropped
+/// (the `PaperSource` contract); `search_by_title` pins "relevance" itself.
+fn sort_params(sort: &str) -> Result<(&'static str, &'static str)> {
+    Ok(match sort {
+        "relevance" => ("score", "desc"),
+        "newest" => ("published", "desc"),
+        "oldest" => ("published", "asc"),
+        "citations" => ("is-referenced-by-count", "desc"),
+        other => {
+            return Err(CoreError::Validation(format!(
+                "CrossRef: unknown sort '{other}'"
+            )))
+        }
+    })
+}
+
+/// Search CrossRef by title, relevance-ordered. Empty vec on any error.
+pub async fn search_by_title(title: &str, limit: u32, mailto: &str) -> Vec<PaperMetadata> {
+    let Ok(url) = search_url(title, limit, "relevance") else {
         return Vec::new();
     };
-    let Ok(resp) = http::get_guarded(url.as_str(), ALLOW).await else {
+    let ua = http::polite_user_agent(mailto);
+    let Ok(resp) = http::get_guarded_with(url.as_str(), ALLOW, &[("User-Agent", &ua)]).await else {
         return Vec::new();
     };
     if resp.status() != reqwest::StatusCode::OK {
@@ -250,16 +271,33 @@ pub async fn search_by_title(title: &str, limit: u32) -> Vec<PaperMetadata> {
     parse_search_body(&body)
 }
 
+/// The `/works` title-search URL for one `(title, limit, sort)`.
+fn search_url(title: &str, limit: u32, sort: &str) -> Result<reqwest::Url> {
+    let (sort_by, order) = sort_params(sort)?;
+    reqwest::Url::parse_with_params(
+        CROSSREF_BASE,
+        [
+            ("query.title", title),
+            ("rows", &limit.to_string()),
+            ("sort", sort_by),
+            ("order", order),
+        ],
+    )
+    .map_err(|e| CoreError::Upstream(format!("CrossRef search failed: {e}")))
+}
+
 /// `search_by_title` that reports transport/HTTP failures instead of folding them
 /// into an empty result, so a caller can tell "CrossRef is down" from "no matches".
 /// Same relationship to `search_by_title` as `fetch_by_doi_checked` has to `fetch_by_doi`.
-pub async fn search_by_title_checked(title: &str, limit: u32) -> Result<Vec<PaperMetadata>> {
-    let url = reqwest::Url::parse_with_params(
-        CROSSREF_BASE,
-        [("query.title", title), ("rows", &limit.to_string())],
-    )
-    .map_err(|e| CoreError::Upstream(format!("CrossRef search failed: {e}")))?;
-    let resp = http::get_guarded(url.as_str(), ALLOW).await?;
+pub async fn search_by_title_checked(
+    title: &str,
+    limit: u32,
+    sort: &str,
+    mailto: &str,
+) -> Result<Vec<PaperMetadata>> {
+    let url = search_url(title, limit, sort)?;
+    let ua = http::polite_user_agent(mailto);
+    let resp = http::get_guarded_with(url.as_str(), ALLOW, &[("User-Agent", &ua)]).await?;
     if resp.status() != reqwest::StatusCode::OK {
         return Err(CoreError::Upstream(format!(
             "CrossRef search failed: HTTP {}",
@@ -448,6 +486,26 @@ mod tests {
         assert!(parse_search_body(b"garbage").is_empty());
     }
 
+    // ---- sort (honoured, not ignored — the PaperSource contract) ----
+    #[test]
+    fn search_url_carries_sort_and_order() {
+        let url = search_url("attention", 5, "newest").unwrap();
+        let q: Vec<(String, String)> = url
+            .query_pairs()
+            .map(|(k, v)| (k.into_owned(), v.into_owned()))
+            .collect();
+        assert!(q.contains(&("sort".into(), "published".into())), "{q:?}");
+        assert!(q.contains(&("order".into(), "desc".into())), "{q:?}");
+        assert_eq!(sort_params("oldest").unwrap(), ("published", "asc"));
+        assert_eq!(sort_params("relevance").unwrap(), ("score", "desc"));
+    }
+
+    #[test]
+    fn unknown_sort_is_refused_not_ignored() {
+        let err = search_url("attention", 5, "bogus").unwrap_err();
+        assert!(matches!(err, CoreError::Validation(_)), "got {err}");
+    }
+
     // ---- fetch_by_doi_checked: 404-vs-failure distinction the backfill route relies on ----
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -461,11 +519,38 @@ mod tests {
             .mount(&server)
             .await;
 
-        let m = fetch_by_doi_checked_at(&server.uri(), &["127.0.0.1"], "10.1000/xyz")
+        let m = fetch_by_doi_checked_at(&server.uri(), &["127.0.0.1"], "10.1000/xyz", "")
             .await
             .expect("200 is Ok")
             .expect("title present is Some");
         assert_eq!(m.source_id, "doi:10.1000/xyz");
+    }
+
+    /// CROSSREF_MAILTO is a user-editable settings field, so this pins both that
+    /// the polite-pool UA reaches CrossRef at all (it used to read the setting
+    /// nowhere) and that a CR/LF in the address can't split it into a second header.
+    #[tokio::test]
+    async fn sends_polite_ua_with_crlf_stripped_mailto() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/10.1000/xyz"))
+            .and(wiremock::matchers::header(
+                "User-Agent",
+                "linXiv/1.0 (mailto:me@x.ioX-Evil: 1)",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(WORK_BODY))
+            .mount(&server)
+            .await;
+
+        fetch_by_doi_checked_at(
+            &server.uri(),
+            &["127.0.0.1"],
+            "10.1000/xyz",
+            "me@x.io\r\nX-Evil: 1",
+        )
+        .await
+        .expect("the mock only matches when the sanitized polite UA is sent")
+        .expect("title present is Some");
     }
 
     #[tokio::test]
@@ -477,7 +562,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let m = fetch_by_doi_checked_at(&server.uri(), &["127.0.0.1"], "10.1000/missing")
+        let m = fetch_by_doi_checked_at(&server.uri(), &["127.0.0.1"], "10.1000/missing", "")
             .await
             .expect("404 is Ok, not Err");
         assert!(m.is_none());
@@ -492,7 +577,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let err = fetch_by_doi_checked_at(&server.uri(), &["127.0.0.1"], "10.1000/xyz")
+        let err = fetch_by_doi_checked_at(&server.uri(), &["127.0.0.1"], "10.1000/xyz", "")
             .await
             .expect_err(
                 "malformed 200 body must be Err, matching OpenAlex's json-parse-error path",
@@ -509,7 +594,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let err = fetch_by_doi_checked_at(&server.uri(), &["127.0.0.1"], "10.1000/xyz")
+        let err = fetch_by_doi_checked_at(&server.uri(), &["127.0.0.1"], "10.1000/xyz", "")
             .await
             .expect_err("503 must be Err, not Ok(None)");
         assert!(matches!(err, CoreError::Upstream(_)), "got {err}");

@@ -24,26 +24,23 @@ export function NoteCard({ note, projects = [], onEdit, onDelete }: NoteCardProp
   const navigate = useNavigate();
   const cardRef = useRef<HTMLDivElement>(null);
   // Clicking the title/preview opens the full note on its own page so a long
-  // note can be read without dropping into the editor. id is effectively always
-  // set, but guard so a malformed note isn't a dead click.
-  const openNote = note.id != null ? () => navigate(`/notes/${note.id}`) : undefined;
+  // note can be read without dropping into the editor.
+  const openNote = () => navigate(`/notes/${note.id}`);
   // A drag-select that ends inside this region still fires click; don't navigate
   // away while the user is selecting preview text to copy. Only a selection
   // inside THIS card suppresses the click — a selection elsewhere shouldn't.
-  const handleCardClick = openNote
-    ? () => {
-        const sel = window.getSelection();
-        if (
-          sel &&
-          !sel.isCollapsed &&
-          sel.anchorNode &&
-          cardRef.current?.contains(sel.anchorNode)
-        ) {
-          return;
-        }
-        openNote();
-      }
-    : undefined;
+  const handleCardClick = () => {
+    const sel = window.getSelection();
+    if (
+      sel &&
+      !sel.isCollapsed &&
+      sel.anchorNode &&
+      cardRef.current?.contains(sel.anchorNode)
+    ) {
+      return;
+    }
+    openNote();
+  };
 
   const { date: stamp, edited: isEdited } = noteEdited(note);
   const scopeProject =
@@ -62,26 +59,17 @@ export function NoteCard({ note, projects = [], onEdit, onDelete }: NoteCardProp
       {/* Title + preview open the full-note page; actions row below stays separate. */}
       <div
         ref={cardRef}
-        role={openNote ? "button" : undefined}
-        tabIndex={openNote ? 0 : undefined}
-        aria-label={openNote ? `Open note: ${note.title || "Untitled note"}` : undefined}
+        role="button"
+        tabIndex={0}
+        aria-label={`Open note: ${note.title || "Untitled note"}`}
         onClick={handleCardClick}
-        onKeyDown={
-          openNote
-            ? (e) => {
-                if (e.key === "Enter" || e.key === " ") {
-                  e.preventDefault();
-                  openNote();
-                }
-              }
-            : undefined
-        }
-        className={
-          "flex flex-col gap-1.5" +
-          (openNote
-            ? " cursor-pointer rounded -m-1 p-1 transition-colors hover:bg-[var(--color-border)]"
-            : "")
-        }
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            openNote();
+          }
+        }}
+        className="flex flex-col gap-1.5 cursor-pointer rounded -m-1 p-1 transition-colors hover:bg-[var(--color-border)]"
       >
         {/* Header: title + scope badge + date */}
         {/* Title on its own full-width row so it never competes with the scope

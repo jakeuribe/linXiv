@@ -11,7 +11,6 @@ use linxiv_core::models::{Status, TagIn};
 use linxiv_core::service::paper as svc_paper;
 use linxiv_core::service::project::{self as svc_project, Projects};
 use linxiv_core::service::tag::{self as svc_tag, Tag};
-use linxiv_core::storage::queries::paper as paperq;
 
 use crate::route::{path_i64, ApiError, ReqCtx};
 use crate::state::AppState;
@@ -66,7 +65,7 @@ fn detail(state: &AppState, label: &str) -> Result<Value, ApiError> {
         let mut projects = Vec::new();
         for p in svc_project::get_many(conn, &active)? {
             if p.project_tags.iter().any(|t| t.eq_ignore_ascii_case(label)) {
-                projects.push(super::projects::project_to_dict_with_count(conn, p)?);
+                projects.push(super::projects::project_out(conn, p)?);
             }
         }
 
@@ -116,7 +115,7 @@ fn delete(state: &AppState, id: &str) -> Result<Value, ApiError> {
 }
 
 /// The `{"tags": [...]}` body both paper-tag arms take. Trimmed, blanks dropped,
-/// case-deduped — the normalization `create` and `tagq::add_project_tags` already
+/// case-deduped — the normalization `create` and `add_project_tags` already
 /// apply, so a label of `"  "` can't reach the TAG table. Nothing left is a 422.
 fn body_tags(ctx: &ReqCtx<'_>) -> Result<Vec<String>, ApiError> {
     #[derive(Deserialize)]
@@ -138,19 +137,19 @@ fn body_tags(ctx: &ReqCtx<'_>) -> Result<Vec<String>, ApiError> {
     Ok(tags)
 }
 
-/// `POST /api/papers/{source_id}/tags` — `paperq::add_paper_tags`; returns the
-/// paper's full tag list after the union. Unknown paper → core NotFound → 404.
+/// `POST /api/papers/{source_id}/tags` — `svc_paper::add_paper_tags`; returns the
+/// paper's full tag list after the union. Unknown paper → `PaperNotFound` → 404.
 fn add_tags(state: &AppState, source_id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let tags = body_tags(ctx)?;
-    let updated = state.with_conn(|conn| paperq::add_paper_tags(conn, source_id, &tags))?;
+    let updated = state.with_conn(|conn| svc_paper::add_paper_tags(conn, source_id, &tags))?;
     Ok(json!({ "source_id": source_id, "tags": updated }))
 }
 
-/// `DELETE /api/papers/{source_id}/tags` — `paperq::remove_paper_tags`; returns the
-/// remaining tags. Unknown paper → core NotFound → 404.
+/// `DELETE /api/papers/{source_id}/tags` — `svc_paper::remove_paper_tags`; returns
+/// the remaining tags. Unknown paper → `PaperNotFound` → 404.
 fn remove_tags(state: &AppState, source_id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let tags = body_tags(ctx)?;
-    let updated = state.with_conn(|conn| paperq::remove_paper_tags(conn, source_id, &tags))?;
+    let updated = state.with_conn(|conn| svc_paper::remove_paper_tags(conn, source_id, &tags))?;
     Ok(json!({ "source_id": source_id, "tags": updated }))
 }
 

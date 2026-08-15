@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use linxiv_core::error::CoreError;
-use linxiv_core::service::{paper as svc_paper, tag as svc_tag};
+use linxiv_core::service::paper as svc_paper;
 
 use crate::state::AppState;
 
@@ -209,27 +209,11 @@ async fn route_inner(state: &AppState, req: ApiRequest) -> Result<Value, ApiErro
 
 // ── reference arms (the worked example every group arm copies) ───────────────
 
-/// `GET /api/stats` — `api/app.py::stats`. Note the envelope differs from the CLI
-/// `stats` command: it adds `recent_papers` (the 10 newest, full `to_dict`).
+/// `GET /api/stats` — `api/app.py::stats`. `service::stats` owns the envelope;
+/// all three surfaces emit it.
 fn stats(state: &AppState) -> Result<Value, ApiError> {
-    state.with_conn(|conn| {
-        let papers = svc_paper::list_papers(conn, true, None, 0, None)?;
-        let tags = svc_tag::list_all_tags(conn)?;
-        let categories = svc_paper::get_categories(conn)?;
-        let pdf_count = papers.iter().filter(|p| p.has_pdf).count();
-        let recent: Vec<Value> = papers
-            .iter()
-            .take(10)
-            .map(|p| serde_json::to_value(p).unwrap_or(Value::Null))
-            .collect();
-        Ok(json!({
-            "paper_count": papers.len(),
-            "tag_count": tags.len(),
-            "category_count": categories.len(),
-            "pdf_count": pdf_count,
-            "recent_papers": recent,
-        }))
-    })
+    let s = state.with_conn(|conn| linxiv_core::service::stats::stats(conn))?;
+    serde_json::to_value(s).map_err(|e| ApiError::new(500, e.to_string()))
 }
 
 /// `GET /api/categories` — `api/app.py::api_categories`. Note the API wraps the

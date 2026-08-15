@@ -13,6 +13,7 @@
 
 use chrono::{NaiveDate, NaiveDateTime};
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -42,6 +43,34 @@ pub const ARXIV_PDF_MARKER: &str = "/pdf/";
 /// SQL callers build their pattern from [`ARXIV_ID_PREFIX`].
 pub fn is_arxiv_source_id(source_id: &str) -> bool {
     source_id.starts_with(ARXIV_ID_PREFIX)
+}
+
+pub const OPENALEX_ID_PREFIX: &str = "openalex:";
+pub const DOI_ID_PREFIX: &str = "doi:";
+pub const LOCAL_ID_PREFIX: &str = "local:";
+
+/// The one home for `source_id` namespace construction (CONTEXT.md § source_id,
+/// ADR 0002). Sources build ids here so [`strip_namespace`] is the exact inverse.
+pub fn arxiv_source_id(bare_id: &str) -> String {
+    format!("{ARXIV_ID_PREFIX}{bare_id}")
+}
+
+pub fn openalex_source_id(work_id: &str) -> String {
+    format!("{OPENALEX_ID_PREFIX}{work_id}")
+}
+
+pub fn doi_source_id(doi: &str) -> String {
+    format!("{DOI_ID_PREFIX}{doi}")
+}
+
+pub fn local_source_id(hash: &str) -> String {
+    format!("{LOCAL_ID_PREFIX}{hash}")
+}
+
+/// Strip one leading provider prefix if present (`removeprefix` semantics —
+/// at most once, never mid-string), else return the id unchanged.
+pub fn strip_provider_prefix<'a>(source_id: &'a str, prefix: &str) -> &'a str {
+    source_id.strip_prefix(prefix).unwrap_or(source_id)
 }
 
 /// The `date.min` sentinel (`0001-01-01`) used to mark "no published date".
@@ -124,7 +153,7 @@ fn is_orcid_shaped(s: &str) -> bool {
 // ---------------------------------------------------------------------------
 
 /// Search-result wire shape. D16: distinct from `PaperDetails`; do not unify.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct SearchResultOut {
     pub source_id: String,
     pub version: i64,
@@ -166,7 +195,7 @@ impl From<PaperMetadata> for SearchResultOut {
 /// Full paper view. D16: distinct from `SearchResultOut`; do not unify.
 /// `published`/`updated` are `Option<NaiveDate>` -> ISO string or `null`,
 /// matching `to_dict`'s `.isoformat() if d else None`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct PaperDetails {
     pub paper_id: i64,
     pub source_id: String,
@@ -201,13 +230,16 @@ pub struct PaperDetails {
     #[serde(default)]
     pub source: Option<String>,
     /// Search-index payload, not a display field: megabytes of TeX per paper
-    /// once ingestion runs.
+    /// once ingestion runs. `ts(skip)` mirrors `skip_serializing` — ts-rs's
+    /// serde-compat only understands the unconditional `skip`.
     #[serde(default, skip_serializing)]
+    #[ts(skip)]
     pub full_text: Option<String>,
     #[serde(default)]
     pub downloaded_source: bool,
-    #[serde(default)]
-    pub source_fk: Option<i64>,
+    /// Never null: PAPER.SOURCE_FK is NOT NULL and every reader selects from
+    /// the `papers` view.
+    pub source_fk: i64,
 }
 
 /// Aggregate view of a paper across all stored versions (PaperDetailsAll).
@@ -249,7 +281,7 @@ pub struct PaperDetailsAll {
 // Authors (service/models/author.py)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct BasicAuthorDetails {
     pub author_id: i64,
     #[serde(default)]
@@ -263,7 +295,7 @@ pub struct BasicAuthorDetails {
 }
 
 /// `AuthorWithCount(BasicAuthorDetails)` — flattened base + `paper_count`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct AuthorWithCount {
     #[serde(flatten)]
     pub base: BasicAuthorDetails,
@@ -278,7 +310,7 @@ pub struct TagWithCount {
     pub paper_count: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct AuthorPaperPreview {
     pub paper_id: i64,
     pub source_id: String,
@@ -288,18 +320,46 @@ pub struct AuthorPaperPreview {
     pub title: Option<String>,
 }
 
+/// `{**author, paper_count, papers}` — the author-detail composite every surface
+/// (route GET/PATCH, `linxiv author get`, MCP `get_author`) emits.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct AuthorWithPapers {
+    #[serde(flatten)]
+    pub base: BasicAuthorDetails,
+    pub paper_count: usize,
+    pub papers: Vec<AuthorPaperPreview>,
+}
+
 // ---------------------------------------------------------------------------
 // Project (service/models/project.py)
 // ---------------------------------------------------------------------------
 
 /// Literal["active","archived","deleted"] — validates at deserialize.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, TS)]
 #[serde(rename_all = "lowercase")]
 pub enum Status {
     #[default]
     Active,
     Archived,
     Deleted,
+}
+
+/// The one parse of a user-supplied status string, and the one message a bad one
+/// gets. Route, CLI and MCP all come through here (ADR 0010 — locality).
+impl std::str::FromStr for Status {
+    type Err = crate::error::CoreError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "active" => Ok(Status::Active),
+            "archived" => Ok(Status::Archived),
+            "deleted" => Ok(Status::Deleted),
+            _ => Err(crate::error::CoreError::Validation(format!(
+                "Invalid status {}. Use 'active', 'archived', or 'deleted'.",
+                crate::formats::pyrepr(s)
+            ))),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -329,45 +389,38 @@ pub struct ProjectDetails {
     pub share_id: Option<String>,
 }
 
-impl ProjectDetails {
-    /// Derived `paper_count = len(source_fks)`; emitted by the `Serialize` impl
-    /// below to match `service/models/project.py::to_dict` (plan §5.2, D16).
-    pub fn paper_count(&self) -> usize {
-        self.source_fks.len()
-    }
-}
-
-// Manual Serialize matching Python's to_dict key order, with the derived
-// `paper_count` between `source_fks` and `status`, plus the trailing `share_id`.
-// A `#[derive(Serialize)]` would silently drop paper_count (it is a method).
-impl Serialize for ProjectDetails {
-    fn serialize<S: serde::Serializer>(&self, ser: S) -> std::result::Result<S::Ok, S::Error> {
-        use serde::ser::SerializeStruct;
-        let mut st = ser.serialize_struct("ProjectDetails", 12)?;
-        st.serialize_field("id", &self.id)?;
-        st.serialize_field("name", &self.name)?;
-        st.serialize_field("description", &self.description)?;
-        st.serialize_field("color", &self.color)?;
-        st.serialize_field("project_tags", &self.project_tags)?;
-        st.serialize_field("source_fks", &self.source_fks)?;
-        st.serialize_field("paper_count", &self.paper_count())?;
-        st.serialize_field("status", &self.status)?;
-        st.serialize_field("created_at", &self.created_at)?;
-        st.serialize_field("updated_at", &self.updated_at)?;
-        st.serialize_field("archived_at", &self.archived_at)?;
-        st.serialize_field("share_id", &self.share_id)?;
-        st.end()
-    }
+// SERIALIZER 3 — ProjectOut: the one project wire shape, emitted identically by
+// the route, the CLI and MCP (ADR-0011 scope). `ProjectDetails` itself is
+// deliberately NOT Serialize so no surface can bypass this shape. Produced only
+// via `service::project::to_out`, which resolves `source_fks` → namespaced
+// `source_ids` and renders `color` as `color_hex`.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct ProjectOut {
+    /// Never null: `ProjectDetails.id` is optional only because that struct
+    /// doubles as the pre-insert shape; `to_out` refuses a row without an id.
+    pub id: i64,
+    pub name: String,
+    pub description: String,
+    pub color_hex: Option<String>,
+    pub project_tags: Vec<String>,
+    pub source_ids: Vec<String>,
+    pub paper_count: usize,
+    pub status: Status,
+    pub created_at: Option<NaiveDateTime>,
+    pub updated_at: Option<NaiveDateTime>,
+    pub archived_at: Option<NaiveDateTime>,
+    pub share_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
 // Note (service/models/note.py) — `note_id` serializes as "id"
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct NoteDetails {
+    /// NOTE_SK is the primary key; a read row always has one.
     #[serde(rename = "id")]
-    pub note_id: Option<i64>,
+    pub note_id: i64,
     /// Stable identity (uuid v4) surviving export/import + share.
     #[serde(default)]
     pub uuid: String,
@@ -390,7 +443,7 @@ pub struct NoteDetails {
 // frontend renderer reads its structure); COMMENT defaults "".
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct AnnotationDetails {
     #[serde(rename = "id")]
     pub annotation_id: i64,
@@ -602,6 +655,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn source_id_constructors_round_trip() {
+        assert_eq!(
+            strip_namespace(&arxiv_source_id("2204.12985")),
+            "2204.12985"
+        );
+        assert_eq!(strip_namespace(&openalex_source_id("W123")), "W123");
+        assert_eq!(
+            strip_namespace(&doi_source_id("10.1000/xyz")),
+            "10.1000/xyz"
+        );
+        assert_eq!(strip_namespace(&local_source_id("deadbeef")), "deadbeef");
+        assert!(is_arxiv_source_id(&arxiv_source_id("2204.12985")));
+        assert!(!is_arxiv_source_id(&openalex_source_id("W123")));
+        assert!(!is_arxiv_source_id(&doi_source_id("10.1000/xyz")));
+        assert!(!is_arxiv_source_id(&local_source_id("deadbeef")));
+        // removeprefix semantics: at most one leading prefix comes off.
+        assert_eq!(strip_provider_prefix("doi:doi:1", DOI_ID_PREFIX), "doi:1");
+        assert_eq!(
+            strip_provider_prefix("10.1000/xyz", DOI_ID_PREFIX),
+            "10.1000/xyz"
+        );
+    }
+
+    #[test]
     fn normalize_orcid_strips_prefix_trailing_slash_and_uppercases() {
         assert_eq!(
             normalize_orcid("https://orcid.org/0000-0002-1825-0097"),
@@ -688,7 +765,7 @@ mod tests {
     #[test]
     fn note_id_field_serializes_as_id() {
         let n = NoteDetails {
-            note_id: Some(7),
+            note_id: 7,
             uuid: "u-7".into(),
             source_fk: 1,
             paper_id_fk: None,
@@ -704,31 +781,45 @@ mod tests {
     }
 
     #[test]
-    fn project_details_emits_paper_count_in_order() {
-        let p = ProjectDetails {
-            id: Some(5),
+    fn project_out_wire_shape_is_pinned() {
+        let p = ProjectOut {
+            id: 5,
             name: "n".into(),
             description: String::new(),
-            color: None,
+            color_hex: Some("#00ff00".into()),
             project_tags: vec![],
-            source_fks: vec![1, 2, 3],
+            source_ids: vec!["arxiv:2204.12985".into()],
+            paper_count: 1,
             status: Status::Active,
             created_at: None,
             updated_at: None,
             archived_at: None,
             share_id: None,
         };
-        let s = serde_json::to_string(&p).unwrap();
-        // derived field present and correct (a derive(Serialize) would drop it)
+        let v = serde_json::to_value(&p).unwrap();
+        // Exact keys in exact order — the canonical shape all three surfaces emit.
+        let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&s).unwrap()["paper_count"],
-            3
+            keys,
+            [
+                "id",
+                "name",
+                "description",
+                "color_hex",
+                "project_tags",
+                "source_ids",
+                "paper_count",
+                "status",
+                "created_at",
+                "updated_at",
+                "archived_at",
+                "share_id",
+            ]
         );
-        // and emitted between source_fks and status, matching to_dict order
-        let fks = s.find("source_fks").unwrap();
-        let pc = s.find("paper_count").unwrap();
-        let st = s.find("\"status\"").unwrap();
-        assert!(fks < pc && pc < st);
+        assert_eq!(v["color_hex"], serde_json::json!("#00ff00"));
+        assert_eq!(v["source_ids"], serde_json::json!(["arxiv:2204.12985"]));
+        assert_eq!(v["paper_count"], serde_json::json!(1));
+        assert_eq!(v["status"], serde_json::json!("active"));
     }
 
     #[test]

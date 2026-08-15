@@ -10,10 +10,11 @@
 //! BEFORE the greedy paper `rest @ ..` arms (Rust matches top-to-bottom), so
 //! project hard-delete and restore now route to `svc_project` correctly.
 
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use linxiv_core::service::paper::{self as svc_paper, Paper};
 use linxiv_core::service::project as svc_project;
+use linxiv_core::service::trash as svc_trash;
 
 use crate::route::{ApiError, ReqCtx};
 use crate::state::AppState;
@@ -37,40 +38,10 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
     }
 }
 
-/// `GET /api/trash` — `api_trash_list`. Two arrays with hand-picked keys (the
-/// `DeletedPaperDetails`/`ProjectDetails` structs carry more than the API exposes).
+/// `GET /api/trash` — `api_trash_list`. The canonical `TrashListing` envelope
+/// (core `service::trash`), shared with `linxiv trash list` and MCP `list_trash`.
 fn list(state: &AppState) -> Result<Value, ApiError> {
-    state.with_conn(|conn| {
-        let papers = svc_paper::list_deleted(conn)?;
-        let projects = svc_project::list_deleted(conn)?;
-        let papers: Vec<Value> = papers
-            .iter()
-            .map(|d| {
-                json!({
-                    "source_fk": d.source_fk,
-                    "source_id": d.source_id,
-                    "title": d.title,
-                    "authors": d.authors,
-                    "published": d.published,
-                    "deleted_at": d.deleted_at,
-                    "had_pdf": d.had_pdf,
-                })
-            })
-            .collect();
-        let projects: Vec<Value> = projects
-            .iter()
-            .map(|p| {
-                json!({
-                    "id": p.id,
-                    "name": p.name,
-                    // archived_at is overwritten by delete(), so it holds the deletion timestamp
-                    "deleted_at": p.archived_at,
-                    "paper_count": p.source_fks.len(),
-                })
-            })
-            .collect();
-        Ok(json!({ "papers": papers, "projects": projects }))
-    })
+    state.with_conn(|conn| crate::route::to_value(&linxiv_core::service::trash::list_trash(conn)?))
 }
 
 /// `POST /api/trash/{source_id:path}/restore` — `api_trash_restore`. 404 unless the
@@ -87,7 +58,12 @@ fn restore(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
                 },
             )?)
         })?;
-    Ok(json!({ "ok": true, "pdf_path": pdf_path, "project_fks": project_fks }))
+    crate::route::to_value(&svc_trash::RestoredPaper {
+        ok: true,
+        restored: source_id.to_string(),
+        pdf_path,
+        project_fks,
+    })
 }
 
 /// `DELETE /api/trash/{source_id:path}` — `api_trash_hard_delete`. Permanent, so it
@@ -104,7 +80,10 @@ fn hard_delete(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
         )?;
         Ok(())
     })?;
-    Ok(json!({ "ok": true }))
+    crate::route::to_value(&svc_trash::HardDeletedPaper {
+        ok: true,
+        hard_deleted: source_id.to_string(),
+    })
 }
 
 /// `POST /api/trash/projects/{id}/restore` — un-trash a project. 422 on a non-integer
@@ -121,7 +100,10 @@ fn restore_project(state: &AppState, id: &str) -> Result<Value, ApiError> {
         )?;
         Ok(())
     })?;
-    Ok(json!({ "ok": true }))
+    crate::route::to_value(&svc_trash::RestoredProject {
+        ok: true,
+        restored_project_id: project_fk,
+    })
 }
 
 /// `DELETE /api/trash/projects/{id}` — permanently delete a trashed project. 422 on a
@@ -138,13 +120,17 @@ fn hard_delete_project(state: &AppState, id: &str) -> Result<Value, ApiError> {
         )?;
         Ok(())
     })?;
-    Ok(json!({ "ok": true }))
+    crate::route::to_value(&svc_trash::HardDeletedProject {
+        ok: true,
+        hard_deleted_project_id: project_fk,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::route::testutil::state;
+    use serde_json::json;
 
     // Trash routes never take a body.
     async fn req(st: &AppState, method: &str, path: &str) -> Result<Value, ApiError> {
@@ -220,7 +206,7 @@ mod tests {
         let v = req(&st, "DELETE", &format!("/api/trash/projects/{id}"))
             .await
             .unwrap();
-        assert_eq!(v, json!({ "ok": true }));
+        assert_eq!(v, json!({ "ok": true, "hard_deleted_project_id": id }));
         // Gone from the DB entirely.
         assert_eq!(get_status(&st, id), None);
     }
@@ -233,7 +219,7 @@ mod tests {
         let v = req(&st, "POST", &format!("/api/trash/projects/{id}/restore"))
             .await
             .unwrap();
-        assert_eq!(v, json!({ "ok": true }));
+        assert_eq!(v, json!({ "ok": true, "restored_project_id": id }));
         assert_eq!(get_status(&st, id), Some(Status::Active));
     }
 

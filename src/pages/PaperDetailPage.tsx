@@ -19,6 +19,12 @@ import type { Note, Paper, Annotation } from "../types/api";
 import { PdfReader } from "../components/pdf/PdfReader";
 import { PagePill } from "../components/pdf/PagePill";
 import { parseAnchor } from "../lib/pdfAnchor";
+import {
+  invalidateAnnotationQueries,
+  invalidateNoteQueries,
+  invalidatePaperMutationQueries,
+  invalidatePaperQueries,
+} from "../lib/paperMutations";
 import { submitOnCtrlEnter } from "../lib/submitShortcut";
 import { Spinner } from "../components/ui/spinner";
 import { Button } from "../components/ui/button";
@@ -32,7 +38,8 @@ import { labelForSource } from "../lib/papers";
 import { MathText } from "../lib/tex";
 import { formatDate } from "../lib/date";
 import { TagBadge } from "../components/tags/TagBadge";
-import { invoke } from "@tauri-apps/api/core";
+import { openPdfInSystem } from "../api/pdfs";
+import { errText } from "../lib/errText";
 
 const LATEST_VERSION_KEY = "latest" as const;
 
@@ -228,10 +235,7 @@ export default function PaperDetailPage() {
       }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["paper", "sfk", sfk] });
-      queryClient.invalidateQueries({ queryKey: ["paper", "versions", sfk] });
-      queryClient.invalidateQueries({ queryKey: ["papers"] });
-      queryClient.invalidateQueries({ queryKey: ["stats"] });
+      invalidatePaperMutationQueries(queryClient);
     },
   });
 
@@ -248,10 +252,7 @@ export default function PaperDetailPage() {
       }
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["paper", "sfk", sfk] });
-      queryClient.invalidateQueries({ queryKey: ["paper", "versions", sfk] });
-      queryClient.invalidateQueries({ queryKey: ["papers"] });
-      queryClient.invalidateQueries({ queryKey: ["stats"] });
+      invalidatePaperMutationQueries(queryClient);
     },
   });
 
@@ -261,17 +262,15 @@ export default function PaperDetailPage() {
   const indexFullTextMutation = useMutation({
     mutationFn: (force: boolean) => fetchFullText(paper!.source_id, force),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["paper", "sfk", sfk] });
+      // Covers ["papers","search",…] too — indexing changes library FTS results.
+      invalidatePaperMutationQueries(queryClient);
     },
   });
 
   const deleteNoteMutation = useMutation({
     mutationFn: (noteId: number) => deleteNote(noteId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["notes", paper?.source_id] });
-      // Drop the deleted note's read page from cache so back-nav to it shows the
-      // not-found state instead of its stale content.
-      queryClient.invalidateQueries({ queryKey: ["note"] });
+      invalidateNoteQueries(queryClient);
     },
   });
 
@@ -279,7 +278,7 @@ export default function PaperDetailPage() {
   const deleteAnnotationMutation = useMutation({
     mutationFn: (id: number) => deleteAnnotation(id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["annotations"] });
+      invalidateAnnotationQueries(queryClient);
     },
     onSettled: () => setPendingDeleteId(null),
   });
@@ -324,10 +323,7 @@ export default function PaperDetailPage() {
   ]);
 
   function handleNotesSaved() {
-    queryClient.invalidateQueries({ queryKey: ["notes", paper?.source_id] });
-    // Also refresh any open single-note read page (keyed ["note", id]) so an
-    // edit here isn't masked by its 30s staleTime.
-    queryClient.invalidateQueries({ queryKey: ["note"] });
+    invalidateNoteQueries(queryClient);
     setShowAddNote(false);
     setEditingNoteId(null);
     deleteNoteMutation.reset();
@@ -340,14 +336,7 @@ export default function PaperDetailPage() {
   }
 
   function handlePaperSaved(_updated: Paper) {
-    queryClient.invalidateQueries({ queryKey: ["paper", "sfk", sfk] });
-    queryClient.invalidateQueries({ queryKey: ["paper", "versions", sfk] });
-    queryClient.invalidateQueries({ queryKey: ["notes", paper?.source_id] });
-    queryClient.invalidateQueries({ queryKey: ["papers"] });
-    queryClient.invalidateQueries({ queryKey: ["graph"] });
-    queryClient.invalidateQueries({ queryKey: ["stats"] });
-    queryClient.invalidateQueries({ queryKey: ["tags"] });
-    queryClient.invalidateQueries({ queryKey: ["tag"] });
+    invalidatePaperQueries(queryClient);
   }
 
   async function handleOpenNative() {
@@ -364,15 +353,13 @@ export default function PaperDetailPage() {
       );
       if (controller.signal.aborted) return;
       if (typeof path !== "string" || !path) throw new Error("Invalid response from pdf-path endpoint");
-      await invoke("open_pdf_in_system", { path });
+      await openPdfInSystem(path);
     } catch (err) {
       if (controller.signal.aborted) return;
       setOpenNativeError(
         typeof err === "string"
           ? err
-          : err instanceof Error
-          ? err.message
-          : "Failed to open PDF"
+          : errText(err, "Failed to open PDF")
       );
     } finally {
       if (!controller.signal.aborted) setOpenNativeLoading(false);
@@ -391,7 +378,7 @@ export default function PaperDetailPage() {
     return (
       <div className="flex items-center justify-center h-full">
         <p className="text-sm" style={{ color: "var(--color-danger)" }}>
-          {paperError instanceof Error ? paperError.message : "Paper not found."}
+          {errText(paperError, "Paper not found.")}
         </p>
       </div>
     );
@@ -482,9 +469,7 @@ export default function PaperDetailPage() {
         {canIndexFullText && !isOnline && <span className="text-xs text-muted">Offline</span>}
         {canIndexFullText && indexFullTextMutation.error && (
           <span className="text-xs text-danger shrink-0">
-            {indexFullTextMutation.error instanceof Error
-              ? indexFullTextMutation.error.message
-              : "Failed to index full text"}
+            {errText(indexFullTextMutation.error, "Failed to index full text")}
           </span>
         )}
         {canIndexFullText && indexResult && !indexFullTextMutation.isPending && (
@@ -751,9 +736,7 @@ export default function PaperDetailPage() {
                     className="text-sm text-center"
                     style={{ color: "var(--color-danger)" }}
                   >
-                    {deleteNoteMutation.error instanceof Error
-                      ? deleteNoteMutation.error.message
-                      : "Failed to delete the note."}
+                    {errText(deleteNoteMutation.error, "Failed to delete the note.")}
                   </p>
                 )}
 
@@ -870,7 +853,7 @@ function AnnotationCard({
     mutationFn: (comment: string) => updateAnnotation(annotation.id, comment),
     onSuccess: (_data, comment) => {
       setBaseComment(comment);
-      queryClient.invalidateQueries({ queryKey: ["annotations"] });
+      invalidateAnnotationQueries(queryClient);
       setEditing(false);
     },
   });
@@ -1122,9 +1105,7 @@ function PdfPane({
                 </Button>
                 {savePdfMutation.isError && (
                   <span className="text-xs" style={{ color: "var(--color-danger)" }}>
-                    {savePdfMutation.error instanceof Error
-                      ? savePdfMutation.error.message
-                      : "Save failed"}
+                    {errText(savePdfMutation.error, "Save failed")}
                   </span>
                 )}
               </div>
@@ -1241,9 +1222,7 @@ function PdfPane({
       </Button>
       {linkPdfMutation.isError && (
         <span className="text-xs" style={{ color: "var(--color-danger)" }}>
-          {linkPdfMutation.error instanceof Error
-            ? linkPdfMutation.error.message
-            : "Link failed"}
+          {errText(linkPdfMutation.error, "Link failed")}
         </span>
       )}
       {!paper.url && !linkPdfMutation.isPending && !linkPdfMutation.isError && (

@@ -65,24 +65,30 @@ pub fn vault_dir() -> PathBuf {
     data_dir().join("vaults")
 }
 
-/// OpenAlex polite-pool address (`OPENALEX_MAILTO`); CR/LF are stripped downstream
-/// in `openalex::user_agent`, matching `OpenAlexSource`.
+/// OpenAlex polite-pool address (`OPENALEX_MAILTO`).
+pub fn openalex_mailto() -> String {
+    mailto_setting("OPENALEX_MAILTO")
+}
+
+/// CrossRef polite-pool address (`CROSSREF_MAILTO`).
+pub fn crossref_mailto() -> String {
+    mailto_setting("CROSSREF_MAILTO")
+}
+
+/// A polite-pool address; CR/LF are stripped downstream in
+/// `sources::http::polite_user_agent`.
 ///
 /// The env var wins; a user-settings override is the fallback. Only the app sets the
 /// env var (`PATCH /api/env`), and it sets it on its own process — so without this
 /// fallback the CLI and MCP server, which run as separate processes, read the value
-/// as empty no matter what was configured, and `settings update OPENALEX_MAILTO`
-/// wrote a key nothing ever read.
-pub fn openalex_mailto() -> String {
-    match std::env::var("OPENALEX_MAILTO") {
+/// as empty no matter what was configured, and `settings update <KEY>` wrote a key
+/// nothing ever read.
+fn mailto_setting(key: &str) -> String {
+    match std::env::var(key) {
         Ok(v) if !v.is_empty() => v,
         _ => UserSettings::load()
             .ok()
-            .and_then(|s| {
-                s.get("OPENALEX_MAILTO")
-                    .and_then(Value::as_str)
-                    .map(String::from)
-            })
+            .and_then(|s| s.get(key).and_then(Value::as_str).map(String::from))
             .unwrap_or_default(),
     }
 }
@@ -131,6 +137,16 @@ impl UserSettings {
     pub fn set(&mut self, key: impl Into<String>, value: Value) -> Result<()> {
         self.overrides.insert(key.into(), value);
         self.save()
+    }
+
+    /// Set an override from a raw command-line/tool string: parsed as JSON when it
+    /// is valid JSON, else stored verbatim as a string. Returns what was stored so
+    /// the caller can echo it. The one home for the rule (`linxiv settings update`
+    /// and MCP `update_setting` each used to spell it out).
+    pub fn set_from_str(&mut self, key: impl Into<String>, raw: String) -> Result<Value> {
+        let parsed = serde_json::from_str::<Value>(&raw).unwrap_or(Value::String(raw));
+        self.set(key, parsed.clone())?;
+        Ok(parsed)
     }
 
     /// Persist only the overrides (pretty-printed, like the Python `json.dumps(indent=2)` writer).
@@ -206,10 +222,7 @@ mod tests {
         // Defaults present; no user file yet.
         let s = UserSettings::load().unwrap();
         assert_eq!(s.get("pdf_save_limit_mb").unwrap().as_i64().unwrap(), 1024);
-        assert_eq!(
-            s.get("tex_rendering_enabled").unwrap().as_bool().unwrap(),
-            true
-        );
+        assert!(s.get("tex_rendering_enabled").unwrap().as_bool().unwrap());
         assert_eq!(s.rss_cache_retention_days(), 30);
         assert!(s.get("nope").is_none());
 
@@ -226,7 +239,7 @@ mod tests {
         let s = UserSettings::load().unwrap();
         assert_eq!(s.get("pdf_save_limit_mb").unwrap().as_i64().unwrap(), 42);
         // Untouched default still resolves through the merge.
-        assert_eq!(s.all()["tex_rendering_enabled"].as_bool().unwrap(), true);
+        assert!(s.all()["tex_rendering_enabled"].as_bool().unwrap());
 
         // openalex_mailto: unset env falls back to the settings override, so the CLI
         // and MCP processes see what `settings update` wrote; a set env var wins.

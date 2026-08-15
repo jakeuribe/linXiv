@@ -137,7 +137,7 @@ where
     if let Some(pid) = project_id {
         if let Err(e) = link_imported(conn, pid, &sid) {
             return Err(match e {
-                CoreError::ProjectNotFound | CoreError::ProjectDeleted(_) => {
+                CoreError::ProjectNotFound(_) | CoreError::ProjectDeleted(_) => {
                     CoreError::PaperLink(format!(
                         "paper {sid} was imported but could not be linked to project {pid}: {e}"
                     ))
@@ -153,12 +153,74 @@ where
     })
 }
 
-/// `import_pdf` with the production resolver wired in. Async because the resolver
-/// (`sources::pdf_metadata::resolve_pdf_metadata`) hits the network for arXiv/DOI/
-/// CrossRef enrichment; `data_dir` threads to arXiv's rate-limit file. We resolve
-/// FIRST, then hand the already-resolved `(meta, external)` to the sync `import_pdf`
-/// via a closure (its bytes arg is ignored) — so `import_pdf`'s seam, and the
-/// rollback-matrix tests over it, stay exactly as they are.
+/// The output of the import's resolve phase: extracted/enriched metadata plus
+/// the optional upstream `(source_id, version)` identity.
+pub type ResolvedPdf = (PaperMetadata, Option<(String, i64)>);
+
+/// Fail-fast guard for the two-phase import: run under a short lock BEFORE
+/// [`resolve_import_pdf`], so a bad `project_id` is rejected without paying
+/// for the network resolve + pdfium parse. `import_pdf` re-checks under the
+/// commit lock (the project can vanish between the phases).
+pub fn precheck_import_pdf(conn: &Connection, project_id: Option<i64>) -> Result<()> {
+    match project_id {
+        Some(pid) => ensure_membership_writable(conn, pid),
+        None => Ok(()),
+    }
+}
+
+/// Phase 1 of the two-phase import — everything that must NOT hold the DB lock:
+/// the `pdf_save_limit_mb` quota precheck (fail before the expensive pdfium
+/// parse; `import_pdf` re-checks it under the lock) and the network metadata
+/// resolve. Hand the result to [`commit_import_pdf`] under the caller's lock.
+///
+/// The CrossRef polite-pool address is read here, at the service seam, for the
+/// same reason `service::source` reads it: `sources::` stays pure DI.
+pub async fn resolve_import_pdf(
+    pdf_dir: &Path,
+    content: &[u8],
+    max_total_bytes: u64,
+    data_dir: &Path,
+) -> Result<ResolvedPdf> {
+    check_pdf_storage_quota(pdf_dir, content.len(), max_total_bytes)?;
+    crate::sources::pdf_metadata::resolve_pdf_metadata(
+        content,
+        data_dir,
+        &crate::config::crossref_mailto(),
+    )
+    .await
+}
+
+/// PDF bytes → the metadata JSON record the out-of-process `pdf-meta` worker
+/// prints. Pure and offline (pdfium only); here so the CLI worker has a service
+/// front door instead of reaching into `sources::` (ADR-0010).
+pub fn extract_pdf_metadata_json(bytes: &[u8]) -> String {
+    crate::sources::pdf_metadata::extract_pdf_metadata_json(bytes)
+}
+
+/// Phase 2, under the caller's DB lock: the sync import (quota re-check,
+/// membership guard when a project is targeted, rollback matrix) with the
+/// already-resolved metadata. Thin over `import_pdf`, so its seam — and the
+/// rollback-matrix tests over it — stay exactly as they are.
+pub fn commit_import_pdf(
+    conn: &mut Connection,
+    pdf_dir: &Path,
+    content: &[u8],
+    project_id: Option<i64>,
+    max_total_bytes: u64,
+    resolved: ResolvedPdf,
+) -> Result<PaperImportResult> {
+    import_pdf(
+        conn,
+        pdf_dir,
+        content,
+        project_id,
+        max_total_bytes,
+        move |_| Ok(resolved.clone()),
+    )
+}
+
+/// Both phases against one directly-held connection (the CLI's shape — no mutex
+/// to keep the await out from under).
 pub async fn import_pdf_default(
     conn: &mut Connection,
     pdf_dir: &Path,
@@ -167,12 +229,57 @@ pub async fn import_pdf_default(
     max_total_bytes: u64,
     data_dir: &Path,
 ) -> Result<PaperImportResult> {
-    // Quota first: don't spend a full pdfium parse + network enrichment on a PDF
-    // that's about to be rejected anyway (import_pdf re-checks — cheap, idempotent).
-    check_pdf_storage_quota(pdf_dir, content.len(), max_total_bytes)?;
-    let resolved = crate::sources::pdf_metadata::resolve_pdf_metadata(content, data_dir).await?;
-    import_pdf(conn, pdf_dir, content, project_id, max_total_bytes, |_| {
-        Ok(resolved.clone())
+    precheck_import_pdf(conn, project_id)?;
+    let resolved = resolve_import_pdf(pdf_dir, content, max_total_bytes, data_dir).await?;
+    commit_import_pdf(
+        conn,
+        pdf_dir,
+        content,
+        project_id,
+        max_total_bytes,
+        resolved,
+    )
+}
+
+/// Receipt for a BibTeX import — the route's `/api/papers/import/bibtex` shape,
+/// emitted by all three surfaces.
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+pub struct BibtexImportReceipt {
+    pub saved_count: usize,
+    pub source_ids: Vec<String>,
+}
+
+/// Import papers from BibTeX text, optionally linking them to a project.
+/// Guard order matches the import contract: membership guard (missing →
+/// `ProjectNotFound`, deleted → `ProjectDeleted`) before parsing, parse errors →
+/// `BadRequest`, and a project vanishing between guard and link → `PaperLink`
+/// with the papers kept.
+pub fn import_bibtex(
+    conn: &mut Connection,
+    text: &str,
+    project_id: Option<i64>,
+) -> Result<BibtexImportReceipt> {
+    if let Some(pid) = project_id {
+        crate::service::project::ensure_membership_writable(conn, pid)?;
+    }
+    let metas = crate::formats::bibtex_import(text).map_err(CoreError::BadRequest)?;
+    let mut source_ids = Vec::with_capacity(metas.len());
+    for meta in &metas {
+        source_ids.push(crate::service::paper::save_paper_metadata(conn, meta, None)?.0);
+    }
+    if let Some(pid) = project_id {
+        if !source_ids.is_empty() {
+            if let Err(e) = crate::service::project::link_imported(conn, pid, &source_ids) {
+                return Err(CoreError::PaperLink(format!(
+                    "{} paper(s) were imported but could not be linked: {e}",
+                    source_ids.len()
+                )));
+            }
+        }
+    }
+    Ok(BibtexImportReceipt {
+        saved_count: source_ids.len(),
+        source_ids,
     })
 }
 
@@ -315,7 +422,7 @@ fn rollback(conn: &mut Connection, tmp_path: &Path, st: &ImportState) {
 /// soft-deleted → ProjectDeleted.
 fn ensure_membership_writable(conn: &Connection, project_fk: i64) -> Result<()> {
     match proj_store::get_project(conn, project_fk, false)? {
-        None => Err(CoreError::ProjectNotFound),
+        None => Err(CoreError::ProjectNotFound(project_fk)),
         Some(p) if p.status == Status::Deleted => Err(CoreError::ProjectDeleted(
             "cannot update a deleted project".into(),
         )),
@@ -352,52 +459,67 @@ fn unique_token() -> String {
 mod tests {
     use super::*;
     use crate::service::paper;
-    use crate::storage::{db::open_in_memory, init_db};
-    use chrono::NaiveDate;
+    use crate::test_support::{db, meta};
     use tempfile::tempdir;
 
     /// A generous cap for tests that aren't exercising the size limit itself —
     /// every fixture PDF here is a few bytes.
     const NO_LIMIT: u64 = 1_000_000;
 
-    fn mem() -> Connection {
-        let conn = open_in_memory().unwrap();
-        init_db(&conn).unwrap();
-        conn
-    }
+    /// The storage cap, at the three points that matter. Only `.pdf` files count
+    /// toward it (`files::pdf_storage_bytes`), and the comparison is `>`, so landing
+    /// exactly on the limit is allowed.
+    #[test]
+    fn check_pdf_storage_quota_at_under_and_over_the_limit() {
+        let dir = tempdir().unwrap();
+        let pdf_dir = dir.path();
+        // 60 bytes of existing PDFs, plus a non-PDF that must not be counted.
+        std::fs::write(pdf_dir.join("a.pdf"), vec![0u8; 40]).unwrap();
+        std::fs::write(pdf_dir.join("b.pdf"), vec![0u8; 20]).unwrap();
+        std::fs::write(pdf_dir.join("notes.txt"), vec![0u8; 5_000]).unwrap();
 
-    fn meta(source_id: &str, version: i64) -> PaperMetadata {
-        PaperMetadata {
-            source_id: source_id.into(),
-            version,
-            title: format!("Title of {source_id} v{version}"),
-            authors: vec!["Alice".into()],
-            published: NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
-            updated: None,
-            summary: "s".into(),
-            category: Some("cs.LG".into()),
-            categories: Some(vec!["cs.LG".into()]),
-            doi: None,
-            journal_ref: None,
-            comment: None,
-            url: None,
-            tags: None,
-            source: Some("arxiv".into()),
-            author_orcids: None,
-        }
+        // under: 60 + 30 = 90 < 100
+        assert!(check_pdf_storage_quota(pdf_dir, 30, 100).is_ok());
+        // exactly at the limit: 60 + 40 = 100, not over
+        assert!(check_pdf_storage_quota(pdf_dir, 40, 100).is_ok());
+        // over: 60 + 41 = 101
+        let err = check_pdf_storage_quota(pdf_dir, 41, 100).unwrap_err();
+        assert_eq!(err.http_status(), 413);
+        let msg = err.to_string();
+        assert!(msg.contains("101"), "reports the would-be total: {msg}");
+        assert!(msg.contains("60"), "reports what is already stored: {msg}");
+
+        // A zero limit rejects even an empty write once anything is stored.
+        assert!(check_pdf_storage_quota(pdf_dir, 0, 0).is_err());
+        // An empty/absent pdf_dir starts the count at zero.
+        let empty = tempdir().unwrap();
+        assert!(check_pdf_storage_quota(empty.path(), 100, 100).is_ok());
+        assert!(check_pdf_storage_quota(empty.path(), 101, 100).is_err());
     }
 
     /// Resolver that hands back a fixed (meta, external).
     fn resolver(
         m: PaperMetadata,
         external: Option<(String, i64)>,
-    ) -> impl Fn(&[u8]) -> Result<(PaperMetadata, Option<(String, i64)>)> {
+    ) -> impl Fn(&[u8]) -> Result<ResolvedPdf> {
         move |_| Ok((m.clone(), external.clone()))
+    }
+
+    /// The fail-fast guard rejects a bad project BEFORE the network phase —
+    /// the regression here would be surfaces paying for the resolve first.
+    #[test]
+    fn precheck_import_pdf_rejects_missing_project_and_passes_none() {
+        let conn = db();
+        assert!(matches!(
+            precheck_import_pdf(&conn, Some(999)),
+            Err(CoreError::ProjectNotFound(999))
+        ));
+        assert!(precheck_import_pdf(&conn, None).is_ok());
     }
 
     #[test]
     fn happy_path_new_paper_writes_db_and_file() {
-        let mut conn = mem();
+        let mut conn = db();
         let dir = tempdir().unwrap();
         let res = import_pdf(
             &mut conn,
@@ -440,7 +562,7 @@ mod tests {
 
     #[test]
     fn import_pdf_within_total_storage_limit_is_saved() {
-        let mut conn = mem();
+        let mut conn = db();
         let dir = tempdir().unwrap();
         // Existing PDFs consume part of the total-storage quota.
         let seed = b"already-saved pdf bytes";
@@ -461,7 +583,7 @@ mod tests {
 
     #[test]
     fn import_pdf_over_total_storage_limit_is_rejected_and_writes_nothing() {
-        let mut conn = mem();
+        let mut conn = db();
         let dir = tempdir().unwrap();
         // Existing PDFs consume most of the quota; the new file alone would fit,
         // but existing + new pushes the TOTAL over → rejected.
@@ -501,7 +623,7 @@ mod tests {
 
     #[test]
     fn resolve_failure_is_pdf_import_and_leaves_nothing() {
-        let mut conn = mem();
+        let mut conn = db();
         let dir = tempdir().unwrap();
         let bad = |_: &[u8]| Err(CoreError::Internal("corrupt pdf".into()));
         let err = import_pdf(&mut conn, dir.path(), b"junk", None, NO_LIMIT, bad).unwrap_err();
@@ -515,7 +637,7 @@ mod tests {
 
     #[test]
     fn adopt_existing_active_root_dedupes_identity() {
-        let mut conn = mem();
+        let mut conn = db();
         let dir = tempdir().unwrap();
         // Pre-existing arxiv root + v1.
         paper::save_paper_metadata(&mut conn, &meta("arxiv:2204.0001", 1), None).unwrap();
@@ -543,7 +665,7 @@ mod tests {
         // "Imported earlier" case: the arxiv root does NOT yet exist when the PDF
         // is imported. The import keys on the resolved arxiv identity, not the
         // content hash.
-        let mut conn = mem();
+        let mut conn = db();
         let dir = tempdir().unwrap();
 
         let res = import_pdf(
@@ -573,7 +695,7 @@ mod tests {
 
     #[test]
     fn reimport_preserves_existing_pdf_on_disk() {
-        let mut conn = mem();
+        let mut conn = db();
         let dir = tempdir().unwrap();
         paper::save_paper_metadata(&mut conn, &meta("arxiv:keep", 1), None).unwrap();
         // A PDF already sits at the canonical path with known bytes.
@@ -604,7 +726,7 @@ mod tests {
 
     #[test]
     fn rollback_brand_new_root_hard_deletes() {
-        let mut conn = mem();
+        let mut conn = db();
         let dir = tempdir().unwrap();
         block_final_path(dir.path(), "local_newv1.pdf");
 
@@ -643,7 +765,7 @@ mod tests {
 
     #[test]
     fn rollback_restored_deleted_root_re_soft_deletes() {
-        let mut conn = mem();
+        let mut conn = db();
         let dir = tempdir().unwrap();
         // A soft-deleted root with NO version (so pre_existing_version is false
         // and the failure-injection dir doesn't trip preserve-existing).
@@ -673,7 +795,7 @@ mod tests {
         // Wiring check: the convenience entry resolves first (junk bytes extract
         // no arXiv/DOI/title, so enrichment makes no network call), then mints a
         // deterministic local:<sha> identity (None external).
-        let mut conn = mem();
+        let mut conn = db();
         let dir = tempdir().unwrap();
         let data_dir = tempdir().unwrap();
         let res = import_pdf_default(
@@ -701,7 +823,7 @@ mod tests {
 
     #[test]
     fn project_link_membership_guards() {
-        let mut conn = mem();
+        let mut conn = db();
         let dir = tempdir().unwrap();
 
         // Missing project → ProjectNotFound, before any import work.
@@ -714,7 +836,7 @@ mod tests {
             resolver(meta("local:p1", 1), None),
         )
         .unwrap_err();
-        assert!(matches!(err, CoreError::ProjectNotFound));
+        assert!(matches!(err, CoreError::ProjectNotFound(_)));
         assert!(paper::list_papers(&conn, false, None, 0, None)
             .unwrap()
             .is_empty());

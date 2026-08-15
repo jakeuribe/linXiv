@@ -1,6 +1,6 @@
 [package]
 name = "linxiv-share"
-version = "0.3.1"
+version = "0.3.3"
 edition = "2021"
 
 [lib]
@@ -21,6 +21,8 @@ rusqlite = "0.40"
 automerge = "0.10.0"
 autosurgeon = "0.12.0"
 serde = { version = "1", features = ["derive"] }
+# SharedPaper::to_summary_value; preserve_order pins the projection's key order.
+serde_json = { version = "1", features = ["preserve_order"] }
 thiserror = "2"
 tracing = "0.1"
 # import_shared_project's missing-publish-date fallback (mirrors export_import).

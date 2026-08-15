@@ -37,7 +37,8 @@ use linxiv_core::models::{
     ProjectIn, ProjectUpdateIn,
 };
 use linxiv_core::service::{
-    annotation as annotation_svc, note as note_svc, paper as paper_svc, project as project_svc,
+    annotation as annotation_svc, author as author_svc, note as note_svc, paper as paper_svc,
+    project as project_svc,
 };
 
 pub use model::{SharedAnnotation, SharedNote, SharedPaper, SharedProject, SharedSummary};
@@ -130,11 +131,10 @@ pub fn build_shared_project(conn: &Connection, project_id: i64) -> Result<Shared
                 ..Default::default()
             },
         )? {
-            let author_orcids =
-                linxiv_core::storage::queries::author::get_paper_authors(conn, p.paper_id)?
-                    .into_iter()
-                    .map(|a| a.orcid)
-                    .collect();
+            let author_orcids = author_svc::get_paper_authors(conn, p.paper_id)?
+                .into_iter()
+                .map(|a| a.orcid)
+                .collect();
             out.push(SharedPaper {
                 source_id: p.source_id,
                 version: p.version,
@@ -266,7 +266,7 @@ pub fn import_shared_project(conn: &mut Connection, sp: &SharedProject) -> Resul
                     project_fk: Some(fk),
                 },
             )?
-            .ok_or(CoreError::ProjectNotFound)?;
+            .ok_or(CoreError::ProjectNotFound(fk))?;
             // Union so remote tag removals stay local-only (additive rule).
             let mut tags = existing.project_tags.clone();
             for t in sp.tags.iter().take(MAX_SHARED_ITEMS) {
@@ -379,14 +379,11 @@ pub fn import_shared_project(conn: &mut Connection, sp: &SharedProject) -> Resul
             }
             let title = truncate_text(&n.title);
             let content = truncate_text(&n.body);
-            if let Some(note_id) = e
-                .note_id
-                .filter(|_| e.title != title || e.content != content)
-            {
+            if e.title != title || e.content != content {
                 note_svc::update(
                     conn,
                     &NoteUpdateIn {
-                        note_id,
+                        note_id: e.note_id,
                         title: Some(title),
                         content: Some(content),
                     },

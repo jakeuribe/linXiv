@@ -8,6 +8,7 @@ import { Badge } from "../ui/badge";
 import { Segmented } from "../ui/segmented";
 import { NoteMarkdown } from "./NoteMarkdown";
 import { submitOnCtrlEnter } from "../../lib/submitShortcut";
+import { errText } from "../../lib/errText";
 
 interface NoteEditorProps {
   sourceId: string;
@@ -85,7 +86,7 @@ export function NoteEditor({
       }
       onSave();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save note");
+      setError(errText(err, "Failed to save note"));
     } finally {
       setSaving(false);
     }
