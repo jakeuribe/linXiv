@@ -403,7 +403,7 @@ mod tests {
 
     #[test]
     fn create_update_delete() {
-        let mut conn = db();
+        let conn = db();
         let id = create(
             &conn,
             &AuthorIn {
@@ -459,7 +459,7 @@ mod tests {
         assert_eq!(a.orcid.as_deref(), Some("0000-9"));
 
         // a key that resolves to no author errors; with id it removes the row
-        assert!(delete(&mut conn, &Author::default()).is_err());
+        assert!(delete(&conn, &Author::default()).is_err());
         assert!(get(
             &conn,
             &Author {
@@ -470,7 +470,7 @@ mod tests {
         .unwrap()
         .is_some());
         delete(
-            &mut conn,
+            &conn,
             &Author {
                 author_id: Some(id),
                 ..Default::default()

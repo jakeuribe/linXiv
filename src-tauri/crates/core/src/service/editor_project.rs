@@ -82,7 +82,7 @@ pub fn parse_frontmatter(content: &str) -> (HashMap<String, String>, String) {
 /// value would terminate/forge the block — never let one through. Mirrors
 /// `_sanitize_line`.
 fn sanitize_line(s: &str) -> String {
-    s.replace('\r', " ").replace('\n', " ").trim().to_string()
+    s.replace(['\r', '\n'], " ").trim().to_string()
 }
 
 /// Serialize the frontmatter fence + optional body. Sanitizes again here (defense in

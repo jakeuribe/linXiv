@@ -61,7 +61,7 @@ pub struct DeletedNote {
 
 /// Every note, CREATED_AT ASC.
 pub fn list_all(conn: &Connection) -> Result<Vec<NoteDetails>> {
-    Ok(q::list_all_notes(conn)?)
+    q::list_all_notes(conn)
 }
 
 /// Fetch notes by filter. Invalid combinations raise `Validation` (Python's
@@ -125,10 +125,10 @@ pub fn list_filtered(
 /// Insert a new note. Returns NOTE_SK.
 pub fn create(conn: &Connection, note: &NoteIn) -> Result<i64> {
     let uuid: Option<String> = match &note.uuid {
-        Some(u) => crate::models::resolve_uuid(u, |n| q::uuid_taken(conn, n).map_err(Into::into))?,
+        Some(u) => crate::models::resolve_uuid(u, |n| q::uuid_taken(conn, n))?,
         None => None,
     };
-    Ok(q::create_note(
+    q::create_note(
         conn,
         note.source_fk,
         note.paper_id,
@@ -136,12 +136,12 @@ pub fn create(conn: &Connection, note: &NoteIn) -> Result<i64> {
         &note.title,
         &note.content,
         uuid.as_deref(),
-    )?)
+    )
 }
 
 /// Whether a note with this uuid already exists.
 pub fn uuid_taken(conn: &Connection, uuid: &str) -> Result<bool> {
-    Ok(q::uuid_taken(conn, uuid)?)
+    q::uuid_taken(conn, uuid)
 }
 
 /// Delete a note by note_id. `false` if absent or note_id unset.
@@ -161,12 +161,12 @@ pub fn update(conn: &Connection, note: &NoteUpdateIn) -> Result<bool> {
             "at least one of title or content must be provided".into(),
         ));
     }
-    Ok(q::patch_note(
+    q::patch_note(
         conn,
         note.note_id,
         note.title.as_deref(),
         note.content.as_deref(),
-    )?)
+    )
 }
 
 #[cfg(test)]

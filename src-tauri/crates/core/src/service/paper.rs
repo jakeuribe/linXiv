@@ -1019,7 +1019,6 @@ mod tests {
                     source_ids: Some(vec![]),
                     tags: Some(vec![]),
                     source_fks: Some(vec![]),
-                    ..Default::default()
                 }
             )
             .unwrap()

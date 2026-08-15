@@ -222,10 +222,7 @@ mod tests {
         // Defaults present; no user file yet.
         let s = UserSettings::load().unwrap();
         assert_eq!(s.get("pdf_save_limit_mb").unwrap().as_i64().unwrap(), 1024);
-        assert_eq!(
-            s.get("tex_rendering_enabled").unwrap().as_bool().unwrap(),
-            true
-        );
+        assert!(s.get("tex_rendering_enabled").unwrap().as_bool().unwrap());
         assert_eq!(s.rss_cache_retention_days(), 30);
         assert!(s.get("nope").is_none());
 
@@ -242,7 +239,7 @@ mod tests {
         let s = UserSettings::load().unwrap();
         assert_eq!(s.get("pdf_save_limit_mb").unwrap().as_i64().unwrap(), 42);
         // Untouched default still resolves through the merge.
-        assert_eq!(s.all()["tex_rendering_enabled"].as_bool().unwrap(), true);
+        assert!(s.all()["tex_rendering_enabled"].as_bool().unwrap());
 
         // openalex_mailto: unset env falls back to the settings override, so the CLI
         // and MCP processes see what `settings update` wrote; a set env var wins.

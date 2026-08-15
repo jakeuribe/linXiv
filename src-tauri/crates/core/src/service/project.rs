@@ -581,7 +581,7 @@ pub fn hard_delete(conn: &mut Connection, project: &Project) -> Result<()> {
 /// (archived_at desc; rows with no timestamp sort last, matching `datetime.min`).
 pub fn list_deleted(conn: &Connection) -> Result<Vec<ProjectDetails>> {
     let mut projects = pq::list_projects(conn, Some(Q::new("STATUS = ?", "deleted")), true)?;
-    projects.sort_by(|a, b| b.archived_at.cmp(&a.archived_at));
+    projects.sort_by_key(|p| std::cmp::Reverse(p.archived_at));
     projects.into_iter().map(|p| fill_tags(conn, p)).collect()
 }
 

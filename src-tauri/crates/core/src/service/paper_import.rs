@@ -501,7 +501,7 @@ mod tests {
     fn resolver(
         m: PaperMetadata,
         external: Option<(String, i64)>,
-    ) -> impl Fn(&[u8]) -> Result<(PaperMetadata, Option<(String, i64)>)> {
+    ) -> impl Fn(&[u8]) -> Result<ResolvedPdf> {
         move |_| Ok((m.clone(), external.clone()))
     }
 

@@ -100,7 +100,7 @@ pub fn safe_path(vault_root: &Path, relpath: &str) -> Result<PathBuf> {
         .split('/')
         .filter(|p| !p.is_empty() && *p != ".")
         .collect();
-    if parts.iter().any(|p| *p == "..") {
+    if parts.contains(&"..") {
         return Err(CoreError::BadRequest(
             "path traversal is not allowed".into(),
         ));

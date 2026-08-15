@@ -20,12 +20,12 @@ pub struct Annotations {
 
 /// Fetch a single annotation by id. `Ok(None)` if absent.
 pub fn get(conn: &Connection, id: i64) -> Result<Option<AnnotationDetails>> {
-    Ok(q::get_annotation(conn, id)?)
+    q::get_annotation(conn, id)
 }
 
 /// Every annotation, CREATED_AT ASC.
 pub fn list_all(conn: &Connection) -> Result<Vec<AnnotationDetails>> {
-    Ok(q::list_all_annotations(conn)?)
+    q::list_all_annotations(conn)
 }
 
 /// Fetch annotations by filter. Invalid combinations raise `Validation`.
@@ -81,32 +81,32 @@ pub fn create(conn: &Connection, ann: &AnnotationIn) -> Result<i64> {
         }
     }
     let uuid: Option<String> = match &ann.uuid {
-        Some(u) => crate::models::resolve_uuid(u, |n| q::uuid_taken(conn, n).map_err(Into::into))?,
+        Some(u) => crate::models::resolve_uuid(u, |n| q::uuid_taken(conn, n))?,
         None => None,
     };
-    Ok(q::create_annotation(
+    q::create_annotation(
         conn,
         ann.source_fk,
         ann.project_fk,
         &ann.anchor,
         &ann.comment,
         uuid.as_deref(),
-    )?)
+    )
 }
 
 /// Whether an annotation with this uuid already exists.
 pub fn uuid_taken(conn: &Connection, uuid: &str) -> Result<bool> {
-    Ok(q::uuid_taken(conn, uuid)?)
+    q::uuid_taken(conn, uuid)
 }
 
 /// Delete an annotation by id. `false` if absent.
 pub fn delete(conn: &Connection, id: i64) -> Result<bool> {
-    Ok(q::delete_annotation(conn, id)?)
+    q::delete_annotation(conn, id)
 }
 
 /// Update the written comment. `false` if no row matched. The anchor is immutable.
 pub fn update(conn: &Connection, ann: &AnnotationUpdateIn) -> Result<bool> {
-    Ok(q::patch_annotation(conn, ann.annotation_id, &ann.comment)?)
+    q::patch_annotation(conn, ann.annotation_id, &ann.comment)
 }
 
 #[cfg(test)]
