@@ -638,11 +638,10 @@ pub fn color_from_hex(hex: &str) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{self, db};
+    use crate::test_support::db;
 
     fn setup() -> Connection {
-        let conn = db::open_in_memory().unwrap();
-        storage::init_db(&conn).unwrap();
+        let conn = db();
         conn.execute_batch(
             "INSERT INTO PAPER_ROOTS (SOURCE_FK, SOURCE_ID, STATUS) VALUES
                  (10, 'arxiv:1', 'active'),
@@ -1182,6 +1181,49 @@ mod tests {
         let share_id_1 = ensure_share_id(&conn, id).unwrap();
         let share_id_2 = ensure_share_id(&conn, id).unwrap();
         assert_eq!(share_id_1, share_id_2);
+    }
+
+    /// Reverse lookup used by the share layer to route an inbound share_id to a
+    /// project. Trashed holders are invisible; archived ones are not.
+    #[test]
+    fn find_by_share_id_hits_live_misses_unknown_and_trashed() {
+        let mut conn = setup();
+        let id = create(&mut conn, &pin("P", vec![], vec![])).unwrap();
+        let share_id = ensure_share_id(&conn, id).unwrap();
+
+        assert_eq!(find_by_share_id(&conn, &share_id).unwrap(), Some(id));
+        assert_eq!(find_by_share_id(&conn, "nobody-holds-this").unwrap(), None);
+        assert_eq!(find_by_share_id(&conn, "").unwrap(), None);
+
+        // Archived still resolves — the query only excludes STATUS = 'deleted'.
+        archive(
+            &conn,
+            &Project {
+                project_fk: Some(id),
+            },
+        )
+        .unwrap();
+        assert_eq!(find_by_share_id(&conn, &share_id).unwrap(), Some(id));
+
+        // Trashed disappears, even though SHARE_ID is still on the row.
+        delete(
+            &conn,
+            &Project {
+                project_fk: Some(id),
+            },
+        )
+        .unwrap();
+        assert_eq!(find_by_share_id(&conn, &share_id).unwrap(), None);
+
+        // ...and comes back on restore.
+        restore(
+            &conn,
+            &Project {
+                project_fk: Some(id),
+            },
+        )
+        .unwrap();
+        assert_eq!(find_by_share_id(&conn, &share_id).unwrap(), Some(id));
     }
 
     #[test]

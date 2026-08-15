@@ -112,14 +112,12 @@ pub fn update(conn: &Connection, ann: &AnnotationUpdateIn) -> Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::db::open_in_memory;
-    use crate::storage::init_db;
+    use crate::test_support::db;
 
     const ANCHOR: &str = r##"{"v":1,"version":1,"page":1,"color":"#ffd400","quote":"q","rects":[{"x":0,"y":0,"w":0.5,"h":0.1}]}"##;
 
     fn setup() -> Connection {
-        let conn = open_in_memory().unwrap();
-        init_db(&conn).unwrap();
+        let conn = db();
         conn.execute(
             "INSERT INTO PAPER_ROOTS (SOURCE_FK, SOURCE_ID) VALUES (1, 'arxiv:1')",
             [],
@@ -222,5 +220,35 @@ mod tests {
         let got2 = get(&conn, id2).unwrap().unwrap();
         assert_ne!(got2.uuid, fixed_uuid);
         assert!(!got2.uuid.is_empty());
+    }
+
+    /// `uuid_taken` is the collision probe `create` feeds to
+    /// `models::resolve_uuid` — taken => the caller drops the requested uuid.
+    #[test]
+    fn uuid_taken_reports_existing_annotation_uuids() {
+        let conn = setup();
+        let uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        assert!(!uuid_taken(&conn, uuid).unwrap());
+
+        create(
+            &conn,
+            &AnnotationIn {
+                source_fk: 1,
+                anchor: ANCHOR.into(),
+                comment: String::new(),
+                project_fk: None,
+                uuid: Some(uuid.into()),
+            },
+        )
+        .unwrap();
+
+        assert!(uuid_taken(&conn, uuid).unwrap());
+        assert!(!uuid_taken(&conn, "11111111-2222-3333-4444-555555555555").unwrap());
+        // Raw string compare, no normalization here: an uppercase spelling of a
+        // stored uuid reads as free. `resolve_uuid` normalizes BEFORE probing,
+        // which is what makes the collision check case-insensitive in practice.
+        assert!(!uuid_taken(&conn, &uuid.to_uppercase()).unwrap());
+        // Not a uuid at all -> just an absent row, not an error.
+        assert!(!uuid_taken(&conn, "not-a-uuid").unwrap());
     }
 }
