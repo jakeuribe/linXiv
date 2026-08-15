@@ -273,6 +273,12 @@ fn ensure_paper_root_row(tx: &Transaction, source_id: &str) -> Result<i64> {
              UPDATED_AT = datetime('now') WHERE SOURCE_ID = ?",
             [source_id],
         )?;
+        // Soft delete drops the FTS row but keeps FULL_TEXT, and STATUS lives on
+        // PAPER_ROOTS — no PAPER_META write happens here, so no trigger fires.
+        // Re-deriving is the un-delete's job. Without this, re-adding a trashed
+        // paper whose version is already stored leaves it active, with a body,
+        // and absent from search permanently.
+        refresh_fts(tx, source_id)?;
     }
     Ok(fk)
 }
@@ -1687,6 +1693,85 @@ mod tests {
         soft_delete_paper(&mut conn, "arxiv:raw").unwrap();
         set_text(&conn, 1, Some("resurrected tex"));
         assert_eq!(matches(&conn, "resurrected"), 0);
+    }
+
+    /// Dropping a version's meta row changes which body is newest, so the index
+    /// has to follow. Delete `papers_fts_meta_ad` and this goes red: search keeps
+    /// answering with a body whose row no longer exists.
+    #[test]
+    fn deleting_the_newest_meta_row_falls_back_to_an_older_body() {
+        let mut conn = open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        let matches = |conn: &Connection, body: &str| {
+            count(
+                conn,
+                "SELECT COUNT(*) FROM papers_fts WHERE papers_fts MATCH ? AND paper_id = 'arxiv:del'",
+                body,
+            )
+        };
+        let set_text = |conn: &Connection, version: i64, text: &str| {
+            conn.execute(
+                "UPDATE PAPER_META SET FULL_TEXT = ? WHERE PAPER_ID IN \
+                 (SELECT PAPER_ID FROM PAPER WHERE SOURCE_ID = 'arxiv:del' AND VERSION = ?)",
+                params![text, version],
+            )
+            .unwrap();
+        };
+
+        save_paper_metadata(&mut conn, &meta("arxiv:del", 1), None).unwrap();
+        set_text(&conn, 1, "older body");
+        save_paper_metadata(&mut conn, &meta("arxiv:del", 2), None).unwrap();
+        set_text(&conn, 2, "newer body");
+        assert_eq!(matches(&conn, "newer"), 1);
+        assert_eq!(matches(&conn, "older"), 0);
+
+        conn.execute(
+            "DELETE FROM PAPER_META WHERE PAPER_ID IN \
+             (SELECT PAPER_ID FROM PAPER WHERE SOURCE_ID = 'arxiv:del' AND VERSION = 2)",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(matches(&conn, "older"), 1, "index did not fall back");
+        assert_eq!(matches(&conn, "newer"), 0, "deleted body still searchable");
+    }
+
+    /// Re-adding a trashed paper whose version is already stored: `INSERT OR
+    /// IGNORE` no-ops, so `write_paper_version_in_tx` returns before any
+    /// PAPER_META write and no trigger fires. The un-delete in
+    /// `ensure_paper_root_row` has to re-derive, or the paper comes back active,
+    /// with a body, and permanently absent from search.
+    #[test]
+    fn readding_a_trashed_paper_returns_it_to_search() {
+        let mut conn = open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        let indexed = |conn: &Connection| {
+            count(
+                conn,
+                "SELECT COUNT(*) FROM papers_fts WHERE paper_id = ?",
+                "arxiv:trash",
+            )
+        };
+
+        save_paper_metadata(&mut conn, &meta("arxiv:trash", 1), None).unwrap();
+        conn.execute(
+            "UPDATE PAPER_META SET FULL_TEXT = 'kept body' WHERE PAPER_ID IN \
+             (SELECT PAPER_ID FROM PAPER WHERE SOURCE_ID = 'arxiv:trash')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(indexed(&conn), 1);
+
+        soft_delete_paper(&mut conn, "arxiv:trash").unwrap();
+        assert_eq!(indexed(&conn), 0, "trashed paper must leave the index");
+
+        // Re-fetching the SAME version — the no-op path, not a new version.
+        save_paper_metadata(&mut conn, &meta("arxiv:trash", 1), None).unwrap();
+        assert_eq!(
+            indexed(&conn),
+            1,
+            "re-added paper is active with a stored body but absent from search"
+        );
     }
 
     #[test]

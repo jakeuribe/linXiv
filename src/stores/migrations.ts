@@ -86,9 +86,16 @@ export function migrateTheme(stored: unknown, version: number): Record<string, u
     delete s.glassTintColor;
     delete s.glassTintAlpha;
     if (Array.isArray(s.customPalettes)) {
-      s.customPalettes = (s.customPalettes as Record<string, unknown>[]).map(
-        ({ glassIntensity: _gi, glassTintColor: _gtc, glassTintAlpha: _gta, ...rest }) => rest
-      );
+      // Non-object entries pass through: destructuring null here throws, and a
+      // throw inside persist rehydration bricks the store on every boot until
+      // the localStorage key is cleared by hand. Stripping fields off a value
+      // that has none is a no-op, not a reason to fail.
+      s.customPalettes = (s.customPalettes as unknown[]).map((p) => {
+        if (typeof p !== "object" || p === null) return p;
+        const { glassIntensity: _gi, glassTintColor: _gtc, glassTintAlpha: _gta, ...rest } =
+          p as Record<string, unknown>;
+        return rest;
+      });
     }
   }
   return s;

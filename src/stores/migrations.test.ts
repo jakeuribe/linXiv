@@ -135,6 +135,31 @@ test("theme v2 -> v3 tolerates a non-array customPalettes", () => {
   });
 });
 
+// A throw here is not a bad return value — it escapes zustand's rehydrate and
+// the store never loads again until localStorage is cleared by hand.
+test("theme v2 -> v3 tolerates junk entries inside customPalettes", () => {
+  const migrated = migrateTheme(
+    {
+      preset: "Navy",
+      customPalettes: [
+        null,
+        undefined,
+        "nope",
+        7,
+        { name: "real", glassIntensity: 0.4, glassTintColor: "#fff" },
+      ],
+    },
+    2
+  );
+  assert.deepStrictEqual(migrated.customPalettes, [
+    null,
+    undefined,
+    "nope",
+    7,
+    { name: "real" },
+  ]);
+});
+
 test("theme migrate handles undefined / null / empty blobs at every version", () => {
   const seeded = { overrideAlphas: {}, customPalettes: [] };
   for (const blob of [undefined, null, {}]) {

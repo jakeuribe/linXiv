@@ -30,7 +30,13 @@ WHERE COALESCE(v.full_text, '') != ''
 -- fts5 has no UPDATE, hence DELETE then INSERT. The INSERT selects from the
 -- view, so it writes nothing when the paper no longer belongs in the index
 -- (text cleared, or the root soft-deleted while its FULL_TEXT is still stored).
-CREATE TRIGGER IF NOT EXISTS papers_fts_meta_ai AFTER INSERT ON PAPER_META
+--
+-- DROP-then-CREATE, like the view above, NOT `CREATE ... IF NOT EXISTS`: these
+-- ship in the views phase, which runs on every open, so dropping first is what
+-- makes an edited trigger body reach an install that already has the old one.
+-- `IF NOT EXISTS` would silently pin every existing DB to the body it first saw.
+DROP TRIGGER IF EXISTS papers_fts_meta_ai;
+CREATE TRIGGER papers_fts_meta_ai AFTER INSERT ON PAPER_META
     WHEN COALESCE(new.FULL_TEXT, '') != ''
 BEGIN
     DELETE FROM papers_fts
@@ -40,7 +46,8 @@ BEGIN
      WHERE source_id = (SELECT SOURCE_ID FROM PAPER WHERE PAPER_ID = new.PAPER_ID);
 END;
 
-CREATE TRIGGER IF NOT EXISTS papers_fts_meta_au AFTER UPDATE OF FULL_TEXT ON PAPER_META
+DROP TRIGGER IF EXISTS papers_fts_meta_au;
+CREATE TRIGGER papers_fts_meta_au AFTER UPDATE OF FULL_TEXT ON PAPER_META
     WHEN old.FULL_TEXT IS NOT new.FULL_TEXT
 BEGIN
     DELETE FROM papers_fts
@@ -48,4 +55,19 @@ BEGIN
     INSERT INTO papers_fts (paper_id, full_text)
     SELECT source_id, full_text FROM paper_index_text
      WHERE source_id = (SELECT SOURCE_ID FROM PAPER WHERE PAPER_ID = new.PAPER_ID);
+END;
+
+-- Dropping a version's meta row changes which body is newest, so the index has
+-- to be re-derived. Guarded on the old row having had text: deleting an empty
+-- version cannot change the answer. During a hard delete the root is already
+-- gone, so the view yields nothing and this collapses to the DELETE alone.
+DROP TRIGGER IF EXISTS papers_fts_meta_ad;
+CREATE TRIGGER papers_fts_meta_ad AFTER DELETE ON PAPER_META
+    WHEN COALESCE(old.FULL_TEXT, '') != ''
+BEGIN
+    DELETE FROM papers_fts
+     WHERE paper_id = (SELECT SOURCE_ID FROM PAPER WHERE PAPER_ID = old.PAPER_ID);
+    INSERT INTO papers_fts (paper_id, full_text)
+    SELECT source_id, full_text FROM paper_index_text
+     WHERE source_id = (SELECT SOURCE_ID FROM PAPER WHERE PAPER_ID = old.PAPER_ID);
 END;

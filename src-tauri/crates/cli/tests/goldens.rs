@@ -169,9 +169,17 @@ fn txt_goldens_match_the_command_tree() {
         for extra in actual_cmds.difference(&golden_cmds) {
             problems.push(format!("command `{extra}` is in the CLI but not in the golden"));
         }
-        for flag in argparse_long_flags(&golden) {
-            if !actual_tokens.contains(&flag) {
+        let golden_flags = argparse_long_flags(&golden);
+        for flag in &golden_flags {
+            if !actual_tokens.contains(flag) {
                 problems.push(format!("flag `{flag}` is in the golden but not in the CLI"));
+            }
+        }
+        // Both directions, same as commands above: a flag the CLI grew that no
+        // golden names is drift too, and it is the half that silently accumulates.
+        for flag in clap_long_flags(&actual) {
+            if !golden_flags.contains(&flag) {
+                problems.push(format!("flag `{flag}` is in the CLI but not in the golden"));
             }
         }
 
@@ -211,6 +219,17 @@ fn argparse_long_flags(golden: &str) -> BTreeSet<String> {
     tokens(golden)
         .into_iter()
         .filter(|t| t.starts_with("--") && t.len() > 2)
+        .collect()
+}
+
+/// The CLI's own long flags, for the reverse direction. Same tokeniser, then
+/// trailing `=` stripped — clap writes `--flag=<VAL>` where argparse wrote
+/// `--flag <VAL>`, and that punctuation difference is formatting, not drift.
+fn clap_long_flags(help: &str) -> BTreeSet<String> {
+    tokens(help)
+        .into_iter()
+        .filter(|t| t.starts_with("--") && t.len() > 2)
+        .map(|t| t.trim_end_matches('=').to_string())
         .collect()
 }
 

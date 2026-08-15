@@ -219,12 +219,10 @@ mod tests {
             rusqlite::params![paper_id, full_text],
         )
         .unwrap();
-        // FTS misnomer: paper_id column stores the SOURCE_ID string.
-        conn.execute(
-            "INSERT INTO papers_fts (paper_id, full_text) VALUES (?1, ?2)",
-            rusqlite::params![source_id, full_text],
-        )
-        .unwrap();
+        // No hand-insert into papers_fts: the PAPER_META write above fires the
+        // sync trigger, which derives the row. Seeding it again would give every
+        // fixture paper two index rows and stop these tests running against the
+        // one-row-per-paper shape production actually has.
     }
 
     #[test]

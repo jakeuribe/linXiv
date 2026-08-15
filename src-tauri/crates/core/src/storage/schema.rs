@@ -162,7 +162,48 @@ mod tests {
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
-        assert_eq!(triggers, ["papers_fts_meta_ai", "papers_fts_meta_au"]);
+        assert_eq!(
+            triggers,
+            ["papers_fts_meta_ad", "papers_fts_meta_ai", "papers_fts_meta_au"]
+        );
+    }
+
+    /// Existing installs must get an *edited* trigger body, not just their first
+    /// one. `CREATE TRIGGER IF NOT EXISTS` no-ops against a trigger that already
+    /// exists, so it would pin every shipped DB to whatever body it saw first —
+    /// silently, and only on upgraded installs. `paper_index_text.sql` drops
+    /// before creating, exactly like the view beside it; swap that back to
+    /// `IF NOT EXISTS` and this goes red.
+    #[test]
+    fn an_edited_trigger_body_reaches_an_already_initialised_db() {
+        let conn = crate::storage::db::open_in_memory().unwrap();
+        crate::storage::init_db(&conn).unwrap();
+
+        // Stand in for "the shipped body changed": replace it with a decoy.
+        conn.execute_batch(
+            "DROP TRIGGER papers_fts_meta_ai;
+             CREATE TRIGGER papers_fts_meta_ai AFTER INSERT ON PAPER_META
+             BEGIN SELECT 'stale body'; END;",
+        )
+        .unwrap();
+
+        crate::storage::init_db(&conn).unwrap();
+
+        let sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'papers_fts_meta_ai'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            !sql.contains("stale body"),
+            "re-init left the decoy body in place: {sql}"
+        );
+        assert!(
+            sql.contains("paper_index_text"),
+            "re-init did not restore the shipped body: {sql}"
+        );
     }
 
     /// THE ORDERING INVARIANT: tables → migrations → views.
