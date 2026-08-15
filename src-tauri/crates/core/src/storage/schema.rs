@@ -164,7 +164,11 @@ mod tests {
             .unwrap();
         assert_eq!(
             triggers,
-            ["papers_fts_meta_ad", "papers_fts_meta_ai", "papers_fts_meta_au"]
+            [
+                "papers_fts_meta_ad",
+                "papers_fts_meta_ai",
+                "papers_fts_meta_au"
+            ]
         );
     }
 

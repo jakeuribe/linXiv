@@ -152,7 +152,10 @@ fn txt_goldens_match_the_command_tree() {
     for path in goldens {
         // `help.txt` is the root; `project_help.txt` is `project --help`.
         let stem = path.file_stem().unwrap().to_str().unwrap();
-        let slug = stem.strip_suffix("help").unwrap_or(stem).trim_end_matches('_');
+        let slug = stem
+            .strip_suffix("help")
+            .unwrap_or(stem)
+            .trim_end_matches('_');
         let argv = argv_from_slug(slug);
 
         let golden = std::fs::read_to_string(&path).expect("read golden");
@@ -164,10 +167,14 @@ fn txt_goldens_match_the_command_tree() {
         let golden_cmds = argparse_commands(&golden);
         let actual_cmds = clap_commands(&actual);
         for missing in golden_cmds.difference(&actual_cmds) {
-            problems.push(format!("command `{missing}` is in the golden but not in the CLI"));
+            problems.push(format!(
+                "command `{missing}` is in the golden but not in the CLI"
+            ));
         }
         for extra in actual_cmds.difference(&golden_cmds) {
-            problems.push(format!("command `{extra}` is in the CLI but not in the golden"));
+            problems.push(format!(
+                "command `{extra}` is in the CLI but not in the golden"
+            ));
         }
         let golden_flags = argparse_long_flags(&golden);
         for flag in &golden_flags {
