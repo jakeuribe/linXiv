@@ -95,15 +95,19 @@ fn ack(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
 mod tests {
     use super::*;
     use crate::route::testutil::{req, state};
-    use std::sync::Mutex;
+    use tokio::sync::Mutex;
 
     // Serialize access to CHECK_IN_PROGRESS across all tests to prevent race
     // conditions (flag must reset on Drop even if test panics).
-    static TEST_MUTEX: Mutex<()> = Mutex::new(());
+    //
+    // tokio's Mutex, not std's: this guard is held across `.await`, and std's
+    // poisons on panic — so the first failing test would make every sibling
+    // panic in `lock()`, hiding which one actually broke.
+    static TEST_MUTEX: Mutex<()> = Mutex::const_new(());
 
     #[tokio::test]
     async fn check_on_empty_library_returns_zero_without_network() {
-        let _guard = TEST_MUTEX.lock().unwrap();
+        let _guard = TEST_MUTEX.lock().await;
         let v = req(&state(), "POST", "/api/versions/check", None)
             .await
             .unwrap();
@@ -112,7 +116,7 @@ mod tests {
 
     #[tokio::test]
     async fn check_rejects_out_of_range_limit() {
-        let _guard = TEST_MUTEX.lock().unwrap();
+        let _guard = TEST_MUTEX.lock().await;
         for limit in [0, 101, -3] {
             let err = req(
                 &state(),
@@ -128,16 +132,18 @@ mod tests {
 
     #[tokio::test]
     async fn check_in_progress_returns_409() {
-        let _guard = TEST_MUTEX.lock().unwrap();
+        let _guard = TEST_MUTEX.lock().await;
         CHECK_IN_PROGRESS.store(true, Ordering::SeqCst);
+        // Resets the flag on drop, including on assertion panic. A trailing
+        // `store(false)` did not: a failed assert left the flag set and every
+        // sibling test then got a 409 — mirrors orcid.rs's BackfillGuard.
+        let _reset = CheckGuard;
 
         let err = req(&state(), "POST", "/api/versions/check", None)
             .await
             .unwrap_err();
 
         assert_eq!(err.status, 409);
-
-        CHECK_IN_PROGRESS.store(false, Ordering::SeqCst);
     }
 
     #[tokio::test]
