@@ -302,10 +302,10 @@ mod tests {
             "",
             "me@x.io",
             "me@x.io\r\nX-Evil: 1",
-            "me@uni.es\u{00A0}",  // trailing NBSP: the copy-paste-off-a-webpage case
+            "me@uni.es\u{00A0}", // trailing NBSP: the copy-paste-off-a-webpage case
             "jos\u{00E9}@uni.es", // accented address
-            "a\u{0007}b@x.io",    // control char
-            "\u{00A0}\u{00A0}",   // nothing but non-ASCII -> must fall back to bare
+            "a\u{0007}b@x.io",   // control char
+            "\u{00A0}\u{00A0}",  // nothing but non-ASCII -> must fall back to bare
             "  me@x.io  ",
         ] {
             let ua = polite_user_agent(raw);
@@ -319,7 +319,10 @@ mod tests {
             polite_user_agent("me@uni.es\u{00A0}"),
             "linXiv/1.0 (mailto:me@uni.es)"
         );
-        assert_eq!(polite_user_agent("  me@x.io  "), "linXiv/1.0 (mailto:me@x.io)");
+        assert_eq!(
+            polite_user_agent("  me@x.io  "),
+            "linXiv/1.0 (mailto:me@x.io)"
+        );
         // Nothing usable left -> bare UA, not a mangled empty mailto.
         assert_eq!(polite_user_agent("\u{00A0}\u{00A0}"), "linXiv/1.0");
     }

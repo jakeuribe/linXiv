@@ -151,7 +151,8 @@ pub fn remove_project_tags(
 pub fn to_out(conn: &Connection, p: ProjectDetails) -> Result<ProjectOut> {
     let source_ids = crate::service::paper::sfks_to_source_ids(conn, &p.source_fks)?;
     Ok(ProjectOut {
-        id: p.id
+        id: p
+            .id
             .ok_or_else(|| CoreError::Internal("Project has no id".into()))?,
         name: p.name,
         description: p.description,
