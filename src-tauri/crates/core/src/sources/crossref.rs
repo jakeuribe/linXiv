@@ -67,16 +67,9 @@ fn parse_published(msg: &Value) -> Option<NaiveDate> {
 /// Convert one CrossRef work message into normalized `PaperMetadata`.
 /// `doi` (when non-empty) wins over the message's own `DOI` field, matching the
 /// Python `doi or msg.get("DOI", "")`.
-pub fn parse_work(msg: &Value, doi: &str) -> PaperMetadata {
-    let title = msg
-        .get("title")
-        .and_then(Value::as_array)
-        .and_then(|a| a.first())
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
-
-    let mut authors = Vec::new();
+/// Parses the `author` array into display names (pushed into `authors`) and
+/// their parallel ORCIDs, `None` unless at least one author was found.
+fn compute_author_orcids(authors: &mut Vec<String>, msg: &Value) -> Option<Vec<Option<String>>> {
     let mut author_orcids = Vec::new();
     if let Some(arr) = msg.get("author").and_then(Value::as_array) {
         for a in arr {
@@ -94,7 +87,20 @@ pub fn parse_work(msg: &Value, doi: &str) -> PaperMetadata {
             }
         }
     }
-    let author_orcids = (!authors.is_empty()).then_some(author_orcids);
+    (!authors.is_empty()).then_some(author_orcids)
+}
+
+pub fn parse_work(msg: &Value, doi: &str) -> PaperMetadata {
+    let title = msg
+        .get("title")
+        .and_then(Value::as_array)
+        .and_then(|a| a.first())
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+
+    let mut authors = Vec::new();
+    let author_orcids = compute_author_orcids(&mut authors, msg);
 
     let published = parse_published(msg).unwrap_or_else(|| chrono::Utc::now().date_naive());
 

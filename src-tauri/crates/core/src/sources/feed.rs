@@ -10,7 +10,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use quick_xml::events::Event;
+use quick_xml::events::{BytesEnd, BytesRef, BytesStart, Event};
 use quick_xml::Reader;
 use reqwest::Url;
 use serde::Serialize;
@@ -152,6 +152,18 @@ fn accented_base(chars: &[char], at: usize, allow_bare: bool) -> Option<(char, u
 /// ponytail: covers accent marks + the handful of single-letter ligatures seen in real
 /// arXiv author names; multi-letter ligatures (`\ss`, `\ae`, `\oe` + capitals) and nested
 /// macros are out of scope -- extend the tables below if one shows up.
+/// The single-letter ligature a no-argument LaTeX control word collapses to
+/// (`\o` -> `ø`), or `None` if `cmd` isn't one of the four ligature commands.
+fn compute_ligature(cmd: char) -> Option<char> {
+    match cmd {
+        'o' => Some('ø'),
+        'O' => Some('Ø'),
+        'l' => Some('ł'),
+        'L' => Some('Ł'),
+        _ => None,
+    }
+}
+
 fn decode_latex_accents(s: &str) -> String {
     if !s.contains('\\') {
         return s.to_string();
@@ -162,13 +174,7 @@ fn decode_latex_accents(s: &str) -> String {
     while i < chars.len() {
         if chars[i] == '\\' && i + 1 < chars.len() {
             let cmd = chars[i + 1];
-            let ligature = match cmd {
-                'o' => Some('ø'),
-                'O' => Some('Ø'),
-                'l' => Some('ł'),
-                'L' => Some('Ł'),
-                _ => None,
-            };
+            let ligature = compute_ligature(cmd);
             // No-argument control word: word-boundary check so `\oint`-style macros
             // aren't mistaken for `\o` + "int"; a boundary space is the terminator
             // and is swallowed too, not printed (`S\o rensen` -> "Sørensen").
@@ -249,6 +255,168 @@ fn finalize(mut e: FeedEntry) -> FeedEntry {
     e
 }
 
+/// `Event::Start`/`Event::Empty` handling: opens a new entry on `<item>`/`<entry>`,
+/// otherwise updates the in-progress entry's link/guid/author state, or clears
+/// `text` ahead of the top-level `<title>` when no entry is open.
+fn handle_start_event(
+    e: &BytesStart<'_>,
+    cur: &mut Option<FeedEntry>,
+    in_author: &mut bool,
+    author_name_found: &mut bool,
+    text: &mut String,
+    guid_is_permalink: &mut bool,
+    explicit_link: &mut Option<String>,
+    guid_permalink: &mut Option<String>,
+) {
+    let name = e.name();
+    let l = local(name.as_ref());
+    if l == b"item" || l == b"entry" {
+        *cur = Some(FeedEntry::default());
+        *guid_is_permalink = true;
+        *explicit_link = None;
+        *guid_permalink = None;
+    } else if cur.is_some() {
+        match l {
+            // Atom link carries its target in @href (prefer the
+            // alternate/plain link over enclosure/self rels).
+            b"link" => {
+                if let Some(href) = attr(e, b"href") {
+                    if matches!(attr(e, b"rel").as_deref(), None | Some("alternate")) {
+                        *explicit_link = Some(href);
+                    }
+                }
+                text.clear();
+            }
+            b"guid" => {
+                *guid_is_permalink = attr(e, b"isPermaLink")
+                    .map(|v| v != "false")
+                    .unwrap_or(true);
+                text.clear();
+            }
+            b"author" => {
+                *in_author = true;
+                *author_name_found = false;
+                text.clear();
+            }
+            // Only clear text buffer for leaf elements we actually parse on End.
+            b"title" | b"description" | b"summary" | b"content" | b"name" | b"creator"
+            | b"pubDate" | b"published" | b"updated" => {
+                text.clear();
+            }
+            _ => {}
+        }
+    } else if l == b"title" {
+        // Top-level title: clear any accumulated text from preceding sibling elements
+        // (e.g., <id> before <title> in real-world Atom feeds).
+        text.clear();
+    }
+}
+
+/// `Event::GeneralRef` handling: quick-xml emits entities (`&amp;`, `&#38;`) as
+/// their own events. Resolves a numeric char ref directly; a named entity checks
+/// XML predefined, then common HTML entities.
+fn handle_general_ref_event(e: &BytesRef<'_>, text: &mut String) {
+    match e.resolve_char_ref() {
+        Ok(Some(c)) => text.push(c),
+        Ok(None) => {
+            // Named entity: check XML predefined, then common HTML entities.
+            if let Ok(name) = e.decode() {
+                if let Some(s) = quick_xml::escape::resolve_predefined_entity(&name) {
+                    text.push_str(s);
+                } else {
+                    // Common HTML entities.
+                    let expanded = match name.as_ref() {
+                        "nbsp" => Some("\u{00A0}"),
+                        "mdash" => Some("\u{2014}"),
+                        "ndash" => Some("\u{2013}"),
+                        "hellip" => Some("\u{2026}"),
+                        "rsquo" => Some("\u{2019}"),
+                        "lsquo" => Some("\u{2018}"),
+                        "ldquo" => Some("\u{201C}"),
+                        "rdquo" => Some("\u{201D}"),
+                        _ => None,
+                    };
+                    if let Some(s) = expanded {
+                        text.push_str(s);
+                    }
+                }
+            }
+        }
+        Err(_) => {
+            // Invalid numeric reference: drop it and continue.
+        }
+    }
+}
+
+/// `Event::End` handling: closes and finalizes the in-progress entry on
+/// `</item>`/`</entry>`, otherwise assigns the just-closed leaf element's
+/// trimmed text into the entry (or the top-level feed title when none is open).
+fn handle_end_event(
+    e: &BytesEnd<'_>,
+    cur: &mut Option<FeedEntry>,
+    entries: &mut Vec<FeedEntry>,
+    feed_title: &mut String,
+    text: &str,
+    in_author: &mut bool,
+    author_name_found: &mut bool,
+    guid_is_permalink: bool,
+    explicit_link: &mut Option<String>,
+    guid_permalink: &mut Option<String>,
+) {
+    let name = e.name();
+    let l = local(name.as_ref());
+    if l == b"item" || l == b"entry" {
+        if let Some(mut b) = cur.take() {
+            // Explicit <link>/Atom @href wins; <guid isPermaLink> is the fallback.
+            b.link = explicit_link
+                .take()
+                .filter(|l| !l.is_empty())
+                .or_else(|| guid_permalink.take().filter(|l| !l.is_empty()))
+                .unwrap_or_default();
+            entries.push(finalize(b));
+        }
+    } else if let Some(b) = cur.as_mut() {
+        let t = text.trim();
+        match l {
+            b"title" => b.title = t.to_string(),
+            // RSS `<link>` is element text; Atom's @href was taken above.
+            b"link" if !t.is_empty() => *explicit_link = Some(t.to_string()),
+            // RSS `<guid isPermaLink>` fallback when <link> is absent.
+            b"guid" if guid_is_permalink && !t.is_empty() => *guid_permalink = Some(t.to_string()),
+            // RSS description / Atom summary; Atom content as fallback.
+            b"description" | b"summary" => b.summary = t.to_string(),
+            b"content" if b.summary.is_empty() => b.summary = t.to_string(),
+            // Atom `<author><name>`.
+            b"name" if *in_author => {
+                b.authors.push(t.to_string());
+                *author_name_found = true;
+            }
+            b"author" => {
+                // Capture RSS 2.0 plain-text `<author>` if no `<name>` child was found.
+                if !*author_name_found && !t.is_empty() {
+                    b.authors.push(t.to_string());
+                }
+                *in_author = false;
+            }
+            // RSS `<dc:creator>` holds a comma-separated author list.
+            b"creator" => {
+                b.authors.extend(
+                    t.split(',')
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string),
+                );
+            }
+            b"pubDate" | b"published" => b.published = t.to_string(),
+            b"updated" if b.published.is_empty() => b.published = t.to_string(),
+            _ => {}
+        }
+    } else if l == b"title" && feed_title.is_empty() {
+        // First title outside any item/entry: the channel/feed title.
+        *feed_title = text.trim().to_string();
+    }
+}
+
 /// Parse RSS 2.0 or Atom bytes into a `Feed`. Pure + sync, fixture-tested below.
 pub fn parse_feed(xml: &[u8]) -> Result<Feed> {
     let mut reader = Reader::from_reader(xml);
@@ -284,48 +452,16 @@ pub fn parse_feed(xml: &[u8]) -> Result<Feed> {
         };
         match ev {
             Event::Start(e) | Event::Empty(e) => {
-                let name = e.name();
-                let l = local(name.as_ref());
-                if l == b"item" || l == b"entry" {
-                    cur = Some(FeedEntry::default());
-                    guid_is_permalink = true;
-                    explicit_link = None;
-                    guid_permalink = None;
-                } else if cur.is_some() {
-                    match l {
-                        // Atom link carries its target in @href (prefer the
-                        // alternate/plain link over enclosure/self rels).
-                        b"link" => {
-                            if let Some(href) = attr(&e, b"href") {
-                                if matches!(attr(&e, b"rel").as_deref(), None | Some("alternate")) {
-                                    explicit_link = Some(href);
-                                }
-                            }
-                            text.clear();
-                        }
-                        b"guid" => {
-                            guid_is_permalink = attr(&e, b"isPermaLink")
-                                .map(|v| v != "false")
-                                .unwrap_or(true);
-                            text.clear();
-                        }
-                        b"author" => {
-                            in_author = true;
-                            author_name_found = false;
-                            text.clear();
-                        }
-                        // Only clear text buffer for leaf elements we actually parse on End.
-                        b"title" | b"description" | b"summary" | b"content" | b"name"
-                        | b"creator" | b"pubDate" | b"published" | b"updated" => {
-                            text.clear();
-                        }
-                        _ => {}
-                    }
-                } else if l == b"title" {
-                    // Top-level title: clear any accumulated text from preceding sibling elements
-                    // (e.g., <id> before <title> in real-world Atom feeds).
-                    text.clear();
-                }
+                handle_start_event(
+                    &e,
+                    &mut cur,
+                    &mut in_author,
+                    &mut author_name_found,
+                    &mut text,
+                    &mut guid_is_permalink,
+                    &mut explicit_link,
+                    &mut guid_permalink,
+                );
             }
             Event::Text(e) => {
                 if let Ok(t) = e.decode() {
@@ -339,92 +475,21 @@ pub fn parse_feed(xml: &[u8]) -> Result<Feed> {
             }
             // quick-xml emits entities (`&amp;`, `&#38;`) as their own events.
             Event::GeneralRef(e) => {
-                match e.resolve_char_ref() {
-                    Ok(Some(c)) => text.push(c),
-                    Ok(None) => {
-                        // Named entity: check XML predefined, then common HTML entities.
-                        if let Ok(name) = e.decode() {
-                            if let Some(s) = quick_xml::escape::resolve_predefined_entity(&name) {
-                                text.push_str(s);
-                            } else {
-                                // Common HTML entities.
-                                let expanded = match name.as_ref() {
-                                    "nbsp" => Some("\u{00A0}"),
-                                    "mdash" => Some("\u{2014}"),
-                                    "ndash" => Some("\u{2013}"),
-                                    "hellip" => Some("\u{2026}"),
-                                    "rsquo" => Some("\u{2019}"),
-                                    "lsquo" => Some("\u{2018}"),
-                                    "ldquo" => Some("\u{201C}"),
-                                    "rdquo" => Some("\u{201D}"),
-                                    _ => None,
-                                };
-                                if let Some(s) = expanded {
-                                    text.push_str(s);
-                                }
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        // Invalid numeric reference: drop it and continue.
-                    }
-                }
+                handle_general_ref_event(&e, &mut text);
             }
             Event::End(e) => {
-                let name = e.name();
-                let l = local(name.as_ref());
-                if l == b"item" || l == b"entry" {
-                    if let Some(mut b) = cur.take() {
-                        // Explicit <link>/Atom @href wins; <guid isPermaLink> is the fallback.
-                        b.link = explicit_link
-                            .take()
-                            .filter(|l| !l.is_empty())
-                            .or_else(|| guid_permalink.take().filter(|l| !l.is_empty()))
-                            .unwrap_or_default();
-                        entries.push(finalize(b));
-                    }
-                } else if let Some(b) = cur.as_mut() {
-                    let t = text.trim();
-                    match l {
-                        b"title" => b.title = t.to_string(),
-                        // RSS `<link>` is element text; Atom's @href was taken above.
-                        b"link" if !t.is_empty() => explicit_link = Some(t.to_string()),
-                        // RSS `<guid isPermaLink>` fallback when <link> is absent.
-                        b"guid" if guid_is_permalink && !t.is_empty() => {
-                            guid_permalink = Some(t.to_string())
-                        }
-                        // RSS description / Atom summary; Atom content as fallback.
-                        b"description" | b"summary" => b.summary = t.to_string(),
-                        b"content" if b.summary.is_empty() => b.summary = t.to_string(),
-                        // Atom `<author><name>`.
-                        b"name" if in_author => {
-                            b.authors.push(t.to_string());
-                            author_name_found = true;
-                        }
-                        b"author" => {
-                            // Capture RSS 2.0 plain-text `<author>` if no `<name>` child was found.
-                            if !author_name_found && !t.is_empty() {
-                                b.authors.push(t.to_string());
-                            }
-                            in_author = false;
-                        }
-                        // RSS `<dc:creator>` holds a comma-separated author list.
-                        b"creator" => {
-                            b.authors.extend(
-                                t.split(',')
-                                    .map(|s| s.trim())
-                                    .filter(|s| !s.is_empty())
-                                    .map(str::to_string),
-                            );
-                        }
-                        b"pubDate" | b"published" => b.published = t.to_string(),
-                        b"updated" if b.published.is_empty() => b.published = t.to_string(),
-                        _ => {}
-                    }
-                } else if l == b"title" && feed_title.is_empty() {
-                    // First title outside any item/entry: the channel/feed title.
-                    feed_title = text.trim().to_string();
-                }
+                handle_end_event(
+                    &e,
+                    &mut cur,
+                    &mut entries,
+                    &mut feed_title,
+                    &text,
+                    &mut in_author,
+                    &mut author_name_found,
+                    guid_is_permalink,
+                    &mut explicit_link,
+                    &mut guid_permalink,
+                );
             }
             Event::Eof => break,
             _ => {}

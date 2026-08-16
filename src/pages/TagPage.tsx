@@ -6,8 +6,8 @@ import { Spinner } from "../components/ui/spinner";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
 import { SortHeader, nextSort, type SortDir } from "../components/ui/sort-header";
-import { PaperCard } from "../components/papers/PaperCard";
-import { ProjectCard } from "../components/projects/ProjectCard";
+import { PaperList } from "../components/papers/PaperList";
+import { ProjectGrid } from "../components/projects/ProjectGrid";
 
 export default function TagPage() {
   const { label } = useParams<{ label?: string }>();
@@ -219,15 +219,7 @@ function TagDetailView({ label }: TagDetailViewProps) {
             No papers with this tag.
           </p>
         ) : (
-          <div className="flex flex-col gap-3">
-            {papers.map((paper) => (
-              <PaperCard
-                key={paper.source_id}
-                paper={paper}
-                onNavigate={(sfk) => navigate(`/library/${sfk}`)}
-              />
-            ))}
-          </div>
+          <PaperList papers={papers} className="flex flex-col gap-3" />
         )}
       </section>
 
@@ -237,15 +229,7 @@ function TagDetailView({ label }: TagDetailViewProps) {
           <h2 className="text-base font-semibold text-text">
             Projects ({projects.length})
           </h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {projects.map((project) => (
-              <ProjectCard
-                key={project.id}
-                project={project}
-                onClick={() => navigate(`/projects/${project.id}`)}
-              />
-            ))}
-          </div>
+          <ProjectGrid projects={projects} className="grid grid-cols-1 sm:grid-cols-2 gap-4" />
         </section>
       )}
     </div>
