@@ -154,6 +154,8 @@ jobs:
     name: Build (linux-x86_64-pacman)
     runs-on: ubuntu-22.04
     container: archlinux:base-devel
+    permissions:
+      contents: read
     steps:
       # The job container starts intentionally small. Install git/node before
       # checkout and the native libraries before the Tauri build.
