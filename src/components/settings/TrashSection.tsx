@@ -106,6 +106,41 @@ function TrashActions({
   );
 }
 
+function TrashRowShell({
+  left,
+  onRestore,
+  onDeleteClick,
+  disarm,
+  isPending,
+  restoring,
+  deleting,
+  confirm,
+}: {
+  left: React.ReactNode;
+  onRestore: () => void;
+  onDeleteClick: () => void;
+  disarm: () => void;
+  isPending: boolean;
+  restoring: boolean;
+  deleting: boolean;
+  confirm: boolean;
+}) {
+  return (
+    <div className="flex items-center justify-between py-3 border-b border-border last:border-0">
+      <div className="flex-1 min-w-0 mr-4">{left}</div>
+      <TrashActions
+        onRestore={onRestore}
+        onDeleteClick={onDeleteClick}
+        disarm={disarm}
+        isPending={isPending}
+        restoring={restoring}
+        deleting={deleting}
+        confirm={confirm}
+      />
+    </div>
+  );
+}
+
 function TrashRow({
   paper,
   onRestore,
@@ -134,21 +169,21 @@ function TrashRow({
       : null;
 
   return (
-    <div className="flex items-center justify-between py-3 border-b border-border last:border-0">
-      <div className="flex-1 min-w-0 mr-4">
-        <p className="text-sm font-medium text-text truncate">{paper.title}</p>
-        {authorLine && <p className="text-xs text-muted mt-0.5">{authorLine}</p>}
-      </div>
-      <TrashActions
-        onRestore={onRestore}
-        onDeleteClick={handleDeleteClick}
-        disarm={disarm}
-        isPending={isPending}
-        restoring={restoring}
-        deleting={deleting}
-        confirm={confirm}
-      />
-    </div>
+    <TrashRowShell
+      left={
+        <>
+          <p className="text-sm font-medium text-text truncate">{paper.title}</p>
+          {authorLine && <p className="text-xs text-muted mt-0.5">{authorLine}</p>}
+        </>
+      }
+      onRestore={onRestore}
+      onDeleteClick={handleDeleteClick}
+      disarm={disarm}
+      isPending={isPending}
+      restoring={restoring}
+      deleting={deleting}
+      confirm={confirm}
+    />
   );
 }
 
@@ -173,23 +208,23 @@ function ProjectTrashRow({
   }
 
   return (
-    <div className="flex items-center justify-between py-3 border-b border-border last:border-0">
-      <div className="flex-1 min-w-0 mr-4">
-        <p className="text-sm font-medium text-text truncate">{project.name}</p>
-        <p className="text-xs text-muted mt-0.5">
-          {project.paper_count} paper{project.paper_count !== 1 ? "s" : ""}
-        </p>
-      </div>
-      <TrashActions
-        onRestore={onRestore}
-        onDeleteClick={handleDeleteClick}
-        disarm={disarm}
-        isPending={isPending}
-        restoring={restoring}
-        deleting={deleting}
-        confirm={confirm}
-      />
-    </div>
+    <TrashRowShell
+      left={
+        <>
+          <p className="text-sm font-medium text-text truncate">{project.name}</p>
+          <p className="text-xs text-muted mt-0.5">
+            {project.paper_count} paper{project.paper_count !== 1 ? "s" : ""}
+          </p>
+        </>
+      }
+      onRestore={onRestore}
+      onDeleteClick={handleDeleteClick}
+      disarm={disarm}
+      isPending={isPending}
+      restoring={restoring}
+      deleting={deleting}
+      confirm={confirm}
+    />
   );
 }
 

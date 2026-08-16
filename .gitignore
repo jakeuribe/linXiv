@@ -67,6 +67,7 @@ src-tauri/gen/schemas/
 # pdfium native lib (fetched per-host by scripts/fetch_pdfium.sh)
 src-tauri/vendor/pdfium/
 
-# local workflow scratch (Phase-4 fan-out scripts)
+# local workflow scratch 
 scratchpad-wf/
 scratchpad-wf5/
+

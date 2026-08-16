@@ -1,8 +1,7 @@
 import { useRef, useState } from "react";
-import { useNavigate } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { listProjects, createProject } from "../api/projects";
-import { ProjectCard } from "../components/projects/ProjectCard";
+import { ProjectGrid } from "../components/projects/ProjectGrid";
 import { ColorSwatch } from "../components/projects/ColorSwatch";
 import { PRESET_COLORS } from "../components/projects/constants";
 import { TagInput, type TagInputHandle } from "../components/projects/TagInput";
@@ -155,7 +154,6 @@ function NewProjectDialog({
 }
 
 export default function ProjectsPage() {
-  const navigate = useNavigate();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
 
@@ -241,15 +239,7 @@ export default function ProjectsPage() {
 
       {/* Grid */}
       {projects.length > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {projects.map((project) => (
-            <ProjectCard
-              key={project.id}
-              project={project}
-              onClick={() => navigate(`/projects/${project.id}`)}
-            />
-          ))}
-        </div>
+        <ProjectGrid projects={projects} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" />
       )}
 
       <NewProjectDialog

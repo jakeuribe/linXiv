@@ -21,7 +21,7 @@
 //! `{source_id}_v{version}.pdf`. Never unify.
 
 use crate::error::{CoreError, Result};
-use crate::models::{PaperMetadata, Status};
+use crate::models::PaperMetadata;
 use crate::service::paper::pdf_on_disk_name;
 use crate::storage::queries::{paper as store, project as proj_store};
 use rusqlite::Connection;
@@ -102,7 +102,7 @@ where
 
     // Pre-import membership guard: fail before mutating the library.
     if let Some(pid) = project_id {
-        ensure_membership_writable(conn, pid)?;
+        crate::service::project::ensure_membership_writable(conn, pid)?;
     }
 
     fs::create_dir_all(pdf_dir)
@@ -163,7 +163,7 @@ pub type ResolvedPdf = (PaperMetadata, Option<(String, i64)>);
 /// commit lock (the project can vanish between the phases).
 pub fn precheck_import_pdf(conn: &Connection, project_id: Option<i64>) -> Result<()> {
     match project_id {
-        Some(pid) => ensure_membership_writable(conn, pid),
+        Some(pid) => crate::service::project::ensure_membership_writable(conn, pid),
         None => Ok(()),
     }
 }
@@ -413,29 +413,16 @@ fn rollback(conn: &mut Connection, tmp_path: &Path, st: &ImportState) {
 }
 
 // ── project-membership guards ────────────────────────────────────────────────
-// Ports of service/project.py::{ensure_membership_writable, link_imported}.
-// The Rust project SERVICE is still an empty stub, so these are composed from the
-// project STORAGE layer here rather than reaching into a service that doesn't
-// exist. They are private and import-only.
-
-/// Apply the membership-write guards without writing: missing → ProjectNotFound,
-/// soft-deleted → ProjectDeleted.
-fn ensure_membership_writable(conn: &Connection, project_fk: i64) -> Result<()> {
-    match proj_store::get_project(conn, project_fk, false)? {
-        None => Err(CoreError::ProjectNotFound(project_fk)),
-        Some(p) if p.status == Status::Deleted => Err(CoreError::ProjectDeleted(
-            "cannot update a deleted project".into(),
-        )),
-        Some(_) => Ok(()),
-    }
-}
+// Ports of service/project.py::link_imported. The membership guard itself now
+// lives in `service::project::ensure_membership_writable` (see `import_bibtex`
+// above); import-only.
 
 /// Link a just-imported paper to a project (same write path as add_papers).
 /// Re-applies the guard (the project may have been deleted since the pre-import
 /// check). An id that doesn't resolve to a root is a no-op (Python logs a warning;
 /// no logger here, and the caller has no user to report it to).
 fn link_imported(conn: &mut Connection, project_fk: i64, source_id: &str) -> Result<()> {
-    ensure_membership_writable(conn, project_fk)?;
+    crate::service::project::ensure_membership_writable(conn, project_fk)?;
     if let Some(root) = store::get_paper_root(conn, source_id)? {
         proj_store::add_papers(conn, project_fk, &[root.source_fk])?;
     }

@@ -22,6 +22,19 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
+function StatusMessage({ msg }: { msg: { ok: boolean; text: string } | null }) {
+  if (!msg) return null;
+  return (
+    <span
+      className={msg.ok ? "text-xs text-success truncate max-w-[220px]" : "text-xs text-danger truncate max-w-[220px]"}
+      title={msg.text}
+      role="status"
+    >
+      {msg.text}
+    </span>
+  );
+}
+
 export function StorageSection() {
   const qc = useQueryClient();
   const navigate = useNavigate();
@@ -158,15 +171,7 @@ export function StorageSection() {
           >
             {backingUp ? "Backing up…" : "Back up…"}
           </Button>
-          {backupMsg && (
-            <span
-              className={backupMsg.ok ? "text-xs text-success truncate max-w-[220px]" : "text-xs text-danger truncate max-w-[220px]"}
-              title={backupMsg.text}
-              role="status"
-            >
-              {backupMsg.text}
-            </span>
-          )}
+          <StatusMessage msg={backupMsg} />
         </SettingRow>
         <SettingRow
           label="Restore database"
@@ -190,15 +195,7 @@ export function StorageSection() {
           >
             {restoring ? "Restoring…" : restoreGuard.confirm ? "Replace library?" : "Restore…"}
           </Button>
-          {restoreMsg && (
-            <span
-              className={restoreMsg.ok ? "text-xs text-success truncate max-w-[220px]" : "text-xs text-danger truncate max-w-[220px]"}
-              title={restoreMsg.text}
-              role="status"
-            >
-              {restoreMsg.text}
-            </span>
-          )}
+          <StatusMessage msg={restoreMsg} />
         </SettingRow>
         <p className="mt-2 text-xs text-muted">
           Reading list status (unread/reading/read) and locally saved PDF files are stored locally and not included in backups.

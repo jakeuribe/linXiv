@@ -124,21 +124,27 @@ fn match_expr(raw: &str) -> Option<String> {
             tok.push(next);
             chars.next();
         }
-        let prefix = tok.ends_with('*');
-        let body = tok.strip_suffix('*').unwrap_or(&tok);
-        if !prefix && matches!(body, "AND" | "OR" | "NOT") {
-            // Two operators in a row (or a leading one) is a syntax error.
-            if !out.is_empty() && !is_operator(out.last()) {
-                out.push(body.to_string());
-            }
-        } else {
-            push_term(&mut out, body, prefix);
-        }
+        match_expr_helper(&mut out, &tok);
     }
     if is_operator(out.last()) {
         out.pop();
     }
     (!out.is_empty()).then(|| out.join(" "))
+}
+
+/// Classifies one raw token as an FTS5 operator (AND/OR/NOT, pushed only if
+/// it doesn't follow another operator) or a term/prefix (via `push_term`).
+fn match_expr_helper(out: &mut Vec<String>, tok: &str) {
+    let prefix = tok.ends_with('*');
+    let body = tok.strip_suffix('*').unwrap_or(tok);
+    if !prefix && matches!(body, "AND" | "OR" | "NOT") {
+        // Two operators in a row (or a leading one) is a syntax error.
+        if !out.is_empty() && !is_operator(out.last()) {
+            out.push(body.to_string());
+        }
+    } else {
+        push_term(out, body, prefix);
+    }
 }
 
 fn is_operator(tok: Option<&String>) -> bool {
