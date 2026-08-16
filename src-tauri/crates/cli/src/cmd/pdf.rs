@@ -62,6 +62,25 @@ struct ImportedPdf {
     title: String,
 }
 
+/// Resolves an explicit `--version` for `pdf download`, validating it against
+/// stored versions (mark_pdf_saved below would update no rows otherwise,
+/// orphaning the downloaded file), or falls back to the paper's current version.
+fn compute_version(
+    ctx: &Ctx,
+    paper: &linxiv_core::models::PaperDetails,
+    source_id: &str,
+    version: Option<i64>,
+) -> i64 {
+    match version.filter(|&v| v != 0) {
+        Some(v) if !stored_versions(ctx, source_id).contains(&v) => fail(format!(
+            "Paper {} has no version {v} in DB",
+            pyrepr(source_id)
+        )),
+        Some(v) => v,
+        None => paper.version,
+    }
+}
+
 pub async fn run(cmd: PdfCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
     match cmd {
         PdfCmd::Path { source_id, version } => {
@@ -88,17 +107,7 @@ pub async fn run(cmd: PdfCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         } => {
             let source_id = as_source_id(&ctx.conn, &source_id);
             let paper = super::paper::resolve_paper_or_exit(ctx, &source_id);
-            // An explicit --version must name a stored version. mark_pdf_saved below
-            // updates no rows otherwise, and refusing after the download would leave
-            // an orphan file in the managed dir that no command can see or remove.
-            let version = match version.filter(|&v| v != 0) {
-                Some(v) if !stored_versions(ctx, &source_id).contains(&v) => fail(format!(
-                    "Paper {} has no version {v} in DB",
-                    pyrepr(&source_id)
-                )),
-                Some(v) => v,
-                None => paper.version,
-            };
+            let version = compute_version(ctx, &paper, &source_id, version);
             let max_pdf_bytes = ctx.settings.pdf_save_limit_bytes();
             let path = svc_files::download_pdf(
                 &ctx.pdf_dir,
