@@ -137,19 +137,19 @@ export async function openReleaseUrl(url: string): Promise<void> {
   }
 }
 
+export type LinuxPackageKind = "deb" | "rpm" | "pacman";
+
 /**
- * Which package manager (if any) owns this install: "deb" or "rpm" route the
- * update through `apply_linux_package_update` (pkexec dpkg/rpm — the Tauri
- * updater plugin only knows how to swap an AppImage), null routes through the
- * updater plugin (AppImage/macOS/Windows) or, outside Tauri, the browser
- * download fallback.
+ * Which package manager (if any) owns this install. Native packages route
+ * through the privileged package updater; null routes through the Tauri
+ * updater (AppImage/macOS/Windows) or the browser fallback outside Tauri.
  */
-export async function getLinuxPackageKind(): Promise<"deb" | "rpm" | null> {
+export async function getLinuxPackageKind(): Promise<LinuxPackageKind | null> {
   if (!isTauri) return null;
   try {
     const { invoke } = await import("@tauri-apps/api/core");
     const kind = await invoke<string | null>("get_linux_package_kind");
-    return kind === "deb" || kind === "rpm" ? kind : null;
+    return kind === "deb" || kind === "rpm" || kind === "pacman" ? kind : null;
   } catch {
     return null;
   }
@@ -159,12 +159,12 @@ export async function getLinuxPackageKind(): Promise<"deb" | "rpm" | null> {
  * Install the update and relaunch. Never called outside Tauri (the browser
  * build only ever offers the "Download" fallback).
  *
- * For deb/rpm, `apply_linux_package_update` resolves the asset itself from
+ * For native packages, `apply_linux_package_update` resolves the asset itself from
  * the pinned repo's latest release — it never takes a URL from here, since
  * that would let webview JS point a root-privileged install at an arbitrary
  * GitHub-hosted asset.
  */
-export async function installUpdate(packageKind: "deb" | "rpm" | null): Promise<void> {
+export async function installUpdate(packageKind: LinuxPackageKind | null): Promise<void> {
   if (!isTauri) throw new Error("Not running in Tauri");
 
   if (packageKind) {

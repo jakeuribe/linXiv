@@ -36,7 +36,7 @@ tauri-plugin-fs = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-updater = "2"
 # relaunch() after an in-place update installs (AppImage via the updater plugin,
-# or deb/rpm via apply_linux_package_update below).
+# or deb/rpm/pacman via apply_linux_package_update below).
 tauri-plugin-process = "2"
 tauri-plugin-texbrain = { git = "https://github.com/linxiv-dev/tex-brain-linxiv-plugin", rev = "9499d4343033de0c3f1e52a2f2a06989fa4d2f13" }
 serde = { version = "1", features = ["derive"] }
@@ -73,7 +73,7 @@ keyring = { version = "3", features = [
 argon2 = "0.5"
 # Random DEK bytes on first run (same major as the lockfile's transitive copy).
 getrandom = "0.3"
-# deb/rpm self-update (apply_linux_package_update): downloads the release asset
+# Native-package self-update (apply_linux_package_update): downloads the release asset
 # directly, since the Tauri updater plugin only ever swaps AppImage/app.tar.gz/
 # NSIS-MSI in place. 0.12.x already pulled transitively (linxiv-core/tex-brain);
 # tauri-plugin-updater pulls its own, newer 0.13.x separately. json: parses the
@@ -81,10 +81,10 @@ getrandom = "0.3"
 # instead of trusting Content-Length.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 # apply_linux_package_update: an O_EXCL-created unique path for the downloaded
-# deb/rpm, so a local process can't symlink-swap a predictable temp path
+# native packages, so a local process can't symlink-swap a predictable temp path
 # before pkexec reads it. (Also used by the share-dispatcher test below.)
 tempfile = "3"
-# apply_linux_package_update: verify the downloaded deb/rpm against the sha256
+# apply_linux_package_update: verify the downloaded native package against the sha256
 # GitHub's Releases API reports for the asset (fetched over api.github.com,
 # a separate channel from the objects.githubusercontent.com download).
 sha2 = "0.10"
