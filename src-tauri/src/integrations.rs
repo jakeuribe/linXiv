@@ -336,22 +336,23 @@ pub fn uninstall_cli() -> Result<(), String> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// In-place update: deb/rpm
+// In-place update: deb/rpm/pacman
 //
 // The Tauri updater plugin (main.rs) only ever swaps an AppImage, a macOS
 // app.tar.gz, or a Windows NSIS/MSI in place — it has no notion of a
-// dpkg/rpm-managed install. Rather than standing up an APT/YUM repository (a
-// separate hosting + package-signing project), a deb/rpm install self-updates
+// package-manager-owned install. Rather than standing up distro repositories
+// (a separate hosting + package-signing project), a native install self-updates
 // by downloading the matching asset straight off the GitHub release and
 // installing it with `pkexec`, the same one-time privilege prompt a user
 // would see running `dpkg -i`/`rpm -U` by hand.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// "deb", "rpm", or `None` (AppImage, dev build, or a non-Linux platform).
+/// "deb", "rpm", "pacman", or `None` (AppImage, dev build, or a non-Linux
+/// platform).
 ///
 /// Resolved by asking the system package database whether it owns the
 /// running executable — `is_cli_installed`'s approach of trusting a fixed
-/// path doesn't apply here, since deb/rpm both put the binary at
+/// path doesn't apply here, since native packages put the binary at
 /// `/usr/bin/linxiv` and only the package manager can say which one (if
 /// either) actually installed it.
 fn linux_package_kind() -> Option<&'static str> {
@@ -369,13 +370,17 @@ fn linux_package_kind() -> Option<&'static str> {
         Some("deb")
     } else if owned_by("rpm", &["-qf", &exe.to_string_lossy()]) {
         Some("rpm")
+    } else if owned_by("pacman", &["-Qo", &exe.to_string_lossy()]) {
+        // Pacman packages cannot be replaced by Tauri's AppImage updater;
+        // route them through the native package path as well.
+        Some("pacman")
     } else {
         None
     }
 }
 
 /// JS-facing: which package manager (if any) owns this install, so the UI can
-/// pick the update path (deb/rpm here vs. the Tauri updater plugin for
+/// pick the update path (native package here vs. the Tauri updater plugin for
 /// everything else). `dpkg -S`/`rpm -qf` read the whole package database, so
 /// this runs off the main thread like any other blocking probe.
 #[tauri::command]
@@ -412,7 +417,7 @@ fn is_allowed_asset_url(url: &str) -> bool {
             .is_some_and(|h| ALLOWED_ASSET_HOSTS.contains(&h))
 }
 
-/// Upper bound on a downloaded deb/rpm — generous for a desktop app package,
+/// Upper bound on a downloaded native package — generous for a desktop app,
 /// just enough to refuse an absurd/misconfigured response before install.
 const MAX_UPDATE_PACKAGE_BYTES: u64 = 300 * 1024 * 1024;
 
@@ -453,8 +458,16 @@ async fn resolve_release_asset(
     release
         .assets
         .into_iter()
-        .find(|a| a.name.ends_with(&format!(".{kind}")) && a.name.contains(arch))
-        .ok_or_else(|| format!("No {arch} .{kind} asset found on the latest release"))
+        .find(|a| package_asset_matches(&a.name, kind, arch))
+        .ok_or_else(|| format!("No {arch} {kind} asset found on the latest release"))
+}
+
+fn package_asset_matches(name: &str, kind: &str, arch: &str) -> bool {
+    let suffix = match kind {
+        "pacman" => ".pkg.tar.zst",
+        other => return name.ends_with(&format!(".{other}")) && name.contains(arch),
+    };
+    name.starts_with("linxiv-") && name.ends_with(suffix) && name.contains(arch)
 }
 
 /// release.yml's asset naming: rpm carries the raw Rust arch ("x86_64",
@@ -467,8 +480,8 @@ fn arch_token<'a>(rust_arch: &'a str, kind: &str) -> &'a str {
     }
 }
 
-/// `dpkg -i`/`rpm -U` don't check a signature on what they install, and
-/// deb/rpm assets aren't covered by `createUpdaterArtifacts`'s minisign
+/// `dpkg -i`/`rpm -U`/`pacman -U` don't check a signature on what they install,
+/// and native package assets aren't covered by `createUpdaterArtifacts`'s minisign
 /// signing (that only signs the AppImage/app.tar.gz/NSIS-MSI artifacts) — so
 /// unlike that path, this one has no real code-signing: the sha256 checked
 /// here comes from the same GitHub API response as the download URL, so it
@@ -494,7 +507,7 @@ pub async fn apply_linux_package_update() -> Result<(), String> {
     let kind = tokio::task::spawn_blocking(linux_package_kind)
         .await
         .map_err(|e| e.to_string())?
-        .ok_or("Not a deb/rpm install")?;
+        .ok_or("Not a supported native package install")?;
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(600))
@@ -543,25 +556,35 @@ pub async fn apply_linux_package_update() -> Result<(), String> {
         // shared-dir path could be symlink-swapped by another local user
         // between write and pkexec's read; this one can't be pre-created or
         // guessed.
+        let suffix = if kind == "pacman" {
+            "pkg.tar.zst"
+        } else {
+            kind
+        };
         let mut tmp = tempfile::Builder::new()
             .prefix("linxiv-update-")
-            .suffix(&format!(".{kind}"))
+            .suffix(&format!(".{suffix}"))
             .tempfile()
             .map_err(|e| format!("Could not create temp file: {e}"))?;
         tmp.write_all(&bytes)
             .and_then(|_| tmp.flush())
             .map_err(|e| format!("Could not write update package: {e}"))?;
 
-        let (installer, install_args): (&str, &str) = match kind {
-            "deb" => ("dpkg", "-i"),
-            _ => ("rpm", "-U"),
+        let (installer, install_args): (&str, &[&str]) = match kind {
+            "deb" => ("dpkg", &["-i"]),
+            "rpm" => ("rpm", &["-U"]),
+            "pacman" => ("pacman", &["-U", "--noconfirm"]),
+            _ => return Err(format!("Unsupported package manager: {kind}")),
         };
         let path_str = tmp.path().to_string_lossy().to_string();
         eprintln!(
-            "[linxiv] apply_linux_package_update: pkexec {installer} {install_args} {path_str}"
+            "[linxiv] apply_linux_package_update: pkexec {installer} {} {path_str}",
+            install_args.join(" ")
         );
         let status = std::process::Command::new("pkexec")
-            .args([installer, install_args, &path_str])
+            .arg(installer)
+            .args(install_args)
+            .arg(&path_str)
             .status()
             .map_err(|e| format!("Could not launch pkexec: {e}"))?;
         // tmp stays in scope (not dropped/deleted) until here.
@@ -1459,9 +1482,34 @@ mod tests {
             ("x86_64", "rpm", "x86_64"),
             ("aarch64", "deb", "arm64"),
             ("aarch64", "rpm", "aarch64"),
+            ("x86_64", "pacman", "x86_64"),
         ];
         for (rust_arch, kind, expected) in cases {
             assert_eq!(arch_token(rust_arch, kind), *expected);
         }
+    }
+
+    #[test]
+    fn native_package_asset_matching() {
+        assert!(package_asset_matches(
+            "linxiv-0.4.1-1-x86_64.pkg.tar.zst",
+            "pacman",
+            "x86_64"
+        ));
+        assert!(!package_asset_matches(
+            "linxiv-0.4.1-1-aarch64.pkg.tar.zst",
+            "pacman",
+            "x86_64"
+        ));
+        assert!(package_asset_matches(
+            "linXiv_0.4.1_amd64.deb",
+            "deb",
+            "amd64"
+        ));
+        assert!(package_asset_matches(
+            "linXiv-0.4.1-1.x86_64.rpm",
+            "rpm",
+            "x86_64"
+        ));
     }
 }
