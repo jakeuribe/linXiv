@@ -299,8 +299,8 @@ fn handle_start_event(
                 text.clear();
             }
             // Only clear text buffer for leaf elements we actually parse on End.
-            b"title" | b"description" | b"summary" | b"content" | b"name"
-            | b"creator" | b"pubDate" | b"published" | b"updated" => {
+            b"title" | b"description" | b"summary" | b"content" | b"name" | b"creator"
+            | b"pubDate" | b"published" | b"updated" => {
                 text.clear();
             }
             _ => {}
@@ -382,9 +382,7 @@ fn handle_end_event(
             // RSS `<link>` is element text; Atom's @href was taken above.
             b"link" if !t.is_empty() => *explicit_link = Some(t.to_string()),
             // RSS `<guid isPermaLink>` fallback when <link> is absent.
-            b"guid" if guid_is_permalink && !t.is_empty() => {
-                *guid_permalink = Some(t.to_string())
-            }
+            b"guid" if guid_is_permalink && !t.is_empty() => *guid_permalink = Some(t.to_string()),
             // RSS description / Atom summary; Atom content as fallback.
             b"description" | b"summary" => b.summary = t.to_string(),
             b"content" if b.summary.is_empty() => b.summary = t.to_string(),
