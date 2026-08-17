@@ -28,10 +28,10 @@ Upload your PDFs, create projects, manage notes, tags, and annotations to organi
 
 <p align="center">
   <a href="https://youtu.be/c4vQuXjFv34">
-    <img src="https://img.youtube.com/vi/t3aH28353P4/maxresdefault.jpg" width="800" alt="Watch the linXiv demo">
+    <img src="https://img.youtube.com/vi/c4vQuXjFv34/maxresdefault.jpg" width="800" alt="Watch the linXiv demo">
   </a>
   <br>
-  <em><a href="https://youtu.be/t3aH28353P4">▶ Watch the full demo (3:16)</a></em>
+  <em><a href="https://youtu.be/c4vQuXjFv34">▶ Watch the full demo (3:16)</a></em>
 </p>
 
 ## Install
