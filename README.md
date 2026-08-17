@@ -41,10 +41,19 @@ Prebuilt installers for Linux, macOS, and Windows are on the [releases page](htt
 | Platform | Download |
 | --- | --- |
 | Linux | `.deb`, `.rpm`, or `.AppImage` |
-| macOS (Apple silicon) | `.dmg` |
+| macOS (Apple silicon) | `.dmg` (arm64) |
+| macOS (Intel) | `.dmg` (x86_64) |
 | Windows | `.exe` (NSIS) or `.msi` |
 
-The macOS and Windows builds are unsigned. On macOS, right-click the app → **Open** to get past Gatekeeper the first time. On Windows, click **More info** → **Run anyway** on the SmartScreen prompt.
+The macOS and Windows builds are unsigned.
+
+**macOS:** On macOS 15 (Sequoia) and later, Apple removed the right-click → **Open** Gatekeeper bypass. The first launch will say **"linXiv is damaged and can't be opened."** This is not a broken download; it's Gatekeeper blocking an unsigned app. To open it:
+- Try launching the app once (it will fail with the "damaged" message), then go to **System Settings → Privacy & Security** and click **Open Anyway** next to the linXiv block notice, or
+- Run `xattr -cr /Applications/linXiv.app` in a terminal to strip the quarantine attribute, then launch normally.
+
+On macOS 14 and earlier, right-click the app → **Open** still works to get past Gatekeeper the first time.
+
+**Windows:** click **More info** → **Run anyway** on the SmartScreen prompt.
 
 ### Installing via pip install
 
@@ -101,7 +110,7 @@ git submodule update --init --recursive
 
 ## Architecture
 
-linXiv is a Tauri v2 app. The frontend is React 18 + TypeScript (Vite); the backend is native Rust and runs **in-process** inside the app — the webview calls it through a single `api` Tauri command over IPC, and streams PDFs and graph assets over a custom `linxiv://` scheme. There is no HTTP server and no Python in the packaged app. SQLite (bundled, FTS5) and PDF extraction (native `libpdfium`) are compiled in — see [docs/architecture.md](docs/architecture.md) for the full workspace layout.
+linXiv is a Tauri v2 app. The frontend is React 18 + TypeScript (Vite); the backend is native Rust and runs **in-process** inside the app: the webview calls it through a single `api` Tauri command over IPC, and streams PDFs and graph assets over a custom `linxiv://` scheme. SQLite (bundled, FTS5) and PDF extraction (native `libpdfium`) are compiled in; see [docs/architecture.md](docs/architecture.md) for the full workspace layout.
 
 ## Setup
 
@@ -123,11 +132,11 @@ bash scripts/stage_rust_bins.sh   # builds + stages the linxiv/linxiv-mcp sideca
 
 Rust crates are fetched automatically on first `cargo`/`tauri` build.
 
-> **Both scripts above are required before `cargo check`/`cargo build`/`tauri dev` will even compile — not just for a full `tauri build`** (they stage gitignored paths that `tauri-build` validates at compile time). See [docs/build.md](docs/build.md) if you hit a `resource path ... doesn't exist` error.
+> **Both scripts above are required before `cargo check`/`cargo build`/`tauri dev` will even compile, not just for a full `tauri build`** (they stage gitignored paths that `tauri-build` validates at compile time). See [docs/build.md](docs/build.md) if you hit a `resource path ... doesn't exist` error.
 
 ### Run in development
 
-Native desktop window (recommended — runs the in-process Rust backend, hot-reloads the frontend):
+Native desktop window (recommended: runs the in-process Rust backend, hot-reloads the frontend):
 
 ```bash
 npm run tauri dev
@@ -182,7 +191,7 @@ linxiv fetch 2204.12985
 linxiv paper get 2204.12985
 ```
 
-Covers papers, tags, projects, notes, PDF annotations, PDFs, DOI resolution, authors, BibTeX import, trash, and library maintenance — see [docs/cli_ref/](docs/cli_ref/) for the full command reference.
+Covers papers, tags, projects, notes, PDF annotations, PDFs, DOI resolution, authors, BibTeX import, trash, and library maintenance; see [docs/cli_ref/](docs/cli_ref/) for the full command reference.
 
 ## MCP server
 
@@ -214,11 +223,11 @@ In a checkout you can run it straight from source with `cargo run -p linxiv-mcp`
 
 ## Graph visualization
 
-Papers and authors form a force-directed network: papers connect to their authors and tags, laid out by a D3 force simulation and rendered with Cytoscape. The control panel exposes real-time sliders to control how the nodes and connections interact. The viewer, MathJax, D3, and the UI font are all bundled locally.
+Papers and authors make up a force-directed network: papers link to their authors and tags, laid out by a D3 force simulation and drawn with Cytoscape. The control panel gives you real-time sliders to steer how the nodes and links work together. The viewer, MathJax, D3, and the UI font are all bundled locally.
 
 ## Data location
 
-The database (`papers.db`), managed PDFs, and the Obsidian vault live in the per-user app data directory for `com.linxiv.app` (e.g. `~/.local/share/com.linxiv.app` on Linux, `~/Library/Application Support/com.linxiv.app` on macOS). Set the `LINXIV_DATA_DIR` environment variable to override the location — the app, CLI, and MCP server all honor it, so they share one library.
+The database (`papers.db`), managed PDFs, and the Obsidian vault live in the per-user app data directory for `com.linxiv.app` (e.g. `~/.local/share/com.linxiv.app` on Linux, `~/Library/Application Support/com.linxiv.app` on macOS). Set the `LINXIV_DATA_DIR` environment variable to override the location; the app, CLI, and MCP server all honor it, so they share one library.
 
 ## Acknowledgements
 

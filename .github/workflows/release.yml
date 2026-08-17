@@ -21,6 +21,9 @@ jobs:
           - os: macos-latest
             platform: macos-arm64
             args: ""
+          - os: macos-15-intel
+            platform: macos-x86_64
+            args: ""
           - os: windows-latest
             platform: windows-x86_64
             # WiX/MSI's ProductVersion is strictly numeric (major.minor.build,
@@ -119,9 +122,9 @@ jobs:
           # We ship both NSIS and MSI; the updater's latest.json can only name
           # one Windows artifact, so pin it to NSIS (passive installMode above).
           updaterJsonPreferNsis: true
-          # macOS and Windows builds are unsigned.
-          # macOS: right-click → Open to bypass Gatekeeper.
-          # Windows: More info → Run anyway on the SmartScreen prompt.
+          # macOS and Windows builds are unsigned. See README.md's Install
+          # section for the current per-OS bypass steps (Gatekeeper's "damaged"
+          # message on macOS 15+, SmartScreen on Windows).
 
       # Raw per-platform binaries for the linxiv PyPI wheels
       # (linxiv-dev/linxiv-pypi downloads these by tag and bundles them).
