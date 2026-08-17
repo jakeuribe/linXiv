@@ -9,6 +9,7 @@ import {
   getLinuxPackageKind,
   installUpdate,
   openReleaseUrl,
+  type LinuxPackageKind,
   type UpdateResult,
 } from "../../api/updates";
 import {
@@ -102,7 +103,7 @@ function UpdateMessage({
   installError,
 }: {
   result: UpdateResult;
-  packageKind: "deb" | "rpm" | null;
+  packageKind: LinuxPackageKind | null;
   packageKindResolved: boolean;
   onInstall: () => void;
   installing: boolean;
@@ -173,9 +174,9 @@ export function AboutSection() {
   const { hash } = useLocation();
   const [version, setVersion] = useState<string | null>(null);
   const [versionResolved, setVersionResolved] = useState(false);
-  const [packageKind, setPackageKind] = useState<"deb" | "rpm" | null>(null);
+  const [packageKind, setPackageKind] = useState<LinuxPackageKind | null>(null);
   // A seeded result paints Install on the first render, before the IPC hop
-  // that says which install path applies; a deb/rpm click before then would
+  // that says which install path applies; a native-package click before then would
   // route through the AppImage updater.
   const [packageKindResolved, setPackageKindResolved] = useState(false);
   const [installing, setInstalling] = useState(false);
