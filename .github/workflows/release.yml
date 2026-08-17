@@ -41,18 +41,7 @@ jobs:
       # over it. After v0.3.0-beta the next release is v0.3.1 — see docs/build.md.
       - name: Set app version from tag
         shell: bash
-        run: |
-          ver="${GITHUB_REF_NAME#v}"
-          jq --arg v "$ver" '.version = $v' src-tauri/tauri.conf.json > /tmp/tauri.conf.json
-          mv /tmp/tauri.conf.json src-tauri/tauri.conf.json
-          npm version "$ver" --no-git-tag-version --allow-same-version
-          # linxiv-p2p is a separate vendored submodule; its version is independent.
-          for f in src-tauri/Cargo.toml src-tauri/crates/*/Cargo.toml; do
-            [ "$f" = "src-tauri/crates/p2p/Cargo.toml" ] && continue
-            # -i.bak (suffix attached, no space) parses the same on GNU sed
-            # (Linux/Windows Git Bash) and BSD sed (macOS); bare `-i` doesn't.
-            sed -i.bak "s/^version = \".*\"/version = \"$ver\"/" "$f" && rm -f "$f.bak"
-          done
+        run: bash scripts/set_release_version.sh "$GITHUB_REF_NAME"
 
       - name: Refuse to release without real updater signing set up
         shell: bash
@@ -161,12 +150,53 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  build-arch:
+    name: Build (linux-x86_64-pacman)
+    runs-on: ubuntu-22.04
+    container: archlinux:base-devel
+    permissions:
+      contents: read
+    steps:
+      # The job container starts intentionally small. Install git/node before
+      # checkout and the native libraries before the Tauri build.
+      - name: Install Arch build dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            curl file git glib2 gtk3 libappindicator librsvg nodejs npm openssl \
+            patchelf rustup webkit2gtk-4.1 wget xdotool
+
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Set app and package version from tag
+        run: bash scripts/set_release_version.sh "$GITHUB_REF_NAME"
+
+      # makepkg refuses to run as root, while GitHub job containers default to
+      # root. Build as an unprivileged account after dependency installation.
+      - name: Build native Arch package
+        run: |
+          useradd --create-home builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          runuser -u builder -- env HOME=/home/builder bash -c '
+            rustup default stable
+            npm ci
+            npm run build:arch
+          '
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linxiv-arch-package
+          path: packaging/arch/*.pkg.tar.zst
+          if-no-files-found: error
+          retention-days: 1
+
   # Runs only once every build job has finished, which is what puts the raw
   # binaries at the BOTTOM of the release asset list rather than interleaved.
   # Keep this job last: anything uploaded after it lands below it too.
   upload-raw-binaries:
     name: Upload raw binaries
-    needs: build
+    needs: [build, build-arch]
     # fail-fast is off above so one broken platform still ships the others'
     # installers. Run on a partial matrix for the same reason: withholding
     # every binary because one runner died would be worse than the old
@@ -176,6 +206,20 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Collect the native Arch package
+        if: ${{ needs.build-arch.result == 'success' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: linxiv-arch-package
+          path: arch-package
+
+      - name: Upload the native Arch package
+        if: ${{ needs.build-arch.result == 'success' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "$GITHUB_REF_NAME" arch-package/*.pkg.tar.zst --clobber
+
       - name: Collect every platform's binaries
         uses: actions/download-artifact@v4
         with:

@@ -8,7 +8,7 @@ import { getPaperPdfUrl } from "../api/papers";
 import { Spinner } from "../components/ui/spinner";
 import { Button } from "../components/ui/button";
 import { Dialog } from "../components/ui/dialog";
-import { PaperCard } from "../components/papers/PaperCard";
+import { PaperList } from "../components/papers/PaperList";
 import { Card, MonoLabel, SectionTitle } from "../components/ui/card";
 import { DismissControls } from "../components/feed/DismissControls";
 import type { FeedEntry, Paper, SearchResult } from "../types/api";
@@ -381,15 +381,7 @@ export default function HomePage() {
                       </p>
                     </Card>
                   ) : (
-                    <div className="space-y-3">
-                      {recentPapers.map((paper) => (
-                        <PaperCard
-                          key={paper.source_id}
-                          paper={paper}
-                          onNavigate={(id) => navigate(`/library/${id}`)}
-                        />
-                      ))}
-                    </div>
+                    <PaperList papers={recentPapers} className="space-y-3" />
                   )}
                 </section>
 

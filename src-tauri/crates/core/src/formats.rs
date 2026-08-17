@@ -190,14 +190,11 @@ fn new_style_arxiv(sid: &str) -> bool {
         && b.chars().all(|c| c.is_ascii_digit())
 }
 
-fn old_style_arxiv(sid: &str) -> bool {
-    let Some((cat_part, rest)) = sid.split_once('/') else {
-        return false;
-    };
-    // Optional `.XX` archive-class suffix (e.g. "math.NT") directly before the
-    // slash; strip it only when it's exactly 2 uppercase letters, matching the
-    // regex's `(\.[A-Z]{2})?` group.
-    let cat = match cat_part.rfind('.') {
+/// Strips an optional `.XX` archive-class suffix (e.g. "math.NT") from a
+/// category part, matching the regex's `(\.[A-Z]{2})?` group: stripped only
+/// when it's exactly 2 uppercase letters.
+fn compute_cat(cat_part: &str) -> &str {
+    match cat_part.rfind('.') {
         Some(i)
             if cat_part[i + 1..].len() == 2
                 && cat_part[i + 1..].chars().all(|c| c.is_ascii_uppercase()) =>
@@ -205,7 +202,14 @@ fn old_style_arxiv(sid: &str) -> bool {
             &cat_part[..i]
         }
         _ => cat_part,
+    }
+}
+
+fn old_style_arxiv(sid: &str) -> bool {
+    let Some((cat_part, rest)) = sid.split_once('/') else {
+        return false;
     };
+    let cat = compute_cat(cat_part);
     if cat.is_empty() || !cat.chars().all(|c| c.is_ascii_lowercase() || c == '-') {
         return false;
     }
