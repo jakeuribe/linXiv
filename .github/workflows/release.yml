@@ -164,9 +164,14 @@ jobs:
       # checkout and the native libraries before the Tauri build.
       - name: Install Arch build dependencies
         run: |
-          pacman -Syu --noconfirm --needed \
-            curl file git glib2 gtk3 libappindicator librsvg nodejs npm openssl \
-            patchelf rustup webkit2gtk-4.1 wget xdotool
+          for i in 1 2 3; do
+            pacman -Syyu --noconfirm --needed \
+              curl file git glib2 gtk3 libappindicator librsvg nodejs npm openssl \
+              patchelf rustup webkit2gtk-4.1 wget xdotool && exit 0
+            echo "pacman failed (attempt $i/3), likely mirror lag; retrying in 30s..."
+            sleep 30
+          done
+          exit 1
 
       - uses: actions/checkout@v7
         with:
