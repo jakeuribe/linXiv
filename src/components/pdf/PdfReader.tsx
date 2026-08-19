@@ -158,6 +158,7 @@ export function PdfReader({ file, sourceId, version, projectId, errorUrl }: PdfR
       if (resizeTimerRef.current !== null) {
         clearTimeout(resizeTimerRef.current);
         pagesWrapRef.current?.style.removeProperty("transform");
+        pagesWrapRef.current?.style.removeProperty("will-change");
       }
       obsRef.current?.disconnect();
     },
@@ -184,6 +185,7 @@ export function PdfReader({ file, sourceId, version, projectId, errorUrl }: PdfR
       clearTimeout(resizeTimerRef.current);
       resizeTimerRef.current = null;
       pagesWrapRef.current?.style.removeProperty("transform");
+      pagesWrapRef.current?.style.removeProperty("will-change");
     }
     scrollerRef.current = el;
     if (!el) return;
@@ -203,13 +205,17 @@ export function PdfReader({ file, sourceId, version, projectId, errorUrl }: PdfR
       const wrap = pagesWrapRef.current;
       const prevInset = committedWidthRef.current - PAGE_INSET;
       if (wrap && prevInset > 0) {
+        wrap.style.willChange = "transform";
         wrap.style.transform = `scaleX(${(newWidth - PAGE_INSET) / prevInset})`;
         wrap.style.transformOrigin = "top center";
       }
       if (resizeTimerRef.current !== null) clearTimeout(resizeTimerRef.current);
       resizeTimerRef.current = window.setTimeout(() => {
         resizeTimerRef.current = null;
-        if (wrap) wrap.style.transform = "";
+        if (wrap) {
+          wrap.style.transform = "";
+          wrap.style.removeProperty("will-change");
+        }
         committedWidthRef.current = newWidth;
         setWidth(newWidth);
       }, RESIZE_SETTLE_MS);
@@ -376,7 +382,11 @@ export function PdfReader({ file, sourceId, version, projectId, errorUrl }: PdfR
           {/* Only pages within PAGE_WINDOW of the current page mount a canvas;
               the rest are fixed-height spacers so scroll offsets stay correct.
               Wrapped so a mid-drag resize can cheaply scaleX this whole group
-              (see attachScroller) instead of reflowing every page. */}
+              (see attachScroller) instead of reflowing every page. Only the
+              canvas-mounting slots get will-change-transform (compositor
+              layer per visible page, smoother scroll) — promoting the empty
+              spacers too would create hundreds of pointless layers on long
+              PDFs for nothing. */}
           <div ref={pagesWrapRef}>
             {Array.from({ length: numPages }, (_, i) => {
               const pn = i + 1;
@@ -391,7 +401,7 @@ export function PdfReader({ file, sourceId, version, projectId, errorUrl }: PdfR
                 );
               }
               return (
-                <div key={pn} className="pdf-page-slot mx-auto my-2">
+                <div key={pn} className="pdf-page-slot mx-auto my-2 will-change-transform">
                   <Page
                     pageNumber={pn}
                     width={pageWidth}
