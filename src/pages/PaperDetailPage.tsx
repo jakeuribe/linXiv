@@ -864,7 +864,7 @@ function AnnotationCard({
   const clampable = quote.length > 160;
 
   return (
-    <Card>
+    <Card variant="translucent">
       <div className="flex items-start gap-2.5">
         <span
           className="mt-1 h-3 w-3 shrink-0 rounded-full border border-black/20"

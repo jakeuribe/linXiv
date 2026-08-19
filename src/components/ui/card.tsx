@@ -3,15 +3,21 @@ import type { HTMLAttributes } from "react";
 type HeadingTag = "h1" | "h2" | "h3" | "h4" | "h5" | "h6";
 
 interface CardProps extends HTMLAttributes<HTMLDivElement> {
-  inset?: boolean;
+  variant?: "default" | "inset" | "translucent";
 }
 
-export function Card({ inset = false, className = "", style, ...props }: CardProps) {
+const VARIANT_BG = {
+  default: "bg-panel",
+  inset: "bg-surface2",
+  translucent: "bg-panel-translucent",
+} as const;
+
+export function Card({ variant = "default", className = "", style, ...props }: CardProps) {
   return (
     <div
       className={[
         "border border-border shadow-card",
-        inset ? "bg-surface2" : "bg-panel",
+        VARIANT_BG[variant],
         className,
       ].join(" ")}
       style={{ borderRadius: "var(--card-radius)", padding: "var(--card-pad)", ...style }}
