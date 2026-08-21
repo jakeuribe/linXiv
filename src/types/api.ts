@@ -69,6 +69,11 @@ export interface Settings {
   /** Overlaid from the process env by route/settings.rs, never persisted here. */
   CROSSREF_MAILTO?: string;
   OPENALEX_MAILTO?: string;
+  /** Self-hosted iroh relay override; empty keeps n0's public relays. Read once at app launch. */
+  p2p_relay_url?: string;
+  p2p_relay_auth_token?: string;
+  /** If true, refuse to bind the p2p node at all rather than falling back to n0's public relay. */
+  p2p_relay_only?: boolean;
   [key: string]: unknown;
 }
 

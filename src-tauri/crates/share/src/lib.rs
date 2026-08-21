@@ -41,6 +41,7 @@ use linxiv_core::service::{
     project as project_svc,
 };
 
+pub use linxiv_p2p::CustomRelay;
 pub use model::{SharedAnnotation, SharedNote, SharedPaper, SharedProject, SharedSummary};
 #[cfg(feature = "sync-beelay")]
 pub use transport::{e2ee_dir, e2ee_received_dir, E2eeSyncOutcome, MemberId, ProjectInvite, Role};
