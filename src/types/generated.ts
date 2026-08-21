@@ -172,3 +172,15 @@ export type BibtexImportReceipt = {
   saved_count: number,
   source_ids: Array<string>,
 };
+
+export type FilterField = "TITLE" | "SUMMARY" | "AUTHOR";
+
+export type FilterAction = "DENY" | "ALLOW";
+
+export type FilterRule = {
+  rule_id: number,
+  field: FilterField,
+  keywords: string,
+  action: FilterAction,
+  enabled: boolean,
+};
