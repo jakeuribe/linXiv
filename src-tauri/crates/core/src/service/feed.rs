@@ -16,7 +16,7 @@ use crate::sources::feed as src_feed;
 use crate::storage::queries::paper;
 use crate::storage::queries::rss;
 
-pub use crate::storage::queries::rss::FilterRule;
+pub use crate::storage::queries::rss::{FilterAction, FilterField, FilterRule};
 
 /// A fetched feed reduced to what the cache window persists.
 pub struct FetchedFeed {
@@ -256,9 +256,9 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&FilterRule {
                 rule_id: 1,
-                field: "TITLE".into(),
+                field: FilterField::Title,
                 keywords: "llm".into(),
-                action: "DENY".into(),
+                action: FilterAction::Deny,
                 enabled: true,
             })
             .unwrap(),

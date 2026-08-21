@@ -7,6 +7,7 @@ use chrono::NaiveDateTime;
 use rusqlite::{params, Connection};
 use serde::Serialize;
 use serde_json::Value;
+use ts_rs::TS;
 
 use crate::error::Result;
 
@@ -217,12 +218,53 @@ pub fn prune_cache_entries(
     )?)
 }
 
-#[derive(Debug, Clone, Serialize)]
+/// `RSS_FILTER_RULE.FIELD` -- closed set, so a real enum instead of `String`
+/// keeps `FilterRule` codegen-able (a bare `String` would flatten the
+/// frontend's hand-written `"TITLE"|"SUMMARY"|"AUTHOR"` union to `string`).
+/// `rename_all` pins the wire strings to the on-disk `TEXT` values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum FilterField {
+    Title,
+    Summary,
+    Author,
+}
+
+impl rusqlite::types::FromSql for FilterField {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        match value.as_str()? {
+            "TITLE" => Ok(FilterField::Title),
+            "SUMMARY" => Ok(FilterField::Summary),
+            "AUTHOR" => Ok(FilterField::Author),
+            _ => Err(rusqlite::types::FromSqlError::InvalidType),
+        }
+    }
+}
+
+/// `RSS_FILTER_RULE.ACTION` -- see `FilterField` for why this is an enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum FilterAction {
+    Deny,
+    Allow,
+}
+
+impl rusqlite::types::FromSql for FilterAction {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        match value.as_str()? {
+            "DENY" => Ok(FilterAction::Deny),
+            "ALLOW" => Ok(FilterAction::Allow),
+            _ => Err(rusqlite::types::FromSqlError::InvalidType),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
 pub struct FilterRule {
     pub rule_id: i64,
-    pub field: String,
+    pub field: FilterField,
     pub keywords: String,
-    pub action: String,
+    pub action: FilterAction,
     pub enabled: bool,
 }
 
@@ -257,12 +299,11 @@ pub fn delete_rule(conn: &Connection, rule_id: i64) -> Result<bool> {
     Ok(conn.execute("DELETE FROM RSS_FILTER_RULE WHERE RULE_ID = ?1", [rule_id])? > 0)
 }
 
-fn field_value<'a>(field: &str, title: &'a str, summary: &'a str, authors: &'a str) -> &'a str {
+fn field_value<'a>(field: FilterField, title: &'a str, summary: &'a str, authors: &'a str) -> &'a str {
     match field {
-        "TITLE" => title,
-        "SUMMARY" => summary,
-        "AUTHOR" => authors,
-        _ => "",
+        FilterField::Title => title,
+        FilterField::Summary => summary,
+        FilterField::Author => authors,
     }
 }
 
@@ -284,17 +325,17 @@ pub fn is_hidden(rules: &[FilterRule], title: &str, summary: &str, authors: &str
         if keywords.is_empty() {
             return false;
         }
-        let field = field_value(&r.field, title, summary, authors).to_lowercase();
+        let field = field_value(r.field, title, summary, authors).to_lowercase();
         keywords.iter().all(|kw| field.contains(kw))
     };
     let denied = rules
         .iter()
-        .filter(|r| r.action == "DENY")
+        .filter(|r| r.action == FilterAction::Deny)
         .any(rule_matches);
     denied
         && !rules
             .iter()
-            .filter(|r| r.action == "ALLOW")
+            .filter(|r| r.action == FilterAction::Allow)
             .any(rule_matches)
 }
 
@@ -550,16 +591,16 @@ mod tests {
         let rules = vec![
             FilterRule {
                 rule_id: 1,
-                field: "TITLE".into(),
+                field: FilterField::Title,
                 keywords: "AI, quantum computing".into(),
-                action: "DENY".into(),
+                action: FilterAction::Deny,
                 enabled: true,
             },
             FilterRule {
                 rule_id: 2,
-                field: "SUMMARY".into(),
+                field: FilterField::Summary,
                 keywords: "ML".into(),
-                action: "ALLOW".into(),
+                action: FilterAction::Allow,
                 enabled: true,
             },
         ];
@@ -583,9 +624,9 @@ mod tests {
     fn separators_only_keywords_never_match() {
         let rules = vec![FilterRule {
             rule_id: 1,
-            field: "TITLE".into(),
+            field: FilterField::Title,
             keywords: " , ".into(),
-            action: "DENY".into(),
+            action: FilterAction::Deny,
             enabled: true,
         }];
         assert!(!is_hidden(&rules, "Anything at all", "", ""));
@@ -699,9 +740,9 @@ mod tests {
     fn disabled_rule_never_matches() {
         let rules = vec![FilterRule {
             rule_id: 1,
-            field: "TITLE".into(),
+            field: FilterField::Title,
             keywords: "spam".into(),
-            action: "DENY".into(),
+            action: FilterAction::Deny,
             enabled: false,
         }];
         assert!(!is_hidden(&rules, "spam spam spam", "", ""));

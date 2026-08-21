@@ -14,6 +14,7 @@ import type {
   SearchResultOut,
   AuthorWithCount,
   AuthorWithPapers,
+  FilterRule,
 } from "./generated";
 
 export type {
@@ -32,6 +33,8 @@ export type {
   FullTextReceipt,
   PaperMembershipReceipt,
   BibtexImportReceipt,
+  FilterField,
+  FilterAction,
 } from "./generated";
 
 // Frontend names for the generated serializers. The Rust name is the model,
@@ -43,6 +46,7 @@ export type Annotation = AnnotationDetails;
 export type SearchResult = SearchResultOut;
 export type Author = AuthorWithCount;
 export type AuthorDetail = AuthorWithPapers;
+export type FeedFilterRule = FilterRule;
 
 // --- Not generated ---------------------------------------------------------
 
@@ -106,17 +110,6 @@ export interface FeedResponse {
   title: string;
   entries: FeedEntry[];
   saved_arxiv_ids: string[];
-}
-
-// storage/queries/rss.rs::FilterRule types `field`/`action` as bare `String`
-// (the values are validated on write in service/feed.rs, not by the type), so
-// generating this would REPLACE the unions below with `string`.
-export interface FeedFilterRule {
-  rule_id: number;
-  field: "TITLE" | "SUMMARY" | "AUTHOR";
-  keywords: string;
-  action: "DENY" | "ALLOW";
-  enabled: boolean;
 }
 
 // `GET /api/papers/sfk/{fk}/versions` projects PaperDetailsAll into an inline
