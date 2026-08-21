@@ -195,6 +195,13 @@ export async function unpublishShare(
   return shareApi("POST", `/api/share/${shareId}/unpublish`);
 }
 
+/** Rebinds the p2p node against whatever relay settings are currently saved
+ *  (Settings → Sharing), without restarting the app. Save the settings first
+ *  via `updateSettings`, then call this. */
+export async function reconnectRelay(): Promise<void> {
+  await shareApi("POST", "/api/share/relay/reconnect");
+}
+
 /** This device's pasteable membership code — sent to a host to be invited
  *  to an encrypted share. */
 export async function memberCode(): Promise<string> {

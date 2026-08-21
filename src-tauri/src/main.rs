@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use linxiv_app::p2p_config::{self, RelaySetting};
 use linxiv_app::route::share::ShareState;
 use linxiv_app::state::AppState;
 use linxiv_app::{integrations, protocol, route};
@@ -37,96 +38,6 @@ fn open_pdf_in_system(app: tauri::AppHandle, path: String) -> Result<(), String>
     app.opener()
         .open_path(path, None::<&str>)
         .map_err(|e| format!("System viewer could not open the PDF: {e}"))
-}
-
-/// 32-byte DEK for the p2p key store (write-enforcement spec §8): the at-rest
-/// encryption key for `device.key` / `auth.key` / keyhive `state.bin`.
-///
-/// Resolution order (spec §8): fetch-or-create in the OS keychain (service
-/// "linXiv", account "p2p-dek") is primary; keychain unavailable
-/// (headless/CI) → Argon2id-derive from `LINXIV_P2P_PASSPHRASE` if set; else
-/// `None` with one logged warning, keeping today's plaintext key store. The
-/// passphrase is inert whenever the keychain works.
-fn p2p_dek() -> Option<[u8; 32]> {
-    let unavailable = |e: &dyn std::fmt::Display| match passphrase_dek() {
-        Some(dek) => Some(dek),
-        None => {
-            eprintln!("warning: OS keychain unavailable, p2p key store stays plaintext: {e}");
-            None
-        }
-    };
-    let entry = match keyring::Entry::new("linXiv", "p2p-dek") {
-        Ok(entry) => entry,
-        Err(e) => return unavailable(&e),
-    };
-    let parse = |hex: &str| -> Option<[u8; 32]> {
-        let bytes: Option<Vec<u8>> = (hex.len() == 64 && hex.is_ascii())
-            .then(|| {
-                (0..64)
-                    .step_by(2)
-                    .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
-                    .collect()
-            })
-            .flatten();
-        bytes.and_then(|b| <[u8; 32]>::try_from(b).ok())
-    };
-    let malformed = || {
-        // Never clobber an entry we can't read — regenerating would orphan
-        // any files sealed under the old DEK.
-        eprintln!("warning: keychain p2p-dek entry is malformed, p2p key store stays plaintext");
-        None
-    };
-    match entry.get_password() {
-        Ok(hex) => match parse(&hex) {
-            Some(dek) => Some(dek),
-            None => malformed(),
-        },
-        Err(keyring::Error::NoEntry) => {
-            let mut dek = [0u8; 32];
-            if let Err(e) = getrandom::fill(&mut dek) {
-                return unavailable(&e);
-            }
-            let hex: String = dek.iter().map(|b| format!("{b:02x}")).collect();
-            if let Err(e) = entry.set_password(&hex) {
-                // A DEK that isn't persisted must not encrypt anything; the
-                // passphrase fallback is fine here — it's re-derivable.
-                return unavailable(&e);
-            }
-            // First-run mint race: two instances launched together can both
-            // see NoEntry and set different DEKs — the keychain keeps the
-            // last write. Seal files only under the READ-BACK value, never
-            // the local mint, or state.bin can end up sealed under a key the
-            // keychain no longer holds (unrecoverable from the next launch).
-            match entry.get_password() {
-                Ok(stored) => match parse(&stored) {
-                    Some(dek) => Some(dek),
-                    None => malformed(),
-                },
-                Err(e) => unavailable(&e),
-            }
-        }
-        Err(e) => unavailable(&e),
-    }
-}
-
-/// Keychain-unavailable fallback (spec §8): derive the DEK from
-/// `LINXIV_P2P_PASSPHRASE` via Argon2id, default params. Fixed app-level
-/// salt, documented as such: the passphrase is per-deployment; the salt only
-/// domain-separates this derivation (there is no per-install salt to store).
-fn passphrase_dek() -> Option<[u8; 32]> {
-    let pass = std::env::var("LINXIV_P2P_PASSPHRASE").ok()?;
-    let mut dek = [0u8; 32];
-    match argon2::Argon2::default().hash_password_into(
-        pass.as_bytes(),
-        b"linxiv-p2p-dek-v1",
-        &mut dek,
-    ) {
-        Ok(()) => Some(dek),
-        Err(e) => {
-            eprintln!("warning: LINXIV_P2P_PASSPHRASE derivation failed, p2p key store stays plaintext: {e}");
-            None
-        }
-    }
 }
 
 fn main() {
@@ -170,25 +81,43 @@ fn main() {
             let mut node_bound = false;
             // At-rest key-store encryption: resolve the DEK before the bind
             // (keychain access is sync; never call it from async context).
-            let dek = p2p_dek();
-            let share_state = match tauri::async_runtime::block_on(ShareNode::bind_with_dek(
-                share_dir.clone(),
-                &p2p_dir,
-                dek,
-            )) {
-                Ok(node) => {
-                    node_bound = true;
-                    ShareState::with_node(share_dir, node)
-                }
-                Err(e) => {
+            let dek = p2p_config::p2p_dek();
+            let share_state = match p2p_config::relay_setting() {
+                RelaySetting::RequireCustomButMissing => {
                     eprintln!(
-                        "warning: share node bind failed, sharing (plain and e2ee) and background sync disabled: {e}"
+                        "warning: \"only use this relay\" is on but no valid custom relay is configured; refusing to fall back to the public n0 relay, sharing disabled"
                     );
                     ShareState::new(share_dir)
                 }
+                setting => {
+                    let relay = match setting {
+                        RelaySetting::Custom(relay) => Some(relay),
+                        _ => None,
+                    };
+                    match tauri::async_runtime::block_on(ShareNode::bind_with_dek(
+                        share_dir.clone(),
+                        &p2p_dir,
+                        dek,
+                        relay,
+                    )) {
+                        Ok(node) => {
+                            node_bound = true;
+                            ShareState::with_node(share_dir, node)
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "warning: share node bind failed, sharing (plain and e2ee) and background sync disabled: {e}"
+                            );
+                            ShareState::new(share_dir)
+                        }
+                    }
+                }
             };
             app.manage(share_state);
-            if node_bound {
+            // `mark_sync_started` also guards the relay-reconnect command's spawn, so a
+            // node that only comes up later (e.g. relay was fixed via "Save & Reconnect")
+            // still gets exactly one interval-sync loop.
+            if node_bound && app.state::<ShareState>().mark_sync_started() {
                 // Background share sync: one pass now, then every 5 min.
                 linxiv_app::share_sync::spawn_interval_sync(app.handle().clone());
             }

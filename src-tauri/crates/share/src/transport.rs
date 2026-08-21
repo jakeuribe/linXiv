@@ -125,27 +125,29 @@ impl ShareNode {
     /// Production node: iroh n0 defaults (relay + discovery). `share_dir` is the
     /// only directory served; `p2p_dir` holds the persisted device key.
     pub async fn bind(share_dir: impl Into<PathBuf>, p2p_dir: &Path) -> Result<Self> {
-        Self::bind_inner(share_dir.into(), p2p_dir, false, None).await
+        Self::bind_inner(share_dir.into(), p2p_dir, false, None, None).await
     }
 
     /// Like [`Self::bind`], but with `Some(dek)` the at-rest key files
     /// (`device.key`, `auth.key`, keyhive `state.bin`) are AEAD-wrapped under
     /// the 32-byte DEK; legacy plaintext files migrate encrypted once. The
     /// DEK comes from the app (OS keychain / passphrase); `None` keeps
-    /// today's plaintext store.
+    /// today's plaintext store. `relay` swaps in a self-hosted relay instead
+    /// of n0's public ones (Settings → Sharing); `None` keeps n0 defaults.
     #[cfg(feature = "sync-beelay")]
     pub async fn bind_with_dek(
         share_dir: impl Into<PathBuf>,
         p2p_dir: &Path,
         dek: Option<[u8; 32]>,
+        relay: Option<linxiv_p2p::CustomRelay>,
     ) -> Result<Self> {
-        Self::bind_inner(share_dir.into(), p2p_dir, false, dek).await
+        Self::bind_inner(share_dir.into(), p2p_dir, false, relay, dek).await
     }
 
     /// Offline/hermetic node: no relays or discovery, direct addrs only. Used by
     /// tests and any same-host transfer.
     pub async fn bind_offline(share_dir: impl Into<PathBuf>, p2p_dir: &Path) -> Result<Self> {
-        Self::bind_inner(share_dir.into(), p2p_dir, true, None).await
+        Self::bind_inner(share_dir.into(), p2p_dir, true, None, None).await
     }
 
     // `_dek` is only read with the beelay stack; the underscore keeps the
@@ -154,6 +156,7 @@ impl ShareNode {
         share_dir: PathBuf,
         p2p_dir: &Path,
         offline: bool,
+        relay: Option<linxiv_p2p::CustomRelay>,
         _dek: Option<[u8; 32]>,
     ) -> Result<Self> {
         std::fs::create_dir_all(p2p_dir)?;
@@ -165,9 +168,10 @@ impl ShareNode {
         #[cfg(not(feature = "sync-beelay"))]
         let identity = DeviceIdentity::load_or_generate(p2p_dir.join(DEVICE_KEY_FILE))?;
         #[cfg(feature = "sync-beelay")]
-        let (inner, beelay) = Self::bind_stack(&identity, p2p_dir, offline, _dek.as_ref()).await?;
+        let (inner, beelay) =
+            Self::bind_stack(&identity, p2p_dir, offline, relay, _dek.as_ref()).await?;
         #[cfg(not(feature = "sync-beelay"))]
-        let inner = Self::bind_plain(&identity, offline).await?;
+        let inner = Self::bind_plain(&identity, offline, relay).await?;
         let node = Self {
             inner,
             share_dir,
@@ -184,9 +188,15 @@ impl ShareNode {
         Ok(node)
     }
 
-    async fn bind_plain(identity: &DeviceIdentity, offline: bool) -> Result<linxiv_p2p::ShareNode> {
+    async fn bind_plain(
+        identity: &DeviceIdentity,
+        offline: bool,
+        relay: Option<linxiv_p2p::CustomRelay>,
+    ) -> Result<linxiv_p2p::ShareNode> {
         if offline {
             linxiv_p2p::ShareNode::bind_local(identity).await
+        } else if let Some(relay) = relay {
+            linxiv_p2p::ShareNode::bind_custom_relay(identity, relay).await
         } else {
             linxiv_p2p::ShareNode::bind(identity).await
         }
@@ -201,6 +211,7 @@ impl ShareNode {
         identity: &DeviceIdentity,
         p2p_dir: &Path,
         offline: bool,
+        relay: Option<linxiv_p2p::CustomRelay>,
         dek: Option<&[u8; 32]>,
     ) -> Result<(linxiv_p2p::ShareNode, Option<linxiv_p2p::BeelayNode>)> {
         let auth_identity = match linxiv_p2p::AuthIdentity::load_or_generate_with_dek(
@@ -210,7 +221,7 @@ impl ShareNode {
             Ok(identity) => identity,
             Err(e) => {
                 tracing::warn!("keyhive auth key failed to load, e2ee sharing disabled: {e}");
-                return Ok((Self::bind_plain(identity, offline).await?, None));
+                return Ok((Self::bind_plain(identity, offline, relay).await?, None));
             }
         };
         let auth = match linxiv_p2p::ProjectAuth::load_or_new_with_dek(
@@ -223,12 +234,21 @@ impl ShareNode {
             Ok(auth) => auth,
             Err(e) => {
                 tracing::warn!("keyhive auth state failed to load, e2ee sharing disabled: {e}");
-                return Ok((Self::bind_plain(identity, offline).await?, None));
+                return Ok((Self::bind_plain(identity, offline, relay).await?, None));
             }
         };
         let beelay_dir = p2p_dir.join("beelay");
         let stack = if offline {
             linxiv_p2p::bind_stack_local(identity, &auth_identity, auth, Some(&beelay_dir)).await
+        } else if let Some(relay) = relay.clone() {
+            linxiv_p2p::bind_stack_custom_relay(
+                identity,
+                &auth_identity,
+                auth,
+                Some(&beelay_dir),
+                relay,
+            )
+            .await
         } else {
             linxiv_p2p::bind_stack(identity, &auth_identity, auth, Some(&beelay_dir)).await
         };
@@ -236,7 +256,7 @@ impl ShareNode {
             Ok((inner, beelay)) => Ok((inner, Some(beelay))),
             Err(e) => {
                 tracing::warn!("beelay/blob stack failed to bind, e2ee sharing disabled: {e}");
-                Ok((Self::bind_plain(identity, offline).await?, None))
+                Ok((Self::bind_plain(identity, offline, relay).await?, None))
             }
         }
     }
