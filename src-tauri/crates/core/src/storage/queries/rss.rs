@@ -299,7 +299,12 @@ pub fn delete_rule(conn: &Connection, rule_id: i64) -> Result<bool> {
     Ok(conn.execute("DELETE FROM RSS_FILTER_RULE WHERE RULE_ID = ?1", [rule_id])? > 0)
 }
 
-fn field_value<'a>(field: FilterField, title: &'a str, summary: &'a str, authors: &'a str) -> &'a str {
+fn field_value<'a>(
+    field: FilterField,
+    title: &'a str,
+    summary: &'a str,
+    authors: &'a str,
+) -> &'a str {
     match field {
         FilterField::Title => title,
         FilterField::Summary => summary,
