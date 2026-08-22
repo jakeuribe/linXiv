@@ -20,7 +20,7 @@
 //! `import_shared_project` is a second, additive-only write path that merges a
 //! received `SharedProject` into the canonical DB: notes and annotations match
 //! by uuid, papers by source_id, the project by SHARE_ID (created when absent).
-//! Remote deletions are not propagated — the import surface is
+//! NOTE: Remote deletions are not propagated — the import surface is
 //! append+update only.
 
 mod model;

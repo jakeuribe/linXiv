@@ -55,8 +55,7 @@ pub struct AcceptedInvite {
     pub share_id: String,
     /// The host could not be reached, so the join is only half done: the invite
     /// is parked and the mirror on disk is an empty placeholder. The interval
-    /// sync finishes it. Note this says nothing about membership either — a
-    /// host that would refuse this device gets to refuse it later instead.
+    /// sync finishes it. General p2p limitations apply; membership not tracked. 
     pub pending: bool,
 }
 
@@ -331,7 +330,7 @@ impl ShareNode {
         save(&received_dir(dest_share_dir), &sp)?;
         Ok(sp)
     }
-
+    ///TODO: Extra functionality needed here if heavyweight summary/CRDTs are posted
     /// Hydrate a received mirror by id from `dest_share_dir/received`.
     pub fn received(dest_share_dir: &Path, share_id: &str) -> Result<SharedProject> {
         if !valid_share_id(share_id) {
@@ -565,12 +564,7 @@ impl ShareNode {
     }
 
     /// Accept an e2ee invite: adopt the share, sync once, and mirror it under
-    /// `share_dir/e2ee/received`.
-    ///
-    /// An unreachable host is not an error. The share is registered, the invite
-    /// is parked, a placeholder mirror lands on disk so the interval loop picks
-    /// it up, and the result comes back with `pending` set — pasting an invite
-    /// while the host is asleep is a supported flow.
+    /// `share_dir/e2ee/received`. An unreachable host is not an error. 
     pub async fn accept_invite(&self, invite: &str) -> Result<AcceptedInvite> {
         let beelay = self.beelay()?;
         // The invite's project id feeds file paths below; reject unsafe ids
@@ -674,6 +668,7 @@ impl ShareNode {
     /// Re-encrypt a hosted e2ee share's whole history under the current epoch.
     /// Invites do this on their own; this repairs shares invited before that,
     /// whose members fetch every commit and can decrypt none.
+    /// TODO: Revisit if this should be exposed via the GUI
     #[cfg(feature = "sync-beelay")]
     pub async fn rekey_e2ee(&self, share_id: &str) -> Result<()> {
         if !valid_share_id(share_id) {
