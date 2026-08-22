@@ -1,7 +1,7 @@
 //! In-process backend state. Holds the single SQLite connection (guarded by a
 //! `Mutex`, opened once at startup) plus the managed PDF/vault roots — the app's
 //! analogue of `linxiv-mcp`'s `Server` and `linxiv-cli`'s `Ctx`. Every router arm
-//! reaches the DB through `with_conn`. Replaces the deprecated HTTP hop to the 
+//! reaches the DB through `with_conn`. Replaces the deprecated HTTP hop to the
 //! Python sidecar.
 
 use std::path::PathBuf;

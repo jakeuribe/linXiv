@@ -101,9 +101,9 @@ pub struct SharedSummary {
 
 /// Heavyweight listing view — full subgraph, pruned/summarized conservatively.
 #[derive(Debug, Clone, PartialEq)]
-pub struct FullSummary{
-    /// NOTE: Not sure this is where this should truly go
-    /// TODO: Complete here and elsewhere 
+pub struct FullSummary {
+    // NOTE: Not sure this is where this should truly go
+    // TODO: Complete here and elsewhere
 }
 
 #[cfg(test)]

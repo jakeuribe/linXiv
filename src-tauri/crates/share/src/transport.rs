@@ -55,7 +55,7 @@ pub struct AcceptedInvite {
     pub share_id: String,
     /// The host could not be reached, so the join is only half done: the invite
     /// is parked and the mirror on disk is an empty placeholder. The interval
-    /// sync finishes it. General p2p limitations apply; membership not tracked. 
+    /// sync finishes it. General p2p limitations apply; membership not tracked.
     pub pending: bool,
 }
 
@@ -564,7 +564,7 @@ impl ShareNode {
     }
 
     /// Accept an e2ee invite: adopt the share, sync once, and mirror it under
-    /// `share_dir/e2ee/received`. An unreachable host is not an error. 
+    /// `share_dir/e2ee/received`. An unreachable host is not an error.
     pub async fn accept_invite(&self, invite: &str) -> Result<AcceptedInvite> {
         let beelay = self.beelay()?;
         // The invite's project id feeds file paths below; reject unsafe ids
