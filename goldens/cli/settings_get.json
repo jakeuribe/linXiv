@@ -8,5 +8,8 @@
   "cat_color_overrides": {},
   "theme_overrides": {},
   "theme_override_alphas": {},
-  "button_color_overrides": {}
+  "button_color_overrides": {},
+  "p2p_relay_url": "",
+  "p2p_relay_auth_token": "",
+  "p2p_relay_only": false
 }
