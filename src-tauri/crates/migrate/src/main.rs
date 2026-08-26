@@ -4,8 +4,7 @@
 //! numbered guards + views, via `storage::init_db`). This is a SCAFFOLD for FUTURE
 //! schema changes: add them to `crates/core/src/storage/migrations.rs` and this
 //! binary applies whatever is pending on the next run. It deliberately knows
-//! nothing about the pre-Rust-port (legacy blue→green) schema — existing DBs
-//! already match the current schema, so no one-time import is needed.
+//! nothing about the pre-Rust-port (legacy blue→green) schema
 //!
 //! The app/CLI/MCP also run `init_db` on every open, so migrations are normally
 //! applied automatically; this binary exists for an explicit, scriptable

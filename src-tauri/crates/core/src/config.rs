@@ -184,6 +184,19 @@ impl UserSettings {
             .filter(|&v| v > 0)
             .unwrap_or(30)
     }
+
+    /// `pdf_import_verify_identity_enabled`: whether the PDF-metadata-first
+    /// import short-circuit (`sources::pdf_metadata::resolve_from_extracted`)
+    /// makes its one optional network lookup — fetching a text-scanned arXiv
+    /// id/DOI candidate to confirm it before adopting it as dedupe identity.
+    /// Off means PDF-only: no network call for identity, ever, even when a
+    /// candidate id is sitting right there in the text. Falls back to `true`
+    /// (verify) if missing or not a bool.
+    pub fn pdf_import_verify_identity_enabled(&self) -> bool {
+        self.get("pdf_import_verify_identity_enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
+    }
 }
 
 fn parse_obj(s: &str) -> Result<Map<String, Value>> {
@@ -224,6 +237,7 @@ mod tests {
         assert_eq!(s.get("pdf_save_limit_mb").unwrap().as_i64().unwrap(), 1024);
         assert!(s.get("tex_rendering_enabled").unwrap().as_bool().unwrap());
         assert_eq!(s.rss_cache_retention_days(), 30);
+        assert!(s.pdf_import_verify_identity_enabled()); // defaults to true
         assert!(s.get("nope").is_none());
 
         // Override + save persists ONLY the override, then reloads merged.
@@ -235,6 +249,17 @@ mod tests {
         .unwrap();
         assert_eq!(raw.len(), 1); // only the override written, not the defaults
         assert_eq!(raw["pdf_save_limit_mb"], Value::from(42));
+
+        // Override flips it off; falls back to true if the stored value isn't a bool.
+        s.set("pdf_import_verify_identity_enabled", Value::from(false))
+            .unwrap();
+        assert!(!UserSettings::load().unwrap().pdf_import_verify_identity_enabled());
+        s.set(
+            "pdf_import_verify_identity_enabled",
+            Value::from("not a bool"),
+        )
+        .unwrap();
+        assert!(UserSettings::load().unwrap().pdf_import_verify_identity_enabled());
 
         let s = UserSettings::load().unwrap();
         assert_eq!(s.get("pdf_save_limit_mb").unwrap().as_i64().unwrap(), 42);

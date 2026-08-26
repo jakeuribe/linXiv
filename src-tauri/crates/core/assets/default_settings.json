@@ -5,6 +5,7 @@
   "search_history_enabled": true,
   "search_history_max": 200,
   "full_text_worker_enabled": false,
+  "pdf_import_verify_identity_enabled": true,
   "cat_color_overrides": {},
   "theme_overrides": {},
   "theme_override_alphas": {},
