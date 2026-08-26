@@ -648,7 +648,11 @@ fn split_authors(raw: &str) -> Vec<String> {
             .map(String::from)
             .collect();
     }
-    let parts: Vec<&str> = raw.split(',').map(str::trim).filter(|p| !p.is_empty()).collect();
+    let parts: Vec<&str> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect();
     let mut authors = Vec::with_capacity(parts.len());
     let mut i = 0;
     while i < parts.len() {
@@ -682,7 +686,11 @@ fn arxiv_id_year_month(id: &str) -> Option<NaiveDate> {
 /// those). `doi` IS PDF-derived (page-text scanned, same as title/authors/
 /// arxiv_id), so it's kept, not dropped like the fields above.
 fn partial_meta_from_raw(local_id: String, raw: &Extracted) -> PaperMetadata {
-    let authors: Vec<String> = raw.authors.as_deref().map(split_authors).unwrap_or_default();
+    let authors: Vec<String> = raw
+        .authors
+        .as_deref()
+        .map(split_authors)
+        .unwrap_or_default();
 
     // Prefer the PDF's own CreationDate/ModificationDate year; failing that, an
     // arXiv id's embedded YYMM is still PDF-derived (no network); only then today.
@@ -1173,9 +1181,18 @@ mod tests {
         // an authors field of stray separators only: the raw string is
         // non-blank, but split_authors() yields nothing real.
         for degraded in [
-            Extracted { title: None, ..full.clone() },
-            Extracted { authors: None, ..full.clone() },
-            Extracted { authors: Some("; ; ".into()), ..full.clone() },
+            Extracted {
+                title: None,
+                ..full.clone()
+            },
+            Extracted {
+                authors: None,
+                ..full.clone()
+            },
+            Extracted {
+                authors: Some("; ; ".into()),
+                ..full.clone()
+            },
         ] {
             assert!(!pdf_metadata_is_sufficient(&degraded));
         }
@@ -1183,18 +1200,31 @@ mod tests {
         // Year is NOT required: title + authors alone still short-circuits.
         // With an arXiv id present, `partial_meta_from_raw` derives the date
         // from its embedded YYMM (no network) rather than defaulting to today.
-        let no_year = Extracted { year: None, ..full.clone() };
+        let no_year = Extracted {
+            year: None,
+            ..full.clone()
+        };
         assert!(pdf_metadata_is_sufficient(&no_year));
         let meta = partial_meta_from_raw("local:x".into(), &no_year);
         assert_eq!(meta.published, NaiveDate::from_ymd_opt(2026, 4, 1).unwrap());
 
         // No arXiv id either: nothing PDF-derived left, falls back to today.
-        let no_year_no_id = Extracted { year: None, arxiv_id: None, ..full.clone() };
+        let no_year_no_id = Extracted {
+            year: None,
+            arxiv_id: None,
+            ..full.clone()
+        };
         let meta = partial_meta_from_raw("local:x".into(), &no_year_no_id);
         assert_eq!(meta.published, Utc::now().date_naive());
 
-        assert_eq!(arxiv_id_year_month("2604.21547v1"), NaiveDate::from_ymd_opt(2026, 4, 1));
-        assert_eq!(arxiv_id_year_month("0704.0001"), NaiveDate::from_ymd_opt(2007, 4, 1));
+        assert_eq!(
+            arxiv_id_year_month("2604.21547v1"),
+            NaiveDate::from_ymd_opt(2026, 4, 1)
+        );
+        assert_eq!(
+            arxiv_id_year_month("0704.0001"),
+            NaiveDate::from_ymd_opt(2007, 4, 1)
+        );
         assert_eq!(arxiv_id_year_month("bad"), None);
 
         let meta = partial_meta_from_raw("local:x".into(), &full);
@@ -1207,9 +1237,14 @@ mod tests {
         // plain field even though it's not trusted for identity (unlike an
         // arXiv id, a bare DOI has no offline/cheap way to confirm what root
         // it maps to — that's exactly what the network DOI resolver does).
-        let with_doi = Extracted { doi: Some("10.1234/xyz".into()), ..full.clone() };
+        let with_doi = Extracted {
+            doi: Some("10.1234/xyz".into()),
+            ..full.clone()
+        };
         assert_eq!(
-            partial_meta_from_raw("local:x".into(), &with_doi).doi.as_deref(),
+            partial_meta_from_raw("local:x".into(), &with_doi)
+                .doi
+                .as_deref(),
             Some("10.1234/xyz")
         );
     }
@@ -1288,13 +1323,27 @@ mod tests {
             arxiv_id: Some("2604.99999".into()),
             year: None,
         };
-        assert!(matches!(identity_candidate(&both), IdentityCandidate::Arxiv(id) if id == "2604.99999"));
+        assert!(
+            matches!(identity_candidate(&both), IdentityCandidate::Arxiv(id) if id == "2604.99999")
+        );
 
-        let doi_only = Extracted { arxiv_id: None, ..both.clone() };
-        assert!(matches!(identity_candidate(&doi_only), IdentityCandidate::Doi(doi) if doi == "10.1234/x"));
+        let doi_only = Extracted {
+            arxiv_id: None,
+            ..both.clone()
+        };
+        assert!(
+            matches!(identity_candidate(&doi_only), IdentityCandidate::Doi(doi) if doi == "10.1234/x")
+        );
 
-        let neither = Extracted { doi: None, arxiv_id: None, ..both };
-        assert!(matches!(identity_candidate(&neither), IdentityCandidate::None));
+        let neither = Extracted {
+            doi: None,
+            arxiv_id: None,
+            ..both
+        };
+        assert!(matches!(
+            identity_candidate(&neither),
+            IdentityCandidate::None
+        ));
     }
 
     // The short-circuit end to end, through resolve_from_extracted directly
@@ -1354,7 +1403,10 @@ mod tests {
         assert_eq!(meta.authors, vec!["Alice Smith", "Bob Jones"]);
         // The DOI text is still preserved as a plain field — the setting only
         // gates identity *verification*, not field extraction.
-        assert_eq!(meta.doi.as_deref(), Some("10.1234/would-be-verified-if-enabled"));
+        assert_eq!(
+            meta.doi.as_deref(),
+            Some("10.1234/would-be-verified-if-enabled")
+        );
     }
 
     // ---- partial-record builder ----

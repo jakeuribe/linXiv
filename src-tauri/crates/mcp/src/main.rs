@@ -37,7 +37,7 @@ pub struct Server {
 
 impl Server {
     /// Open the data dir, the DB, and run startup init, then assemble the
-    /// merged router. 
+    /// merged router.
     pub fn new() -> anyhow::Result<Self> {
         config::init_data_dir()?;
         let conn = db_admin::open_app_db()?;
