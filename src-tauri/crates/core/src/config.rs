@@ -253,13 +253,17 @@ mod tests {
         // Override flips it off; falls back to true if the stored value isn't a bool.
         s.set("pdf_import_verify_identity_enabled", Value::from(false))
             .unwrap();
-        assert!(!UserSettings::load().unwrap().pdf_import_verify_identity_enabled());
+        assert!(!UserSettings::load()
+            .unwrap()
+            .pdf_import_verify_identity_enabled());
         s.set(
             "pdf_import_verify_identity_enabled",
             Value::from("not a bool"),
         )
         .unwrap();
-        assert!(UserSettings::load().unwrap().pdf_import_verify_identity_enabled());
+        assert!(UserSettings::load()
+            .unwrap()
+            .pdf_import_verify_identity_enabled());
 
         let s = UserSettings::load().unwrap();
         assert_eq!(s.get("pdf_save_limit_mb").unwrap().as_i64().unwrap(), 42);
