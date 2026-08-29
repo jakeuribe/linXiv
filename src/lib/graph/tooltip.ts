@@ -11,9 +11,13 @@ import type { GraphIndex, GraphNodeType } from "./model.ts";
 export const SUMMARY_MAX = 260;
 
 export interface TooltipContent {
+  /** May contain TeX — arXiv titles do. The component renders it via MathText. */
   title: string;
   /** Meta lines, rendered one per line. Plain text: this is library metadata. */
-  lines: string[];
+  meta: string[];
+  /** Truncated abstract. May contain TeX; rendered via MathText, kept separate
+   *  from `meta` so only it and the title go through the TeX path. */
+  summary?: string;
 }
 
 export function truncate(text: string, max: number): string {
@@ -57,28 +61,31 @@ export function tooltipFor(
 ): TooltipContent {
   if (type === "paper") {
     const p = index.paperById.get(nodeId);
-    if (!p) return { title: "(untitled)", lines: [] };
-    const lines: string[] = [];
+    if (!p) return { title: "(untitled)", meta: [] };
+    const meta: string[] = [];
     const head: string[] = [];
     if (p.category) head.push(p.category);
     // `published` is already null for the "no date" sentinel, so "no date" is
     // sayable rather than a bogus year 1.
     head.push(p.published ?? "No publication date");
     head.push(p.has_pdf ? "PDF" : "No PDF");
-    lines.push(head.join(" · "));
+    meta.push(head.join(" · "));
     // Already deduped and spelled as the chips beside them are — the backend
     // resolves both, so this line names exactly what the canvas drew.
-    if (p.tags.length) lines.push(p.tags.join(" · "));
-    if (p.summary) lines.push(truncate(p.summary, SUMMARY_MAX));
-    return { title: p.label || "(untitled)", lines };
+    if (p.tags.length) meta.push(p.tags.join(" · "));
+    return {
+      title: p.label || "(untitled)",
+      meta,
+      summary: p.summary ? truncate(p.summary, SUMMARY_MAX) : undefined,
+    };
   }
 
   const node = type === "author" ? index.authorById.get(nodeId) : index.tagById.get(nodeId);
-  if (!node) return { title: "(untitled)", lines: [] };
+  if (!node) return { title: "(untitled)", meta: [] };
   const papers = index.papersByNode.get(nodeId) ?? [];
   const drawn = papers.filter((p) => drawnPapers.has(p)).length;
   return {
     title: node.label || "(untitled)",
-    lines: [degreeLine(type === "author" ? "Author" : "Tag", node.paper_count, drawn)],
+    meta: [degreeLine(type === "author" ? "Author" : "Tag", node.paper_count, drawn)],
   };
 }
