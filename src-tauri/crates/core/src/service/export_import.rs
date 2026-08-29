@@ -3,8 +3,9 @@
 //! A `.lxproj` file is a zip archive: `manifest.json` (project + papers + notes,
 //! all keyed by source_id — no local DB ids) plus optional `pdfs/{source_id}_v{n}.pdf`
 //! entries. That archive PDF name (`{source_id}_v{version}.pdf`, WITH the `_v`
-//! separator) is DISTINCT from the on-disk managed name `{safe}v{version}.pdf`
-//! (`service::paper::pdf_on_disk_name`) — do NOT unify the two.
+//! separator) is owned by [`ArchivePdfName`] and is DISTINCT from the on-disk
+//! managed name `{safe}v{version}.pdf` (`service::paper::pdf_on_disk_name`) —
+//! the separate type/helper keep the two formats unmixable; do NOT unify them.
 //!
 //! DI seam: every DB-touching fn takes `conn` first; every FS-touching fn takes the
 //! resolved `pdf_dir: &Path` as a param. Nothing here reads config.
@@ -224,6 +225,42 @@ pub struct AnnotationEntry {
     pub uuid: Option<String>,
 }
 
+/// Archive PDF name: in-zip path `pdfs/{source_id}_v{version}.pdf` (WITH the
+/// `_v` separator). Owns both directions of the archive format. DISTINCT from
+/// the on-disk managed name `{safe}v{version}.pdf`
+/// (`service::paper::pdf_on_disk_name`) — the two types keep the formats
+/// unmixable; do NOT unify them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchivePdfName {
+    pub source_id: String,
+    pub version: i64,
+}
+
+impl ArchivePdfName {
+    /// Decode an in-zip entry path. Returns `None` for entries the import
+    /// loop skips: non-`.pdf` names and stems without `_v`. (The `pdfs/`
+    /// prefix is filtered at the zip layer; here any directory prefix is
+    /// dropped via the basename.) Splits on the LAST `_v` — the encoded
+    /// `_v{version}` suffix is always the last one, so source_ids that
+    /// themselves contain `_v` round-trip. A non-numeric version falls back
+    /// to 1 (Python import parity).
+    pub fn parse_entry(archive_name: &str) -> Option<Self> {
+        let basename = archive_name.rsplit('/').next().unwrap_or(archive_name);
+        let stem = basename.strip_suffix(".pdf")?;
+        let sep = stem.rfind("_v")?;
+        Some(Self {
+            source_id: stem[..sep].to_string(),
+            version: stem[sep + 2..].parse().unwrap_or(1),
+        })
+    }
+}
+
+impl std::fmt::Display for ArchivePdfName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "pdfs/{}_v{}.pdf", self.source_id, self.version)
+    }
+}
+
 /// A decoded archive PDF entry. `archive_name` is the in-zip path, e.g.
 /// `pdfs/2204.12985_v1.pdf`; the zip layer fills `bytes` from the archive.
 #[derive(Debug, Clone)]
@@ -323,7 +360,11 @@ pub fn build_manifest(
             let Some(stored) = &p.pdf_path else { continue };
             let local = pdf_dir.join(stored);
             if local.is_file() {
-                pdf_files.push((format!("pdfs/{}_v{}.pdf", p.source_id, p.version), local));
+                let name = ArchivePdfName {
+                    source_id: p.source_id.clone(),
+                    version: p.version,
+                };
+                pdf_files.push((name.to_string(), local));
             }
         }
     }
@@ -573,30 +614,25 @@ fn import_pdfs(
     std::fs::create_dir_all(pdf_dir).map_err(|e| CoreError::Internal(e.to_string()))?;
 
     for entry in pdfs {
+        let Some(name) = ArchivePdfName::parse_entry(&entry.archive_name) else {
+            continue;
+        };
+        if !source_ids.iter().any(|s| s == &name.source_id) {
+            continue;
+        }
+
+        // Dest keeps the archive basename VERBATIM (not re-encoded): a
+        // non-canonical stem like `a_v01.pdf` must land on disk unchanged.
         let basename = entry
             .archive_name
             .rsplit('/')
             .next()
             .unwrap_or(&entry.archive_name);
-        let Some(stem) = basename.strip_suffix(".pdf") else {
-            continue;
-        };
-        // Last "_v" splits source_id from version.
-        let Some(sep) = stem.rfind("_v") else {
-            continue;
-        };
-        let source_id = &stem[..sep];
-        let version_str = &stem[sep + 2..];
-        if !source_ids.iter().any(|s| s == source_id) {
-            continue;
-        }
-
         let dest = pdf_dir.join(basename);
         std::fs::write(&dest, &entry.bytes).map_err(|e| CoreError::Internal(e.to_string()))?;
-        let version: i64 = version_str.parse().unwrap_or(1);
         let dest_str = dest.to_string_lossy().to_string();
 
-        if let Err(e) = paper::mark_pdf_saved(conn, source_id, &dest_str, version) {
+        if let Err(e) = paper::mark_pdf_saved(conn, &name.source_id, &dest_str, name.version) {
             // Bundled PDF names a version that wasn't imported: drop the file, log, skip.
             let _ = std::fs::remove_file(&dest);
             tracing::warn!("import: skipping PDF {basename}: {e}");
@@ -727,6 +763,76 @@ mod tests {
     use crate::models::{AnnotationIn, Status};
     use crate::test_support::db;
     use chrono::NaiveDate;
+
+    // ── ArchivePdfName (pins the exact legacy import-loop behavior) ─────────
+
+    #[test]
+    fn archive_pdf_name_display() {
+        let n = ArchivePdfName {
+            source_id: "2204.12985".into(),
+            version: 1,
+        };
+        assert_eq!(n.to_string(), "pdfs/2204.12985_v1.pdf");
+    }
+
+    #[test]
+    fn archive_pdf_name_parse_skips_and_accepts_like_import_loop() {
+        // Skipped: non-.pdf suffix, stem without "_v".
+        assert_eq!(ArchivePdfName::parse_entry("pdfs/a_v1.txt"), None);
+        assert_eq!(ArchivePdfName::parse_entry("pdfs/av1.pdf"), None);
+        // Accepted regardless of directory prefix — only the basename is
+        // parsed (the `pdfs/` filter lives at the zip layer).
+        for path in [
+            "pdfs/a_v2.pdf",
+            "other/a_v2.pdf",
+            "a_v2.pdf",
+            "x/y/a_v2.pdf",
+        ] {
+            assert_eq!(
+                ArchivePdfName::parse_entry(path),
+                Some(ArchivePdfName {
+                    source_id: "a".into(),
+                    version: 2,
+                }),
+                "{path}"
+            );
+        }
+        // Non-numeric or empty version falls back to 1.
+        assert_eq!(
+            ArchivePdfName::parse_entry("pdfs/a_vX.pdf")
+                .unwrap()
+                .version,
+            1
+        );
+        assert_eq!(
+            ArchivePdfName::parse_entry("pdfs/a_v.pdf").unwrap().version,
+            1
+        );
+    }
+
+    #[test]
+    fn archive_pdf_name_round_trips() {
+        // Property-style: parse(display(n)) == n. Includes source_ids that
+        // themselves contain "_v" — rfind splits on the LAST "_v", which is
+        // always the encoded `_v{version}` suffix.
+        for sid in [
+            "2204.12985",
+            "arxiv:1",
+            "foo_v2_bar",
+            "a_v",
+            "_v",
+            "x_v5",
+            "",
+        ] {
+            for version in [0, 1, 7, 12, 130] {
+                let n = ArchivePdfName {
+                    source_id: sid.into(),
+                    version,
+                };
+                assert_eq!(ArchivePdfName::parse_entry(&n.to_string()), Some(n));
+            }
+        }
+    }
 
     fn meta(source_id: &str, version: i64, title: &str, tags: &[&str]) -> PaperMetadata {
         PaperMetadata {
