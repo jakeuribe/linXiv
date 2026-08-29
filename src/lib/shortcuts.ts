@@ -18,6 +18,24 @@ export type { ShortcutOverride };
 
 export type ShortcutScope = "global" | "form";
 
+/**
+ * One key combination, in a form that can be compared without a KeyboardEvent
+ * — and so can cross a postMessage boundary. Key events do not propagate out
+ * of an iframe, so the Knowledge Graph guest has to be *told* which keydowns
+ * belong to the app before it can hand them back (see `activeShortcutCombos`).
+ *
+ * `shift: null` means "either", which is how the built-in zoom matchers already
+ * behave: `+` is Shift+`=` on most layouts, so a combo that insisted on one
+ * value of Shift would miss half the ways the chord is actually typed. Ctrl and
+ * Cmd are one modifier here, exactly as in `captureOverride`.
+ */
+export interface ShortcutCombo {
+  ctrl: boolean;
+  alt: boolean;
+  shift: boolean | null;
+  key: string;
+}
+
 export interface Shortcut {
   id: string;
   /** Key tokens rendered as separate <kbd> chips, e.g. ["Ctrl/Cmd", "+"]. */
@@ -27,14 +45,31 @@ export interface Shortcut {
   /** Present only for window-bound shortcuts dispatched by useGlobalShortcuts. */
   match?: (e: KeyboardEvent) => boolean;
   run?: () => void;
+  /**
+   * The combos `match` accepts, spelled out. Required for every shortcut with a
+   * `run`: a subframe cannot evaluate a predicate it has no access to, so this
+   * is what gets sent across the iframe boundary. Pinned to `match` in
+   * shortcuts.test.ts — a combo listed here that `match` rejects would have the
+   * guest swallow a key the host then ignores.
+   */
+  defaultCombos?: ShortcutCombo[];
 }
 
 // Ctrl (Win/Linux) or Cmd (macOS), but not Alt — the zoom modifier.
 const zoomMod = (e: KeyboardEvent) => (e.ctrlKey || e.metaKey) && !e.altKey;
 
+/** A `zoomMod` combo: Ctrl/Cmd, no Alt, Shift either way. */
+const zoomCombo = (key: string): ShortcutCombo => ({
+  ctrl: true,
+  alt: false,
+  shift: null,
+  key,
+});
+
 export const SHORTCUTS: Shortcut[] = [
   {
     id: "zoom-in",
+    defaultCombos: [zoomCombo("+"), zoomCombo("=")],
     keys: ["Ctrl/Cmd", "+"],
     description: "Zoom the interface in",
     scope: "global",
@@ -46,6 +81,7 @@ export const SHORTCUTS: Shortcut[] = [
   },
   {
     id: "zoom-out",
+    defaultCombos: [zoomCombo("-"), zoomCombo("_")],
     keys: ["Ctrl/Cmd", "-"],
     description: "Zoom the interface out",
     scope: "global",
@@ -57,6 +93,7 @@ export const SHORTCUTS: Shortcut[] = [
   },
   {
     id: "zoom-reset",
+    defaultCombos: [zoomCombo("0")],
     keys: ["Ctrl/Cmd", "0"],
     description: "Reset the interface zoom to 100%",
     scope: "global",
@@ -177,4 +214,60 @@ export function findConflict(
  * window with no input/textarea exclusion. */
 export function hasBindableModifier(e: KeyboardEvent): boolean {
   return e.ctrlKey || e.metaKey || e.altKey;
+}
+
+// --- Crossing a frame boundary -----------------------------------------
+
+/**
+ * A combo as the KeyboardEvent fields the `match` predicates read, so combo
+ * dispatch reuses those predicates instead of growing a second copy of the
+ * matching rules. A `null` shift is dispatched as "not held", the value both
+ * built-in matchers ignore anyway.
+ */
+export function comboEvent(c: ShortcutCombo): KeyboardEvent {
+  return {
+    key: c.key,
+    ctrlKey: c.ctrl,
+    metaKey: false,
+    altKey: c.alt,
+    shiftKey: c.shift === true,
+    repeat: false,
+  } as KeyboardEvent;
+}
+
+/**
+ * Every combo the app currently answers to — the app's shortcut vocabulary in
+ * a form that survives `postMessage`.
+ *
+ * `useGlobalShortcuts` listens on the host window, and key events do not cross
+ * a frame boundary, so a focused iframe silently swallows all of them. The
+ * Knowledge Graph guest (public/graph/graph.js) is handed this list so it can
+ * hand those keydowns back; it intercepts nothing else, which is what keeps
+ * Ctrl+A / Ctrl+C working in its own filter boxes.
+ */
+export function activeShortcutCombos(
+  overrides: Record<string, ShortcutOverride>
+): ShortcutCombo[] {
+  return SHORTCUTS.flatMap((s) => {
+    if (!s.run) return [];
+    const o = overrides[s.id];
+    // A rebind names one exact combo, Shift included; the defaults spell out
+    // every combo their predicate accepts.
+    return o
+      ? [{ ctrl: o.ctrl, alt: o.alt, shift: o.shift, key: o.key }]
+      : (s.defaultCombos ?? []);
+  });
+}
+
+/**
+ * The shortcut a combo forwarded from a subframe fires, or undefined. Returns
+ * the shortcut rather than running it so the caller owns the side effect (and
+ * so this stays testable without a DOM).
+ */
+export function shortcutForCombo(
+  combo: ShortcutCombo,
+  overrides: Record<string, ShortcutOverride>
+): Shortcut | undefined {
+  const e = comboEvent(combo);
+  return SHORTCUTS.find((s) => s.run && effectiveMatch(s, overrides)?.(e));
 }
