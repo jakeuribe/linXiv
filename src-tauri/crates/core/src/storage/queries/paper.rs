@@ -79,6 +79,21 @@ pub fn get_paper(
     }
 }
 
+/// `storage/db.py::get_paper_by_id` — one exact PAPER version by PK. Reads the
+/// list column set (FULL_TEXT blanked): paper_id callers never saw the body
+/// when this was composed from `list_papers`, and keeping it out means the
+/// lookup never hauls a full TeX corpus row into memory.
+pub fn get_paper_by_id(conn: &Connection, paper_id: i64) -> Result<Option<PaperDetails>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {PAPER_COLUMNS_NO_TEXT} FROM papers WHERE paper_id = ?"
+    ))?;
+    let mut rows = stmt.query([paper_id])?;
+    match rows.next()? {
+        Some(row) => Ok(Some(row_to_paper(row)?)),
+        None => Ok(None),
+    }
+}
+
 /// The `papers`/`latest_papers` column list with FULL_TEXT blanked out — every
 /// column `row_to_paper` reads, in the view's order. `PaperDetails` callers see
 /// no difference; the CLI's raw-row `linxiv library list`, which dumps whatever
@@ -223,6 +238,42 @@ pub fn list_papers_sorted(
     let (sql, params) = list_papers_sql(latest_only, limit, offset, category, sort, desc);
     let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query(params_from_iter(&params))?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push(row_to_paper(row)?);
+    }
+    Ok(out)
+}
+
+/// `storage/db.py::get_categories` — distinct primary categories across latest
+/// active papers, NULLs excluded, ascending. BINARY collation (the default) is
+/// byte order — the same ordering the service's old BTreeSet<String> produced.
+pub fn get_categories(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT category FROM latest_papers \
+         WHERE category IS NOT NULL ORDER BY category",
+    )?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// `storage/db.py::get_papers_by_json_tag` — latest papers whose JSON TAGS list
+/// holds `label`, matched whole and case-insensitively (NOCASE folds ASCII
+/// only, same rule as the service's old `eq_ignore_ascii_case` filter).
+///
+/// Matches the JSON column, not PAPER_TO_TAG: the relational half is
+/// code-synced (no triggers), skips empty labels, and folds label case into a
+/// shared TAG row — the JSON list is what the old in-Rust filter read.
+/// `published DESC` puts NULL dates last, exactly where `Option<NaiveDate>`
+/// descending put them; `paper_id DESC` breaks same-date ties.
+pub fn get_papers_by_json_tag(conn: &Connection, label: &str) -> Result<Vec<PaperDetails>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {PAPER_COLUMNS_NO_TEXT} FROM latest_papers WHERE tags IS NOT NULL \
+         AND EXISTS (SELECT 1 FROM json_each(latest_papers.tags) \
+                     WHERE json_each.value = ? COLLATE NOCASE) \
+         ORDER BY published DESC, paper_id DESC"
+    ))?;
+    let mut rows = stmt.query([label])?;
     let mut out = Vec::new();
     while let Some(row) = rows.next()? {
         out.push(row_to_paper(row)?);
