@@ -14,6 +14,7 @@ import type { ForceLink, Simulation, SimulationLinkDatum, SimulationNodeDatum } 
 import type { ThemeColors } from "../../lib/theme";
 import type { GraphIndex, GraphNodeType, GraphView } from "../../lib/graph/model";
 import type { GraphMatch } from "../../lib/graph/filter";
+import { layoutIds } from "../../lib/graph/filter";
 import type { ForceSettings } from "../../lib/graph/layout";
 import { layoutRng, randomizePositions, seedPositions } from "../../lib/graph/layout";
 import { fitViewport, placeFloatingBox, FIT_PADDING } from "../../lib/graph/fit";
@@ -499,11 +500,13 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(function Gra
    *
    * Skipped entirely when the membership is UNCHANGED, because reheating is not
    * free: it pushes every unpinned node around for a few hundred more ticks.
-   * A Visibility checkbox and "Show highlighted only" both produce a brand-new
-   * `match` object while leaving `layoutIds` byte-identical — they change what is
-   * DRAWN, not what the layout runs over — so keying off the object alone made
-   * unchecking "Authors" visibly shuffle the papers the user had arranged, which
-   * is the one thing a view toggle must never do.
+   * "Show highlighted only" produces a brand-new `match` object while leaving
+   * `layoutIds` byte-identical — it changes what is DRAWN, not what the layout
+   * runs over — so keying off the object alone made a pure view toggle visibly
+   * shuffle the papers the user had arranged. A Visibility checkbox is NOT such
+   * a toggle any more: it takes its whole type out of `layoutIds`, so it lands
+   * here as a genuine membership change and reheats on purpose — an invisible
+   * node must not go on shaping the layout of the visible ones.
    *
    * `force` is for the callers that need the work done regardless: a fresh
    * payload (nothing has been applied to this simulation yet) and "Randomize &
@@ -680,22 +683,6 @@ function sameIds(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
   if (a.size !== b.size) return false;
   for (const id of a) if (!b.has(id)) return false;
   return true;
-}
-
-/**
- * The node ids the force layout runs over. An excluded node is PINNED rather
- * than removed from the simulation, so this is the membership the charge, the
- * collision radius, the link set and the drag release all have to agree on —
- * every one of them reads it from here.
- *
- * The Visibility checkboxes are deliberately absent: hiding a node type is a
- * view toggle, so the layout must not reshuffle underneath it. Deriving this
- * from the RENDERED sets instead meant unchecking "Papers" dropped every link
- * (every edge has a paper endpoint) and left the authors and tags to fly apart
- * under pure repulsion.
- */
-function layoutIds(m: GraphMatch): Set<string> {
-  return new Set([...m.papers, ...m.authors, ...m.tags]);
 }
 
 /** The papers currently painted at a non-zero opacity — what a degree line

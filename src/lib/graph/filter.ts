@@ -73,6 +73,29 @@ export interface GraphMatch {
   drawnCount: number;
 }
 
+/**
+ * The node ids the force layout runs over. An excluded node is PINNED rather
+ * than removed from the simulation, so this is the membership the charge, the
+ * collision radius, the link set and the drag release all have to agree on —
+ * every one of them reads it from here.
+ *
+ * The Visibility checkboxes take a type out of the layout along with the
+ * attribute filters: a node drawn at opacity 0 is one the user cannot see, and
+ * an invisible node must not shape the layout of the ones they can. (That is a
+ * reversal — hidden types used to stay in the physics so that hiding Papers,
+ * which every edge touches, would not drop the whole link set. It does now:
+ * with Papers off the authors and tags hold position only by their pins and,
+ * once nudged, the balance of repulsion against centring — an honest picture,
+ * since no visible relationship exists to pull them together.)
+ */
+export function layoutIds(m: GraphMatch): Set<string> {
+  const ids = new Set<string>();
+  if (!m.hiddenTypes.has("paper")) for (const id of m.papers) ids.add(id);
+  if (!m.hiddenTypes.has("author")) for (const id of m.authors) ids.add(id);
+  if (!m.hiddenTypes.has("tag")) for (const id of m.tags) ids.add(id);
+  return ids;
+}
+
 /** Whether anything in `state` narrows what the canvas shows. */
 export function isFilterActive(state: GraphFilterState): boolean {
   return activeFilterSummary(state).length > 0 || activeTagFilterSummary(state).length > 0;

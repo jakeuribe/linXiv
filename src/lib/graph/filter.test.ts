@@ -18,6 +18,7 @@ import {
   activeFilterSummary,
   activeTagFilterSummary,
   evalTagRows,
+  layoutIds,
   matchGraph,
   projectsMatchingName,
   projectsWithTag,
@@ -95,6 +96,49 @@ test("all three types hidden draws nothing at all", () => {
   const m = run({ showPapers: false, showAuthors: false, showTags: false });
   assert.equal(m.hiddenTypes.size, 3);
   assert.equal(m.drawnCount, 0);
+});
+
+// The layout membership is what the canvas hands the charge, collision, link
+// and pinning passes. It differs from the MATCH in exactly one way: a type a
+// Visibility checkbox switched off is out of the layout even though it still
+// matches — an invisible node must not shape the layout of the visible ones.
+test("with nothing hidden the layout runs over every matched node", () => {
+  const m = run();
+  assert.deepEqual(
+    [...layoutIds(m)].sort(),
+    ["1", "2", "author::7", "author::8", "tag::ml", "tag::nlp"]
+  );
+});
+
+test("a hidden type is out of the layout even though it still matches", () => {
+  const m = run({ showAuthors: false });
+  assert.deepEqual(ids(m.authors), ["author::7", "author::8"], "still MATCHED…");
+  const layout = layoutIds(m);
+  assert.ok(!layout.has("author::7") && !layout.has("author::8"), "…but not laid out");
+  assert.deepEqual([...layout].sort(), ["1", "2", "tag::ml", "tag::nlp"]);
+});
+
+test("hiding Papers leaves only authors and tags in the layout", () => {
+  // Every edge has a paper endpoint, so this is the membership that empties the
+  // link set — the canvas must be handed that honestly, not papered over here.
+  const m = run({ showPapers: false });
+  assert.deepEqual(
+    [...layoutIds(m)].sort(),
+    ["author::7", "author::8", "tag::ml", "tag::nlp"]
+  );
+});
+
+// "Show highlighted only" changes opacity, never membership: the non-matching
+// nodes were already out of the layout, and the matching ones must not move.
+test("isolate does not change the layout membership", () => {
+  const m = run({ title: "Other" });
+  assert.deepEqual([...layoutIds(m)].sort(), [...layoutIds(run({ title: "Other", isolate: true }))].sort());
+});
+
+test("an attribute filter and a hidden type compose in the layout", () => {
+  const m = run({ title: "Other", showTags: false });
+  // Paper 2 matches, its author matches, its tag matches but the type is hidden.
+  assert.deepEqual([...layoutIds(m)].sort(), ["2", "author::7"]);
 });
 
 test("tag rows fold left through their AND/OR toggles", () => {
