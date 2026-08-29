@@ -97,7 +97,9 @@ pub fn pdf_filename_safe(source_id: &str) -> String {
 
 /// On-disk name for a directly-imported PDF: `{safe}v{version}.pdf` (NO
 /// underscore before `v`). Distinct from the `.lxproj` archive format
-/// `{source_id}_v{version}.pdf` — do not unify.
+/// `{source_id}_v{version}.pdf`, which is owned by
+/// `service::export_import::ArchivePdfName` — the separate type keeps the two
+/// formats unmixable; do not unify.
 pub fn pdf_on_disk_name(source_id: &str, version: i64) -> String {
     format!("{}v{}.pdf", pdf_filename_safe(source_id), version)
 }
