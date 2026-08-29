@@ -11,9 +11,8 @@
 //! (export/import contract). PaperDetails (one version) / PaperDetailsAll (all
 //! versions) / SearchResultOut stay distinct serializers (D16).
 //!
-//! Several Python `storage.db` reads have no dedicated Rust storage fn yet
-//! (`get_paper_by_id`, `get_paper_by_source_fk`, `get_categories`,
-//! `get_papers_by_json_tag`); they are composed here from existing storage fns
+//! One Python `storage.db` read has no dedicated Rust storage fn yet
+//! (`get_paper_by_source_fk`); it is composed here from existing storage fns
 //! rather than adding raw SQL to the service.
 
 use crate::error::{CoreError, Result};
@@ -105,12 +104,9 @@ pub fn pdf_on_disk_name(source_id: &str, version: i64) -> String {
 
 // ── composed reads (no dedicated storage fn exists yet) ──────────────────────
 
-/// `db.get_paper_by_id` — exact PAPER version by PK. Composed by scanning the
-/// all-versions list (same `papers` view the Python query hits).
+/// `db.get_paper_by_id` — exact PAPER version by PK.
 fn paper_by_id(conn: &Connection, paper_id: i64) -> Result<Option<PaperDetails>> {
-    Ok(store::list_papers(conn, false, None, 0, None)?
-        .into_iter()
-        .find(|p| p.paper_id == paper_id))
+    store::get_paper_by_id(conn, paper_id)
 }
 
 /// `db.get_paper_by_source_fk` — latest version for a root. Composed:
@@ -475,27 +471,14 @@ pub fn list_papers_sorted(
 
 /// Sorted distinct primary categories across latest papers (`db.get_categories`).
 pub fn get_categories(conn: &Connection) -> Result<Vec<String>> {
-    let set: std::collections::BTreeSet<String> = store::list_papers(conn, true, None, 0, None)?
-        .into_iter()
-        .filter_map(|p| p.category)
-        .collect();
-    Ok(set.into_iter().collect())
+    store::get_categories(conn)
 }
 
 /// Latest papers whose JSON tags include `label`, case-insensitively
-/// (`db.get_papers_by_json_tag`). Order: published DESC, then paper_id DESC so
-/// same-published-date papers are deterministic (matches the SQL secondary sort).
+/// (`db.get_papers_by_json_tag`). Order: published DESC (undated last), then
+/// paper_id DESC so same-published-date papers are deterministic.
 pub fn get_papers_by_tag(conn: &Connection, label: &str) -> Result<Vec<PaperDetails>> {
-    let mut out: Vec<PaperDetails> = store::list_papers(conn, true, None, 0, None)?
-        .into_iter()
-        .filter(|p| p.tags.iter().any(|t| t.eq_ignore_ascii_case(label)))
-        .collect();
-    out.sort_by(|a, b| {
-        b.published
-            .cmp(&a.published)
-            .then(b.paper_id.cmp(&a.paper_id))
-    });
-    Ok(out)
+    store::get_papers_by_json_tag(conn, label)
 }
 
 // ── root / id helpers ────────────────────────────────────────────────────────
@@ -1019,6 +1002,98 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].source_id, "local:abc");
         assert!(get_papers_by_tag(&conn, "nope").unwrap().is_empty());
+    }
+
+    /// Pins the paper_id lookup's exact semantics: the one version row that PK
+    /// names, with FULL_TEXT blanked like every list read (the source_id path
+    /// via `get_paper` does return the body — the difference is load-bearing).
+    #[test]
+    fn paper_by_id_returns_exact_version_with_full_text_blanked() {
+        let mut conn = db();
+        let (_fk, v1, _v2) = seed_two_versions(&mut conn);
+        set_full_text(&mut conn, "arxiv:A", 1, "tex body").unwrap();
+
+        let p = get(&conn, &PaperRef::Id(v1)).unwrap().unwrap();
+        assert_eq!(p.paper_id, v1);
+        assert_eq!(p.version, 1);
+        assert_eq!(p.title, "T1");
+        assert!(p.downloaded_source);
+        assert_eq!(p.full_text, None);
+        assert!(get(&conn, &PaperRef::Id(424242)).unwrap().is_none());
+    }
+
+    /// Pins get_categories: distinct, NULLs excluded, byte-order ascending
+    /// (BTreeSet<String> order == SQL BINARY collation), latest versions only.
+    #[test]
+    fn get_categories_distinct_sorted_null_free_latest_only() {
+        let mut conn = db();
+        save_paper_metadata(&mut conn, &meta("arxiv:1", 1, "cs.LG", &[]), None).unwrap();
+        save_paper_metadata(&mut conn, &meta("arxiv:2", 1, "cs.LG", &[]), None).unwrap(); // dup
+        save_paper_metadata(&mut conn, &meta("arxiv:3", 1, "CS.AI", &[]), None).unwrap(); // 'C' < 'c'
+                                                                                          // A superseded version's category must not surface.
+        save_paper_metadata(&mut conn, &meta("arxiv:4", 1, "old.CAT", &[]), None).unwrap();
+        save_paper_metadata(&mut conn, &meta("arxiv:4", 2, "math.CO", &[]), None).unwrap();
+        let no_cat = PaperMetadata {
+            category: None,
+            categories: None,
+            ..meta("arxiv:5", 1, "unused", &[])
+        };
+        save_paper_metadata(&mut conn, &no_cat, None).unwrap();
+
+        assert_eq!(
+            get_categories(&conn).unwrap(),
+            vec![
+                "CS.AI".to_string(),
+                "cs.LG".to_string(),
+                "math.CO".to_string()
+            ]
+        );
+    }
+
+    /// Pins get_papers_by_tag: ASCII-case-insensitive whole-tag match on the
+    /// JSON list, published DESC with NULL-published papers last, and papers
+    /// with NULL TAGS skipped rather than erroring.
+    #[test]
+    fn get_papers_by_tag_matches_case_insensitively_and_sinks_null_published() {
+        let mut conn = db();
+        // Dated papers whose tag differs only in case (published day 1 vs 2).
+        save_paper_metadata(&mut conn, &meta("arxiv:old", 1, "cs.LG", &["SHARED"]), None).unwrap();
+        save_paper_metadata(&mut conn, &meta("arxiv:new", 2, "cs.LG", &["shared"]), None).unwrap();
+        let untagged = PaperMetadata {
+            tags: None,
+            ..meta("arxiv:untagged", 1, "cs.LG", &[])
+        };
+        save_paper_metadata(&mut conn, &untagged, None).unwrap();
+        // NULL published is unreachable through save_paper_metadata; raw rows.
+        conn.execute(
+            "INSERT INTO PAPER_ROOTS (SOURCE_ID) VALUES ('arxiv:undated')",
+            [],
+        )
+        .unwrap();
+        let fk = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO PAPER (SOURCE_ID, VERSION, TITLE, SOURCE_FK) \
+             VALUES ('arxiv:undated', 1, 'U', ?)",
+            [fk],
+        )
+        .unwrap();
+        let pid = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO PAPER_META (PAPER_ID, TAGS) VALUES (?, '[\"Shared\"]')",
+            [pid],
+        )
+        .unwrap();
+
+        let hits = get_papers_by_tag(&conn, "sHaRed").unwrap();
+        assert_eq!(
+            hits.iter()
+                .map(|p| p.source_id.as_str())
+                .collect::<Vec<_>>(),
+            // published DESC first, then the NULL-published paper last.
+            ["arxiv:new", "arxiv:old", "arxiv:undated"]
+        );
+        // Whole-tag equality only — no substring matching.
+        assert!(get_papers_by_tag(&conn, "share").unwrap().is_empty());
     }
 
     #[test]
