@@ -33,7 +33,6 @@ use crate::models::{
     validate_anchor, AnnotationIn, NoteIn, PaperDetails, PaperMetadata, ProjectIn,
 };
 use crate::service::{annotation, note, paper, project};
-use crate::storage::queries::paper as paperq;
 
 const FORMAT_VERSION: i64 = 1;
 
@@ -302,72 +301,18 @@ pub fn build_manifest(
             ..Default::default()
         },
     )?;
-    let notes = note::get_many(
-        conn,
-        &note::Notes {
-            project_fk: Some(project_fk),
-            ..Default::default()
-        },
-    )?;
-    let annotations = annotation::get_many(
-        conn,
-        &annotation::Annotations {
-            project_fk: Some(project_fk),
-            ..Default::default()
-        },
-    )?;
 
     let paper_entries: Vec<PaperEntry> = papers
         .iter()
         .map(|p| PaperEntry::from_details(conn, p))
         .collect::<Result<Vec<_>>>()?;
-
-    let mut note_entries = Vec::new();
-    for n in &notes {
-        let Some(source_id) = paper::get_source_id(conn, n.source_fk)? else {
-            continue; // Python skips notes whose source_id no longer resolves.
-        };
-        let version = match n.paper_id_fk {
-            Some(pid) => paper::get(conn, &paper::PaperRef::Id(pid))?.map(|p| p.version),
-            None => None,
-        };
-        note_entries.push(NoteEntry {
-            paper_source_id: Some(source_id),
-            paper_version: version,
-            title: n.title.clone(),
-            content: n.content.clone(),
-            uuid: Some(n.uuid.clone()),
-        });
-    }
-
-    let mut annotation_entries = Vec::new();
-    for a in &annotations {
-        let Some(source_id) = paper::get_source_id(conn, a.source_fk)? else {
-            continue; // skip annotations whose source_id no longer resolves.
-        };
-        annotation_entries.push(AnnotationEntry {
-            paper_source_id: source_id,
-            anchor: a.anchor.clone(),
-            comment: a.comment.clone(),
-            uuid: Some(a.uuid.clone()),
-        });
-    }
-
-    // archive_name -> local path; only files that actually exist on disk.
-    let mut pdf_files: Vec<(String, PathBuf)> = Vec::new();
-    if include_pdfs {
-        for p in &papers {
-            let Some(stored) = &p.pdf_path else { continue };
-            let local = pdf_dir.join(stored);
-            if local.is_file() {
-                let name = ArchivePdfName {
-                    source_id: p.source_id.clone(),
-                    version: p.version,
-                };
-                pdf_files.push((name.to_string(), local));
-            }
-        }
-    }
+    let note_entries = collect_note_entries(conn, project_fk)?;
+    let annotation_entries = collect_annotation_entries(conn, project_fk)?;
+    let pdf_files = if include_pdfs {
+        collect_pdf_files(&papers, pdf_dir)
+    } else {
+        Vec::new()
+    };
 
     // Python: `color_to_hex(details.color) if details.color else None` — 0 is falsy.
     let color_hex = details.color.filter(|&c| c != 0).map(project::color_to_hex);
@@ -393,6 +338,76 @@ pub fn build_manifest(
         annotations: annotation_entries,
     };
     Ok((manifest, pdf_files))
+}
+
+/// Archive note records for a project's notes, keyed by source_id.
+fn collect_note_entries(conn: &Connection, project_fk: i64) -> Result<Vec<NoteEntry>> {
+    let notes = note::get_many(
+        conn,
+        &note::Notes {
+            project_fk: Some(project_fk),
+            ..Default::default()
+        },
+    )?;
+    let mut note_entries = Vec::new();
+    for n in &notes {
+        let Some(source_id) = paper::get_source_id(conn, n.source_fk)? else {
+            continue; // Python skips notes whose source_id no longer resolves.
+        };
+        let version = match n.paper_id_fk {
+            Some(pid) => paper::get(conn, &paper::PaperRef::Id(pid))?.map(|p| p.version),
+            None => None,
+        };
+        note_entries.push(NoteEntry {
+            paper_source_id: Some(source_id),
+            paper_version: version,
+            title: n.title.clone(),
+            content: n.content.clone(),
+            uuid: Some(n.uuid.clone()),
+        });
+    }
+    Ok(note_entries)
+}
+
+/// Archive annotation records for a project's annotations, keyed by source_id.
+fn collect_annotation_entries(conn: &Connection, project_fk: i64) -> Result<Vec<AnnotationEntry>> {
+    let annotations = annotation::get_many(
+        conn,
+        &annotation::Annotations {
+            project_fk: Some(project_fk),
+            ..Default::default()
+        },
+    )?;
+    let mut annotation_entries = Vec::new();
+    for a in &annotations {
+        let Some(source_id) = paper::get_source_id(conn, a.source_fk)? else {
+            continue; // skip annotations whose source_id no longer resolves.
+        };
+        annotation_entries.push(AnnotationEntry {
+            paper_source_id: source_id,
+            anchor: a.anchor.clone(),
+            comment: a.comment.clone(),
+            uuid: Some(a.uuid.clone()),
+        });
+    }
+    Ok(annotation_entries)
+}
+
+/// archive_name -> local path; only files that actually exist on disk.
+fn collect_pdf_files(papers: &[PaperDetails], pdf_dir: &Path) -> Vec<(String, PathBuf)> {
+    let mut pdf_files: Vec<(String, PathBuf)> = Vec::new();
+    for p in papers {
+        let Some(stored) = &p.pdf_path else { continue };
+        let local = pdf_dir.join(stored);
+        if local.is_file() {
+            let name = ArchivePdfName {
+                source_id: p.source_id.clone(),
+                version: p.version,
+            };
+            pdf_files.push((name.to_string(), local));
+        }
+    }
+    pdf_files
 }
 
 /// Write a project to a `.lxproj` ZIP_DEFLATED archive at `dest_path` (`.lxproj`
@@ -551,20 +566,20 @@ fn commit_body(
     let mut source_ids: Vec<String> = Vec::new();
     for pe in &manifest.papers {
         let source_id = pe.source_id.clone();
-        match paperq::get_paper_root(conn, &source_id)? {
+        match paper::get_paper_root(conn, &source_id)? {
             Some(root) => {
                 if root.status == "deleted" {
                     paper::restore(conn, &paper::PaperRef::source(source_id.clone()))?;
                 }
                 if on_conflict == OnConflict::Overwrite {
-                    // Storage-level: an archive replays already-stored metadata, so it
+                    // Unvalidated: an archive replays already-stored metadata, so it
                     // is not held to the Paper Repair input rules the front doors apply.
-                    paperq::repair_paper(conn, root.source_fk, &pe.to_metadata())?;
+                    paper::repair_paper_unvalidated(conn, root.source_fk, &pe.to_metadata())?;
                 }
                 // UNION the archive paper's tags onto the existing paper (Python
                 // `_paper.add_paper_tags`) so a merge-import never discards them.
                 if !pe.tags.is_empty() {
-                    paperq::add_paper_tags(conn, &source_id, &pe.tags)?;
+                    paper::add_paper_tags(conn, &source_id, &pe.tags)?;
                 }
             }
             None => {
@@ -654,7 +669,7 @@ fn import_notes(
         if !source_ids.iter().any(|s| s == paper_source_id) {
             continue;
         }
-        let source_fk = match paperq::get_paper_root(conn, paper_source_id)? {
+        let source_fk = match paper::get_paper_root(conn, paper_source_id)? {
             Some(r) => r.source_fk,
             None => continue,
         };
@@ -706,7 +721,7 @@ fn import_annotations(
         if !source_ids.iter().any(|s| s == &ad.paper_source_id) {
             continue;
         }
-        let source_fk = match paperq::get_paper_root(conn, &ad.paper_source_id)? {
+        let source_fk = match paper::get_paper_root(conn, &ad.paper_source_id)? {
             Some(r) => r.source_fk,
             None => continue,
         };
