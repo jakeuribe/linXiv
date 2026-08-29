@@ -112,10 +112,7 @@ pub enum PaperSort {
     Title,
 }
 
-/// `models::date_min` as stored by `date_to_sql` — the "no published date"
-/// sentinel. It is the smallest representable date, so it sinks on its own under
-/// DESC but would otherwise head the list under ASC.
-const NO_PUBLISHED_DATE: &str = "0001-01-01";
+use crate::models::NO_PUBLISHED_DATE;
 
 impl PaperSort {
     /// Wire key (`?sort=`); anything unrecognised falls back to the default.

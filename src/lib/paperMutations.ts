@@ -18,12 +18,11 @@ export const TAG_QUERY_KEYS: readonly string[] = ["tags", "tag"];
 /**
  * "This operation changes what `GET /api/graph` would return."
  *
- * The Knowledge Graph is not a react-query view — it is an iframe
- * (public/graph/graph.js) that fetches its own payload and reloads on a
- * `refresh` postMessage — so no query is ever registered under this key and
- * invalidating it has never refreshed anything. It stays in the key lists
- * because a set that names it is making a real claim, which `onGraphDirtying`
- * below turns into the signal GraphPage's Refresh button needs.
+ * Marked stale but deliberately NOT refetched — see `invalidateAll`. The graph
+ * is the one view in the app that must never reload on its own: a reload
+ * rebuilds the force layout, and the user may have spent a while arranging it.
+ * The dot on GraphPage's Refresh button (driven by `onGraphDirtying` below) is
+ * how they are told there is newer data; loading it is their call.
  *
  * The claim must be per-operation: a note or annotation edit is invisible to
  * the graph, while anything that adds, removes, retitles, retags, reprojects
@@ -67,9 +66,9 @@ export const PROJECT_MUTATION_QUERY_KEYS: readonly string[] = [
   "project",
   ...TAG_QUERY_KEYS,
   "trash",
-  // `/api/graph/project-options` sends each active project's name, colour and
-  // tags, and the graph's Projects / Project Tags filter rows resolve their
-  // free text through exactly that list.
+  // `GET /api/graph` sends each active project's name, colour and tags, and the
+  // graph's Projects / Project Tags filter rows resolve their free text through
+  // exactly that list.
   GRAPH_QUERY_KEY,
 ];
 
@@ -134,7 +133,26 @@ function invalidateAll(qc: QueryClient, keys: readonly string[]): Promise<void> 
   if (keys.includes(GRAPH_QUERY_KEY)) {
     for (const listener of [...graphDirtyListeners]) listener();
   }
-  return Promise.all(keys.map((k) => qc.invalidateQueries({ queryKey: [k] }))).then(() => {});
+  return Promise.all(
+    keys.map((k) =>
+      // `refetchType: "none"` for the graph alone: mark it stale, do not fetch.
+      //
+      // Everything else here SHOULD refresh on its own, and does. The graph must
+      // not, and the default would: keys match by prefix, so ["graph"] matches
+      // the ["graph", excludeSingleAuthors] entry GraphPage holds, and
+      // invalidateQueries defaults to refetchType "active" — which refetches a
+      // mounted, enabled query at once, whatever its staleTime. GraphPage is
+      // mounted for the rest of the session once /graph has been visited (the
+      // app shell keeps it alive behind `display: none`), so retitling a paper
+      // from the Library would silently re-fetch the payload, and a new payload
+      // rebuilds the simulation — re-annealing from alpha 1 and drifting the
+      // arrangement the user made, with no action of theirs to explain it. Mid
+      // drag it would also destroy the grabbed node under the gesture.
+      qc.invalidateQueries(
+        k === GRAPH_QUERY_KEY ? { queryKey: [k], refetchType: "none" } : { queryKey: [k] }
+      )
+    )
+  ).then(() => {});
 }
 
 /** Fan-out for a paper appearing, disappearing, or changing: soft delete,

@@ -74,6 +74,12 @@ pub fn strip_provider_prefix<'a>(source_id: &'a str, prefix: &str) -> &'a str {
 }
 
 /// The `date.min` sentinel (`0001-01-01`) used to mark "no published date".
+/// [`date_min`] as `date_to_sql` stores it — the "no published date" sentinel.
+/// It is the smallest representable date, so it sinks on its own under DESC but
+/// would otherwise head the list under ASC, and it reads as a real date in year
+/// 1 to anything that forwards the column raw.
+pub const NO_PUBLISHED_DATE: &str = "0001-01-01";
+
 pub(crate) fn date_min() -> NaiveDate {
     NaiveDate::from_ymd_opt(1, 1, 1).expect("0001-01-01 is a valid date")
 }

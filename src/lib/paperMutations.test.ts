@@ -1,7 +1,7 @@
 // Run: node --experimental-transform-types --test src/lib/paperMutations.test.ts
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { QueryClient } from "@tanstack/react-query";
+import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import {
   PAPER_QUERY_KEYS,
   PAPER_MUTATION_QUERY_KEYS,
@@ -55,6 +55,62 @@ test("a paper delete invalidates every paper-existence view", async () => {
   for (const key of ["graph", "tags", "tag", "stats", "trash", "notes"]) {
     assert.ok(PAPER_QUERY_KEYS.includes(key), `${key} missing from the registry`);
   }
+});
+
+// The graph is the one view that must never reload on its own: a new payload
+// rebuilds the force simulation, which re-anneals from alpha 1 and drifts the
+// arrangement the user made. Keys match by PREFIX and invalidateQueries defaults
+// to refetchType "active", so a plain invalidate would refetch the
+// ["graph", excludeSingleAuthors] entry GraphPage holds.
+//
+// "Active" means "has a subscribed observer", which is what useQuery creates —
+// so these mount a real QueryObserver. Without one, a cache entry is inactive
+// and would sit out the refetch whatever refetchType said, which would let the
+// graph assertion below pass for entirely the wrong reason.
+async function mounted(qc: QueryClient, queryKey: unknown[]) {
+  let fetches = 0;
+  const observer = new QueryObserver(qc, {
+    queryKey,
+    queryFn: async () => {
+      fetches++;
+      return "payload";
+    },
+    staleTime: Infinity,
+  });
+  const unsubscribe = observer.subscribe(() => {});
+  await observer.refetch();
+  return { count: () => fetches, unsubscribe, observer };
+}
+
+test("a graph-dirtying operation marks the graph stale without refetching it", async () => {
+  const qc = new QueryClient();
+  const graph = await mounted(qc, ["graph", false]);
+  assert.equal(graph.count(), 1, "the initial load");
+
+  await invalidatePaperQueries(qc);
+  await new Promise((r) => setTimeout(r, 20));
+
+  assert.equal(graph.count(), 1, "invalidation must not refetch the graph");
+  assert.ok(
+    qc.getQueryState(["graph", false])?.isInvalidated,
+    "…but it must still be marked stale, so the state is honest"
+  );
+  graph.unsubscribe();
+});
+
+// The other half of the same contract: everything that is NOT the graph keeps
+// refreshing on its own, which is the whole point of the registry. If this ever
+// fails the same way, the exemption above has leaked to every key.
+test("a graph-dirtying operation still refetches the other views", async () => {
+  const qc = new QueryClient();
+  const papers = await mounted(qc, ["papers", "list"]);
+  assert.equal(papers.count(), 1);
+
+  await invalidatePaperQueries(qc);
+  await new Promise((r) => setTimeout(r, 20));
+
+  assert.equal(papers.count(), 2, "papers must reload without being asked");
+  papers.unsubscribe();
 });
 
 test("invalidation matches nested keys by prefix", async () => {

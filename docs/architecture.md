@@ -1,6 +1,6 @@
 # Architecture
 
-linXiv is a Tauri v2 app. The frontend is React 18 + TypeScript (Vite); the backend is native Rust and runs **in-process** inside the app — the webview calls it through a single `api` Tauri command over IPC, and streams PDFs and graph assets over a custom `linxiv://` scheme.
+linXiv is a Tauri v2 app. The frontend is React 18 + TypeScript (Vite); the backend is native Rust and runs **in-process** inside the app — the webview calls it through a single `api` Tauri command over IPC, and streams PDF bytes over a custom `linxiv://` scheme.
 
 The Rust workspace lives under `src-tauri/` (which is also the Cargo workspace root):
 
@@ -8,8 +8,8 @@ The Rust workspace lives under `src-tauri/` (which is also the Cargo workspace r
 linXiv/
 ├── src/                        # React + TypeScript frontend (Vite)
 │   ├── api/                    # Typed client — calls the in-process backend via invoke("api")
-│   ├── pages/ components/ …    # UI
-├── public/graph/               # Force-directed graph viewer (Cytoscape rendering a D3 force sim), loaded over linxiv://
+│   ├── lib/graph/              # Knowledge Graph: filter/layout/fit/tooltip logic, pure and unit-tested (ADR 0026)
+│   ├── pages/ components/ …    # UI (components/graph/ draws the canvas with Cytoscape + d3-force)
 ├── src-tauri/                  # Tauri shell + Cargo workspace root
 │   ├── src/                    # Tauri app: window, api-command router, integrations (install CLI/MCP)
 │   │   └── bin/dev_server.rs   # linxiv-dev-server: dev-only HTTP shim over the Rust core (see Run in development)
