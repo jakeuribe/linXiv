@@ -3,20 +3,44 @@
 <head>
     <meta charset="utf-8" />
     <script>
+    // Pre-paint theme. The host (src/pages/GraphPage.tsx) resolves the live
+    // theme with getColors() and freezes it into this document's src at mount
+    // (see src/lib/graphIframeSrc.ts), so graph.html carries no palette of its
+    // own -- the copy it used to hold went stale silently every time
+    // src/lib/theme.ts gained a preset. Theme changes after load ride the
+    // `theme_update` postMessage handled in graph.js. Opened standalone (no
+    // ?theme=), graph.css's own var() fallbacks apply. VARS must list every
+    // token getColors() resolves -- graph.css and graph.js's node colours read
+    // --color-success / --color-danger too.
+    //
+    // ?mode= carries the light/dark half of the theme, which the eight colour
+    // tokens do not encode. It drives `color-scheme`, the property
+    // src/styles/tokens.css sets from [data-mode] so WebKitGTK draws native
+    // controls (date pickers, checkboxes, sliders, the panel scrollbar) in our
+    // chrome instead of the OS's. The iframe inherits none of that, so without
+    // this it sat on the UA default of light inside every dark preset. Applied
+    // before ?theme= and independently of it -- a malformed palette must not
+    // take the scheme down with it.
     (function() {
-        var P={Navy:{dark:{bg:"#0f0f1a",panel:"#1a1a2e",border:"#2e2e50",accent:"#5b8dee",text:"#ccccdd",muted:"#7777aa"},light:{bg:"#f0f4ff",panel:"#ffffff",border:"#c8d4f0",accent:"#4a7de0",text:"#1a1a3e",muted:"#6677aa"}},Slate:{dark:{bg:"#1a1b1e",panel:"#25262b",border:"#373a40",accent:"#748ffc",text:"#c1c2c5",muted:"#868e96"},light:{bg:"#f5f5f7",panel:"#ffffff",border:"#e0e1e5",accent:"#5a7cf8",text:"#1a1b1e",muted:"#6b7280"}},Charcoal:{dark:{bg:"#1c1c1c",panel:"#252525",border:"#333333",accent:"#e8912d",text:"#d4d4d4",muted:"#888888"},light:{bg:"#f6f6f6",panel:"#ffffff",border:"#dedede",accent:"#d4811f",text:"#1c1c1c",muted:"#666666"}},Forest:{dark:{bg:"#0d1b12",panel:"#162318",border:"#243d2c",accent:"#4caf88",text:"#c8d8cc",muted:"#6b8f72"},light:{bg:"#f0f5f2",panel:"#ffffff",border:"#c4d9cc",accent:"#3a9a72",text:"#0d1b12",muted:"#527a5a"}},Ember:{dark:{bg:"#1a1009",panel:"#261a0e",border:"#3d2b18",accent:"#e8912d",text:"#ddd0c4",muted:"#a0897a"},light:{bg:"#fdf5ee",panel:"#ffffff",border:"#eed8be",accent:"#cc7a1e",text:"#2a1a09",muted:"#8a6a50"}},Cupertino:{dark:{bg:"#1c1c1e",panel:"rgba(44,44,46,0.80)",border:"rgba(58,58,60,0.9)",accent:"#0a84ff",text:"#ffffff",muted:"#8e8e93"},light:{bg:"#eef1f6",panel:"rgba(255,255,255,0.72)",border:"rgba(209,209,214,0.6)",accent:"#007aff",text:"#1c1c1e",muted:"#8e8e93"}}};
+        var VARS = ['bg', 'panel', 'border', 'accent', 'text', 'muted',
+                    'success', 'danger'];
+        var MODES = ['dark', 'light'];
         try {
-            var s = JSON.parse(localStorage.getItem('linxiv-theme') || '{}').state || {};
-            var preset = P[s.preset] || P.Navy;
-            var colors = Object.assign({}, preset[s.mode] || preset.dark, s.overrides || {});
+            var params = new URLSearchParams(window.location.search);
+            var mode = params.get('mode');
+            if (MODES.indexOf(mode) !== -1) {
+                document.documentElement.style.setProperty('color-scheme', mode);
+            }
+            var raw = params.get('theme');
+            if (!raw) return;
+            var colors = JSON.parse(raw);
             var r = document.documentElement;
-            r.style.setProperty('--color-bg',     colors.bg);
-            r.style.setProperty('--color-panel',  colors.panel);
-            r.style.setProperty('--color-border', colors.border);
-            r.style.setProperty('--color-accent', colors.accent);
-            r.style.setProperty('--color-text',   colors.text);
-            r.style.setProperty('--color-muted',  colors.muted);
-        } catch(e) {}
+            VARS.forEach(function(k) {
+                if (typeof colors[k] === 'string' && colors[k]) {
+                    r.style.setProperty('--color-' + k, colors[k]);
+                }
+            });
+        } catch (e) {}
     })();
     </script>
     <link rel="stylesheet" href="graph.css" />
@@ -25,6 +49,41 @@
 </head>
 <body>
     <div id="cy"></div>
+
+    <!-- Hover inspector. Paper labels are ellipsized at 180px on the canvas, so
+         a long title is unreadable without clicking through to the paper, and
+         the category / published date / tags / PDF flag / abstract that
+         `/api/graph` already sends for every paper (crates/core/src/graph.rs's
+         PAPER_NODES_SQL selects url, doi and summary too) had no surface at all
+         -- the payload was fetched and thrown away. Plain text set with
+         textContent, never innerHTML: these strings are library metadata. -->
+    <div id="node-tooltip" role="tooltip" aria-hidden="true" style="display:none">
+        <div id="node-tooltip-title"></div>
+        <div id="node-tooltip-meta"></div>
+    </div>
+
+    <!-- Filtered-to-nothing notice. The canvas is the one surface in the app
+         with no "no results" state: a filter that matches nothing leaves either
+         a blank rectangle ("Show highlighted only") or a field of 8% ghosts,
+         and neither is distinguishable from a graph that failed to load. The
+         host's own EmptyState overlay (src/pages/GraphPage.tsx) cannot cover
+         this case -- it is `absolute inset-0`, so it would bury the very filter
+         panels the user needs to undo it -- so the notice lives in here,
+         centred in the strip #right-panels leaves uncovered. -->
+    <div id="no-match-notice" role="status" aria-live="polite" aria-hidden="true" style="display:none">
+        <div id="no-match-title"></div>
+        <div id="no-match-body"></div>
+        <!-- Second cause, when it applies: "Hide single-paper authors" is a
+             HOST checkbox (src/pages/GraphPage.tsx) applied by the backend, so
+             the authors it drops reach this document as neither a node nor an
+             edge -- and the Filters > Author box matches against that edge
+             list. The notice is where that becomes visible, and the checkbox
+             is out of reach from inside the frame, so the button asks the host
+             to clear it. -->
+        <div id="no-match-hint" style="display:none"></div>
+        <button id="no-match-show-authors" class="full-btn" style="display:none">Show single-paper authors</button>
+        <button id="no-match-clear" class="full-btn">Clear all filters</button>
+    </div>
 
     <!-- Both panels share the right-side column -->
     <div id="right-panels">
@@ -66,7 +125,12 @@
         <!-- Filters panel -->
         <div class="panel" id="filters">
             <div class="panel-header">
-                <span>Filters</span>
+                <!-- The count of filters currently in force. This panel opens
+                     COLLAPSED and its state outlives every navigation (AppShell
+                     keeps the frame alive), so an active filter was a canvas of
+                     8% ghosts with nothing on the header to say why -- see
+                     _updateFilterBadges in graph.js. -->
+                <span>Filters<span id="filter-active-count" class="panel-count"></span></span>
                 <button class="panel-toggle" data-target="filters-body">▶</button>
             </div>
             <div class="panel-body" id="filters-body" style="display:none">
@@ -88,14 +152,23 @@
                     <label><input type="checkbox" id="filterHasPdf"> Has PDF only</label>
                 </div>
 
+                <!-- type=date, as the rest of the app enters dates
+                     (PaperMetadataEditor). These were free text: the filter
+                     applies 280ms after each keystroke and compares the raw
+                     string, so typing "2024-01-05" walked the graph through
+                     "2", "20", "202"... each a live filter over every paper,
+                     and a typo like "05/01/2024" filtered silently and
+                     wrongly with nothing to say so. A date input's value is
+                     either "" or a valid YYYY-MM-DD, which is exactly what the
+                     comparison downstream assumes. -->
                 <div class="section-title">Date range</div>
                 <div class="filter-row">
                     <label>From</label>
-                    <input type="text" id="filterDateFrom" placeholder="YYYY-MM-DD">
+                    <input type="date" id="filterDateFrom">
                 </div>
                 <div class="filter-row">
                     <label>To</label>
-                    <input type="text" id="filterDateTo" placeholder="YYYY-MM-DD">
+                    <input type="date" id="filterDateTo">
                 </div>
 
                 <div class="section-title">Highlight</div>
@@ -116,7 +189,7 @@
         <!-- Tag Filter panel -->
         <div class="panel" id="tag-filter-panel">
             <div class="panel-header">
-                <span>Tag Filter</span>
+                <span>Tag Filter<span id="tag-filter-active-count" class="panel-count"></span></span>
                 <button class="panel-toggle" data-target="tag-filter-body">▶</button>
             </div>
             <div class="panel-body" id="tag-filter-body" style="display:none">
@@ -128,7 +201,7 @@
                     <button id="addProjectBtn" class="add-filter-btn" title="Add project filter">+</button>
                 </div>
                 <div id="project-filter-rows"></div>
-                <div id="project-filter-empty" style="font-size:11px; color:#3e3e60; font-style:italic; margin-top:4px;">No project filters active.</div>
+                <div id="project-filter-empty" class="filter-empty">No project filters active.</div>
 
                 <div class="section-title">Project Tags</div>
                 <div class="tag-input-row">
@@ -137,7 +210,7 @@
                     <button id="addProjTagBtn" class="add-filter-btn" title="Add project tag filter">+</button>
                 </div>
                 <div id="proj-tag-filter-rows"></div>
-                <div id="proj-tag-filter-empty" style="font-size:11px; color:#3e3e60; font-style:italic; margin-top:4px;">No project tag filters active.</div>
+                <div id="proj-tag-filter-empty" class="filter-empty">No project tag filters active.</div>
 
                 <div class="section-title">Paper Tags</div>
                 <div class="tag-input-row">
@@ -147,7 +220,7 @@
                     <button id="addTagBtn" class="add-filter-btn" title="Add tag">+</button>
                 </div>
                 <div id="tag-filter-rows"></div>
-                <div id="tag-filter-empty" style="font-size:11px; color:#3e3e60; font-style:italic; margin-top:4px;">
+                <div id="tag-filter-empty" class="filter-empty">
                     No tag filters active.
                 </div>
             </div>
@@ -156,12 +229,12 @@
         <!-- Selection panel -->
         <div class="panel" id="selection-panel">
             <div class="panel-header">
-                <span>Selection <span id="selectionCount" style="color:#7777aa; font-weight:400;">(0)</span></span>
+                <span>Selection <span id="selectionCount">(0)</span></span>
                 <button class="panel-toggle" data-target="selection-body">▶</button>
             </div>
             <div class="panel-body" id="selection-body" style="display:none">
                 <div class="check-row" style="margin-bottom:8px;">
-                    <span style="font-size:12px; color:#aaaacc;">Click to select · Ctrl+click to add</span>
+                    <span class="panel-hint">Click to select · Ctrl+click to add</span>
                 </div>
                 <button id="select-all-btn" class="full-btn" style="margin-top:0;">Select all visible</button>
                 <button id="clear-selection-btn" class="full-btn">Clear selection</button>

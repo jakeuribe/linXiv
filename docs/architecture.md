@@ -9,7 +9,7 @@ linXiv/
 ├── src/                        # React + TypeScript frontend (Vite)
 │   ├── api/                    # Typed client — calls the in-process backend via invoke("api")
 │   ├── pages/ components/ …    # UI
-├── public/graph/               # Force-directed graph viewer (Cytoscape + fCoSE + D3), loaded over linxiv://
+├── public/graph/               # Force-directed graph viewer (Cytoscape rendering a D3 force sim), loaded over linxiv://
 ├── src-tauri/                  # Tauri shell + Cargo workspace root
 │   ├── src/                    # Tauri app: window, api-command router, integrations (install CLI/MCP)
 │   │   └── bin/dev_server.rs   # linxiv-dev-server: dev-only HTTP shim over the Rust core (see Run in development)

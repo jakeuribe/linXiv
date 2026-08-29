@@ -11,6 +11,7 @@ import { nameSortKey, type NameSortBy } from "../lib/authorName";
 import { useUiStore } from "../stores/ui";
 import { MathText } from "../lib/tex";
 import { submitOnCtrlEnter } from "../lib/submitShortcut";
+import { invalidateAuthorQueries } from "../lib/paperMutations";
 
 // Matches an author against a free-text query across full/first/last name and ORCID.
 function authorMatchesQuery(a: { full_name?: string | null; first_name?: string | null; last_name?: string | null; orcid?: string | null }, query: string) {
@@ -234,8 +235,7 @@ function AuthorDetailView({ authorId }: AuthorDetailViewProps) {
   const updateMutation = useMutation({
     mutationFn: (body: AuthorUpdateBody) => updateAuthor(authorId, body),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["author", authorId] });
-      queryClient.invalidateQueries({ queryKey: ["authors"] });
+      invalidateAuthorQueries(queryClient);
       setEditing(false);
     },
   });
@@ -243,7 +243,7 @@ function AuthorDetailView({ authorId }: AuthorDetailViewProps) {
   const deleteMutation = useMutation({
     mutationFn: () => deleteAuthor(authorId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["authors"] });
+      invalidateAuthorQueries(queryClient);
       navigate("/authors");
     },
     onError: (err: Error) => setDeleteError(err.message),
@@ -280,9 +280,7 @@ function AuthorDetailView({ authorId }: AuthorDetailViewProps) {
   const mergeMutation = useMutation({
     mutationFn: (ids: number[]) => mergeAuthors(authorId, ids),
     onSuccess: (_data, ids) => {
-      queryClient.invalidateQueries({ queryKey: ["author", authorId] });
-      queryClient.invalidateQueries({ queryKey: ["authors"] });
-      queryClient.invalidateQueries({ queryKey: ["author-merge-candidates", authorId] });
+      invalidateAuthorQueries(queryClient);
       ids.forEach((dupId) => queryClient.removeQueries({ queryKey: ["author", dupId] }));
       setMergeIds([]);
     },

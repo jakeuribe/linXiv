@@ -78,24 +78,114 @@ export interface Settings {
 }
 
 // `GET /api/graph` builds its payload as a `serde_json::Value` in
-// crates/core/src/graph.rs — no struct to derive on.
+// crates/core/src/graph.rs — no single Rust struct, so nothing to `#[derive(TS)]`
+// and these stay hand-written. That also means nothing but a test can hold them
+// to the payload, and left unchecked they had already drifted away from it: a
+// paper node's `id` was declared `string` where graph.rs emits the bare
+// SOURCE_FK integer, and eight of the fields the payload carries were missing
+// altogether. src/lib/graphIframeAssets.test.ts now pins every field below
+// against that file, in both directions.
+//
+// The nodes are a discriminated union on `type`, not one loose shape: only a
+// paper node carries the paper metadata, only an author node carries the
+// `author_id` its click handler navigates to, and a tag node is the
+// id/label/type triple and nothing else.
+
+/** `type: "paper"` — the latest version of one active root. */
+export interface GraphPaperNode {
+  /**
+   * PAPER_ROOTS.SOURCE_FK, as a number — the `/library/:sfk` route param, and
+   * the `source` of every edge. NOT the `source_id` below.
+   */
+  id: number;
+  type: "paper";
+  source_id: string;
+  /**
+   * PAPER.TITLE. Declared non-null because the column is NOT NULL; graph.rs
+   * reads it as an `Option` defensively, and public/graph/graph.js's title
+   * filter calls `.toLowerCase()` on it unguarded.
+   */
+  label: string;
+  category: string | null;
+  tags: string[];
+  has_pdf: boolean;
+  /**
+   * PAPER_META.PUBLISHED, forwarded raw — so `0001-01-01` (chrono's `date.min`
+   * sentinel for "no date") reaches the client as a date in year 1 rather than
+   * as null, unlike every other serializer. graph.js folds it back.
+   */
+  published: string | null;
+  url: string | null;
+  doi: string | null;
+  summary: string | null;
+  /** Ids of the ACTIVE projects holding this paper, ascending. */
+  project_ids: number[];
+}
+
+/** `type: "author"` — one AUTHOR row linked to at least one active paper. */
+export interface GraphAuthorNode {
+  /** `author::<AUTHOR_FK>`. */
+  id: string;
+  type: "author";
+  /** AUTHOR.AUTHOR_FULL_NAME — the canonical spelling, so it follows renames. */
+  label: string;
+  /** AUTHOR_FK, the `/authors/:id` route param. */
+  author_id: number;
+}
+
+/** `type: "tag"` — derived from the papers' own tags, not from the TAG table. */
+export interface GraphTagNode {
+  /** `tag::<lowercased label>`. */
+  id: string;
+  type: "tag";
+  /**
+   * Display casing of the first paper that used the tag — first in SQLite's
+   * scan order, since PAPER_NODES_SQL has no ORDER BY, so it can change under a
+   * plain Refresh and it need not be the canonical `TAG.TAG` label the Tags
+   * index and TagPage show. public/graph/graph.js draws the chip with the
+   * `/api/tags` spelling instead (`_canonicalTagLabel`) and falls back to this.
+   */
+  label: string;
+}
+
+export type GraphNode = GraphPaperNode | GraphAuthorNode | GraphTagNode;
+
+/**
+ * Always paper → author or paper → tag, so `source` is a paper node's numeric
+ * id and `target` is a prefixed string one. There is no edge `type`.
+ */
+export interface GraphEdge {
+  source: number;
+  target: string;
+}
+
 export interface GraphData {
   nodes: GraphNode[];
   edges: GraphEdge[];
 }
 
-export interface GraphNode {
-  id: string;
-  label: string;
-  type: string;
-  tags?: string[];
-  project_ids?: number[];
+// `GET /api/graph/project-options` — the graph's Projects / Project Tags filter
+// chips. Assembled by the same `json!` in crates/core/src/graph.rs and wrapped
+// in `{projects: …}` by src-tauri/src/route/graph.rs.
+//
+// Every ACTIVE project, whether or not any paper `/api/graph` drew belongs to
+// it — the two endpoints are answered independently. Both filter boxes match a
+// paper through `GraphPaperNode.project_ids`, so public/graph/graph.js narrows
+// what it OFFERS to the projects that appear there (and marks a hand-typed row
+// that names only the others), the same split it makes for the Paper Tags
+// dropdown against `/api/tags`. A consumer that shows this list raw is offering
+// filters that can only empty the canvas.
+export interface GraphProjectOption {
+  id: number;
+  name: string;
+  /** Always set: graph.rs falls back to its own default when a project has none. */
+  color: string;
+  /** PROJECT_TO_TAG labels, ordered by label. */
+  tags: string[];
 }
 
-export interface GraphEdge {
-  source: string;
-  target: string;
-  type?: string;
+export interface GraphProjectOptions {
+  projects: GraphProjectOption[];
 }
 
 // sources/feed.rs::FeedEntry has a matching Rust struct, but the response is

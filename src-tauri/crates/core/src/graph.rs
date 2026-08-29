@@ -3,8 +3,12 @@
 //! `get_graph_data`. Faithful to the CURRENT output (the graph subsystem is
 //! mid-refactor; re-port if the shape changes).
 //!
-//! Author nodes are keyed by the JSON author NAME (`author::<name>`), not the
-//! AUTHOR_FK — the FK is attached only for navigation when a name resolves to one.
+//! Author nodes come from PAPER_TO_AUTHOR and are keyed by AUTHOR_FK
+//! (`author::<fk>`) — the relational half of the dual author storage every other
+//! author read in the app already goes through. `PAPER_META.AUTHORS` is only a
+//! free-text cache: it spells one person several ways and goes stale when an
+//! author is renamed or merged, so keying on it split one person across nodes and
+//! left them without the `author_id` their click handler navigates to.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -30,21 +34,31 @@ const PAPER_NODES_SQL: &str = "\
     WHERE p.VERSION = (SELECT MAX(VERSION) FROM PAPER WHERE SOURCE_FK = r.SOURCE_FK) \
       AND r.STATUS = 'active'";
 
-/// Per author name (COLLATE NOCASE): the AUTHOR_FK with the most papers, ties by
-/// lowest FK. Shared CTE for both author queries.
-const NAME_FK_CTE: &str = "\
-    name_fk AS ( \
-        SELECT author_name, author_fk FROM ( \
-            SELECT a.AUTHOR_FULL_NAME AS author_name, a.AUTHOR_FK AS author_fk, \
-                   ROW_NUMBER() OVER ( \
-                       PARTITION BY a.AUTHOR_FULL_NAME COLLATE NOCASE \
-                       ORDER BY COALESCE(apc.paper_count, 0) DESC, a.AUTHOR_FK ASC \
-                   ) AS rn \
-            FROM AUTHOR a \
-            LEFT JOIN author_paper_counts apc ON apc.author_fk = a.AUTHOR_FK \
-            WHERE a.AUTHOR_FULL_NAME IS NOT NULL \
-        ) WHERE rn = 1 \
-    )";
+/// One row per (latest active paper, author linked to it), in the paper's own
+/// author order. Reads the PAPER_TO_AUTHOR links, so it follows the renames and
+/// merges that `PAPER_META.AUTHORS` does not see. `exclude_single_authors` joins
+/// `author_paper_counts`, the same view the Authors page filters on.
+fn author_rows_sql(exclude_single_authors: bool) -> String {
+    let count_join = if exclude_single_authors {
+        "JOIN author_paper_counts apc \
+             ON apc.author_fk = a.AUTHOR_FK AND apc.paper_count > 1 "
+    } else {
+        ""
+    };
+    format!(
+        "SELECT r.SOURCE_FK AS source_fk, a.AUTHOR_FK AS author_fk, \
+                a.AUTHOR_FULL_NAME AS author_name \
+         FROM PAPER_ROOTS r \
+         JOIN PAPER p ON p.SOURCE_FK = r.SOURCE_FK \
+         JOIN PAPER_TO_AUTHOR pta ON pta.PAPER_ID = p.PAPER_ID \
+         JOIN AUTHOR a ON a.AUTHOR_FK = pta.AUTHOR_FK \
+         {count_join}\
+         WHERE p.VERSION = (SELECT MAX(VERSION) FROM PAPER WHERE SOURCE_FK = r.SOURCE_FK) \
+           AND r.STATUS = 'active' \
+           AND a.AUTHOR_FULL_NAME IS NOT NULL \
+         ORDER BY r.SOURCE_FK, pta.AUTHOR_INDEX"
+    )
+}
 
 /// `GET /api/graph` payload — `get_augmented_graph_data`. Paper nodes carry their
 /// active-project ids; tag nodes/edges are derived from each paper's tags.
@@ -139,55 +153,30 @@ fn graph_data(
         paper_nodes.push((source_fk, node, tags));
     }
 
-    let (count_cte, count_col, count_join) = if exclude_single_authors {
-        (
-            ", name_counts AS ( \
-             SELECT a.AUTHOR_FULL_NAME AS author_name, MAX(apc.paper_count) AS paper_count \
-             FROM AUTHOR a JOIN author_paper_counts apc ON apc.author_fk = a.AUTHOR_FK \
-             GROUP BY a.AUTHOR_FULL_NAME COLLATE NOCASE \
-         )",
-            "nc.paper_count AS paper_count, ",
-            "LEFT JOIN name_counts nc ON nc.author_name = je.value COLLATE NOCASE ",
-        )
-    } else {
-        ("", "", "")
-    };
-    let authors_sql = format!(
-        "WITH {NAME_FK_CTE}{count_cte} \
-         SELECT r.SOURCE_FK AS source_fk, je.value AS author_name, {count_col}nf.author_fk AS author_fk \
-         FROM PAPER_ROOTS r \
-         JOIN PAPER p ON p.SOURCE_FK = r.SOURCE_FK \
-         JOIN PAPER_META m ON m.PAPER_ID = p.PAPER_ID, json_each(m.AUTHORS) je \
-         {count_join}LEFT JOIN name_fk nf ON nf.author_name = je.value COLLATE NOCASE \
-         WHERE p.VERSION = (SELECT MAX(VERSION) FROM PAPER WHERE SOURCE_FK = r.SOURCE_FK) \
-           AND r.STATUS = 'active'"
-    );
-
-    let mut author_stmt = conn.prepare(&authors_sql)?;
+    let mut author_stmt = conn.prepare(&author_rows_sql(exclude_single_authors))?;
     let mut rows = author_stmt.query([])?;
-    let mut seen: HashSet<String> = HashSet::new();
+    let mut seen: HashSet<i64> = HashSet::new();
+    let mut seen_edges: HashSet<(i64, i64)> = HashSet::new();
     let mut author_nodes = Vec::new();
     let mut edges = Vec::new();
     while let Some(row) = rows.next()? {
-        let name: String = row.get("author_name")?;
-        // Drop authors with a known count < 2; a NULL count (no AUTHOR match) is kept.
-        if exclude_single_authors {
-            if let Some(count) = row.get::<_, Option<i64>>("paper_count")? {
-                if count < 2 {
-                    continue;
-                }
-            }
-        }
         let source_fk: i64 = row.get("source_fk")?;
-        let node_id = format!("author::{name}");
-        if seen.insert(node_id.clone()) {
-            let mut node = json!({ "id": node_id, "label": name, "type": "author" });
-            if let Some(fk) = row.get::<_, Option<i64>>("author_fk")? {
-                node["author_id"] = json!(fk);
-            }
+        let author_fk: i64 = row.get("author_fk")?;
+        let node_id = format!("author::{author_fk}");
+        if seen.insert(author_fk) {
+            let label: String = row.get("author_name")?;
+            let node = json!({
+                "id": node_id.clone(),
+                "label": label,
+                "type": "author",
+                "author_id": author_fk,
+            });
             author_nodes.push(node);
         }
-        edges.push(json!({ "source": source_fk, "target": node_id }));
+        // A paper can list the same person twice (repeat or case variant); one edge.
+        if seen_edges.insert((source_fk, author_fk)) {
+            edges.push(json!({ "source": source_fk, "target": node_id }));
+        }
     }
 
     Ok((paper_nodes, author_nodes, edges))
@@ -221,8 +210,34 @@ pub fn project_filter_options(conn: &Connection) -> Result<Vec<Value>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::service::author as svc_author;
+    use crate::storage::queries::author as store_author;
     use crate::storage::{self, db};
 
+    /// AUTHOR_FK for `name`, matched COLLATE NOCASE like `author_fk_for_name`.
+    fn find_author_fk(conn: &Connection, name: &str) -> Option<i64> {
+        let sql = "SELECT AUTHOR_FK FROM AUTHOR WHERE AUTHOR_FULL_NAME = ? COLLATE NOCASE";
+        conn.query_row(sql, [name], |r| r.get(0)).ok()
+    }
+
+    /// `find_author_fk`, inserting the AUTHOR row when there is no match.
+    fn author_fk(conn: &Connection, name: &str) -> i64 {
+        if let Some(fk) = find_author_fk(conn, name) {
+            return fk;
+        }
+        let ins = "INSERT INTO AUTHOR (AUTHOR_FULL_NAME) VALUES (?)";
+        conn.execute(ins, [name]).unwrap();
+        conn.last_insert_rowid()
+    }
+
+    /// The node id the graph emits for the author currently named `name`.
+    fn author_id(conn: &Connection, name: &str) -> String {
+        format!("author::{}", find_author_fk(conn, name).unwrap())
+    }
+
+    /// Seed one active paper, writing its authors both ways the paper writer does:
+    /// the `PAPER_META.AUTHORS` free-text cache AND the PAPER_TO_AUTHOR links the
+    /// graph reads (reusing an AUTHOR row COLLATE NOCASE, as `sync_paper_authors`).
     fn seed_paper(conn: &Connection, source_id: &str, authors_json: &str, tags_json: &str) -> i64 {
         conn.execute(
             "INSERT INTO PAPER_ROOTS (SOURCE_ID) VALUES (?1)",
@@ -249,7 +264,46 @@ mod tests {
             rusqlite::params![pid, authors_json, tags_json],
         )
         .unwrap();
+        let names = list_from_sql(authors_json).unwrap();
+        for (i, name) in names.iter().enumerate() {
+            let fk = author_fk(conn, name);
+            let link = "INSERT INTO PAPER_TO_AUTHOR (PAPER_ID, AUTHOR_FK, AUTHOR_INDEX) \
+                        VALUES (?1, ?2, ?3)";
+            conn.execute(link, [pid, fk, i as i64]).unwrap();
+        }
         sfk
+    }
+
+    /// Every author node in the payload, in emission order.
+    fn author_nodes(g: &Value) -> Vec<Value> {
+        let mut out = Vec::new();
+        for n in g["nodes"].as_array().unwrap() {
+            if n["type"] == "author" {
+                out.push(n.clone());
+            }
+        }
+        out
+    }
+
+    /// The node with `id`; panics if the payload has none.
+    fn node_by_id(g: &Value, id: &str) -> Value {
+        for n in g["nodes"].as_array().unwrap() {
+            if n["id"] == id {
+                return n.clone();
+            }
+        }
+        panic!("no node {id}");
+    }
+
+    /// How many `sfk -> target` edges the payload carries.
+    fn edge_count(g: &Value, sfk: i64, target: &str) -> usize {
+        let mut n = 0;
+        for e in g["edges"].as_array().unwrap() {
+            if e["source"] == json!(sfk) && e["target"] == target {
+                n += 1;
+            }
+        }
+        n
     }
 
     #[test]
@@ -277,15 +331,120 @@ mod tests {
         assert_eq!(paper["project_ids"], json!([]));
         assert_eq!(paper["has_pdf"], json!(true));
 
-        // author edge keys author::<name>; one author + one tag edge per paper.
-        assert!(edges
-            .iter()
-            .any(|e| e["source"] == json!(sfk) && e["target"] == json!("author::Ada Lovelace")));
+        // Author nodes are keyed by AUTHOR_FK and always carry the author_id the
+        // node's click handler navigates to.
+        let ada_fk = find_author_fk(&conn, "Ada Lovelace").unwrap();
+        let ada = node_by_id(&g, &format!("author::{ada_fk}"));
+        assert_eq!(ada["label"], "Ada Lovelace");
+        assert_eq!(ada["author_id"], json!(ada_fk));
+        assert_eq!(edge_count(&g, sfk, &format!("author::{ada_fk}")), 1);
+
         assert!(edges.iter().any(|e| e["target"] == json!("tag::ml")));
         // tag node id is lowercased, label preserved.
         assert!(nodes
             .iter()
             .any(|n| n["id"] == json!("tag::ml") && n["label"] == json!("ML")));
+    }
+
+    #[test]
+    fn author_spelled_differently_across_papers_is_one_node() {
+        let conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        // Same person, two spellings — PAPER_META.AUTHORS is a free-text cache, and
+        // the AUTHOR row it reconciles against is matched COLLATE NOCASE.
+        let a = seed_paper(&conn, "arxiv:1", r#"["Ada Lovelace"]"#, "[]");
+        let b = seed_paper(&conn, "arxiv:2", r#"["ada lovelace"]"#, "[]");
+
+        let g = augmented_graph_data(&conn, false).unwrap();
+        let authors = author_nodes(&g);
+        assert_eq!(authors.len(), 1, "one person, one node: {authors:?}");
+        let id = author_id(&conn, "Ada Lovelace");
+        assert_eq!(authors[0]["id"], id);
+        // Both papers still reach it, so the co-authorship link is not severed.
+        assert_eq!(edge_count(&g, a, &id), 1);
+        assert_eq!(edge_count(&g, b, &id), 1);
+    }
+
+    #[test]
+    fn author_listed_twice_on_one_paper_yields_one_edge() {
+        let conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        let authors = r#"["Ada Lovelace","ada lovelace"]"#;
+        let sfk = seed_paper(&conn, "arxiv:1", authors, "[]");
+
+        let g = augmented_graph_data(&conn, false).unwrap();
+        assert_eq!(author_nodes(&g).len(), 1);
+        let id = author_id(&conn, "Ada Lovelace");
+        assert_eq!(edge_count(&g, sfk, &id), 1);
+    }
+
+    #[test]
+    fn author_node_label_follows_the_author_table_spelling() {
+        let conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        let sql = "INSERT INTO AUTHOR (AUTHOR_FULL_NAME) VALUES ('Ada Lovelace')";
+        conn.execute(sql, []).unwrap();
+        let fk = conn.last_insert_rowid();
+        // The paper caches a lowercased spelling; the node must still show the
+        // canonical one, since clicking it opens that AUTHOR's page.
+        seed_paper(&conn, "arxiv:1", r#"["ada lovelace"]"#, "[]");
+
+        let g = augmented_graph_data(&conn, false).unwrap();
+        let ada = node_by_id(&g, &format!("author::{fk}"));
+        assert_eq!(ada["label"], "Ada Lovelace");
+        assert_eq!(ada["author_id"], json!(fk));
+    }
+
+    #[test]
+    fn renaming_an_author_relabels_its_graph_node() {
+        let conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        let sfk = seed_paper(&conn, "arxiv:1", r#"["A Lovelace"]"#, "[]");
+        let fk = find_author_fk(&conn, "A Lovelace").unwrap();
+        // PATCH /api/authors/{id} rewrites the AUTHOR row only — PAPER_META.AUTHORS
+        // keeps caching the old spelling, which a name-keyed graph rendered instead.
+        let new_name = Some("Ada Lovelace");
+        store_author::update_author(&conn, fk, new_name, None, None, None).unwrap();
+
+        let g = augmented_graph_data(&conn, false).unwrap();
+        let authors = author_nodes(&g);
+        assert_eq!(authors.len(), 1, "still one person: {authors:?}");
+        assert_eq!(authors[0]["label"], "Ada Lovelace");
+        assert_eq!(authors[0]["author_id"], json!(fk));
+        assert_eq!(edge_count(&g, sfk, &format!("author::{fk}")), 1);
+    }
+
+    #[test]
+    fn merged_authors_collapse_into_one_graph_node() {
+        let mut conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        let a = seed_paper(&conn, "arxiv:1", r#"["Ada Lovelace"]"#, "[]");
+        let b = seed_paper(&conn, "arxiv:2", r#"["A. Lovelace"]"#, "[]");
+        let keep = find_author_fk(&conn, "Ada Lovelace").unwrap();
+        let dup = find_author_fk(&conn, "A. Lovelace").unwrap();
+        svc_author::merge(&mut conn, keep, &[dup]).unwrap();
+
+        let g = augmented_graph_data(&conn, false).unwrap();
+        let authors = author_nodes(&g);
+        assert_eq!(authors.len(), 1, "merged into one: {authors:?}");
+        let id = format!("author::{keep}");
+        assert_eq!(authors[0]["id"], id);
+        assert_eq!(edge_count(&g, a, &id), 1);
+        assert_eq!(edge_count(&g, b, &id), 1);
+    }
+
+    #[test]
+    fn exclude_single_authors_keeps_only_multi_paper_people() {
+        let conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        seed_paper(&conn, "arxiv:1", r#"["Ada Lovelace","Solo Dev"]"#, "[]");
+        seed_paper(&conn, "arxiv:2", r#"["ada lovelace"]"#, "[]");
+
+        // Ada is one person on two papers despite the spelling; Solo Dev is on one.
+        let g = augmented_graph_data(&conn, true).unwrap();
+        let authors = author_nodes(&g);
+        assert_eq!(authors.len(), 1, "only Ada survives: {authors:?}");
+        assert_eq!(authors[0]["label"], "Ada Lovelace");
     }
 
     #[test]
