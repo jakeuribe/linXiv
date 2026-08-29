@@ -15,7 +15,7 @@ use serde_json::json;
 
 use linxiv_core::error::CoreError;
 use linxiv_core::models::{ProjectDetails, ProjectIn, ProjectUpdateIn, Status, TagIn};
-use linxiv_core::service::paper::{self, Paper};
+use linxiv_core::service::paper::{self, PaperRef};
 use linxiv_core::service::project::{self, Project, Projects};
 use linxiv_core::service::tag::{self, Tag};
 
@@ -448,16 +448,10 @@ impl Server {
         let paper_id = _params.0.paper_id;
         self.with_conn(|conn| {
             // Python `get_paper_tags` returns [] for an absent paper (no error).
-            let tags = paper::get(
-                conn,
-                &Paper {
-                    source_id: Some(paper_id.clone()),
-                    ..Default::default()
-                },
-            )
-            .map_err(core_err)?
-            .map(|p| p.tags)
-            .unwrap_or_default();
+            let tags = paper::get(conn, &PaperRef::source(paper_id.clone()))
+                .map_err(core_err)?
+                .map(|p| p.tags)
+                .unwrap_or_default();
             jval(json!({ "paper_id": paper_id, "tags": tags }))
         })
     }

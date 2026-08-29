@@ -339,14 +339,8 @@ pub fn import_shared_project(conn: &mut Connection, sp: &SharedProject) -> Resul
         if paper_svc::is_paper_deleted(conn, &p.source_id)? {
             continue;
         }
-        let known = paper_svc::get(
-            conn,
-            &paper_svc::Paper {
-                source_id: Some(p.source_id.clone()),
-                ..Default::default()
-            },
-        )?
-        .is_some();
+        let known =
+            paper_svc::get(conn, &paper_svc::PaperRef::source(p.source_id.clone()))?.is_some();
         if !known {
             // Metadata writes apply only to papers not already in the DB.
             paper_svc::save_paper_metadata(conn, &paper_meta(p), None)?;

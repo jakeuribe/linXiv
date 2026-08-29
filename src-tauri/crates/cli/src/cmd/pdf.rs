@@ -175,10 +175,7 @@ pub async fn run(cmd: PdfCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             let source_id = as_source_id(&ctx.conn, &source_id);
             let all = match svc_paper::get_all(
                 &ctx.conn,
-                &svc_paper::Paper {
-                    source_id: Some(source_id.clone()),
-                    ..Default::default()
-                },
+                &svc_paper::PaperRef::source(source_id.clone()),
             )? {
                 Some(all) => all,
                 None => fail(linxiv_core::error::CoreError::PaperNotFound(
@@ -251,10 +248,7 @@ pub async fn run(cmd: PdfCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
 fn stored_versions(ctx: &Ctx, source_id: &str) -> Vec<i64> {
     svc_paper::get_all(
         &ctx.conn,
-        &svc_paper::Paper {
-            source_id: Some(source_id.to_string()),
-            ..Default::default()
-        },
+        &svc_paper::PaperRef::source(source_id.to_string()),
     )
     .ok()
     .flatten()

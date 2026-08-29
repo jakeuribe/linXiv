@@ -2,7 +2,7 @@
 
 use clap::Subcommand;
 
-use linxiv_core::service::paper::{self as svc_paper, Paper};
+use linxiv_core::service::paper::{self as svc_paper, PaperRef};
 use linxiv_core::service::project::{self as svc_project, Project};
 
 use crate::ctx::Ctx;
@@ -32,13 +32,8 @@ pub async fn run(cmd: TrashCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         TrashCmd::Restore { source_id } => {
             let source_id = as_source_id(&ctx.conn, &source_id);
             svc_paper::require_trashed(&ctx.conn, &source_id).unwrap_or_else(|e| fail(e));
-            let (pdf_path, project_fks) = svc_paper::restore(
-                &mut ctx.conn,
-                &Paper {
-                    source_id: Some(source_id.clone()),
-                    ..Default::default()
-                },
-            )?;
+            let (pdf_path, project_fks) =
+                svc_paper::restore(&mut ctx.conn, &PaperRef::source(source_id.clone()))?;
             output(&linxiv_core::service::trash::RestoredPaper {
                 ok: true,
                 restored: source_id,
@@ -52,14 +47,8 @@ pub async fn run(cmd: TrashCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             svc_paper::require_trashed(&ctx.conn, &source_id).unwrap_or_else(|e| fail(e));
             // _do_paper_hard_delete: get_paper_root None -> not found; here unreachable
             // after the guard, but mirror the message off hard_delete's None return.
-            if svc_paper::hard_delete(
-                &mut ctx.conn,
-                &Paper {
-                    source_id: Some(source_id.clone()),
-                    ..Default::default()
-                },
-            )?
-            .is_none()
+            if svc_paper::hard_delete(&mut ctx.conn, &PaperRef::source(source_id.clone()))?
+                .is_none()
             {
                 fail(linxiv_core::error::CoreError::PaperNotFound(
                     source_id.clone(),

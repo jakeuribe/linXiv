@@ -87,11 +87,8 @@ pub(super) fn resolve_paper_or_exit(
     svc_paper::get_required(&ctx.conn, source_id).unwrap_or_else(|e| fail(e))
 }
 
-fn paper(source_id: &str) -> svc_paper::Paper {
-    svc_paper::Paper {
-        source_id: Some(source_id.to_string()),
-        ..Default::default()
-    }
+fn paper(source_id: &str) -> svc_paper::PaperRef {
+    svc_paper::PaperRef::source(source_id.to_string())
 }
 
 pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {

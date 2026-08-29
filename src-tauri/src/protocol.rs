@@ -19,7 +19,7 @@ use tauri::http::{header, Request, Response, StatusCode};
 use tauri::{AppHandle, Manager, Runtime, UriSchemeContext, UriSchemeResponder};
 
 use linxiv_core::error::CoreError;
-use linxiv_core::service::paper::{self as svc_paper, Paper};
+use linxiv_core::service::paper::{self as svc_paper, PaperRef};
 use linxiv_core::sources::http as core_http;
 
 use crate::route::{pct_decode, pdfs::resolve_local_pdf, split_segments};
@@ -90,10 +90,9 @@ fn serve_local_pdf<R: Runtime>(app: &AppHandle<R>, query: &str) -> Response<Cow<
     let found = state.with_conn(|conn| {
         svc_paper::get(
             conn,
-            &Paper {
-                source_id: Some(source_id.clone()),
+            &PaperRef::Source {
+                source_id: source_id.clone(),
                 version,
-                ..Default::default()
             },
         )
         .ok()
