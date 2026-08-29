@@ -103,14 +103,14 @@ git submodule update --init --recursive
 - **PDF management** — Download PDFs, import local PDFs (with first-page text and metadata extraction via native PDFium), and track total storage usage.
 - **Full-text search** — Pull an arXiv paper's TeX source into a local SQLite FTS5 index, from the paper page, the CLI (`linxiv paper fetch-source` / `index-sources`), or the `fetch_full_text` MCP tool; library search then matches the paper's body, not just its metadata.
 - **Import / export** — Import and export projects as `.lxproj` archives, import BibTeX (`.bib`), and export projects to BibTeX or Obsidian-flavored Markdown.
-- **Interactive graph** — Force-directed network of papers and authors (Cytoscape rendering with an fCoSE / D3 layout), with real-time force controls.
+- **Interactive graph** — Force-directed network of papers, authors and tags (Cytoscape rendering a d3-force layout), with real-time force controls and filter panels.
 - **TeX rendering** — MathJax renders LaTeX math in titles and abstracts, bundled locally for full offline use.
 - **CLI & MCP server** — A headless `linxiv` CLI and an `linxiv-mcp` MCP server expose the same library over the terminal and to LLM clients such as Claude.
 - **Peer-to-peer project sharing** — Share a project over [iroh](https://www.iroh.computer/) (QUIC + node tickets, no relay server to run) with end-to-end encrypted sync via keyhive + beelay CRDTs; you're the Hoster or a Reader of a share, and a Hoster can invite members as Editor or Viewer; join with a pasted ticket, mirror shared projects into your local library, and sync on your own schedule.
 
 ## Architecture
 
-linXiv is a Tauri v2 app. The frontend is React 18 + TypeScript (Vite); the backend is native Rust and runs **in-process** inside the app: the webview calls it through a single `api` Tauri command over IPC, and streams PDFs and graph assets over a custom `linxiv://` scheme. SQLite (bundled, FTS5) and PDF extraction (native `libpdfium`) are compiled in; see [docs/architecture.md](docs/architecture.md) for the full workspace layout.
+linXiv is a Tauri v2 app. The frontend is React 18 + TypeScript (Vite); the backend is native Rust and runs **in-process** inside the app: the webview calls it through a single `api` Tauri command over IPC, and streams PDF bytes over a custom `linxiv://` scheme. SQLite (bundled, FTS5) and PDF extraction (native `libpdfium`) are compiled in; see [docs/architecture.md](docs/architecture.md) for the full workspace layout.
 
 ## Setup
 
@@ -223,7 +223,7 @@ In a checkout you can run it straight from source with `cargo run -p linxiv-mcp`
 
 ## Graph visualization
 
-Papers and authors make up a force-directed network: papers link to their authors and tags, laid out by a D3 force simulation and drawn with Cytoscape. The control panel gives you real-time sliders to steer how the nodes and links work together. The viewer, MathJax, D3, and the UI font are all bundled locally.
+Papers and authors make up a force-directed network: papers link to their authors and tags, laid out by a d3-force simulation and drawn with Cytoscape. The control panel gives you real-time sliders to steer how the nodes and links work together, plus filters over categories, dates, tags and projects. Everything — the graph libraries, MathJax and the UI font — is bundled locally, so the graph works offline like the rest of the app.
 
 ## Data location
 

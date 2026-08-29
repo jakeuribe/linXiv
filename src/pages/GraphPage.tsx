@@ -1,36 +1,31 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, Network } from "lucide-react";
+
 import { useThemeStore } from "../stores/theme";
 import { useUiStore } from "../stores/ui";
-import { useShortcutsStore } from "../stores/shortcuts";
-import { activeShortcutCombos, shortcutForCombo } from "../lib/shortcuts";
 import { getColors } from "../lib/theme";
-import type { ThemeColors, ThemeMode } from "../lib/theme";
-import { graphIframeSrc } from "../lib/graphIframeSrc";
-import type { GraphApiTransport } from "../lib/graphIframeSrc";
-import { graphLoadOutcome, graphNoReplyOutcome } from "../lib/graphLoadState";
-import type { GraphLoadOutcome, GraphLoadState } from "../lib/graphLoadState";
-import { isTauri } from "../api/client";
+import { getGraphView } from "../api/graph";
 import { listProjects } from "../api/projects";
 import {
   addToProjectMutationOptions,
   createProjectMutationOptions,
   onGraphDirtying,
 } from "../lib/paperMutations";
-import { getStats } from "../api/settings";
+import { indexView } from "../lib/graph/model";
+import type { GraphFilterState } from "../lib/graph/filter";
+import { EMPTY_FILTER, joinTypes, matchGraph, noMatchCause } from "../lib/graph/filter";
+import type { ForceSettings } from "../lib/graph/layout";
+import { DEFAULT_FORCES } from "../lib/graph/layout";
+import type { GraphCanvasHandle } from "../components/graph/GraphCanvas";
+import GraphPanels from "../components/graph/GraphPanels";
 import { Spinner } from "../components/ui/spinner";
 import { Button } from "../components/ui/button";
 import { formSubmitOnCtrlEnter } from "../lib/submitShortcut";
 import { Dialog } from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
 import { EmptyState } from "../components/ui/empty-state";
-
-// Per-option: 'in-place' applies via postMessage (iframe keeps its state);
-// 'reload' lets the src track the live value so toggling re-bootstraps graph.js.
-type ReloadStrategy = "in-place" | "reload";
-const HIDE_SINGLE_AUTHORS_STRATEGY: ReloadStrategy = "in-place";
 
 // Root query keys whose invalidation may change graph-relevant data.
 //
@@ -42,132 +37,158 @@ const HIDE_SINGLE_AUTHORS_STRATEGY: ReloadStrategy = "in-place";
 // the registry in src/lib/paperMutations.ts (StorageSection's blanket
 // invalidate, the ORCID backfill). The registry's own `onGraphDirtying` signal
 // below is what makes the operations it owns reliable.
+// cytoscape and d3-force are ~400kB of the bundle and are needed by exactly one
+// screen. AppShell imports this page eagerly (it is keep-alive, so it must exist
+// from boot), so a lazy PAGE would not help — the canvas is the boundary that
+// does: it is not rendered until the first visit to /graph, which is the same
+// point the old iframe used to be mounted at. Every user used to pay for those
+// two libraries only on opening the graph, and this is what keeps that true.
+const GraphCanvas = lazy(() => import("../components/graph/GraphCanvas"));
+
 const GRAPH_DIRTYING_KEYS = new Set([
   "stats", "papers", "paper", "projects", "project", "tags", "tag", "authors", "author",
 ]);
 
-// How long to wait for a graph_loaded reply before clearing the spinner.
-const REFRESH_FALLBACK_MS = 8000;
-
-// Which backend the guest fetches from. The same `isTauri` branch papers.ts
-// takes for getPaperPdfUrl / getPdfProxyUrl, and for the same reason: inside
-// the app (packaged OR `tauri dev`) the library runs in-process and is reachable
-// only over the linxiv:// scheme, while in browser dev it lives behind the Vite
-// `/api` proxy. The guest cannot tell the two apart — `tauri dev` serves it from
-// http://localhost:5180 exactly as the browser does — so it used to sniff its
-// own URL and land on the dev server's database under `tauri dev`, alone in an
-// app whose every other surface was reading the in-process one.
-const GRAPH_API_TRANSPORT: GraphApiTransport = isTauri ? "linxiv" : "origin";
-
-// The iframe is a bare cytoscape canvas: a library with no papers, a backend
-// that never answered and a fetch still in flight all render as the same blank
-// rectangle, which is the one place in the app with no loading or empty state.
-// graph.js reports `nodeCount` / `error` alongside `ok` in its `graph_loaded`
-// reply and this page turns that into the app's own Spinner / EmptyState,
-// overlaid on the (still full-size, so cytoscape keeps a real viewport) frame.
-// Which of those a reply moves us to — including the rule that a FAILED reload
-// must not take away a graph that is still drawn — lives in ../lib/graphLoadState.
-
+/**
+ * The Knowledge Graph.
+ *
+ * This page used to be a thin host around an `<iframe>` running a 2,400-line
+ * unbundled browser script, and most of what it did was work around that frame:
+ * a postMessage protocol in both directions, a `graph_loaded` reply carrying the
+ * load state because the guest owned the canvas and the host owned the spinner,
+ * an eight-second fallback for a reply that never came, a theme push on every
+ * palette change, a `?api=` parameter naming which backend the guest should talk
+ * to, and a hand-back channel for keyboard shortcuts — key events do not cross a
+ * frame boundary, so every app-wide shortcut was dead on /graph alone.
+ *
+ * None of that survives the port. The canvas is a component, the load state is
+ * react-query's, the theme is read from the store, and the shortcuts are the
+ * window's own.
+ */
 export default function GraphPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const iframeRef = useRef<HTMLIFrameElement>(null);
-  const preset = useThemeStore(s => s.preset);
-  const mode = useThemeStore(s => s.mode);
-  const overrides = useThemeStore(s => s.overrides);
-  const overrideAlphas = useThemeStore(s => s.overrideAlphas);
-  const hideSingleAuthors = useUiStore(s => s.hideSingleAuthors);
-  const shortcutOverrides = useShortcutsStore(s => s.overrides);
-  const setHideSingleAuthors = useUiStore(s => s.setHideSingleAuthors);
+  const canvasRef = useRef<GraphCanvasHandle>(null);
+  const preset = useThemeStore((s) => s.preset);
+  const mode = useThemeStore((s) => s.mode);
+  const overrides = useThemeStore((s) => s.overrides);
+  const overrideAlphas = useThemeStore((s) => s.overrideAlphas);
+  const hideSingleAuthors = useUiStore((s) => s.hideSingleAuthors);
+  const setHideSingleAuthors = useUiStore((s) => s.setHideSingleAuthors);
 
-  const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>([]);
+  const theme = useMemo(
+    () => getColors(preset, mode, overrides, overrideAlphas),
+    [preset, mode, overrides, overrideAlphas]
+  );
+
+  const [filter, setFilter] = useState<GraphFilterState>(EMPTY_FILTER);
+  const [forces, setForces] = useState<ForceSettings>(DEFAULT_FORCES);
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(() => new Set());
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [projectPickerError, setProjectPickerError] = useState<string | null>(null);
   const [newProjectName, setNewProjectName] = useState("");
   const [dirty, setDirty] = useState(false);
-  const [refreshing, setRefreshing] = useState(false);
-  const [loadState, setLoadState] = useState<GraphLoadState>("loading");
-  const [loadError, setLoadError] = useState<string | null>(null);
-  // A reload that failed over a screen the user can still use. Reported in the
-  // header rather than by covering the canvas — see ../lib/graphLoadState.
-  const [refreshError, setRefreshError] = useState<string | null>(null);
-  // The message listener and the timeout both need the CURRENT screen to decide
-  // whether a failure may escalate, and neither can read `loadState` (the
-  // listener is registered once, the timeout closes over the value it was armed
-  // with). Mirrored here so both ask the same question of the same answer.
-  const loadStateRef = useRef<GraphLoadState>("loading");
-  const applyLoadOutcome = useCallback((outcome: GraphLoadOutcome) => {
-    loadStateRef.current = outcome.state;
-    setLoadState(outcome.state);
-    setLoadError(outcome.error);
-    setRefreshError(outcome.refreshError);
-  }, []);
 
   // AppShell's keep-alive renders this page from app BOOT and hides it with
-  // `display: none` (EditorPage carries the same warning for its own iframe).
-  // An iframe inside a hidden container lays out 0x0 and graph.css sizes #cy in
-  // vw/vh, so cytoscape would bootstrap against an empty viewport: its
-  // getFitViewport() bails on a zero-sized container, meaning BOTH the initial
-  // fit and the fit-on-settle silently do nothing and the first look at the
-  // graph is an unframed slice at zoom 1. Every user would also pay the graph
-  // fetch plus the force layout at startup without ever opening this page.
-  // Mount the frame on the first visit instead; it then stays mounted, so
-  // leaving and coming back still keeps the settled layout.
+  // `display: none`. A hidden container lays out 0x0, and cytoscape's fit bails
+  // silently on a zero-sized viewport — so a graph built there would keep the
+  // default zoom 1 with its layout spread off-screen. Every user would also pay
+  // the graph fetch plus the force layout at startup without ever opening this
+  // page. Mount on the first visit instead; it then stays mounted, so leaving
+  // and coming back still keeps the settled layout.
   const onGraphRoute = useLocation().pathname === "/graph";
-  const [frameMounted, setFrameMounted] = useState(false);
+  const [visited, setVisited] = useState(false);
   useEffect(() => {
-    if (onGraphRoute) setFrameMounted(true);
+    if (onGraphRoute) setVisited(true);
   }, [onGraphRoute]);
 
-  // Frozen when the frame first mounts — NOT at app boot, which can be many
-  // theme/option changes earlier. The src is an iframe navigation, so a live
-  // value here would reload the guest and drop its settled layout; later
-  // changes ride theme_update / set_options instead.
-  const boot = useRef<{ exclude: boolean; mode: ThemeMode; theme: ThemeColors } | null>(null);
-  // Last option value pushed to the iframe; the option effect bails when this
-  // is unchanged.
-  const appliedExclude = useRef(hideSingleAuthors);
-  if (frameMounted && boot.current === null) {
-    boot.current = {
-      exclude: hideSingleAuthors,
-      mode,
-      theme: getColors(preset, mode, overrides, overrideAlphas),
-    };
-    appliedExclude.current = hideSingleAuthors;
-  }
-  const refreshTimerRef = useRef<number | null>(null);
-  // dirtyEpoch bumps on each dirtying invalidation; loadEpoch snapshots it at
-  // each load start.
-  const dirtyEpochRef = useRef(0);
-  const loadEpochRef = useRef(0);
-
-  // Observe ["stats"] (paper add/remove/repair all invalidate it) so it stays
-  // active and the subscription below keeps refiring from the keep-alive page.
-  useQuery({ queryKey: ["stats"], queryFn: getStats, staleTime: Infinity });
-
-  const { data: projectsData, isLoading: projectsLoading } = useQuery({
-    queryKey: ["projects"],
-    queryFn: () => listProjects(),
-    enabled: projectPickerOpen,
+  const {
+    data: view,
+    isPending,
+    isFetching,
+    error,
+    refetch,
+    dataUpdatedAt,
+  } = useQuery({
+    queryKey: ["graph", hideSingleAuthors],
+    queryFn: () => getGraphView(hideSingleAuthors),
+    enabled: visited,
+    // "Hide single-paper authors" is applied by the BACKEND, so toggling it is a
+    // different query key — one with nothing cached under it. Without this,
+    // `data` would drop to undefined for the length of that fetch, unmounting
+    // the canvas and the panels: the settled positions and the last viewport
+    // live in refs inside GraphCanvas and die with it, so the payload that came
+    // back would be seeded as a COLD load and reframed, and the panels would
+    // re-collapse. A checkbox next to Refresh would silently throw away an
+    // arrangement the user built. Holding the previous payload keeps both
+    // mounted, so the new one arrives as the in-place reload it is meant to be:
+    // surviving nodes keep their positions and the viewport is held.
+    placeholderData: keepPreviousData,
+    // This query fetches when it is ASKED to and at no other time. A new payload
+    // rebuilds the simulation, which re-anneals the layout from alpha 1 — so any
+    // fetch the user did not ask for drifts an arrangement they may have spent a
+    // while making, and can yank a grabbed node out from under a drag. The three
+    // settings below are the three ways react-query would otherwise start one on
+    // its own; the invalidation side is held by `refetchType: "none"` in
+    // src/lib/paperMutations.ts. Refresh calls `refetch()`, which ignores all of
+    // this and is the point.
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
+
+  const index = useMemo(() => (view ? indexView(view) : null), [view]);
+
+  // Typing in a filter box re-matches every paper. Deferring it lets React keep
+  // the keystroke responsive and drop superseded passes on its own — the fixed
+  // 280ms debounce this replaces was a guess that was always either laggy or
+  // wasteful, depending on the library.
+  const deferredFilter = useDeferredValue(filter);
+  const match = useMemo(
+    () => (view && index ? matchGraph(view, index, deferredFilter) : null),
+    [view, index, deferredFilter]
+  );
+
+  // Selected papers the current filter state does not DRAW at all: everything
+  // when the Papers checkbox is off, and the non-matching ones under isolate.
+  const hiddenSelectedCount = useMemo(() => {
+    if (!match || selectedIds.size === 0) return 0;
+    if (match.hiddenTypes.has("paper")) return selectedIds.size;
+    if (!match.isolate) return 0;
+    let n = 0;
+    for (const id of selectedIds) if (!match.papers.has(id)) n++;
+    return n;
+  }, [match, selectedIds]);
+
+  const selectedSourceIds = useMemo(() => {
+    if (!index) return [];
+    const out: string[] = [];
+    for (const id of selectedIds) {
+      const source = index.paperById.get(id)?.source_id;
+      if (source) out.push(source);
+    }
+    return out;
+  }, [index, selectedIds]);
 
   const projectPickerUi = {
     setError: setProjectPickerError,
     // The shared partial-failure contract (src/lib/paperMutations.ts) re-selects
     // exactly the papers that could not be added, so a retry can't re-add the
-    // ones that made it in. On the Library page that is a local state update
-    // and the whole story; here the selection is the GUEST's — this page only
-    // mirrors what `selection_changed` reports — so narrowing it locally left
-    // the canvas still highlighting the full set and the guest still holding
-    // it, ready to post it back over this copy on the next click in the frame.
+    // ones that made it in. It speaks `source_id`, which the canvas does not —
+    // map back through the payload. (Across the iframe this needed a round trip
+    // and could leave the two copies of the selection disagreeing.)
     selectFailures: (sourceIds: string[]) => {
-      setSelectedSourceIds(sourceIds);
-      postToIframe({ type: "set_selection", sourceIds });
+      if (!index) return;
+      const wanted = new Set(sourceIds);
+      const next = new Set<string>();
+      for (const [id, paper] of index.paperById) {
+        if (wanted.has(paper.source_id)) next.add(id);
+      }
+      setSelectedIds(next);
     },
     onDone: () => {
       setProjectPickerOpen(false);
-      setSelectedSourceIds([]);
-      postToIframe({ type: "clear_selection" });
+      setSelectedIds(new Set());
     },
     clearName: () => setNewProjectName(""),
   };
@@ -175,239 +196,175 @@ export default function GraphPage() {
   const addToProjectMutation = useMutation(
     addToProjectMutationOptions(queryClient, projectPickerUi)
   );
-
   const createProjectMutation = useMutation(
     createProjectMutationOptions(queryClient, projectPickerUi)
   );
 
-  function postToIframe(msg: object) {
-    iframeRef.current?.contentWindow?.postMessage(msg, window.location.origin);
-  }
-
-  useEffect(() => {
-    function onMessage(e: MessageEvent) {
-      if (!e.data || typeof e.data !== "object") return;
-      if (e.origin !== window.location.origin) return;
-      if (e.data.type === "paper_clicked" && typeof e.data.id === "string") {
-        setSelectedSourceIds([]);
-        navigate(`/library/${e.data.id}`);
-      } else if (e.data.type === "author_clicked" && typeof e.data.id === "string") {
-        setSelectedSourceIds([]);
-        navigate(`/authors/${Number(e.data.id)}`);
-      } else if (e.data.type === "tag_clicked" && typeof e.data.label === "string") {
-        // Same target TagBadge links to everywhere else in the app; TagPage
-        // lowercases the param itself, so the node's display casing is fine.
-        setSelectedSourceIds([]);
-        navigate(`/tags/${encodeURIComponent(e.data.label)}`);
-      } else if (e.data.type === "shortcut_key" && e.data.combo && typeof e.data.combo === "object") {
-        // A keydown the guest matched against the combos we pushed it. Key
-        // events don't cross a frame boundary, so without this hand-back the
-        // app's own shortcuts are dead for as long as the graph has focus —
-        // read the overrides live rather than closing over them, so a rebind
-        // doesn't need this listener re-registered.
-        shortcutForCombo(e.data.combo, useShortcutsStore.getState().overrides)?.run?.();
-      } else if (e.data.type === "request_options" && typeof e.data.excludeSingleAuthors === "boolean") {
-        // The guest's filtered-to-nothing notice offering to undo an option it
-        // cannot reach. "Hide single-paper authors" is applied by the backend,
-        // so the authors it drops are absent from the payload entirely and the
-        // graph's own Author filter — which matches through the paper→author
-        // edges — cannot see them. The checkbox is up here in the page header,
-        // outside the frame, so the notice asks rather than acts. Flipping the
-        // store is all this has to do: the option effect below sees the change
-        // and posts the `set_options` reload. Read through getState() for the
-        // same reason `shortcut_key` does — so the setter isn't a dependency
-        // of this listener.
-        useUiStore.getState().setHideSingleAuthors(e.data.excludeSingleAuthors);
-      } else if (e.data.type === "selection_changed" && Array.isArray(e.data.sourceIds)) {
-        setSelectedSourceIds(e.data.sourceIds);
-      } else if (e.data.type === "graph_loaded") {
-        if (refreshTimerRef.current !== null) {
-          clearTimeout(refreshTimerRef.current);
-          refreshTimerRef.current = null;
-        }
-        setRefreshing(false);
-        // Clear dirty only on success and only if nothing changed since the load began.
-        setDirty(e.data.ok === false || dirtyEpochRef.current !== loadEpochRef.current);
-        // A failure that arrives over a graph already on screen leaves that
-        // graph where it is and reports itself in the header; only a load with
-        // nothing usable behind it escalates to the error card. nodeCount
-        // counts papers + authors + tags, so 0 means the library itself is
-        // empty rather than "filtered down to nothing".
-        applyLoadOutcome(graphLoadOutcome(loadStateRef.current, e.data));
-      }
-    }
-    window.addEventListener("message", onMessage);
-    return () => window.removeEventListener("message", onMessage);
-  }, [navigate, applyLoadOutcome]);
-
-  const sendTheme = useCallback(() => {
-    const iframe = iframeRef.current;
-    if (!iframe?.contentWindow) return;
-    const colors = getColors(preset, mode, overrides, overrideAlphas);
-    // `mode` rides along because light/dark is not recoverable from the eight
-    // colour tokens, and the guest needs it for `color-scheme` — see
-    // graphIframeSrc.
-    iframe.contentWindow.postMessage({ type: "theme_update", colors, mode }, window.location.origin);
-  }, [preset, mode, overrides, overrideAlphas]);
-
-  useEffect(() => {
-    sendTheme();
-  }, [sendTheme]);
-
-  // The guest cannot evaluate a `match` predicate it has no access to, so it is
-  // handed the combos themselves. Resent on every rebind, and again on load
-  // (the guest starts with an empty list and forwards nothing until it arrives).
-  const sendShortcuts = useCallback(() => {
-    const iframe = iframeRef.current;
-    if (!iframe?.contentWindow) return;
-    iframe.contentWindow.postMessage(
-      { type: "set_shortcuts", combos: activeShortcutCombos(shortcutOverrides) },
-      window.location.origin
-    );
-  }, [shortcutOverrides]);
-
-  useEffect(() => {
-    sendShortcuts();
-  }, [sendShortcuts]);
-
-  // Push an option change to the iframe in place; bail when the value is unchanged.
-  useEffect(() => {
-    if (hideSingleAuthors === appliedExclude.current) return;
-    appliedExclude.current = hideSingleAuthors;
-    if (HIDE_SINGLE_AUTHORS_STRATEGY === "in-place") {
-      requestGraphReload({ type: "set_options", excludeSingleAuthors: hideSingleAuthors });
-    }
-    // 'reload': the src tracks the live value (see iframeSrc), so the iframe
-    // reloads itself — nothing to post.
-  }, [hideSingleAuthors]);
+  const { data: projectsData, isLoading: projectsLoading } = useQuery({
+    queryKey: ["projects"],
+    queryFn: () => listProjects(),
+    enabled: projectPickerOpen,
+  });
 
   // Flag the Refresh button when a query holding graph-relevant data is
-  // invalidated elsewhere (GraphPage is keep-alive, so it sees those events).
-  const markGraphDirty = useCallback(() => {
-    dirtyEpochRef.current++;
+  // invalidated elsewhere (this page is keep-alive, so it sees those events).
+  // Bumped on every dirtying signal; `handleRefresh` snapshots it so a change
+  // that lands WHILE a refresh is in flight is not cleared by that refresh's
+  // success — the payload it fetched predates the change.
+  const dirtyEpoch = useRef(0);
+  const markDirty = useCallback(() => {
+    dirtyEpoch.current++;
     setDirty(true);
   }, []);
-
   useEffect(() => {
     const unsubscribe = queryClient.getQueryCache().subscribe((event) => {
       if (event.type !== "updated" || event.action.type !== "invalidate") return;
       const root = event.query.queryKey[0];
-      if (typeof root === "string" && GRAPH_DIRTYING_KEYS.has(root)) markGraphDirty();
+      if (typeof root === "string" && GRAPH_DIRTYING_KEYS.has(root)) markDirty();
     });
     return unsubscribe;
-  }, [queryClient, markGraphDirty]);
+  }, [queryClient, markDirty]);
 
   // The primary signal: the invalidation registry announcing an operation that
-  // changes what `/api/graph` would return. Unlike the cache subscription
-  // above it does not depend on another page holding a matching query — an
-  // author merge from /authors or a project retag from /projects reaches the
-  // graph even when nothing has ["authors"] or ["projects"] cached.
-  useEffect(() => onGraphDirtying(markGraphDirty), [markGraphDirty]);
+  // changes what `/api/graph` would return. Unlike the cache subscription above
+  // it does not depend on another page holding a matching query — an author
+  // merge from /authors or a project retag from /projects reaches the graph even
+  // when nothing has ["authors"] or ["projects"] cached.
+  useEffect(() => onGraphDirtying(markDirty), [markDirty]);
 
-  useEffect(() => () => {
-    if (refreshTimerRef.current !== null) clearTimeout(refreshTimerRef.current);
-  }, []);
+  // The dot means "the graph on screen is older than the library", so what
+  // clears it is DATA ARRIVING — not which control asked for it. Hanging that
+  // off the Refresh button alone got it wrong in both directions: clearing up
+  // front told the user they were current when the refresh then failed, and
+  // clearing only there left the dot lit after a "Hide single-paper authors"
+  // toggle had already re-fetched and redrawn from a payload that included the
+  // change. `dataUpdatedAt` moves only on a SUCCESSFUL fetch, so a failure
+  // leaves the dot alone by construction, and the epoch guard keeps a change
+  // that landed while the fetch was in flight from being cleared by it — that
+  // payload predates the change.
+  const fetchEpoch = useRef(0);
+  useEffect(() => {
+    if (isFetching) fetchEpoch.current = dirtyEpoch.current;
+  }, [isFetching]);
+  useEffect(() => {
+    if (!dataUpdatedAt) return;
+    if (dirtyEpoch.current === fetchEpoch.current) setDirty(false);
+  }, [dataUpdatedAt]);
 
-  function handleClearSelection() {
-    setSelectedSourceIds([]);
-    postToIframe({ type: "clear_selection" });
-  }
+  const handleRefresh = useCallback(() => {
+    void refetch();
+  }, [refetch]);
 
-  // Arm a fallback for a graph_loaded reply that never arrives (a guest that
-  // died before answering). Only a load with nothing on screen yet escalates to
-  // the error state — a dropped reply to a refresh leaves the settled graph
-  // alone and just re-flags the Refresh button.
-  function armLoadFallback() {
-    if (refreshTimerRef.current !== null) clearTimeout(refreshTimerRef.current);
-    refreshTimerRef.current = window.setTimeout(() => {
-      refreshTimerRef.current = null;
-      setRefreshing(false);
-      setDirty(true);
-      applyLoadOutcome(graphNoReplyOutcome(loadStateRef.current));
-    }, REFRESH_FALLBACK_MS);
-  }
+  // The panel column is `position: absolute` over the canvas's right edge, so a
+  // plain fit would push the rightmost nodes — and their right-hand labels,
+  // which stick out further still — underneath the panels. Measure what it
+  // covers and let the canvas frame into the strip that is left.
+  const panelsRef = useRef<HTMLDivElement>(null);
+  const [gutter, setGutter] = useState(0);
+  // Read live by the canvas's fit, which cannot wait for this state to commit —
+  // see GraphCanvas's `measureGutter`. The state above still drives what RENDERS
+  // (the no-match notice's centring, the hover inspector's flip point), where a
+  // re-render is exactly what is wanted.
+  const measureGutter = useCallback(
+    () => panelsRef.current?.getBoundingClientRect().width ?? 0,
+    []
+  );
+  useEffect(() => {
+    const el = panelsRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const measure = () => setGutter(el.getBoundingClientRect().width);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [view]);
 
-  // Drive an in-place reload (refresh or option toggle): snapshot the epoch, show
-  // the spinner, and arm a fallback for a dropped graph_loaded reply.
-  function requestGraphReload(message: object) {
-    setRefreshing(true);
-    // The previous attempt's message is about an attempt that is over.
-    setRefreshError(null);
-    loadEpochRef.current = dirtyEpochRef.current;
-    postToIframe(message);
-    armLoadFallback();
-  }
+  const handlePaperTap = useCallback(
+    (id: string, additive: boolean) => {
+      if (additive) {
+        setSelectedIds((prev) => {
+          const next = new Set(prev);
+          if (!next.delete(id)) next.add(id);
+          return next;
+        });
+        return;
+      }
+      // A click that leaves the graph drops the selection: this page stays
+      // mounted across the route change, so a selection left behind comes back
+      // highlighted with an action bar for papers the user has moved on from.
+      setSelectedIds(new Set());
+      navigate(`/library/${id}`);
+    },
+    [navigate]
+  );
 
-  function handleRefresh() {
-    requestGraphReload({ type: "refresh" });
-  }
+  const handleAuthorTap = useCallback(
+    (authorId: number) => {
+      setSelectedIds(new Set());
+      navigate(`/authors/${authorId}`);
+    },
+    [navigate]
+  );
 
-  // Retry from the error state: go back to the spinner so a second failure is
-  // distinguishable from the first, then re-run the same in-place reload.
-  function handleRetry() {
-    applyLoadOutcome({ state: "loading", error: null, refreshError: null });
-    requestGraphReload({ type: "refresh" });
-  }
+  // The same target TagBadge links to everywhere else in the app; TagPage
+  // lowercases the param itself, so the node's display casing is fine.
+  const handleTagTap = useCallback(
+    (label: string) => {
+      setSelectedIds(new Set());
+      navigate(`/tags/${encodeURIComponent(label)}`);
+    },
+    [navigate]
+  );
 
-  function handleIframeLoad() {
-    // Snapshot the epoch for the bootstrap load, then push the theme. The
-    // bootstrap fetch runs inside the guest, so arm the same dropped-reply
-    // fallback here — without it a guest that never answers spins forever.
-    loadEpochRef.current = dirtyEpochRef.current;
-    sendTheme();
-    sendShortcuts();
-    armLoadFallback();
-  }
+  const handleSelectAllVisible = useCallback(() => {
+    if (!match || match.hiddenTypes.has("paper")) return;
+    setSelectedIds(new Set(match.papers));
+  }, [match]);
 
-  // 'reload' tracks the live option (toggling swaps the src → full reload);
-  // 'in-place' reads the value frozen at frame mount so changes ride postMessage.
-  const iframeSrc = boot.current
-    ? graphIframeSrc({
-        excludeSingleAuthors:
-          HIDE_SINGLE_AUTHORS_STRATEGY === "reload" ? hideSingleAuthors : boot.current.exclude,
-        api: GRAPH_API_TRANSPORT,
-        mode: boot.current.mode,
-        theme: boot.current.theme,
-      })
-    : null;
+  const clearSelection = useCallback(() => setSelectedIds(new Set()), []);
+  const clearFilters = useCallback(() => setFilter(EMPTY_FILTER), []);
+
+  const ready = view && index && match;
+  const empty = ready && view.papers.length + view.authors.length + view.tags.length === 0;
 
   return (
     <div className="w-full h-full flex flex-col">
       <div className="p-4 border-b border-border flex items-center gap-3">
-        <h1 className="font-display text-[27px] font-semibold leading-tight tracking-[-0.015em] text-text">Knowledge Graph</h1>
+        <h1 className="font-display text-[27px] font-semibold leading-tight tracking-[-0.015em] text-text">
+          Knowledge Graph
+        </h1>
         <span className="text-sm text-muted">
-          {selectedSourceIds.length > 0
-            ? `${selectedSourceIds.length} paper${selectedSourceIds.length !== 1 ? "s" : ""} selected; Ctrl/Cmd+click to add more`
+          {selectedIds.size > 0
+            ? `${selectedIds.size} paper${selectedIds.size !== 1 ? "s" : ""} selected; Ctrl/Cmd+click to add more`
             : "Click a node to open · Ctrl/Cmd+click to select"}
         </span>
         <div className="ml-auto flex items-center gap-4">
-          {/* A reload that failed with a graph still drawn underneath. It says
-              so here instead of covering that graph with the error card — the
-              canvas the user panned and zoomed to is still valid, and the
-              Refresh dot beside this is already flagged for the retry. */}
-          {refreshError && (
+          {/* A refetch that failed with a graph still drawn underneath says so
+              here instead of covering that graph with the error card — the view
+              the user panned and zoomed to is still valid. */}
+          {error && view && (
             <span
               role="status"
               className="text-sm max-w-[32ch] truncate"
               style={{ color: "var(--color-danger)" }}
-              title={refreshError}
+              title={String((error as Error).message ?? error)}
             >
-              Refresh failed: {refreshError}
+              Refresh failed: {String((error as Error).message ?? error)}
             </span>
           )}
           <Button
             variant="ghost"
             size="sm"
             onClick={handleRefresh}
-            disabled={refreshing}
+            disabled={isFetching}
             title={
               dirty
                 ? "Graph data has changed since it was loaded. Click to refresh"
                 : "Reload the graph from the latest data"
             }
           >
-            {refreshing ? "Refreshing…" : "Refresh"}
-            {dirty && !refreshing && (
+            {isFetching ? "Refreshing…" : "Refresh"}
+            {dirty && !isFetching && (
               <span
                 aria-hidden
                 className="inline-block w-1.5 h-1.5 rounded-full align-middle"
@@ -428,29 +385,77 @@ export default function GraphPage() {
           </label>
         </div>
       </div>
-      {/* The frame stays at full size underneath the overlay: cytoscape fits
-          against its container, so shrinking or unmounting it while loading
-          would put the graph back to the unframed-at-zoom-1 state. */}
-      <div className="flex-1 relative" style={{ backgroundColor: "var(--color-bg)" }}>
-        {/* One render without the frame: the effect above mounts it as soon as
-            the route is entered. */}
-        {iframeSrc && (
-          <iframe
-            ref={iframeRef}
-            src={iframeSrc}
-            className="absolute inset-0 border-0 w-full h-full"
-            title="Paper knowledge graph"
-            onLoad={handleIframeLoad}
-          />
+
+      <div className="flex-1 relative overflow-hidden" style={{ backgroundColor: "var(--color-bg)" }}>
+        {ready && !empty && (
+          <>
+            <Suspense fallback={<Spinner size={28} />}>
+              <GraphCanvas
+                ref={canvasRef}
+                view={view}
+                index={index}
+                theme={theme}
+                forces={forces}
+                match={match}
+                selectedIds={selectedIds}
+                gutter={gutter}
+                measureGutter={measureGutter}
+                onPaperTap={handlePaperTap}
+                onAuthorTap={handleAuthorTap}
+                onTagTap={handleTagTap}
+                onBackgroundTap={clearSelection}
+              />
+            </Suspense>
+            {/* The canvas is the one surface in the app with no "no results"
+                state: a filter matching nothing leaves either a blank rectangle
+                (under isolate) or a field of 8% ghosts, and neither is
+                distinguishable from a graph that failed to load. It cannot be a
+                full-bleed overlay either — that would bury the very panels the
+                user needs to undo the filter — so it sits in the strip the panel
+                column leaves uncovered. */}
+            <NoMatchNotice
+              match={match}
+              gutter={gutter}
+              authorFilter={deferredFilter.author.trim()}
+              excludeSingleAuthors={hideSingleAuthors}
+              onClearFilters={clearFilters}
+              onShowSingleAuthors={() => setHideSingleAuthors(false)}
+            />
+            <GraphPanels
+              columnRef={panelsRef}
+              view={view}
+              filter={filter}
+              onFilterChange={setFilter}
+              onClearFilters={clearFilters}
+              forces={forces}
+              onForcesChange={setForces}
+              onRelayout={() => canvasRef.current?.relayout()}
+              selectedCount={selectedIds.size}
+              hiddenSelectedCount={hiddenSelectedCount}
+              onSelectAllVisible={handleSelectAllVisible}
+              onClearSelection={clearSelection}
+            />
+          </>
         )}
-        {loadState !== "ready" && (
+
+        {(!ready || empty) && (
           <div
             className="absolute inset-0 overflow-y-auto flex items-center justify-center"
             style={{ backgroundColor: "var(--color-bg)" }}
           >
-            {loadState === "loading" ? (
+            {isPending || !visited ? (
               <Spinner size={28} />
-            ) : loadState === "empty" ? (
+            ) : error ? (
+              <EmptyState
+                icon={<AlertCircle size={28} strokeWidth={1.5} />}
+                title="Couldn't load the graph"
+                description={`The graph data could not be fetched: ${
+                  (error as Error).message ?? String(error)
+                }`}
+                actionLabel={isFetching ? "Retrying…" : "Retry"}
+                onAction={handleRefresh}
+              />
+            ) : (
               <EmptyState
                 icon={<Network size={28} strokeWidth={1.5} />}
                 title="Nothing to graph yet"
@@ -458,33 +463,19 @@ export default function GraphPage() {
                 actionLabel="Go to Library"
                 onAction={() => navigate("/library")}
               />
-            ) : (
-              <EmptyState
-                icon={<AlertCircle size={28} strokeWidth={1.5} />}
-                title="Couldn't load the graph"
-                description={
-                  loadError
-                    ? `The graph data could not be fetched: ${loadError}`
-                    : "The graph data could not be fetched."
-                }
-                actionLabel={refreshing ? "Retrying…" : "Retry"}
-                onAction={handleRetry}
-              />
             )}
           </div>
         )}
       </div>
 
-      {selectedSourceIds.length > 0 && (
+      {selectedIds.size > 0 && (
         <div
           className="shrink-0 flex items-center justify-between px-6 py-3 border-t border-border shadow-lg"
           style={{ backgroundColor: "var(--color-panel)" }}
         >
-          <span className="text-sm font-medium text-text">
-            {selectedSourceIds.length} selected
-          </span>
+          <span className="text-sm font-medium text-text">{selectedIds.size} selected</span>
           <div className="flex items-center gap-2">
-            <Button variant="ghost" size="sm" onClick={handleClearSelection}>
+            <Button variant="ghost" size="sm" onClick={clearSelection}>
               Clear
             </Button>
             <Button variant="muted" size="sm" onClick={() => setProjectPickerOpen(true)}>
@@ -551,7 +542,10 @@ export default function GraphPage() {
                   type="button"
                   key={project.id}
                   onClick={() =>
-                    addToProjectMutation.mutate({ projectId: project.id, sourceIds: selectedSourceIds })
+                    addToProjectMutation.mutate({
+                      projectId: project.id,
+                      sourceIds: selectedSourceIds,
+                    })
                   }
                   disabled={addToProjectMutation.isPending}
                   className="w-full text-left px-3 py-2 rounded-md border border-border hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] text-text text-sm transition-colors disabled:opacity-50"
@@ -582,6 +576,78 @@ export default function GraphPage() {
           </div>
         </div>
       </Dialog>
+    </div>
+  );
+}
+
+/**
+ * The Filters > Author box matches `GraphPaper.author_keys`, and "Hide
+ * single-paper authors" is applied by the BACKEND — it drops those authors from
+ * that index too. So with the option on, typing a name that is certainly in the
+ * library empties the canvas under "No papers match the active filters": true,
+ * but not why. The checkbox lives in the page header, out of the canvas's way,
+ * so this is the only place that can say so.
+ */
+const AUTHOR_HIDDEN_HINT =
+  "Authors with a single paper are hidden, so the Author filter cannot match them.";
+
+function NoMatchNotice({
+  match,
+  gutter,
+  authorFilter,
+  excludeSingleAuthors,
+  onClearFilters,
+  onShowSingleAuthors,
+}: {
+  match: ReturnType<typeof matchGraph>;
+  gutter: number;
+  authorFilter: string;
+  excludeSingleAuthors: boolean;
+  onClearFilters: () => void;
+  onShowSingleAuthors: () => void;
+}) {
+  if (match.drawnCount > 0) return null;
+  // Three Visibility checkboxes off is a different mistake from a filter that
+  // excludes everything, and "Clear all filters" fixes both, so one notice with
+  // two bodies covers it.
+  const cause = noMatchCause(match);
+  const hiddenByVisibility = cause.kind === "visibility";
+  // Nothing here can tell whether a hidden author is the actual cause — the
+  // names never arrived — so it is offered as a second possibility, and only
+  // when both halves of it are in force.
+  const authorsMayBeHidden = !hiddenByVisibility && !!authorFilter && excludeSingleAuthors;
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="absolute top-1/2 z-10 w-[min(340px,60%)] rounded-md border border-border p-4 text-center shadow-lg"
+      style={{
+        left: `calc((100% - ${gutter}px) / 2)`,
+        transform: "translate(-50%, -50%)",
+        backgroundColor: "var(--color-panel)",
+      }}
+    >
+      <div className="text-sm font-semibold text-text">
+        {hiddenByVisibility ? "Nothing to draw" : "No matches"}
+      </div>
+      <p className="mt-1 text-xs text-muted">
+        {cause.kind === "visibility"
+          ? `${joinTypes(cause.types)} ${
+              cause.types.length === 1 ? "is" : "are"
+            } switched off under Filters › Visibility.`
+          : "No papers match the active filters."}
+      </p>
+      {authorsMayBeHidden && (
+        <>
+          <p className="mt-2 text-xs text-muted">{AUTHOR_HIDDEN_HINT}</p>
+          <Button variant="muted" size="sm" className="mt-2 w-full" onClick={onShowSingleAuthors}>
+            Show single-paper authors
+          </Button>
+        </>
+      )}
+      <Button variant="ghost" size="sm" className="mt-1 w-full" onClick={onClearFilters}>
+        Clear all filters
+      </Button>
     </div>
   );
 }
