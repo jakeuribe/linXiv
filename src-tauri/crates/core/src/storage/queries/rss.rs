@@ -5,7 +5,7 @@ use std::collections::HashSet;
 
 use chrono::NaiveDateTime;
 use rusqlite::{params, Connection};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 
@@ -222,12 +222,29 @@ pub fn prune_cache_entries(
 /// keeps `FilterRule` codegen-able (a bare `String` would flatten the
 /// frontend's hand-written `"TITLE"|"SUMMARY"|"AUTHOR"` union to `string`).
 /// `rename_all` pins the wire strings to the on-disk `TEXT` values.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum FilterField {
     Title,
     Summary,
     Author,
+}
+
+impl FilterField {
+    /// The canonical on-disk `TEXT` value (matches the wire string).
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            FilterField::Title => "TITLE",
+            FilterField::Summary => "SUMMARY",
+            FilterField::Author => "AUTHOR",
+        }
+    }
+}
+
+impl rusqlite::types::ToSql for FilterField {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        Ok(self.as_str().into())
+    }
 }
 
 impl rusqlite::types::FromSql for FilterField {
@@ -242,11 +259,27 @@ impl rusqlite::types::FromSql for FilterField {
 }
 
 /// `RSS_FILTER_RULE.ACTION` -- see `FilterField` for why this is an enum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum FilterAction {
     Deny,
     Allow,
+}
+
+impl FilterAction {
+    /// The canonical on-disk `TEXT` value (matches the wire string).
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            FilterAction::Deny => "DENY",
+            FilterAction::Allow => "ALLOW",
+        }
+    }
+}
+
+impl rusqlite::types::ToSql for FilterAction {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        Ok(self.as_str().into())
+    }
 }
 
 impl rusqlite::types::FromSql for FilterAction {
@@ -286,7 +319,12 @@ pub fn list_rules(conn: &Connection) -> Result<Vec<FilterRule>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-pub fn create_rule(conn: &Connection, field: &str, keywords: &str, action: &str) -> Result<i64> {
+pub fn create_rule(
+    conn: &Connection,
+    field: FilterField,
+    keywords: &str,
+    action: FilterAction,
+) -> Result<i64> {
     conn.execute(
         "INSERT INTO RSS_FILTER_RULE (FIELD, KEYWORDS, ACTION) VALUES (?1, ?2, ?3)",
         params![field, keywords, action],
@@ -580,11 +618,24 @@ mod tests {
     #[test]
     fn rule_crud_round_trips() {
         let c = conn();
-        let id = create_rule(&c, "TITLE", "quantum", "DENY").unwrap();
+        let id = create_rule(&c, FilterField::Title, "quantum", FilterAction::Deny).unwrap();
         let rules = list_rules(&c).unwrap();
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].rule_id, id);
+        assert_eq!(rules[0].field, FilterField::Title);
+        assert_eq!(rules[0].keywords, "quantum");
+        assert_eq!(rules[0].action, FilterAction::Deny);
         assert!(rules[0].enabled);
+
+        // ToSql must write the exact canonical TEXT values, not Debug names.
+        let (f, a): (String, String) = c
+            .query_row(
+                "SELECT FIELD, ACTION FROM RSS_FILTER_RULE WHERE RULE_ID = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((f.as_str(), a.as_str()), ("TITLE", "DENY"));
 
         assert!(delete_rule(&c, id).unwrap());
         assert!(list_rules(&c).unwrap().is_empty());
