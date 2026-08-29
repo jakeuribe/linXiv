@@ -30,6 +30,7 @@ import {
 } from "../../lib/graph/style";
 import { tooltipFor } from "../../lib/graph/tooltip";
 import type { TooltipContent } from "../../lib/graph/tooltip";
+import { MathText } from "../../lib/tex";
 
 /**
  * The graph engine: one cytoscape instance for drawing and one d3-force
@@ -623,7 +624,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(function Gra
     // Only re-place when a NEW box appears; re-running on every position write
     // would loop against its own setState.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tooltip?.title, tooltip?.lines, gutter]);
+  }, [tooltip?.title, tooltip?.meta, tooltip?.summary, gutter]);
 
   useImperativeHandle(
     ref,
@@ -664,10 +665,17 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(function Gra
           className="absolute z-20 pointer-events-none max-w-[340px] rounded-md border border-border px-3 py-2 shadow-lg"
           style={{ left: tooltip.left, top: tooltip.top, backgroundColor: "var(--color-panel)" }}
         >
-          <div className="text-sm font-semibold text-text">{tooltip.title}</div>
-          {tooltip.lines.length > 0 && (
+          <div className="text-sm font-semibold text-text">
+            <MathText forceInline>{tooltip.title}</MathText>
+          </div>
+          {tooltip.meta.length > 0 && (
             <div className="mt-1 text-xs text-muted whitespace-pre-line">
-              {tooltip.lines.join("\n")}
+              {tooltip.meta.join("\n")}
+            </div>
+          )}
+          {tooltip.summary && (
+            <div className="mt-1 text-xs text-muted">
+              <MathText forceInline>{tooltip.summary}</MathText>
             </div>
           )}
         </div>
