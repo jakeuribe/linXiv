@@ -25,7 +25,8 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
 fn graph_view(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let exclude = ctx.q_bool("exclude_single_authors");
     let view = state.with_conn(|conn| graph::graph_view(conn, exclude))?;
-    serde_json::to_value(view).map_err(|e| ApiError::new(500, format!("serializing graph view: {e}")))
+    serde_json::to_value(view)
+        .map_err(|e| ApiError::new(500, format!("serializing graph view: {e}")))
 }
 
 #[cfg(test)]

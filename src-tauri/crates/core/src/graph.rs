@@ -591,7 +591,8 @@ mod tests {
     fn tag_label_follows_the_tag_table_not_the_papers_casing() {
         let conn = conn();
         // The TAG table holds "ML"; this paper's own metadata spells it "ml ".
-        conn.execute("INSERT INTO TAG (TAG) VALUES ('ML')", []).unwrap();
+        conn.execute("INSERT INTO TAG (TAG) VALUES ('ML')", [])
+            .unwrap();
         seed_paper(&conn, "arxiv:1", "[]", r#"["ml "]"#);
 
         let v = graph_view(&conn, false).unwrap();
@@ -622,7 +623,10 @@ mod tests {
         let v = graph_view(&conn, false).unwrap();
         assert_eq!(v.papers[0].tag_keys, ["ml", "nlp"]);
         assert_eq!(edge_count(&v, &sfk.to_string(), "tag::ml"), 1);
-        assert_eq!(v.tags.iter().find(|t| t.key == "ml").unwrap().paper_count, 1);
+        assert_eq!(
+            v.tags.iter().find(|t| t.key == "ml").unwrap().paper_count,
+            1
+        );
     }
 
     #[test]
@@ -697,7 +701,10 @@ mod tests {
         let v = graph_view(&conn, false).unwrap();
         assert_eq!(v.authors.len(), 1, "still one person: {:?}", v.authors);
         assert_eq!(v.authors[0].label, "Ada Lovelace");
-        assert_eq!(edge_count(&v, &sfk.to_string(), &format!("author::{fk}")), 1);
+        assert_eq!(
+            edge_count(&v, &sfk.to_string(), &format!("author::{fk}")),
+            1
+        );
     }
 
     #[test]
