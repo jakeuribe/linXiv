@@ -26,11 +26,8 @@ use crate::Server;
 use crate::util::{core_err, invalid, json_ok};
 
 /// `Paper(source_id=paper_id)` lookup key, as the Python tools build it.
-fn paper_key(paper_id: &str) -> svc_paper::Paper {
-    svc_paper::Paper {
-        source_id: Some(paper_id.to_string()),
-        ..Default::default()
-    }
+fn paper_key(paper_id: &str) -> svc_paper::PaperRef {
+    svc_paper::PaperRef::source(paper_id.to_string())
 }
 
 fn default_source() -> String {

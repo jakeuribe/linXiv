@@ -1303,10 +1303,9 @@ async fn shared_pdf(
         .with_conn(|c| {
             paper_svc::get(
                 c,
-                &paper_svc::Paper {
-                    source_id: Some(source_id.clone()),
+                &paper_svc::PaperRef::Source {
+                    source_id: source_id.clone(),
                     version: Some(version),
-                    ..Default::default()
                 },
             )
         })?
@@ -1612,15 +1611,9 @@ mod tests {
             assert_eq!(p.project_tags, vec!["RL".to_string()]);
             assert_eq!(p.source_fks.len(), 1, "paper linked to project");
 
-            let paper = paper_svc::get(
-                c,
-                &paper_svc::Paper {
-                    source_id: Some("arxiv:9".into()),
-                    ..Default::default()
-                },
-            )
-            .unwrap()
-            .expect("paper row created");
+            let paper = paper_svc::get(c, &paper_svc::PaperRef::source("arxiv:9".into()))
+                .unwrap()
+                .expect("paper row created");
             assert_eq!(paper.title, "Remote Paper");
             assert_eq!(paper.tags, vec!["remote-tag".to_string()]);
 

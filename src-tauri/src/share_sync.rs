@@ -136,10 +136,9 @@ pub(crate) async fn populate_pdf_blobs(
         let custom = match state.with_conn(|c| {
             paper_svc::get(
                 c,
-                &paper_svc::Paper {
-                    source_id: Some(p.source_id.clone()),
+                &paper_svc::PaperRef::Source {
+                    source_id: p.source_id.clone(),
                     version: Some(p.version),
-                    ..Default::default()
                 },
             )
         }) {

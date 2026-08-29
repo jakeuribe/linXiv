@@ -264,10 +264,9 @@ impl Server {
         self.with_conn(|conn| {
             let paper = svc_paper::get(
                 conn,
-                &svc_paper::Paper {
-                    source_id: Some(p.paper_id.clone()),
+                &svc_paper::PaperRef::Source {
+                    source_id: p.paper_id.clone(),
                     version: p.version,
-                    ..Default::default()
                 },
             )
             .map_err(core_err)?
@@ -295,10 +294,9 @@ impl Server {
         let (source_id, ver) = self.with_conn(|conn| {
             svc_paper::get(
                 conn,
-                &svc_paper::Paper {
-                    source_id: Some(p.paper_id.clone()),
+                &svc_paper::PaperRef::Source {
+                    source_id: p.paper_id.clone(),
                     version: p.version,
-                    ..Default::default()
                 },
             )
             .map_err(core_err)?
@@ -373,15 +371,11 @@ impl Server {
     ) -> Result<String, ErrorData> {
         let pdf_dir = self.pdf_dir.clone();
         self.with_conn(|conn| {
-            let all = svc_paper::get_all(
-                conn,
-                &svc_paper::Paper {
-                    source_id: Some(p.paper_id.clone()),
-                    ..Default::default()
-                },
-            )
-            .map_err(core_err)?
-            .ok_or_else(|| crate::util::guard_err(CoreError::PaperNotFound(p.paper_id.clone())))?;
+            let all = svc_paper::get_all(conn, &svc_paper::PaperRef::source(p.paper_id.clone()))
+                .map_err(core_err)?
+                .ok_or_else(|| {
+                    crate::util::guard_err(CoreError::PaperNotFound(p.paper_id.clone()))
+                })?;
             for ver in &all.versions {
                 let path = svc_files::pdf_path(
                     &pdf_dir,
@@ -434,14 +428,8 @@ impl Server {
             // require_trashed passing implies the root exists (STATUS='deleted' row),
             // so no separate existence check — same reasoning as cli/cmd/trash.rs.
             svc_paper::require_trashed(conn, &p.paper_id).map_err(guard_err)?;
-            svc_paper::hard_delete(
-                conn,
-                &svc_paper::Paper {
-                    source_id: Some(p.paper_id.clone()),
-                    ..Default::default()
-                },
-            )
-            .map_err(core_err)?;
+            svc_paper::hard_delete(conn, &svc_paper::PaperRef::source(p.paper_id.clone()))
+                .map_err(core_err)?;
             json_ok(&linxiv_core::service::trash::HardDeletedPaper {
                 ok: true,
                 hard_deleted: p.paper_id.clone(),

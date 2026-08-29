@@ -530,10 +530,9 @@ mod tests {
 
         let p = paper::get(
             &conn,
-            &paper::Paper {
-                source_id: Some("local:abc".into()),
+            &paper::PaperRef::Source {
+                source_id: "local:abc".into(),
                 version: Some(1),
-                ..Default::default()
             },
         )
         .unwrap()
@@ -736,15 +735,11 @@ mod tests {
         assert!(matches!(err, CoreError::Internal(_)));
 
         // Brand-new root with NULL pdf_path → hard-deleted: paper + root gone.
-        assert!(paper::get(
-            &conn,
-            &paper::Paper {
-                source_id: Some("local:new".into()),
-                ..Default::default()
-            }
-        )
-        .unwrap()
-        .is_none());
+        assert!(
+            paper::get(&conn, &paper::PaperRef::source("local:new".into()))
+                .unwrap()
+                .is_none()
+        );
         assert!(store::get_paper_root(&conn, "local:new").unwrap().is_none());
         // Temp upload cleaned up.
         let uploads = fs::read_dir(dir.path()).unwrap().filter(|e| {
@@ -803,15 +798,9 @@ mod tests {
         .await
         .unwrap();
         assert!(res.source_id.starts_with("local:"));
-        let p = paper::get(
-            &conn,
-            &paper::Paper {
-                source_id: Some(res.source_id.clone()),
-                ..Default::default()
-            },
-        )
-        .unwrap()
-        .unwrap();
+        let p = paper::get(&conn, &paper::PaperRef::source(res.source_id.clone()))
+            .unwrap()
+            .unwrap();
         assert!(p.has_pdf);
     }
 

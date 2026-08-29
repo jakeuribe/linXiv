@@ -12,7 +12,7 @@
 
 use serde_json::Value;
 
-use linxiv_core::service::paper::{self as svc_paper, Paper};
+use linxiv_core::service::paper::{self as svc_paper, PaperRef};
 use linxiv_core::service::project as svc_project;
 use linxiv_core::service::trash as svc_trash;
 
@@ -52,10 +52,7 @@ fn restore(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
             svc_paper::require_trashed(conn, source_id)?;
             Ok(svc_paper::restore(
                 conn,
-                &Paper {
-                    source_id: Some(source_id.to_string()),
-                    ..Default::default()
-                },
+                &PaperRef::source(source_id.to_string()),
             )?)
         })?;
     crate::route::to_value(&svc_trash::RestoredPaper {
@@ -71,13 +68,7 @@ fn restore(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
 fn hard_delete(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
     state.with_conn(|conn| -> Result<(), ApiError> {
         svc_paper::require_trashed(conn, source_id)?;
-        svc_paper::hard_delete(
-            conn,
-            &Paper {
-                source_id: Some(source_id.to_string()),
-                ..Default::default()
-            },
-        )?;
+        svc_paper::hard_delete(conn, &PaperRef::source(source_id.to_string()))?;
         Ok(())
     })?;
     crate::route::to_value(&svc_trash::HardDeletedPaper {

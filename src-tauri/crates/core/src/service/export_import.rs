@@ -291,14 +291,7 @@ pub fn build_manifest(
             continue; // Python skips notes whose source_id no longer resolves.
         };
         let version = match n.paper_id_fk {
-            Some(pid) => paper::get(
-                conn,
-                &paper::Paper {
-                    paper_id: Some(pid),
-                    ..Default::default()
-                },
-            )?
-            .map(|p| p.version),
+            Some(pid) => paper::get(conn, &paper::PaperRef::Id(pid))?.map(|p| p.version),
             None => None,
         };
         note_entries.push(NoteEntry {
@@ -520,13 +513,7 @@ fn commit_body(
         match paperq::get_paper_root(conn, &source_id)? {
             Some(root) => {
                 if root.status == "deleted" {
-                    paper::restore(
-                        conn,
-                        &paper::Paper {
-                            source_id: Some(source_id.clone()),
-                            ..Default::default()
-                        },
-                    )?;
+                    paper::restore(conn, &paper::PaperRef::source(source_id.clone()))?;
                 }
                 if on_conflict == OnConflict::Overwrite {
                     // Storage-level: an archive replays already-stored metadata, so it
@@ -640,10 +627,9 @@ fn import_notes(
         let paper_id = match nd.paper_version {
             Some(v) if v != 0 => paper::get(
                 conn,
-                &paper::Paper {
-                    source_id: Some(paper_source_id.clone()),
+                &paper::PaperRef::Source {
+                    source_id: paper_source_id.clone(),
                     version: Some(v),
-                    ..Default::default()
                 },
             )?
             .map(|p| p.paper_id),
@@ -890,10 +876,9 @@ mod tests {
         // A note pinned to arxiv:1 v1.
         let pid_v1 = paper::get(
             &conn,
-            &paper::Paper {
-                source_id: Some("arxiv:1".into()),
+            &paper::PaperRef::Source {
+                source_id: "arxiv:1".into(),
                 version: Some(1),
-                ..Default::default()
             },
         )
         .unwrap()
@@ -998,15 +983,9 @@ mod tests {
         assert_eq!(got.source_fks.len(), 1, "paper linked to the new project");
 
         // Paper metadata saved.
-        let p = paper::get(
-            &conn,
-            &paper::Paper {
-                source_id: Some("arxiv:1".into()),
-                ..Default::default()
-            },
-        )
-        .unwrap()
-        .unwrap();
+        let p = paper::get(&conn, &paper::PaperRef::source("arxiv:1".into()))
+            .unwrap()
+            .unwrap();
         assert_eq!(p.title, "New Paper");
 
         // PDF written under the archive basename + recorded on the paper.
@@ -1049,15 +1028,9 @@ mod tests {
             let pid =
                 commit_from_manifest(&mut conn, &manifest, &[], OnConflict::Merge, tmp.path())
                     .unwrap();
-            let p = paper::get(
-                &conn,
-                &paper::Paper {
-                    source_id: Some("arxiv:1".into()),
-                    ..Default::default()
-                },
-            )
-            .unwrap()
-            .unwrap();
+            let p = paper::get(&conn, &paper::PaperRef::source("arxiv:1".into()))
+                .unwrap()
+                .unwrap();
             assert_eq!(p.title, "Stored Title", "merge does not overwrite metadata");
             assert_eq!(
                 project::get(
@@ -1080,15 +1053,9 @@ mod tests {
                 .unwrap();
             commit_from_manifest(&mut conn, &manifest, &[], OnConflict::Overwrite, tmp.path())
                 .unwrap();
-            let p = paper::get(
-                &conn,
-                &paper::Paper {
-                    source_id: Some("arxiv:1".into()),
-                    ..Default::default()
-                },
-            )
-            .unwrap()
-            .unwrap();
+            let p = paper::get(&conn, &paper::PaperRef::source("arxiv:1".into()))
+                .unwrap()
+                .unwrap();
             assert_eq!(
                 p.title, "Archive Title",
                 "overwrite repairs metadata from the archive"
@@ -1101,14 +1068,7 @@ mod tests {
         let mut conn = db();
         let tmp = tempfile::tempdir().unwrap();
         paper::save_paper_metadata(&mut conn, &meta("arxiv:1", 1, "T", &[]), None).unwrap();
-        paper::delete(
-            &mut conn,
-            &paper::Paper {
-                source_id: Some("arxiv:1".into()),
-                ..Default::default()
-            },
-        )
-        .unwrap();
+        paper::delete(&mut conn, &paper::PaperRef::source("arxiv:1".into())).unwrap();
         assert!(paper::is_paper_deleted(&conn, "arxiv:1").unwrap());
 
         let manifest = base_manifest("P", vec![paper_entry("arxiv:1", 1, "T", &[])], vec![]);
@@ -1220,10 +1180,9 @@ mod tests {
         .unwrap();
         let pv1 = paper::get(
             &conn,
-            &paper::Paper {
-                source_id: Some("arxiv:1".into()),
+            &paper::PaperRef::Source {
+                source_id: "arxiv:1".into(),
                 version: Some(1),
-                ..Default::default()
             },
         )
         .unwrap()
@@ -1272,15 +1231,9 @@ mod tests {
         assert_eq!(proj.name, "Round Trip");
         assert_eq!(proj.source_fks.len(), 1);
 
-        let p = paper::get(
-            &conn2,
-            &paper::Paper {
-                source_id: Some("arxiv:1".into()),
-                ..Default::default()
-            },
-        )
-        .unwrap()
-        .unwrap();
+        let p = paper::get(&conn2, &paper::PaperRef::source("arxiv:1".into()))
+            .unwrap()
+            .unwrap();
         assert_eq!(p.title, "Paper One");
         assert!(p.has_pdf);
 
@@ -1372,15 +1325,9 @@ mod tests {
         let manifest = base_manifest("P", vec![paper_entry("arxiv:1", 1, "T", &["B"])], vec![]);
         commit_from_manifest(&mut conn, &manifest, &[], OnConflict::Merge, tmp.path()).unwrap();
 
-        let p = paper::get(
-            &conn,
-            &paper::Paper {
-                source_id: Some("arxiv:1".into()),
-                ..Default::default()
-            },
-        )
-        .unwrap()
-        .unwrap();
+        let p = paper::get(&conn, &paper::PaperRef::source("arxiv:1".into()))
+            .unwrap()
+            .unwrap();
         let mut tags = p.tags.clone();
         tags.sort();
         assert_eq!(

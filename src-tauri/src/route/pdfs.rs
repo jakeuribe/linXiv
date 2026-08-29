@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 
 use linxiv_core::error::CoreError;
 use linxiv_core::service::files;
-use linxiv_core::service::paper::{self as svc_paper, pdf_on_disk_name, Paper};
+use linxiv_core::service::paper::{self as svc_paper, pdf_on_disk_name, PaperRef};
 
 use crate::route::{ApiError, ReqCtx};
 use crate::state::AppState;
@@ -72,14 +72,8 @@ fn list_saved(state: &AppState) -> Result<Value, ApiError> {
 fn delete_saved(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
     let pdf_dir = state.pdf_dir.clone();
     state.with_conn(|conn| -> Result<(), ApiError> {
-        let all = svc_paper::get_all(
-            conn,
-            &Paper {
-                source_id: Some(source_id.to_string()),
-                ..Default::default()
-            },
-        )?
-        .ok_or_else(|| CoreError::PaperNotFound(source_id.to_string()))?;
+        let all = svc_paper::get_all(conn, &PaperRef::source(source_id.to_string()))?
+            .ok_or_else(|| CoreError::PaperNotFound(source_id.to_string()))?;
         for ver in &all.versions {
             let path = resolve_local_pdf(&pdf_dir, ver.pdf_path.as_deref(), source_id, ver.version);
             if let Some(p) = &path {
@@ -106,10 +100,9 @@ fn pdf_path(state: &AppState, source_id: &str, ctx: &ReqCtx<'_>) -> Result<Value
     state.with_conn(|conn| {
         let paper = svc_paper::get(
             conn,
-            &Paper {
-                source_id: Some(source_id.to_string()),
+            &PaperRef::Source {
+                source_id: source_id.to_string(),
                 version,
-                ..Default::default()
             },
         )?
         .ok_or_else(|| CoreError::PaperNotFound(source_id.to_string()))?;
