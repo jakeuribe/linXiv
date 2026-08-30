@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Test Feed</title>
+    <item>
+      <title>Item Title</title>
+      <guid isPermaLink="true">https://example.com/guid-url</guid>
+      <link>https://example.com/real-link</link>
+      <description>Test item.</description>
+    </item>
+  </channel>
+</rss>

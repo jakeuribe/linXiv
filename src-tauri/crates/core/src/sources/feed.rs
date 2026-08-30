@@ -568,43 +568,12 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    // fixtures live in testdata/feed/, whitespace inside is load-bearing --
+    // never run a formatter over them.
     /// Trimmed real shape of `https://rss.arxiv.org/rss/cs.LG` (RSS 2.0 + dc).
-    const ARXIV_RSS: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/">
-  <channel>
-    <title>cs.LG updates on arXiv.org</title>
-    <link>http://rss.arxiv.org/rss/cs.LG</link>
-    <description>cs.LG updates on the arXiv.org e-print archive.</description>
-    <item>
-      <title>Attention &amp; Memory in Deep Learning</title>
-      <link>https://arxiv.org/abs/2401.12345</link>
-      <description>arXiv:2401.12345v1 Announce Type: new
-Abstract: We study attention.</description>
-      <dc:creator>Ada Lovelace, Alan Turing</dc:creator>
-      <pubDate>Mon, 15 Jan 2024 00:00:00 -0500</pubDate>
-      <guid isPermaLink="false">oai:arXiv.org:2401.12345v1</guid>
-    </item>
-    <item>
-      <title>An Old-Style Paper</title>
-      <link>https://arxiv.org/abs/math-ph/0309136v2</link>
-      <description><![CDATA[Abstract: CDATA body.]]></description>
-      <dc:creator>Emmy Noether</dc:creator>
-      <pubDate>Tue, 16 Jan 2024 00:00:00 -0500</pubDate>
-    </item>
-  </channel>
-</rss>"#;
+    const ARXIV_RSS: &str = include_str!("testdata/feed/arxiv_rss.xml");
 
-    const ATOM: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom">
-  <title>Example Atom Feed</title>
-  <entry>
-    <title>Non-arXiv Post</title>
-    <link rel="alternate" href="https://example.com/post/1"/>
-    <summary>A blog post.</summary>
-    <author><name>Grace Hopper</name></author>
-    <published>2024-02-01T00:00:00Z</published>
-  </entry>
-</feed>"#;
+    const ATOM: &str = include_str!("testdata/feed/atom.xml");
 
     #[test]
     fn parses_arxiv_rss_items() {
@@ -799,17 +768,7 @@ Abstract: We study attention.</description>
     #[test]
     fn parses_title_with_nested_markup() {
         // Title containing inline nested markup should accumulate text from before and after the nested tag.
-        const RSS_WITH_MARKUP: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0">
-  <channel>
-    <title>Feed Title</title>
-    <item>
-      <title>Foo <b>Bar</b> Baz</title>
-      <link>https://example.com/item</link>
-      <description>Test item with markup in title.</description>
-    </item>
-  </channel>
-</rss>"#;
+        const RSS_WITH_MARKUP: &str = include_str!("testdata/feed/rss_with_markup.xml");
 
         let feed = parse_feed(RSS_WITH_MARKUP.as_bytes()).unwrap();
         assert_eq!(feed.entries.len(), 1);
@@ -821,17 +780,7 @@ Abstract: We study attention.</description>
     fn parses_feed_with_invalid_char_ref() {
         // Feed containing an invalid numeric character reference (e.g., &#0;) should parse successfully,
         // dropping just that reference instead of aborting the entire parse.
-        const RSS_WITH_BAD_REF: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0">
-  <channel>
-    <title>Feed Title</title>
-    <item>
-      <title>Test Item</title>
-      <link>https://example.com/item</link>
-      <description>Before &#0; after</description>
-    </item>
-  </channel>
-</rss>"#;
+        const RSS_WITH_BAD_REF: &str = include_str!("testdata/feed/rss_with_bad_ref.xml");
 
         let feed = parse_feed(RSS_WITH_BAD_REF.as_bytes()).unwrap();
         assert_eq!(feed.entries.len(), 1);
@@ -844,17 +793,8 @@ Abstract: We study attention.</description>
         // Real Atom feeds (e.g., GitHub's commits.atom) may have <id>, <link>, etc. before <title>.
         // The text buffer must be cleared when we encounter the top-level title element
         // to prevent accumulated text from preceding siblings from leaking into the feed title.
-        const ATOM_WITH_ID_BEFORE_TITLE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom">
-  <id>urn:uuid:60a76c80-d399-11d9-b91C-0003939e0af6</id>
-  <link href="https://example.org/"/>
-  <title>My Feed</title>
-  <entry>
-    <title>Entry One</title>
-    <link href="https://example.org/entry1"/>
-    <summary>First entry.</summary>
-  </entry>
-</feed>"#;
+        const ATOM_WITH_ID_BEFORE_TITLE: &str =
+            include_str!("testdata/feed/atom_with_id_before_title.xml");
 
         let feed = parse_feed(ATOM_WITH_ID_BEFORE_TITLE.as_bytes()).unwrap();
         // Feed title must be exactly "My Feed", not corrupted with the preceding id/link text.
@@ -867,25 +807,7 @@ Abstract: We study attention.</description>
     fn malformed_entry_is_skipped_and_the_rest_survive() {
         // A stray end tag inside the middle item is a hard quick-xml error; the
         // parser must skip that entry and still return its good siblings.
-        const RSS_WITH_BAD_ITEM: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0">
-  <channel>
-    <title>Feed Title</title>
-    <item>
-      <title>Good One</title>
-      <link>https://example.com/1</link>
-    </item>
-    <item>
-      <title>Broken</title>
-      <bad></b>
-      <link>https://example.com/2</link>
-    </item>
-    <item>
-      <title>Good Two</title>
-      <link>https://example.com/3</link>
-    </item>
-  </channel>
-</rss>"#;
+        const RSS_WITH_BAD_ITEM: &str = include_str!("testdata/feed/rss_with_bad_item.xml");
 
         let feed = parse_feed(RSS_WITH_BAD_ITEM.as_bytes()).unwrap();
         let titles: Vec<&str> = feed.entries.iter().map(|e| e.title.as_str()).collect();
@@ -897,18 +819,7 @@ Abstract: We study attention.</description>
     fn guid_before_link_prefers_explicit_link() {
         // Regression: when <guid isPermaLink> appears before <link>,
         // the explicit <link> should take precedence, not the guid.
-        const RSS_GUID_BEFORE_LINK: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0">
-  <channel>
-    <title>Test Feed</title>
-    <item>
-      <title>Item Title</title>
-      <guid isPermaLink="true">https://example.com/guid-url</guid>
-      <link>https://example.com/real-link</link>
-      <description>Test item.</description>
-    </item>
-  </channel>
-</rss>"#;
+        const RSS_GUID_BEFORE_LINK: &str = include_str!("testdata/feed/rss_guid_before_link.xml");
 
         let feed = parse_feed(RSS_GUID_BEFORE_LINK.as_bytes()).unwrap();
         assert_eq!(feed.entries.len(), 1);
