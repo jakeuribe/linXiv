@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Example Atom Feed</title>
+  <entry>
+    <title>Non-arXiv Post</title>
+    <link rel="alternate" href="https://example.com/post/1"/>
+    <summary>A blog post.</summary>
+    <author><name>Grace Hopper</name></author>
+    <published>2024-02-01T00:00:00Z</published>
+  </entry>
+</feed>

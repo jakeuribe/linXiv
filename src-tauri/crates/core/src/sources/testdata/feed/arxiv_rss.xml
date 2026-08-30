@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/">
+  <channel>
+    <title>cs.LG updates on arXiv.org</title>
+    <link>http://rss.arxiv.org/rss/cs.LG</link>
+    <description>cs.LG updates on the arXiv.org e-print archive.</description>
+    <item>
+      <title>Attention &amp; Memory in Deep Learning</title>
+      <link>https://arxiv.org/abs/2401.12345</link>
+      <description>arXiv:2401.12345v1 Announce Type: new
+Abstract: We study attention.</description>
+      <dc:creator>Ada Lovelace, Alan Turing</dc:creator>
+      <pubDate>Mon, 15 Jan 2024 00:00:00 -0500</pubDate>
+      <guid isPermaLink="false">oai:arXiv.org:2401.12345v1</guid>
+    </item>
+    <item>
+      <title>An Old-Style Paper</title>
+      <link>https://arxiv.org/abs/math-ph/0309136v2</link>
+      <description><![CDATA[Abstract: CDATA body.]]></description>
+      <dc:creator>Emmy Noether</dc:creator>
+      <pubDate>Tue, 16 Jan 2024 00:00:00 -0500</pubDate>
+    </item>
+  </channel>
+</rss>
