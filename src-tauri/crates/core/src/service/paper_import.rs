@@ -204,6 +204,10 @@ pub fn extract_pdf_metadata_json(bytes: &[u8]) -> String {
     crate::sources::pdf_metadata::extract_pdf_metadata_json(bytes)
 }
 
+/// The worker's CLI subcommand name — same service front door (ADR-0010) so
+/// `crates/cli` wires its clap command to the exact string core invokes.
+pub use crate::sources::pdf_metadata::PDF_META_SUBCOMMAND;
+
 /// Phase 2, under the caller's DB lock: the sync import (quota re-check,
 /// membership guard when a project is targeted, rollback matrix) with the
 /// already-resolved metadata. Thin over `import_pdf`, so its seam — and the
