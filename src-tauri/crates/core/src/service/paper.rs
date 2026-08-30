@@ -285,9 +285,21 @@ fn not_found_as_paper<T>(r: Result<T>, source_id: &str) -> Result<T> {
 
 /// Re-write a paper's metadata in-place (migrating SOURCE_ID if it changed).
 /// Normalizes and validates first, so every Paper Repair front door (route, CLI,
-/// MCP) rejects the same input. Archive import bypasses this via `store::repair_paper`.
+/// MCP) rejects the same input. Archive import bypasses this via
+/// [`repair_paper_unvalidated`].
 pub fn repair_paper(conn: &mut Connection, source_fk: i64, meta: &PaperMetadata) -> Result<()> {
     store::repair_paper(conn, source_fk, &validate_repair(meta)?)
+}
+
+/// [`repair_paper`] minus normalization/validation — archive import replays
+/// already-stored metadata, which is not held to the Paper Repair input rules
+/// the front doors apply.
+pub fn repair_paper_unvalidated(
+    conn: &mut Connection,
+    source_fk: i64,
+    meta: &PaperMetadata,
+) -> Result<()> {
+    store::repair_paper(conn, source_fk, meta)
 }
 
 /// Parse a user-supplied `published` date for Paper Repair.

@@ -1,0 +1,114 @@
+//! PDF path/flag bookkeeping on PAPER / PAPER_META.
+
+use rusqlite::{params, Connection};
+
+use crate::error::{CoreError, Result};
+use crate::storage::db::transaction;
+
+/// `set_has_pdf` — flip HAS_PDF for one paper version.
+pub fn set_has_pdf(conn: &Connection, source_id: &str, version: i64, has: bool) -> Result<()> {
+    conn.execute(
+        "UPDATE PAPER SET HAS_PDF = ? WHERE SOURCE_ID = ? AND VERSION = ?",
+        params![has as i64, source_id, version],
+    )?;
+    Ok(())
+}
+
+/// `set_pdf_path` — set PDF_PATH for one version, or every version when
+/// `version` is None/0 (Python `if version:` treats 0 as falsy).
+pub fn set_pdf_path(
+    conn: &Connection,
+    source_id: &str,
+    path: &str,
+    version: Option<i64>,
+) -> Result<()> {
+    match version.filter(|v| *v != 0) {
+        Some(v) => conn.execute(
+            "UPDATE PAPER_META SET PDF_PATH = ? WHERE PAPER_ID IN \
+             (SELECT PAPER_ID FROM PAPER WHERE SOURCE_ID = ? AND VERSION = ?)",
+            params![path, source_id, v],
+        )?,
+        None => conn.execute(
+            "UPDATE PAPER_META SET PDF_PATH = ? WHERE PAPER_ID IN \
+             (SELECT PAPER_ID FROM PAPER WHERE SOURCE_ID = ?)",
+            params![path, source_id],
+        )?,
+    };
+    Ok(())
+}
+
+/// `mark_pdf_saved` — write PDF_PATH and HAS_PDF=1 for one version in a single
+/// transaction so a crash cannot leave the two disagreeing. Errors if no matching
+/// PAPER_META or PAPER row (0 rows updated).
+pub fn mark_pdf_saved(
+    conn: &mut Connection,
+    source_id: &str,
+    path: &str,
+    version: i64,
+) -> Result<()> {
+    transaction(conn, |tx| {
+        let meta_rows = tx.execute(
+            "UPDATE PAPER_META SET PDF_PATH = ? WHERE PAPER_ID IN \
+             (SELECT PAPER_ID FROM PAPER WHERE SOURCE_ID = ? AND VERSION = ?)",
+            params![path, source_id, version],
+        )?;
+        if meta_rows == 0 {
+            return Err(CoreError::Internal(format!(
+                "mark_pdf_saved: no PAPER or PAPER_META row for source_id={source_id:?} version={version}"
+            )));
+        }
+        let paper_rows = tx.execute(
+            "UPDATE PAPER SET HAS_PDF = 1 WHERE SOURCE_ID = ? AND VERSION = ?",
+            params![source_id, version],
+        )?;
+        if paper_rows == 0 {
+            return Err(CoreError::Internal(format!(
+                "mark_pdf_saved: no PAPER row for source_id={source_id:?} version={version}"
+            )));
+        }
+        Ok(())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::testutil::meta;
+    use super::super::*;
+    use crate::storage::{db::open_in_memory, init_db};
+
+    #[test]
+    fn pdf_setters_and_mark_pdf_saved() {
+        let mut conn = open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        save_paper_metadata(&mut conn, &meta("arxiv:p", 1), None).unwrap();
+
+        set_has_pdf(&conn, "arxiv:p", 1, true).unwrap();
+        assert!(
+            get_paper(&conn, "arxiv:p", Some(1))
+                .unwrap()
+                .unwrap()
+                .has_pdf
+        );
+
+        set_pdf_path(&conn, "arxiv:p", "/tmp/a.pdf", Some(1)).unwrap();
+        assert_eq!(
+            get_paper(&conn, "arxiv:p", Some(1))
+                .unwrap()
+                .unwrap()
+                .pdf_path
+                .as_deref(),
+            Some("/tmp/a.pdf")
+        );
+
+        // mark_pdf_saved sets both path and has_pdf atomically.
+        set_has_pdf(&conn, "arxiv:p", 1, false).unwrap();
+        mark_pdf_saved(&mut conn, "arxiv:p", "/tmp/b.pdf", 1).unwrap();
+        let p = get_paper(&conn, "arxiv:p", Some(1)).unwrap().unwrap();
+        assert!(p.has_pdf);
+        assert_eq!(p.pdf_path.as_deref(), Some("/tmp/b.pdf"));
+
+        // Missing version -> error, nothing partially written.
+        let err = mark_pdf_saved(&mut conn, "arxiv:p", "/tmp/c.pdf", 99);
+        assert!(err.is_err());
+    }
+}

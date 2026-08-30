@@ -13,6 +13,7 @@ use clap::{Parser, Subcommand};
 use ctx::Ctx;
 use linxiv_core::config;
 use linxiv_core::service::db_admin;
+use linxiv_core::service::paper_import::PDF_META_SUBCOMMAND;
 
 #[derive(Parser)]
 #[command(name = "linxiv", version, about = "linXiv headless CLI")]
@@ -97,8 +98,10 @@ enum Commands {
     /// Restore the database from a backup snapshot
     Restore { src: std::path::PathBuf },
     /// Hidden pdfium worker: extraction runs in this child process so a native
-    /// libpdfium crash kills the child, not the app (core `pdf_metadata`).
-    #[command(hide = true)]
+    /// libpdfium crash kills the child, not the app (core `pdf_metadata`). The
+    /// name comes from core's `PDF_META_SUBCOMMAND` — the exact string core's
+    /// worker spawn invokes — so a rename is a one-const change in core.
+    #[command(name = PDF_META_SUBCOMMAND, hide = true)]
     PdfMeta { path: std::path::PathBuf },
 }
 
@@ -159,5 +162,21 @@ async fn main() {
                 output::fail(e);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The clap command for the worker must parse the exact subcommand string
+    // core spawns (`PDF_META_SUBCOMMAND`) — catches the attr drifting even
+    // though the const itself is shared.
+    #[test]
+    fn pdf_meta_subcommand_parses_from_core_const() {
+        let cli = Cli::try_parse_from(["linxiv", PDF_META_SUBCOMMAND, "/tmp/x.pdf"]).unwrap();
+        assert!(
+            matches!(cli.command, Commands::PdfMeta { ref path } if path == std::path::Path::new("/tmp/x.pdf"))
+        );
     }
 }

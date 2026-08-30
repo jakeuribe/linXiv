@@ -4,7 +4,7 @@ use std::process::Command;
 fn pdf_meta_missing_path_nonzero_exit() {
     let bin = env!("CARGO_BIN_EXE_linxiv-cli");
     let output = Command::new(bin)
-        .arg("pdf-meta")
+        .arg(linxiv_core::service::paper_import::PDF_META_SUBCOMMAND)
         .arg("/nonexistent/path/that/does/not/exist.pdf")
         .output()
         .expect("failed to run pdf-meta");
@@ -23,7 +23,7 @@ fn pdf_meta_garbage_file_ok() {
     std::fs::write(&temp_file, b"not a pdf").expect("failed to write temp file");
 
     let output = Command::new(bin)
-        .arg("pdf-meta")
+        .arg(linxiv_core::service::paper_import::PDF_META_SUBCOMMAND)
         .arg(&temp_file)
         .output()
         .expect("failed to run pdf-meta");
