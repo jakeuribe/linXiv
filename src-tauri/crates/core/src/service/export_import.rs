@@ -313,7 +313,6 @@ pub fn build_manifest(
     } else {
         Vec::new()
     };
-
     // Python: `color_to_hex(details.color) if details.color else None` — 0 is falsy.
     let color_hex = details.color.filter(|&c| c != 0).map(project::color_to_hex);
 
