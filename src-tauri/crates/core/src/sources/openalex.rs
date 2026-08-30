@@ -335,34 +335,11 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    // fixtures live in testdata/openalex/, whitespace inside is load-bearing —
+    // never run a formatter over them.
     // A representative /works search response (wire shape: {"results":[...]}).
     // Mirrors the OpenAlex Work objects recorded in tests/test_sources.py.
-    const SEARCH_RESPONSE: &str = r#"{
-      "meta": {"count": 2, "per_page": 10},
-      "results": [
-        {
-          "id": "https://openalex.org/W3123456789",
-          "title": "OpenAlex Paper",
-          "authorships": [
-            {"author": {"display_name": "Jane Doe"}},
-            {"author": {}}
-          ],
-          "publication_date": "2023-06-01",
-          "doi": "https://doi.org/10.1000/xyz",
-          "primary_topic": {"subfield": {"display_name": "Machine Learning"}},
-          "abstract_inverted_index": {"Hello": [0], "world": [1]}
-        },
-        {
-          "id": "",
-          "title": "Malformed — no id",
-          "authorships": [],
-          "publication_date": "2020-01-01",
-          "doi": null,
-          "primary_topic": null,
-          "abstract_inverted_index": null
-        }
-      ]
-    }"#;
+    const SEARCH_RESPONSE: &str = include_str!("testdata/openalex/search_response.json");
 
     // ── reconstruct_abstract ──────────────────────────────────────────────
     #[test]
