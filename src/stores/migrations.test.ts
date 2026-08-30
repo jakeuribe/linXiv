@@ -65,9 +65,10 @@ test("theme v1 -> v3 keeps preset/mode/overrides and seeds the v2 fields", () =>
   });
 });
 
-test("theme v0/v1 -> v3 resets overrideAlphas and customPalettes even if present", () => {
-  // Documents current behaviour: these fields did not exist before v2, so a blob
-  // claiming v0/v1 that carries them has them overwritten, not merged.
+test("theme v0/v1 -> v3 correctly resets overrideAlphas and customPalettes", () => {
+  // Verdict: reset is correct. Both fields were introduced in v2 (git: "color
+  // configging."), so a blob claiming v0/v1 that carries them is corrupt, not
+  // user data — overwrite, don't merge.
   const migrated = migrateTheme(
     {
       preset: "Navy",
@@ -261,8 +262,9 @@ test("ui v3 -> v7 keeps the saved zoom and seeds the v4/v5 fields", () => {
   });
 });
 
-test("ui v1/v2 -> v7 resets a saved zoom to the default (zoom is a v3 field)", () => {
-  // Documents current behaviour: a pre-v3 blob carrying `zoom` loses it.
+test("ui v1/v2 -> v7 correctly resets zoom (introduced in v3)", () => {
+  // Verdict: reset is correct. zoom did not exist before v3, so a pre-v3 blob
+  // carrying one is corrupt, not user data — overwrite, don't merge.
   assert.equal(migrateUi(fullUi, 1).zoom, DEFAULT_ZOOM);
   assert.equal(migrateUi(fullUi, 2).zoom, DEFAULT_ZOOM);
 });
@@ -271,6 +273,7 @@ test("ui v4 -> v7 keeps hideSingleAuthors and backfills density", () => {
   const migrated = migrateUi(fullUi, 4);
   assert.equal(migrated.hideSingleAuthors, true);
   assert.equal(migrated.zoom, 1.5);
+  // Verdict: reset is correct — density was introduced in v5, hideSingleAuthors in v4.
   assert.equal(migrated.density, DEFAULT_DENSITY, "density is a v5 field, so it resets");
 });
 
