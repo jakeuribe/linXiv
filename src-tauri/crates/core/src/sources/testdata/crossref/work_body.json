@@ -1,0 +1,8 @@
+{"message":{
+        "title":["Test Paper"],
+        "author":[{"given":"Jane","family":"Doe"}],
+        "published":{"date-parts":[[2023,6,15]]},
+        "abstract":"<jats:p>Clean <b>text</b> here</jats:p>",
+        "container-title":["Journal of Testing"],
+        "URL":"https://doi.org/10.1000/xyz",
+        "DOI":"10.1000/xyz"}}
