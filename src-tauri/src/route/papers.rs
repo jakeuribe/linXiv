@@ -13,6 +13,7 @@ use linxiv_core::config;
 use linxiv_core::error::CoreError;
 use linxiv_core::models::PaperMetadata;
 use linxiv_core::service::paper::{self as svc_paper, PaperRef};
+use linxiv_core::service::paper_merge as svc_merge;
 use linxiv_core::service::project as svc_project;
 
 use crate::route::{path_i64, ApiError, ReqCtx};
@@ -26,6 +27,7 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
         ("GET", ["api", "papers", "sfk", fk, "doi-candidates"]) => Some(doi_candidates(state, fk)),
         ("GET", ["api", "papers", "sfk", fk]) => Some(by_sfk(state, fk, ctx)),
         ("PUT", ["api", "papers", "sfk", fk]) => Some(repair(state, fk, ctx)),
+        ("POST", ["api", "papers", "sfk", fk, "merge"]) => Some(merge(state, fk, ctx)),
         ("DELETE", ["api", "papers", "sfk", fk, "projects"]) => {
             Some(remove_from_projects(state, fk))
         }
@@ -233,6 +235,32 @@ fn repair(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     })
 }
 
+/// `POST /api/papers/sfk/{fk}/merge` — `merge_papers`. Merges the duplicate
+/// root named in the body INTO this paper (this paper's metadata is canonical;
+/// the duplicate's notes, annotations, memberships, tags, missing versions and
+/// PDFs move over, then the duplicate root is deleted). 404 on unknown roots,
+/// 409 on self/trashed/share-linked duplicates (see `merge_plan`'s guards).
+fn merge(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
+    let winner_fk = path_i64(fk)?;
+    #[derive(Deserialize)]
+    struct Body {
+        loser_source_fk: i64,
+    }
+    let b: Body = ctx.parse_body()?;
+    let pdf_dir = state.pdf_dir.clone();
+    // Holds the conn lock across the FS phase too — same-dir renames, bounded
+    // by the loser's version count.
+    let receipt = state.with_conn(|conn| {
+        svc_merge::merge_papers(
+            conn,
+            &pdf_dir,
+            &PaperRef::SourceFk(winner_fk),
+            &PaperRef::SourceFk(b.loser_source_fk),
+        )
+    })?;
+    to_value(&receipt)
+}
+
 /// `DELETE /api/papers/sfk/{fk}/projects` — `api_remove_paper_from_all_projects`.
 fn remove_from_projects(state: &AppState, fk: &str) -> Result<Value, ApiError> {
     let source_fk = path_i64(fk)?;
@@ -333,6 +361,74 @@ mod tests {
         .unwrap();
         m.doi = doi.map(String::from);
         m
+    }
+
+    /// The merge endpoint's three faces: 404 for an unknown duplicate, 409 for
+    /// a self-merge, and the happy path returning the receipt with the loser
+    /// gone afterwards. The row-level matrix lives with the service/storage
+    /// tests; this covers the HTTP mapping.
+    #[tokio::test]
+    async fn merge_maps_guards_to_404_409_and_returns_the_receipt() {
+        let st = state();
+        let winner = meta("arxiv:W", Some("10.1/x"));
+        let loser = meta("local:L", Some("10.1/x"));
+        st.with_conn(|conn| svc_paper::save_paper_metadata(conn, &winner, None))
+            .unwrap();
+        st.with_conn(|conn| svc_paper::save_paper_metadata(conn, &loser, None))
+            .unwrap();
+        let sfk_of = |sid: &str| -> i64 {
+            st.with_conn(|conn| svc_paper::resolve_source_fk(conn, sid))
+                .unwrap()
+        };
+        let (w, l) = (sfk_of("arxiv:W"), sfk_of("local:L"));
+
+        let err = req(
+            &st,
+            "POST",
+            &format!("/api/papers/sfk/{w}/merge"),
+            Some(json!({ "loser_source_fk": 9999 })),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status, 404);
+
+        let err = req(
+            &st,
+            "POST",
+            &format!("/api/papers/sfk/{w}/merge"),
+            Some(json!({ "loser_source_fk": w })),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status, 409, "self-merge must 409: {}", err.detail);
+
+        let receipt = req(
+            &st,
+            "POST",
+            &format!("/api/papers/sfk/{w}/merge"),
+            Some(json!({ "loser_source_fk": l })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(receipt["winner_source_id"], "arxiv:W");
+        assert_eq!(receipt["merged_source_id"], "local:L");
+        assert_eq!(receipt["versions_collapsed"], 1);
+
+        // The duplicate root is gone from every read surface.
+        let err = req(&st, "GET", &format!("/api/papers/sfk/{l}"), None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, 404);
+        // And no DOI twin is suggested any more.
+        let cands = req(
+            &st,
+            "GET",
+            &format!("/api/papers/sfk/{w}/doi-candidates"),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(cands, json!({ "candidates": [] }));
     }
 
     /// The guards that run BEFORE any network call, so they are the testable part

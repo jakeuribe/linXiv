@@ -97,7 +97,7 @@ fn sync_paper_authors(
 
 /// `_sync_paper_tags` — relational half of dual tag storage. Replaces the
 /// PAPER_TO_TAG rows (PAPER_ID + composite (SOURCE_ID, VERSION)) for this paper.
-fn sync_paper_tags(
+pub(super) fn sync_paper_tags(
     tx: &Transaction,
     paper_id: i64,
     source_id: &str,

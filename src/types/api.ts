@@ -30,6 +30,7 @@ export type {
   Status,
   Stats,
   DoiVersionCandidate,
+  MergeReceipt,
   FullTextReceipt,
   PaperMembershipReceipt,
   BibtexImportReceipt,
