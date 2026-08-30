@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Feed Title</title>
+    <item>
+      <title>Foo <b>Bar</b> Baz</title>
+      <link>https://example.com/item</link>
+      <description>Test item with markup in title.</description>
+    </item>
+  </channel>
+</rss>

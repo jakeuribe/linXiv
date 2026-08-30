@@ -1,7 +1,9 @@
 import { save, open } from "@tauri-apps/plugin-dialog";
 import { join as pathJoin } from "@tauri-apps/api/path";
 import { apiFetch, BASE_URL, bytesToBase64, isTauri } from "./client";
-import type { BibtexImportReceipt } from "../types/api";
+import type { BibtexImportReceipt, ImportPreview } from "../types/api";
+
+export type { ImportPreview };
 
 async function fileToBase64(file: File): Promise<string> {
   return bytesToBase64(new Uint8Array(await file.arrayBuffer()));
@@ -9,15 +11,6 @@ async function fileToBase64(file: File): Promise<string> {
 
 function pickerCancelled(): Error {
   return Object.assign(new Error("Cancelled"), { name: "AbortError" });
-}
-
-export interface ImportPreview {
-  project_name: string;
-  description: string;
-  paper_count: number;
-  note_count: number;
-  has_pdfs: boolean;
-  format_version: number;
 }
 
 async function fetchBlob(url: string, init?: RequestInit): Promise<{ blob: Blob; filename?: string }> {

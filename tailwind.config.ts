@@ -9,6 +9,11 @@ export default {
       colors: {
         bg: "var(--color-bg)",
         panel: "var(--color-panel)",
+        // Reuses the existing (previously CSS-only) accent-tint token — an
+        // accent-hued wash, not a neutral one, so it stays visually distinct
+        // from both the opaque panel it sits on and the neutral bg-surface2
+        // used by nested inputs (e.g. AnnotationCard's edit textarea).
+        "panel-translucent": "var(--color-accent-tint)",
         surface2: "var(--color-surface-2)",
         border: "var(--color-border)",
         accent: "var(--color-accent)",

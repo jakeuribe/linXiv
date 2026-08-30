@@ -173,8 +173,11 @@ pub fn precheck_import_pdf(conn: &Connection, project_id: Option<i64>) -> Result
 /// parse; `import_pdf` re-checks it under the lock) and the network metadata
 /// resolve. Hand the result to [`commit_import_pdf`] under the caller's lock.
 ///
-/// The CrossRef polite-pool address is read here, at the service seam, for the
-/// same reason `service::source` reads it: `sources::` stays pure DI.
+/// The CrossRef polite-pool address and the `pdf_import_verify_identity_enabled`
+/// setting are read here, at the service seam, for the same reason
+/// `service::source` reads its config: `sources::` stays pure DI. A settings-load
+/// failure defaults to `true` (verify) — matching the setting's own missing/invalid
+/// default — rather than silently going network-free.
 pub async fn resolve_import_pdf(
     pdf_dir: &Path,
     content: &[u8],
@@ -182,10 +185,14 @@ pub async fn resolve_import_pdf(
     data_dir: &Path,
 ) -> Result<ResolvedPdf> {
     check_pdf_storage_quota(pdf_dir, content.len(), max_total_bytes)?;
+    let verify_identity = crate::config::UserSettings::load()
+        .map(|s| s.pdf_import_verify_identity_enabled())
+        .unwrap_or(true);
     crate::sources::pdf_metadata::resolve_pdf_metadata(
         content,
         data_dir,
         &crate::config::crossref_mailto(),
+        verify_identity,
     )
     .await
 }
@@ -196,6 +203,10 @@ pub async fn resolve_import_pdf(
 pub fn extract_pdf_metadata_json(bytes: &[u8]) -> String {
     crate::sources::pdf_metadata::extract_pdf_metadata_json(bytes)
 }
+
+/// The worker's CLI subcommand name — same service front door (ADR-0010) so
+/// `crates/cli` wires its clap command to the exact string core invokes.
+pub use crate::sources::pdf_metadata::PDF_META_SUBCOMMAND;
 
 /// Phase 2, under the caller's DB lock: the sync import (quota re-check,
 /// membership guard when a project is targeted, rollback matrix) with the
@@ -523,10 +534,9 @@ mod tests {
 
         let p = paper::get(
             &conn,
-            &paper::Paper {
-                source_id: Some("local:abc".into()),
+            &paper::PaperRef::Source {
+                source_id: "local:abc".into(),
                 version: Some(1),
-                ..Default::default()
             },
         )
         .unwrap()
@@ -729,15 +739,11 @@ mod tests {
         assert!(matches!(err, CoreError::Internal(_)));
 
         // Brand-new root with NULL pdf_path → hard-deleted: paper + root gone.
-        assert!(paper::get(
-            &conn,
-            &paper::Paper {
-                source_id: Some("local:new".into()),
-                ..Default::default()
-            }
-        )
-        .unwrap()
-        .is_none());
+        assert!(
+            paper::get(&conn, &paper::PaperRef::source("local:new".into()))
+                .unwrap()
+                .is_none()
+        );
         assert!(store::get_paper_root(&conn, "local:new").unwrap().is_none());
         // Temp upload cleaned up.
         let uploads = fs::read_dir(dir.path()).unwrap().filter(|e| {
@@ -796,15 +802,9 @@ mod tests {
         .await
         .unwrap();
         assert!(res.source_id.starts_with("local:"));
-        let p = paper::get(
-            &conn,
-            &paper::Paper {
-                source_id: Some(res.source_id.clone()),
-                ..Default::default()
-            },
-        )
-        .unwrap()
-        .unwrap();
+        let p = paper::get(&conn, &paper::PaperRef::source(res.source_id.clone()))
+            .unwrap()
+            .unwrap();
         assert!(p.has_pdf);
     }
 

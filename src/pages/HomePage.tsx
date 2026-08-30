@@ -243,13 +243,13 @@ function FeedSection({ url }: { url: string }) {
         {data?.title || "Home feed"}
       </SectionTitle>
       {isLoading ? (
-        <Card inset>
+        <Card variant="inset">
           <div className="flex justify-center py-6">
             <Spinner size={20} />
           </div>
         </Card>
       ) : error ? (
-        <Card inset className="text-center">
+        <Card variant="inset" className="text-center">
           <p className="text-sm" style={{ color: "var(--color-danger)" }}>
             {errText(error, "Failed to load feed")}
           </p>
@@ -258,7 +258,7 @@ function FeedSection({ url }: { url: string }) {
           </p>
         </Card>
       ) : entries.length === 0 ? (
-        <Card inset className="text-center">
+        <Card variant="inset" className="text-center">
           <p className="text-muted text-sm">The feed has no entries.</p>
         </Card>
       ) : (
@@ -375,7 +375,7 @@ export default function HomePage() {
                 <section>
                   <SectionTitle className="text-base mb-4">Recent papers</SectionTitle>
                   {recentPapers.length === 0 ? (
-                    <Card inset className="text-center">
+                    <Card variant="inset" className="text-center">
                       <p className="text-muted text-sm">
                         No papers yet. Add some from the Library or Search pages.
                       </p>
@@ -388,7 +388,7 @@ export default function HomePage() {
                 <section className="lg:sticky lg:top-8 self-start">
                   <SectionTitle className="text-base mb-4">Tags —— Recent Papers</SectionTitle>
                   {topTags.length === 0 ? (
-                    <Card inset className="text-center">
+                    <Card variant="inset" className="text-center">
                       <p className="text-muted text-sm">
                         No tags on recent papers yet.
                       </p>

@@ -18,13 +18,11 @@ use std::time::Duration;
 use tauri::http::{header, Request, Response, StatusCode};
 use tauri::{AppHandle, Manager, Runtime, UriSchemeContext, UriSchemeResponder};
 
-use serde_json::json;
-
 use linxiv_core::error::CoreError;
-use linxiv_core::service::paper::{self as svc_paper, Paper};
+use linxiv_core::service::paper::{self as svc_paper, PaperRef};
 use linxiv_core::sources::http as core_http;
 
-use crate::route::{pct_decode, pdfs::resolve_local_pdf, route, split_segments, ApiRequest};
+use crate::route::{pct_decode, pdfs::resolve_local_pdf, split_segments};
 use crate::state::AppState;
 
 /// The scheme name registered on the Tauri builder.
@@ -65,58 +63,8 @@ async fn serve<R: Runtime>(
     {
         ["pdf"] => serve_local_pdf(app, query),
         ["pdf-proxy"] => serve_proxy(query).await,
-        // The graph iframe is plain HTML/JS (no `invoke`), so it fetches its data
-        // over this scheme. Bridge ONLY the four GET endpoints it reads (see
-        // public/graph/graph.js) into the in-process router as JSON — not all of
-        // `/api/*` — so the scheme exposes no more than the iframe needs.
-        ["api", "graph"]
-        | ["api", "graph", "project-options"]
-        | ["api", "categories"]
-        | ["api", "tags"] => serve_api_json(app, &req).await,
         _ => empty(StatusCode::NOT_FOUND),
     }
-}
-
-/// Run an `/api/*` request through the JSON router and return its result as an
-/// `application/json` response (for the graph iframe's `fetch`).
-async fn serve_api_json<R: Runtime>(
-    app: &AppHandle<R>,
-    req: &Request<Vec<u8>>,
-) -> Response<Cow<'static, [u8]>> {
-    // Read-only bridge: the graph iframe only GETs. Mutations go through the
-    // `invoke('api')` transport, not this scheme.
-    if req.method() != tauri::http::Method::GET {
-        return empty(StatusCode::METHOD_NOT_ALLOWED);
-    }
-    let path = req
-        .uri()
-        .path_and_query()
-        .map_or_else(|| req.uri().path().to_string(), |pq| pq.to_string());
-    let api_req = ApiRequest {
-        method: req.method().as_str().to_string(),
-        path,
-        body: None,
-    };
-    let state = app.state::<AppState>();
-    match route(&state, api_req).await {
-        Ok(value) => json_response(StatusCode::OK, &value),
-        Err(e) => {
-            let status =
-                StatusCode::from_u16(e.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-            json_response(status, &json!({ "detail": e.detail }))
-        }
-    }
-}
-
-fn json_response(status: StatusCode, value: &serde_json::Value) -> Response<Cow<'static, [u8]>> {
-    let body = serde_json::to_vec(value).unwrap_or_default();
-    Response::builder()
-        .status(status)
-        // linxiv:// is fetched cross-origin by the tauri:// webview.
-        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Cow::Owned(body))
-        .expect("static response builder")
 }
 
 /// `/pdf?id=<source_id>&version=N` — the saved PDF on disk. Mirrors
@@ -142,10 +90,9 @@ fn serve_local_pdf<R: Runtime>(app: &AppHandle<R>, query: &str) -> Response<Cow<
     let found = state.with_conn(|conn| {
         svc_paper::get(
             conn,
-            &Paper {
-                source_id: Some(source_id.clone()),
+            &PaperRef::Source {
+                source_id: source_id.clone(),
                 version,
-                ..Default::default()
             },
         )
         .ok()

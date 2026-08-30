@@ -4,18 +4,12 @@
 // so ApiFsResponder (src/lib/editorFsResponder.ts) is a thin wrapper over vaultFsOp.
 
 import { apiFetch } from "./client";
+import type { EditorProjectSummary } from "../types/api";
 import type { FsOp, FsResult } from "../lib/editorBridgeTypes";
 import type { DocOpenPayload } from "../lib/editorBridge";
 
 /** One editor project = a frontmatter-flagged NOTE owning a vault at note_<noteId>/. */
-export interface EditorProjectSummary {
-  noteId: number;
-  projectName: string;
-  mainFile: string;
-  sourceFk: number;
-  projectId: number | null;
-  updatedAt: string | null;
-}
+export type { EditorProjectSummary };
 
 /** List editor projects, optionally scoped to a linXiv project. */
 export async function listEditorProjects(

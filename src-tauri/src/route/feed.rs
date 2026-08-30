@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 
 use linxiv_core::config::UserSettings;
 use linxiv_core::service::feed as svc_feed;
+use linxiv_core::service::feed::{FilterAction, FilterField};
 
 use crate::route::{ApiError, ReqCtx};
 use crate::state::AppState;
@@ -119,17 +120,17 @@ fn list_rules(state: &AppState) -> Result<Value, ApiError> {
 fn create_rule(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     #[derive(Deserialize)]
     struct Body {
-        field: String,
+        field: FilterField,
         keywords: String,
         #[serde(default = "default_action")]
-        action: String,
+        action: FilterAction,
     }
-    fn default_action() -> String {
-        "DENY".to_string()
+    fn default_action() -> FilterAction {
+        FilterAction::Deny
     }
     let b: Body = ctx.parse_body()?;
     let rule_id =
-        state.with_conn(|conn| svc_feed::create_rule(conn, &b.field, &b.keywords, &b.action))?;
+        state.with_conn(|conn| svc_feed::create_rule(conn, b.field, &b.keywords, b.action))?;
     Ok(json!({ "rule_id": rule_id }))
 }
 
@@ -172,6 +173,69 @@ mod tests {
             },
         )
         .await
+    }
+
+    async fn post(
+        state: &AppState,
+        path: &str,
+        body: serde_json::Value,
+    ) -> Result<serde_json::Value, crate::route::ApiError> {
+        route(
+            state,
+            ApiRequest {
+                method: "POST".into(),
+                path: path.into(),
+                body: Some(body),
+            },
+        )
+        .await
+    }
+
+    /// Invalid field/action values die at body deserialization: 422 (same
+    /// status the old service-side validation returned) with a detail naming
+    /// the offending value and the valid variants.
+    #[tokio::test]
+    async fn create_rule_invalid_field_or_action_is_422_naming_the_value() {
+        let st = state();
+        let err = post(
+            &st,
+            "/api/feed/rules",
+            serde_json::json!({ "field": "BODY", "keywords": "x" }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status, 422);
+        assert!(err.detail.contains("BODY"), "got: {}", err.detail);
+        assert!(err.detail.contains("TITLE"), "got: {}", err.detail);
+
+        let err = post(
+            &st,
+            "/api/feed/rules",
+            serde_json::json!({ "field": "TITLE", "keywords": "x", "action": "MAYBE" }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status, 422);
+        assert!(err.detail.contains("MAYBE"), "got: {}", err.detail);
+        assert!(err.detail.contains("DENY"), "got: {}", err.detail);
+    }
+
+    /// Omitted action still defaults to DENY with typed bodies.
+    #[tokio::test]
+    async fn create_rule_defaults_action_to_deny() {
+        let st = state();
+        let res = post(
+            &st,
+            "/api/feed/rules",
+            serde_json::json!({ "field": "TITLE", "keywords": "llm" }),
+        )
+        .await
+        .unwrap();
+        assert!(res["rule_id"].as_i64().is_some());
+        let rules = st
+            .with_conn(|conn| linxiv_core::service::feed::list_rules(conn))
+            .unwrap();
+        assert_eq!(rules[0].action, super::FilterAction::Deny);
     }
 
     #[tokio::test]

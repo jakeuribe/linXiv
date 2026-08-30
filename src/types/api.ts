@@ -14,6 +14,7 @@ import type {
   SearchResultOut,
   AuthorWithCount,
   AuthorWithPapers,
+  FilterRule,
 } from "./generated";
 
 export type {
@@ -32,6 +33,17 @@ export type {
   FullTextReceipt,
   PaperMembershipReceipt,
   BibtexImportReceipt,
+  FilterField,
+  FilterAction,
+  TagWithCount,
+  NewVersion,
+  OrcidCandidate,
+  ImportPreview,
+  BackupInfo,
+  DeletedPaperDetails,
+  TrashedProjectRow,
+  RestoredPaper,
+  EditorProjectSummary,
 } from "./generated";
 
 // Frontend names for the generated serializers. The Rust name is the model,
@@ -43,6 +55,7 @@ export type Annotation = AnnotationDetails;
 export type SearchResult = SearchResultOut;
 export type Author = AuthorWithCount;
 export type AuthorDetail = AuthorWithPapers;
+export type FeedFilterRule = FilterRule;
 
 // --- Not generated ---------------------------------------------------------
 
@@ -65,29 +78,22 @@ export interface Settings {
   /** Overlaid from the process env by route/settings.rs, never persisted here. */
   CROSSREF_MAILTO?: string;
   OPENALEX_MAILTO?: string;
+  /** Self-hosted iroh relay override; empty keeps n0's public relays. Read once at app launch. */
+  p2p_relay_url?: string;
+  p2p_relay_auth_token?: string;
+  /** If true, refuse to bind the p2p node at all rather than falling back to n0's public relay. */
+  p2p_relay_only?: boolean;
   [key: string]: unknown;
 }
 
-// `GET /api/graph` builds its payload as a `serde_json::Value` in
-// crates/core/src/graph.rs — no struct to derive on.
-export interface GraphData {
-  nodes: GraphNode[];
-  edges: GraphEdge[];
-}
-
-export interface GraphNode {
-  id: string;
-  label: string;
-  type: string;
-  tags?: string[];
-  project_ids?: number[];
-}
-
-export interface GraphEdge {
-  source: string;
-  target: string;
-  type?: string;
-}
+// The Knowledge Graph's wire shapes used to be hand-written here, because
+// `GET /api/graph` assembled its payload as an inline `serde_json::Value`
+// with no Rust struct to `#[derive(TS)]` from — so nothing but a test could
+// hold them to it, and they had already drifted: a paper node's `id` was
+// declared `string` where the payload emitted a bare integer, and eight of
+// its fields were missing altogether. `linxiv_core::graph` is typed now, so
+// they are GENERATED (`GraphView` and friends in ./generated.ts) and the
+// drift check is `npm run types:check` rather than a bespoke assets test.
 
 // sources/feed.rs::FeedEntry has a matching Rust struct, but the response is
 // assembled inline in route/feed.rs (`title` + entries + saved ids), so only
@@ -106,17 +112,6 @@ export interface FeedResponse {
   title: string;
   entries: FeedEntry[];
   saved_arxiv_ids: string[];
-}
-
-// storage/queries/rss.rs::FilterRule types `field`/`action` as bare `String`
-// (the values are validated on write in service/feed.rs, not by the type), so
-// generating this would REPLACE the unions below with `string`.
-export interface FeedFilterRule {
-  rule_id: number;
-  field: "TITLE" | "SUMMARY" | "AUTHOR";
-  keywords: string;
-  action: "DENY" | "ALLOW";
-  enabled: boolean;
 }
 
 // `GET /api/papers/sfk/{fk}/versions` projects PaperDetailsAll into an inline

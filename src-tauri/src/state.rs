@@ -1,7 +1,8 @@
 //! In-process backend state. Holds the single SQLite connection (guarded by a
 //! `Mutex`, opened once at startup) plus the managed PDF/vault roots — the app's
 //! analogue of `linxiv-mcp`'s `Server` and `linxiv-cli`'s `Ctx`. Every router arm
-//! reaches the DB through `with_conn`. Replaces the HTTP hop to the Python sidecar.
+//! reaches the DB through `with_conn`. Replaces the deprecated HTTP hop to the
+//! Python sidecar.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -55,6 +56,10 @@ impl AppState {
     /// broken invariant to protect (an unfinished transaction rolls back when its
     /// guard drops), and refusing the lock forever would take every DB-touching
     /// route and the background indexer down with it for the rest of the process.
+    ///
+    /// TODO: Revisit how this should work for HUB (not concretely defined) roles
+    /// Maybe simultaneous reads, classified as such, are ran parralel, writes are
+    /// serial
     pub fn with_conn<T>(&self, f: impl FnOnce(&mut Connection) -> T) -> T {
         let mut guard = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         f(&mut guard)

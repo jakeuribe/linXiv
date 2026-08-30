@@ -1,6 +1,9 @@
 import { apiFetch } from "./client";
 import type { Clause, SearchResult } from "../types/api";
 
+// Diverged from core's `service::search_state::SavedSearch`: core stores
+// clauses/results/sort_prefs as untyped JSON (`Vec<Value>`/`Map`) and has no
+// `updated_at` (added by the route) — not generatable until core types them.
 export interface SearchState {
   clauses: Clause[];
   source: string;

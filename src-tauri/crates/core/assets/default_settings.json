@@ -5,8 +5,12 @@
   "search_history_enabled": true,
   "search_history_max": 200,
   "full_text_worker_enabled": false,
+  "pdf_import_verify_identity_enabled": true,
   "cat_color_overrides": {},
   "theme_overrides": {},
   "theme_override_alphas": {},
-  "button_color_overrides": {}
+  "button_color_overrides": {},
+  "p2p_relay_url": "",
+  "p2p_relay_auth_token": "",
+  "p2p_relay_only": false
 }

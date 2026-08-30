@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use linxiv_core::config;
 use linxiv_core::error::CoreError;
 use linxiv_core::models::PaperMetadata;
-use linxiv_core::service::paper::{self as svc_paper, Paper};
+use linxiv_core::service::paper::{self as svc_paper, PaperRef};
 use linxiv_core::service::project as svc_project;
 
 use crate::route::{path_i64, ApiError, ReqCtx};
@@ -106,10 +106,9 @@ fn by_sfk(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
             // version branch: resolve source_id first, then the pinned version.
             let source_id = svc_paper::get_source_id(conn, source_fk)?
                 .ok_or_else(|| CoreError::PaperNotFound(source_fk.to_string()))?;
-            let key = Paper {
-                source_id: Some(source_id),
+            let key = PaperRef::Source {
+                source_id: source_id,
                 version: Some(version),
-                ..Default::default()
             };
             svc_paper::get(conn, &key)?
                 .ok_or_else(|| ApiError::new(404, format!("Version {version} not stored")))?
@@ -257,18 +256,12 @@ struct RepairBody {
     tags: Option<Vec<String>>,
 }
 
-fn sfk_key(source_fk: i64) -> Paper {
-    Paper {
-        source_fk: Some(source_fk),
-        ..Default::default()
-    }
+fn sfk_key(source_fk: i64) -> PaperRef {
+    PaperRef::SourceFk(source_fk)
 }
 
-pub(crate) fn sid_key(source_id: &str) -> Paper {
-    Paper {
-        source_id: Some(source_id.to_string()),
-        ..Default::default()
-    }
+pub(crate) fn sid_key(source_id: &str) -> PaperRef {
+    PaperRef::source(source_id.to_string())
 }
 
 use super::to_value;

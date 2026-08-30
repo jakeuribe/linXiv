@@ -51,12 +51,15 @@ export function migrateUi(persisted: unknown, fromVersion: number): Partial<UiPe
     state.exportMethods = { ...DEFAULT_EXPORT_METHODS, ...state.exportMethods };
   }
   if (fromVersion < 3) {
+    // Reset is correct: zoom was introduced in v3, so no genuine pre-v3 blob carries one.
     state.zoom = DEFAULT_ZOOM;
   }
   if (fromVersion < 4) {
+    // Reset is correct: hideSingleAuthors was introduced in v4; nothing older to carry.
     state.hideSingleAuthors = false;
   }
   if (fromVersion < 5) {
+    // Reset is correct: density was introduced in v5; nothing older to carry.
     state.density = DEFAULT_DENSITY;
   }
   if (fromVersion < 6) {
@@ -77,7 +80,8 @@ export function migrateTheme(stored: unknown, version: number): Record<string, u
     delete s.glassEffects;
   }
   if (version <= 1) {
-    // overrideAlphas and customPalettes were introduced in v2; neither field existed before.
+    // Reset is correct: overrideAlphas and customPalettes were introduced in v2; neither
+    // field existed before, so a pre-v2 blob carrying them is corrupt, not user data.
     s.overrideAlphas = {};
     s.customPalettes = [];
   }

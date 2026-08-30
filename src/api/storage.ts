@@ -1,10 +1,8 @@
 import { save, open } from "@tauri-apps/plugin-dialog";
 import { apiFetch } from "./client";
+import type { BackupInfo } from "../types/api";
 
-export interface BackupInfo {
-  path: string;
-  bytes: number;
-}
+export type { BackupInfo };
 
 /** Pick a destination with the OS save dialog and snapshot the DB there.
  *  Returns null when the user cancels the dialog. */

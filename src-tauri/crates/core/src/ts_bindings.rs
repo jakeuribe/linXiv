@@ -39,6 +39,11 @@ fn decl<T: TS + ?Sized>() -> String {
 /// paragraph. Splits on top-level commas only, so `Array<A, B>` stays intact;
 /// anything that isn't a `{ … }` body (a union like `Status`) passes through.
 /// ts-rs's `format` feature would do this too, at the cost of 45 crates.
+///
+/// A comma inside a JSDoc block is prose, not a member separator: ts-rs carries
+/// the Rust doc comment through verbatim, so splitting on those commas chopped
+/// a doc sentence across lines mid-clause and indented each fragment as its own
+/// member. Track the `/* … */` span and only split outside it.
 fn pretty(decl: String) -> String {
     let (Some(open), Some(close)) = (decl.find("{ "), decl.rfind(" }")) else {
         return decl;
@@ -55,8 +60,25 @@ fn pretty(decl: String) -> String {
 
     let mut out = format!("{}{{\n", &decl[..open]);
     let mut depth = 0i32;
+    let mut in_comment = false;
+    let mut prev = '\0';
     let mut member = String::new();
     for c in decl[open + 1..close].chars() {
+        if in_comment {
+            // Closing `*/` — `prev` is the `*`, so the slash ends the block.
+            if prev == '*' && c == '/' {
+                in_comment = false;
+            }
+            member.push(c);
+            prev = c;
+            continue;
+        }
+        if prev == '/' && c == '*' {
+            in_comment = true;
+            member.push(c);
+            prev = c;
+            continue;
+        }
         match c {
             '<' | '{' | '[' | '(' => depth += 1,
             '>' | '}' | ']' | ')' => depth -= 1,
@@ -64,11 +86,13 @@ fn pretty(decl: String) -> String {
                 member.push(',');
                 flush(&member, &mut out);
                 member.clear();
+                prev = '\0';
                 continue;
             }
             _ => {}
         }
         member.push(c);
+        prev = c;
     }
     flush(&member, &mut out);
     out.push('}');
@@ -95,6 +119,24 @@ pub(crate) fn render() -> String {
     out.push_str(&decl::<crate::service::paper::FullTextReceipt>());
     out.push_str(&decl::<crate::service::project::PaperMembershipReceipt>());
     out.push_str(&decl::<crate::service::paper_import::BibtexImportReceipt>());
+    out.push_str(&decl::<crate::storage::queries::rss::FilterField>());
+    out.push_str(&decl::<crate::storage::queries::rss::FilterAction>());
+    out.push_str(&decl::<crate::storage::queries::rss::FilterRule>());
+    out.push_str(&decl::<crate::graph::GraphPaper>());
+    out.push_str(&decl::<crate::graph::GraphAuthor>());
+    out.push_str(&decl::<crate::graph::GraphTag>());
+    out.push_str(&decl::<crate::graph::GraphEdge>());
+    out.push_str(&decl::<crate::graph::GraphProject>());
+    out.push_str(&decl::<crate::graph::GraphView>());
+    out.push_str(&decl::<TagWithCount>());
+    out.push_str(&decl::<crate::storage::queries::version_check::NewVersion>());
+    out.push_str(&decl::<crate::storage::queries::author::OrcidCandidate>());
+    out.push_str(&decl::<crate::service::export_import::ImportPreview>());
+    out.push_str(&decl::<crate::storage::backup::BackupInfo>());
+    out.push_str(&decl::<crate::service::paper::DeletedPaperDetails>());
+    out.push_str(&decl::<crate::service::trash::TrashedProjectRow>());
+    out.push_str(&decl::<crate::service::trash::RestoredPaper>());
+    out.push_str(&decl::<crate::service::editor_project::EditorProjectSummary>());
     out
 }
 

@@ -16,7 +16,7 @@ use crate::sources::feed as src_feed;
 use crate::storage::queries::paper;
 use crate::storage::queries::rss;
 
-pub use crate::storage::queries::rss::FilterRule;
+pub use crate::storage::queries::rss::{FilterAction, FilterField, FilterRule};
 
 /// A fetched feed reduced to what the cache window persists.
 pub struct FetchedFeed {
@@ -214,16 +214,14 @@ pub fn list_rules(conn: &Connection) -> Result<Vec<FilterRule>> {
     rss::list_rules(conn)
 }
 
-/// Create an auto-filter rule.
-pub fn create_rule(conn: &Connection, field: &str, keywords: &str, action: &str) -> Result<i64> {
-    if !matches!(field, "TITLE" | "SUMMARY" | "AUTHOR") {
-        return Err(CoreError::Validation(
-            "field must be TITLE, SUMMARY, or AUTHOR".into(),
-        ));
-    }
-    if !matches!(action, "DENY" | "ALLOW") {
-        return Err(CoreError::Validation("action must be DENY or ALLOW".into()));
-    }
+/// Create an auto-filter rule. Field/action validity is the type's job
+/// (deserialization rejects unknown variants); only keywords needs checking.
+pub fn create_rule(
+    conn: &Connection,
+    field: FilterField,
+    keywords: &str,
+    action: FilterAction,
+) -> Result<i64> {
     if keywords.trim().is_empty() {
         return Err(CoreError::Validation("keywords is required".into()));
     }
@@ -256,9 +254,9 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&FilterRule {
                 rule_id: 1,
-                field: "TITLE".into(),
+                field: FilterField::Title,
                 keywords: "llm".into(),
-                action: "DENY".into(),
+                action: FilterAction::Deny,
                 enabled: true,
             })
             .unwrap(),
@@ -309,22 +307,30 @@ mod tests {
     }
 
     #[test]
-    fn create_rule_validates_field_action_keywords() {
+    fn create_rule_requires_keywords() {
         let c = conn();
         assert!(matches!(
-            create_rule(&c, "BODY", "x", "DENY"),
+            create_rule(&c, FilterField::Title, "  ", FilterAction::Deny),
             Err(CoreError::Validation(_))
         ));
-        assert!(matches!(
-            create_rule(&c, "TITLE", "x", "MAYBE"),
-            Err(CoreError::Validation(_))
-        ));
-        assert!(matches!(
-            create_rule(&c, "TITLE", "  ", "DENY"),
-            Err(CoreError::Validation(_))
-        ));
-        let id = create_rule(&c, "TITLE", "llm", "DENY").unwrap();
+        let id = create_rule(&c, FilterField::Title, "llm", FilterAction::Deny).unwrap();
         delete_rule(&c, id).unwrap();
         assert!(matches!(delete_rule(&c, id), Err(CoreError::NotFound(_))));
+    }
+
+    /// Invalid field/action strings die at deserialization now, not in the
+    /// service -- pin that "BODY"/"MAYBE" are rejected on the wire.
+    #[test]
+    fn invalid_field_action_fail_deserialization() {
+        assert!(serde_json::from_str::<FilterField>(r#""BODY""#).is_err());
+        assert!(serde_json::from_str::<FilterAction>(r#""MAYBE""#).is_err());
+        assert_eq!(
+            serde_json::from_str::<FilterField>(r#""TITLE""#).unwrap(),
+            FilterField::Title
+        );
+        assert_eq!(
+            serde_json::from_str::<FilterAction>(r#""ALLOW""#).unwrap(),
+            FilterAction::Allow
+        );
     }
 }

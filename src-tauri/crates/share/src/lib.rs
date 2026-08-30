@@ -20,7 +20,7 @@
 //! `import_shared_project` is a second, additive-only write path that merges a
 //! received `SharedProject` into the canonical DB: notes and annotations match
 //! by uuid, papers by source_id, the project by SHARE_ID (created when absent).
-//! Remote deletions are not propagated — the import surface is
+//! NOTE: Remote deletions are not propagated — the import surface is
 //! append+update only.
 
 mod model;
@@ -41,6 +41,7 @@ use linxiv_core::service::{
     project as project_svc,
 };
 
+pub use linxiv_p2p::CustomRelay;
 pub use model::{SharedAnnotation, SharedNote, SharedPaper, SharedProject, SharedSummary};
 #[cfg(feature = "sync-beelay")]
 pub use transport::{e2ee_dir, e2ee_received_dir, E2eeSyncOutcome, MemberId, ProjectInvite, Role};
@@ -338,14 +339,8 @@ pub fn import_shared_project(conn: &mut Connection, sp: &SharedProject) -> Resul
         if paper_svc::is_paper_deleted(conn, &p.source_id)? {
             continue;
         }
-        let known = paper_svc::get(
-            conn,
-            &paper_svc::Paper {
-                source_id: Some(p.source_id.clone()),
-                ..Default::default()
-            },
-        )?
-        .is_some();
+        let known =
+            paper_svc::get(conn, &paper_svc::PaperRef::source(p.source_id.clone()))?.is_some();
         if !known {
             // Metadata writes apply only to papers not already in the DB.
             paper_svc::save_paper_metadata(conn, &paper_meta(p), None)?;

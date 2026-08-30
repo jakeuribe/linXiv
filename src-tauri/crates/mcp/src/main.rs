@@ -37,8 +37,7 @@ pub struct Server {
 
 impl Server {
     /// Open the data dir, the DB, and run startup init, then assemble the
-    /// merged router. Mirrors the `init_data_dir()` / `init_db()` block at the
-    /// top of `linxiv_mcp.py`.
+    /// merged router.
     pub fn new() -> anyhow::Result<Self> {
         config::init_data_dir()?;
         let conn = db_admin::open_app_db()?;

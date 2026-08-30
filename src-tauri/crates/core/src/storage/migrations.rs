@@ -209,6 +209,11 @@ fn project_to_paper_unique_index(conn: &Connection) -> Result<()> {
 /// enough to hold duplicates has no such child table (PAPER_TO_READING postdates
 /// the unique index), so the DELETE is legal. Idempotent: no-ops when the table
 /// doesn't exist yet (fresh DB) or the unique index already does.
+///
+/// Pinned by tests, not just this prose:
+/// `schema::tests::dedup_project_to_paper_must_run_before_apply_tables` (the
+/// wrong order hard-fails) and `legacy_db_with_duplicate_memberships_boots_and_dedups`
+/// below (a pre-dedup duplicate shape upgrades cleanly through the real `init_db`).
 pub fn dedup_project_to_paper(conn: &Connection) -> Result<()> {
     let table_exists: i64 = conn.query_row(
         "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='PROJECT_TO_PAPER'",
@@ -1289,6 +1294,12 @@ mod tests {
     /// unconditionally on every init_db, so a v0.2.0 view definition can't
     /// affect the outcome.
     ///
+    /// Every DDL string below is FROZEN HISTORY, not a copy of the current
+    /// `sql/` files. Some of it (papers_fts, PAPER_META.FULL_TEXT) happens to
+    /// coincide with today's shape -- never "dedupe" those against `sql/` or
+    /// update them when the live schema changes: this test's whole value is
+    /// replaying what a real v0.2.0 DB actually contains.
+    ///
     /// v0.1.0 (the only older tag) predates this entirely: it used a single
     /// flat `papers` table with lowercase columns, a completely different data
     /// model. That shape was carried forward only via a manual, one-off
@@ -1426,6 +1437,9 @@ mod tests {
                  FOREIGN KEY (PAPER_ID_FK) REFERENCES PAPER(PAPER_ID)        ON DELETE SET NULL,
                  FOREIGN KEY (PROJECT_FK)  REFERENCES PROJECT(PROJECT_FK)
              );
+             -- Byte-identical to today's sql/tables/papers_fts.sql only by
+             -- coincidence of history: this is the v0.2.0 shape, frozen. Do not
+             -- retarget it at the sql/ file (see the doc comment above).
              CREATE VIRTUAL TABLE IF NOT EXISTS papers_fts USING fts5(paper_id, full_text);
              CREATE TABLE IF NOT EXISTS DB_VERSION (
                  VERSION_FK  INTEGER   PRIMARY KEY AUTOINCREMENT,

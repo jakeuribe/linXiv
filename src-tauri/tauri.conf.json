@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "linXiv",
-  "version": "0.3.3",
+  "version": "0.4.2",
   "identifier": "com.linxiv.app",
   "build": {
     "frontendDist": "../dist",
@@ -32,6 +32,8 @@
     "active": true,
     "targets": "all",
     "createUpdaterArtifacts": true,
+    "category": "Education",
+    "shortDescription": "Discover, manage, and visualize academic papers",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

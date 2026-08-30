@@ -217,8 +217,11 @@ mod tests {
     /// "shortcut" the comment at the bottom of this file forbids) must fail;
     /// slotting run_migrations in between must succeed.
     ///
-    /// Reorder `init_db` to tables → views → migrations, or add a
-    /// tables-and-views convenience fn, and this test goes red.
+    /// Add a tables-and-views convenience fn (the shortcut this file's bottom
+    /// comment forbids) built on these two calls and this goes red. Reordering
+    /// `init_db` itself would NOT: CREATE VIEW / CREATE TRIGGER resolve their
+    /// bodies lazily, so a reordered init_db still boots every legacy fixture —
+    /// `init_db_source_applies_phases_in_pinned_order` below pins the real path.
     #[test]
     fn views_require_migrations_to_have_run_first() {
         let conn = legacy_conn();
@@ -246,6 +249,32 @@ mod tests {
             r.get::<_, i64>(0)
         })
         .unwrap();
+    }
+
+    /// Pins the phase order in `init_db` ITSELF: dedup → tables → migrations →
+    /// views. The behavioral tests around this one show why each wrong order is
+    /// wrong, but none can catch a reordered init_db: SQLite resolves view and
+    /// trigger bodies lazily, so views-before-migrations boots cleanly and the
+    /// damage is latent (the first migration to prepare DML on PAPER_META would
+    /// hit the papers_fts triggers reading a view that can't resolve yet — see
+    /// paper_index_text.sql's header). So this asserts the source directly.
+    #[test]
+    fn init_db_source_applies_phases_in_pinned_order() {
+        let src = include_str!("mod.rs");
+        let pos = |call: &str| {
+            src.find(call)
+                .unwrap_or_else(|| panic!("init_db no longer calls {call}"))
+        };
+        let order = [
+            pos("dedup_project_to_paper(conn)"),
+            pos("apply_tables(conn)"),
+            pos("run_migrations(conn)"),
+            pos("apply_views(conn)"),
+        ];
+        assert!(
+            order.iter().is_sorted(),
+            "init_db phases out of order (byte offsets): {order:?}"
+        );
     }
 
     /// The other half of the ordering rule, at the front: `dedup_project_to_paper`

@@ -172,3 +172,233 @@ export type BibtexImportReceipt = {
   saved_count: number,
   source_ids: Array<string>,
 };
+
+export type FilterField = "TITLE" | "SUMMARY" | "AUTHOR";
+
+export type FilterAction = "DENY" | "ALLOW";
+
+export type FilterRule = {
+  rule_id: number,
+  field: FilterField,
+  keywords: string,
+  action: FilterAction,
+  enabled: boolean,
+};
+
+export type GraphPaper = {
+  /**
+   * Node id — `PAPER_ROOTS.SOURCE_FK` as a string, so every id in this
+   * payload (papers, authors, tags) is one comparable type. The numeric
+   * value is [`Self::source_fk`], which is the `/library/:sfk` route param.
+   */
+  id: string,
+  source_fk: number,
+  /**
+   * `PAPER_ROOTS.SOURCE_ID` — the vocabulary the project picker speaks.
+   */
+  source_id: string,
+  /**
+   * `PAPER.TITLE`. The column is NOT NULL; an empty string is the honest
+   * answer for a row that somehow holds one, and the title filter can
+   * compare it unguarded.
+   */
+  label: string,
+  category: string | null,
+  /**
+   * Display spellings of this paper's tags, deduped on [`norm_tag`] and
+   * resolved to the TAG table's casing — i.e. exactly the tag CHIPS the
+   * canvas draws for it, in the same order as [`Self::tag_keys`].
+   */
+  tags: Array<string>,
+  /**
+   * [`norm_tag`] of each entry in [`Self::tags`]. What a tag filter row is
+   * compared against, so the comparison needs no normalization pass on the
+   * client and cannot disagree with the chips.
+   */
+  tag_keys: Array<string>,
+  has_pdf: boolean,
+  /**
+   * `PAPER_META.PUBLISHED`, with the [`NO_PUBLISHED_DATE`] sentinel folded to
+   * `None`. Forwarding it raw made an undated paper read as a real date in
+   * year 1, so a Date-range `From` filter silently dropped every undated
+   * paper off the canvas as "too old".
+   */
+  published: string | null,
+  url: string | null,
+  doi: string | null,
+  summary: string | null,
+  /**
+   * Ids of the ACTIVE projects holding this paper, ascending.
+   */
+  project_ids: Array<number>,
+  /**
+   * Lowercased names of this paper's authors — what the Author highlight
+   * filter substring-matches. Author names only reach the canvas as separate
+   * author NODES, so the client used to rebuild this index by walking the
+   * edge list on every load.
+   */
+  author_keys: Array<string>,
+};
+
+export type GraphAuthor = {
+  /**
+   * `author::<AUTHOR_FK>`.
+   */
+  id: string,
+  /**
+   * AUTHOR_FK, the `/authors/:id` route param.
+   */
+  author_id: number,
+  /**
+   * `AUTHOR.AUTHOR_FULL_NAME` — the canonical spelling, so it follows renames
+   * and merges that `PAPER_META.AUTHORS` does not see.
+   */
+  label: string,
+  /**
+   * Papers on THIS canvas joined to this author. The hover inspector reports
+   * it; the client has no other source for a degree.
+   */
+  paper_count: number,
+};
+
+export type GraphTag = {
+  /**
+   * `tag::<key>`.
+   */
+  id: string,
+  /**
+   * [`norm_tag`] of the label — the key a tag filter row matches on.
+   */
+  key: string,
+  /**
+   * `TAG.TAG`, the spelling the Tags index and TagPage show, falling back to
+   * the paper's own casing for a tag the TAG table cannot answer for (the
+   * reserved reading-list marker, which `list_tags_with_count` filters out).
+   * Resolving it here is what stops one tag being drawn "ML" on the canvas
+   * and offered as "ml" in the dropdown two panels away.
+   */
+  label: string,
+  paper_count: number,
+};
+
+export type GraphEdge = {
+  source: string,
+  target: string,
+};
+
+export type GraphProject = {
+  id: number,
+  name: string,
+  /**
+   * Always set: falls back to the app's default accent for a project with
+   * no colour of its own.
+   */
+  color: string,
+  /**
+   * `PROJECT_TO_TAG` labels, ordered by label, with the reserved
+   * reading-list marker removed — it is bookkeeping nobody typed, and every
+   * other surface that draws a project's tags filters it out too.
+   */
+  tags: Array<string>,
+  /**
+   * Whether any paper on THIS canvas belongs to the project. Both filter
+   * boxes match a paper through [`GraphPaper::project_ids`], so a project
+   * that is active but holds no drawn paper can only empty the canvas —
+   * the frontend narrows what it OFFERS to the ones flagged here, and marks
+   * a hand-typed row that names only the others.
+   */
+  on_graph: boolean,
+};
+
+export type GraphView = {
+  papers: Array<GraphPaper>,
+  authors: Array<GraphAuthor>,
+  tags: Array<GraphTag>,
+  edges: Array<GraphEdge>,
+  /**
+   * Distinct `PAPER.CATEGORY` values in the library, for the Category box.
+   */
+  categories: Array<string>,
+  projects: Array<GraphProject>,
+};
+
+export type TagWithCount = {
+  label: string,
+  paper_count: number,
+};
+
+export type NewVersion = {
+  source_fk: number,
+  source_id: string,
+  title: string,
+  version: number,
+};
+
+export type OrcidCandidate = {
+  author_id: number,
+  full_name: string,
+  doi: string,
+};
+
+export type ImportPreview = {
+  project_name: string,
+  description: string,
+  paper_count: number,
+  note_count: number,
+  annotation_count: number,
+  has_pdfs: boolean,
+  format_version: number,
+};
+
+export type BackupInfo = {
+  path: string,
+  bytes: number,
+};
+
+export type DeletedPaperDetails = {
+  source_fk: number,
+  source_id: string,
+  title: string,
+  authors: Array<string>,
+  published: string | null,
+  deleted_at: string | null,
+  pdf_path: string | null,
+  had_pdf: boolean,
+  project_fks: Array<number>,
+};
+
+export type TrashedProjectRow = {
+  deleted_at: string | null,
+  /**
+   * Never null: `ProjectDetails.id` is optional only because that struct
+   * doubles as the pre-insert shape; `to_out` refuses a row without an id.
+   */
+  id: number,
+  name: string,
+  description: string,
+  color_hex: string | null,
+  project_tags: Array<string>,
+  source_ids: Array<string>,
+  paper_count: number,
+  status: Status,
+  created_at: string | null,
+  updated_at: string | null,
+  archived_at: string | null,
+  share_id: string | null,
+};
+
+export type RestoredPaper = {
+  ok: boolean,
+  restored: string,
+  pdf_path: string | null,
+  project_fks: Array<number>,
+};
+
+export type EditorProjectSummary = {
+  noteId: number,
+  projectName: string,
+  mainFile: string,
+  sourceFk: number,
+  projectId: number | null,
+  updatedAt: string | null,
+};

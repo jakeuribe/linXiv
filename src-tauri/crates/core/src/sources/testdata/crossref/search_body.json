@@ -1,0 +1,5 @@
+{"message":{"items":[
+        {"title":["Paper A"],"DOI":"10.1000/0","author":[],"published":{"date-parts":[[2023]]},"abstract":null,"container-title":[],"URL":null},
+        {"title":["Paper B"],"DOI":"10.1000/1","author":[],"published":{"date-parts":[[2023]]},"abstract":null,"container-title":[],"URL":null},
+        {"title":["Paper Without DOI"]}
+    ]}}

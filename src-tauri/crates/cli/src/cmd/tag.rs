@@ -4,7 +4,7 @@ use clap::Subcommand;
 use serde_json::json;
 
 use linxiv_core::models::TagIn;
-use linxiv_core::service::paper::{self as svc_paper, Paper};
+use linxiv_core::service::paper::{self as svc_paper, PaperRef};
 use linxiv_core::service::project as svc_project;
 use linxiv_core::service::tag::{self as svc_tag, Tag};
 
@@ -68,15 +68,9 @@ pub async fn run(cmd: TagCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         // cmd_tag_list: missing paper -> empty list (no error), matching get_paper_tags.
         TagCmd::List { source_id } => {
             let source_id = as_source_id(&ctx.conn, &source_id);
-            let tags = svc_paper::get(
-                &ctx.conn,
-                &Paper {
-                    source_id: Some(source_id.clone()),
-                    ..Default::default()
-                },
-            )?
-            .map(|d| d.tags)
-            .unwrap_or_default();
+            let tags = svc_paper::get(&ctx.conn, &PaperRef::source(source_id.clone()))?
+                .map(|d| d.tags)
+                .unwrap_or_default();
             output(&json!({ "source_id": source_id, "tags": tags }));
         }
         // cmd_tag_list_all

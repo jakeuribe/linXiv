@@ -99,15 +99,9 @@ async fn an_adapter_fetch_stores_through_the_service_save_path() {
     let stored = fetch_and_save(&fake(), &mut conn, "fake:1").await.unwrap();
     assert_eq!(stored, "fake:1");
 
-    let got = svc_paper::get(
-        &conn,
-        &svc_paper::Paper {
-            source_id: Some("fake:1".to_string()),
-            ..Default::default()
-        },
-    )
-    .unwrap()
-    .expect("saved paper is readable");
+    let got = svc_paper::get(&conn, &svc_paper::PaperRef::source("fake:1".to_string()))
+        .unwrap()
+        .expect("saved paper is readable");
     assert_eq!(got.title, "Attention Is All You Need");
     assert_eq!(got.source.as_deref(), Some("fake"));
 }

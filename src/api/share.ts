@@ -31,6 +31,9 @@ export const sharingAvailable = isTauri;
 
 export type MemberRole = "hoster" | "editor" | "viewer";
 
+// Diverged from `crates/share::model::SharedSummary` (not Serialize, no
+// synced_at/paused/project_fk/e2ee/member_count/role/pending; extra
+// annotation_count) — and linxiv-core's generator can't see that crate anyway.
 export interface SharedSummary {
   share_id: string;
   name: string;
@@ -193,6 +196,13 @@ export async function unpublishShare(
   shareId: string
 ): Promise<{ unpublished: boolean; share_id: string }> {
   return shareApi("POST", `/api/share/${shareId}/unpublish`);
+}
+
+/** Rebinds the p2p node against whatever relay settings are currently saved
+ *  (Settings → Sharing), without restarting the app. Save the settings first
+ *  via `updateSettings`, then call this. */
+export async function reconnectRelay(): Promise<void> {
+  await shareApi("POST", "/api/share/relay/reconnect");
 }
 
 /** This device's pasteable membership code — sent to a host to be invited

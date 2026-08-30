@@ -1,13 +1,10 @@
 import { apiFetch } from "./client";
+import type { NewVersion } from "../types/api";
 
 /** A newly discovered arXiv version, captured into the library by a poll pass. */
-export interface NewVersion {
-  source_fk: number;
-  source_id: string;
-  title: string;
-  version: number;
-}
+export type { NewVersion };
 
+// Envelope assembled inline by route/versions.rs — no core struct to generate.
 export interface VersionCheckResult {
   checked: number;
   new_versions: NewVersion[];

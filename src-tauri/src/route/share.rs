@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,9 +26,11 @@ use linxiv_core::service::paper_import;
 use linxiv_core::service::project as project_svc;
 use linxiv_share::{
     build_shared_project, doc_path, e2ee_dir, e2ee_received_dir, received_dir, save,
-    valid_share_id, MemberId, ProjectInvite, Role, ShareError, ShareNode, ShareStore, ShareTicket,
+    valid_share_id, CustomRelay, MemberId, ProjectInvite, Role, ShareError, ShareNode, ShareStore,
+    ShareTicket,
 };
 
+use crate::p2p_config::{self, RelaySetting};
 use crate::route::{parse_query, path_i64, split_segments, ApiError, ApiRequest, ReqCtx};
 use crate::share_sync;
 use crate::state::AppState;
@@ -45,6 +48,10 @@ pub struct ShareState {
     node: Mutex<Option<Arc<ShareNode>>>,
     // Entries persist for the process lifetime.
     write_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    // Flipped once, by whichever of {startup, a later `rebind`} first finds a
+    // bound node — guards against spawning the background interval-sync loop
+    // twice (or never, if startup found no node but a reconnect later does).
+    sync_started: AtomicBool,
 }
 
 impl ShareState {
@@ -54,6 +61,7 @@ impl ShareState {
             store: ShareStore::new(share_dir),
             node: Mutex::new(None),
             write_locks: Mutex::new(HashMap::new()),
+            sync_started: AtomicBool::new(false),
         }
     }
 
@@ -63,6 +71,7 @@ impl ShareState {
             store: ShareStore::new(share_dir),
             node: Mutex::new(Some(Arc::new(node))),
             write_locks: Mutex::new(HashMap::new()),
+            sync_started: AtomicBool::new(false),
         }
     }
 
@@ -95,6 +104,37 @@ impl ShareState {
         }
         Ok(())
     }
+
+    /// Marks the background interval-sync loop as started. Returns `true`
+    /// only for the caller that flips it, so exactly one loop ever runs
+    /// regardless of whether the node came up at startup or via a later
+    /// [`Self::rebind`].
+    pub fn mark_sync_started(&self) -> bool {
+        self.sync_started
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    /// Tears the current node down (if any) and binds a fresh one with
+    /// `relay`, swapping it into place — the "Save & Reconnect" relay flow,
+    /// so a relay change doesn't need a full app restart. A bind failure
+    /// leaves the node unbound (sharing disabled) rather than retrying the
+    /// old config: silently keeping the previous relay after the user asked
+    /// to switch would be its own kind of unwanted fallback.
+    pub async fn rebind(
+        &self,
+        p2p_dir: &Path,
+        dek: Option<[u8; 32]>,
+        relay: Option<CustomRelay>,
+    ) -> Result<(), ShareError> {
+        let mut guard = self.node.lock().await;
+        if let Some(old) = guard.take() {
+            old.shutdown().await?;
+        }
+        let fresh = ShareNode::bind_with_dek(self.store.share_dir(), p2p_dir, dek, relay).await?;
+        *guard = Some(Arc::new(fresh));
+        Ok(())
+    }
 }
 
 impl From<ShareError> for ApiError {
@@ -115,6 +155,7 @@ impl From<ShareError> for ApiError {
 /// `{method, path, body}` shape but resolves `ShareState` alongside `AppState`.
 #[tauri::command]
 pub async fn share_api(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     share: tauri::State<'_, ShareState>,
     req: ApiRequest,
@@ -159,6 +200,9 @@ pub async fn share_api(
             return put_settings(share.inner(), id, ctx.body).await
         }
         ("GET", ["api", "share", "member_code"]) => return member_code(share.inner()).await,
+        ("POST", ["api", "share", "relay", "reconnect"]) => {
+            return reconnect_relay(&app, share.inner()).await
+        }
         // Shadows the sync arm in `handle` so the live app gets role-stamped
         // summaries; the store-only tests keep dispatching through `handle`.
         ("GET", ["api", "share", "received"]) => {
@@ -835,6 +879,33 @@ async fn member_code(share: &ShareState) -> Result<Value, ApiError> {
     Ok(json!({ "code": code }))
 }
 
+/// `POST /api/share/relay/reconnect` — rebind the p2p node against whatever
+/// is currently saved under Settings → Sharing, without an app restart. Save
+/// the relay settings first (`PATCH /api/settings`), then call this.
+async fn reconnect_relay(app: &tauri::AppHandle, share: &ShareState) -> Result<Value, ApiError> {
+    let p2p_dir = config::data_dir().join("p2p");
+    match p2p_config::relay_setting() {
+        RelaySetting::RequireCustomButMissing => {
+            share.shutdown().await?;
+            return Err(ApiError::new(
+                400,
+                "\"Only use this relay\" is on but no valid relay is configured; refusing to fall back to the public n0 relay",
+            ));
+        }
+        setting => {
+            let relay = match setting {
+                RelaySetting::Custom(relay) => Some(relay),
+                _ => None,
+            };
+            share.rebind(&p2p_dir, p2p_config::p2p_dek(), relay).await?;
+        }
+    }
+    if share.mark_sync_started() {
+        share_sync::spawn_interval_sync(app.clone());
+    }
+    Ok(json!({ "ok": true }))
+}
+
 /// `POST /api/share/project/{id}/publish_secure` — snapshot a canonical project
 /// into an e2ee share (doc under `share_dir/e2ee`, beelay-registered), sharing
 /// PDF blobs for papers with a local file, and seed the members sidecar with
@@ -1232,10 +1303,9 @@ async fn shared_pdf(
         .with_conn(|c| {
             paper_svc::get(
                 c,
-                &paper_svc::Paper {
-                    source_id: Some(source_id.clone()),
+                &paper_svc::PaperRef::Source {
+                    source_id: source_id.clone(),
                     version: Some(version),
-                    ..Default::default()
                 },
             )
         })?
@@ -1541,15 +1611,9 @@ mod tests {
             assert_eq!(p.project_tags, vec!["RL".to_string()]);
             assert_eq!(p.source_fks.len(), 1, "paper linked to project");
 
-            let paper = paper_svc::get(
-                c,
-                &paper_svc::Paper {
-                    source_id: Some("arxiv:9".into()),
-                    ..Default::default()
-                },
-            )
-            .unwrap()
-            .expect("paper row created");
+            let paper = paper_svc::get(c, &paper_svc::PaperRef::source("arxiv:9".into()))
+                .unwrap()
+                .expect("paper row created");
             assert_eq!(paper.title, "Remote Paper");
             assert_eq!(paper.tags, vec!["remote-tag".to_string()]);
 
