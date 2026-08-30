@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
+  <title>ArXiv Query</title>
+  <id>http://arxiv.org/api/errors</id>
+  <entry>
+    <id>http://arxiv.org/abs/2204.12985v1</id>
+    <published>2022-04-27T17:59:01Z</published>
+    <title>Good Paper</title>
+    <summary>Good summary.</summary>
+    <author><name>Alice Smith</name></author>
+    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2301.00123v1</id>
+    <title>Bad Paper</title>
+    <summary>Missing published date.</summary>
+    <author><name>Bob Jones</name></author>
+    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+  </entry>
+</feed>

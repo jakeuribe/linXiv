@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
+  <title type="html">ArXiv Query</title>
+  <id>http://arxiv.org/api/errors</id>
+  <updated>2024-01-01T00:00:00-05:00</updated>
+  <entry>
+    <id>http://arxiv.org/abs/2204.12985v1</id>
+    <updated>2023-08-14T15:00:00Z</updated>
+    <published>2022-04-27T17:59:01Z</published>
+    <title>First Paper</title>
+    <summary>First summary text.</summary>
+    <author><name>Alice Smith</name></author>
+    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2301.00123v2</id>
+    <updated>2023-01-15T10:30:00Z</updated>
+    <published>2023-01-01T12:00:00Z</published>
+    <title>Second Paper</title>
+    <summary>Second summary text.</summary>
+    <author><name>Bob Jones</name></author>
+    <author><name>Charlie Brown</name></author>
+    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+  </entry>
+</feed>

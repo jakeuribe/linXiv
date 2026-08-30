@@ -350,111 +350,21 @@ mod tests {
     use super::*;
     use chrono::NaiveDate;
 
-    const ATOM: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
-  <title type="html">ArXiv Query</title>
-  <id>http://arxiv.org/api/errors</id>
-  <updated>2024-01-01T00:00:00-05:00</updated>
-  <entry>
-    <id>http://arxiv.org/abs/2204.12985v4</id>
-    <updated>2023-08-14T15:00:00Z</updated>
-    <published>2022-04-27T17:59:01Z</published>
-    <title>Attention Is All You
-      Need Again</title>
-    <summary>  We propose a new architecture &amp; show it works.
-Second line of the abstract.
-</summary>
-    <author><name>Alice Smith</name></author>
-    <author><name>Bob Jones</name></author>
-    <arxiv:doi xmlns:arxiv="http://arxiv.org/schemas/atom">10.1234/test.2022.12985</arxiv:doi>
-    <link title="doi" href="http://dx.doi.org/10.1234/test.2022.12985" rel="related"/>
-    <arxiv:comment xmlns:arxiv="http://arxiv.org/schemas/atom">15 pages, 3 figures</arxiv:comment>
-    <arxiv:journal_ref xmlns:arxiv="http://arxiv.org/schemas/atom">J. Test 12 (2022) 1-15</arxiv:journal_ref>
-    <link href="http://arxiv.org/abs/2204.12985v4" rel="alternate" type="text/html"/>
-    <link title="pdf" href="http://arxiv.org/pdf/2204.12985v4" rel="related" type="application/pdf"/>
-    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
-    <category term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
-    <category term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
-  </entry>
-</feed>"#;
+    // fixtures live in testdata/arxiv/, whitespace inside is load-bearing —
+    // never run a formatter over them.
+    const ATOM: &[u8] = include_bytes!("testdata/arxiv/atom_full_entry.xml");
 
     // A feed for a non-existent id: no <entry> elements.
-    const ATOM_EMPTY: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom">
-  <title>ArXiv Query</title>
-  <id>http://arxiv.org/api/errors</id>
-  <opensearch:totalResults xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/">0</opensearch:totalResults>
-</feed>"#;
+    const ATOM_EMPTY: &[u8] = include_bytes!("testdata/arxiv/atom_empty.xml");
 
     // A feed with two entries to verify non-cross-contamination.
-    const ATOM_TWO: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
-  <title type="html">ArXiv Query</title>
-  <id>http://arxiv.org/api/errors</id>
-  <updated>2024-01-01T00:00:00-05:00</updated>
-  <entry>
-    <id>http://arxiv.org/abs/2204.12985v1</id>
-    <updated>2023-08-14T15:00:00Z</updated>
-    <published>2022-04-27T17:59:01Z</published>
-    <title>First Paper</title>
-    <summary>First summary text.</summary>
-    <author><name>Alice Smith</name></author>
-    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
-  </entry>
-  <entry>
-    <id>http://arxiv.org/abs/2301.00123v2</id>
-    <updated>2023-01-15T10:30:00Z</updated>
-    <published>2023-01-01T12:00:00Z</published>
-    <title>Second Paper</title>
-    <summary>Second summary text.</summary>
-    <author><name>Bob Jones</name></author>
-    <author><name>Charlie Brown</name></author>
-    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
-  </entry>
-</feed>"#;
+    const ATOM_TWO: &[u8] = include_bytes!("testdata/arxiv/atom_two_entries.xml");
 
     // A feed with one good entry and one malformed entry (missing published date).
-    const ATOM_MIXED_GOOD_BAD: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
-  <title>ArXiv Query</title>
-  <id>http://arxiv.org/api/errors</id>
-  <entry>
-    <id>http://arxiv.org/abs/2204.12985v1</id>
-    <published>2022-04-27T17:59:01Z</published>
-    <title>Good Paper</title>
-    <summary>Good summary.</summary>
-    <author><name>Alice Smith</name></author>
-    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
-  </entry>
-  <entry>
-    <id>http://arxiv.org/abs/2301.00123v1</id>
-    <title>Bad Paper</title>
-    <summary>Missing published date.</summary>
-    <author><name>Bob Jones</name></author>
-    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
-  </entry>
-</feed>"#;
+    const ATOM_MIXED_GOOD_BAD: &[u8] = include_bytes!("testdata/arxiv/atom_mixed_good_bad.xml");
 
     // A feed where all entries fail finalize (all missing published date).
-    const ATOM_ALL_BAD: &[u8] = br#"<?xml version="1.0" encoding="UTF-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
-  <title>ArXiv Query</title>
-  <id>http://arxiv.org/api/errors</id>
-  <entry>
-    <id>http://arxiv.org/abs/2204.12985v1</id>
-    <title>Bad Paper 1</title>
-    <summary>Missing published.</summary>
-    <author><name>Alice</name></author>
-    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
-  </entry>
-  <entry>
-    <id>http://arxiv.org/abs/2301.00123v1</id>
-    <title>Bad Paper 2</title>
-    <summary>Also missing published.</summary>
-    <author><name>Bob</name></author>
-    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
-  </entry>
-</feed>"#;
+    const ATOM_ALL_BAD: &[u8] = include_bytes!("testdata/arxiv/atom_all_bad.xml");
 
     #[test]
     fn parse_arxiv_id_matches_python_cases() {
