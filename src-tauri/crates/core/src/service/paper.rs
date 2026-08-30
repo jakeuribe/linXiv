@@ -373,7 +373,7 @@ pub fn search_library(conn: &Connection, query: &str, limit: i64) -> Result<Vec<
 // ── soft / hard delete ───────────────────────────────────────────────────────
 
 /// Resolve a `PaperRef` to its text source_id (any variant → the root's id).
-fn resolve_source_id(conn: &Connection, paper: &PaperRef) -> Result<Option<String>> {
+pub(crate) fn resolve_source_id(conn: &Connection, paper: &PaperRef) -> Result<Option<String>> {
     match paper {
         PaperRef::Source { source_id, .. } => Ok(Some(canonical_source_id(conn, source_id))),
         PaperRef::SourceFk(sfk) => store::get_source_id(conn, *sfk),

@@ -8,7 +8,7 @@ use crate::output::{as_source_id, fail, output};
 
 use linxiv_core::config;
 use linxiv_core::models::PaperMetadata;
-use linxiv_core::service::{paper as svc_paper, project as svc_project};
+use linxiv_core::service::{paper as svc_paper, paper_merge as svc_merge, project as svc_project};
 
 #[derive(Subcommand)]
 pub enum PaperCmd {
@@ -53,6 +53,13 @@ pub enum PaperCmd {
     RemoveFromAllProjects { source_id: String },
     /// List other paper roots sharing this paper's DOI
     DoiCandidates { source_id: String },
+    /// Merge a duplicate paper into this one (the duplicate is deleted)
+    Merge {
+        /// The paper that survives; its metadata stays canonical
+        winner_source_id: String,
+        /// The duplicate to merge away
+        loser_source_id: String,
+    },
     /// Fetch a paper's arXiv TeX source and index it for full-text search
     FetchSource {
         source_id: String,
@@ -211,6 +218,31 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                 None => fail(linxiv_core::error::CoreError::PaperNotFound(
                     source_id.clone(),
                 )),
+            }
+        }
+
+        // POST /api/papers/sfk/{fk}/merge: winner's metadata is canonical; the
+        // duplicate's notes/annotations/memberships/tags/versions/PDFs move over.
+        // Guard failures (self-merge, trashed, share-linked) exit like the route's
+        // 409; unknown papers like its 404.
+        PaperCmd::Merge {
+            winner_source_id,
+            loser_source_id,
+        } => {
+            let winner = as_source_id(&ctx.conn, &winner_source_id);
+            let loser = as_source_id(&ctx.conn, &loser_source_id);
+            match svc_merge::merge_papers(
+                &mut ctx.conn,
+                &ctx.pdf_dir,
+                &paper(&winner),
+                &paper(&loser),
+            ) {
+                Ok(receipt) => output(&receipt),
+                Err(
+                    e @ (linxiv_core::error::CoreError::Conflict(_)
+                    | linxiv_core::error::CoreError::PaperNotFound(_)),
+                ) => fail(e),
+                Err(e) => return Err(e.into()),
             }
         }
 

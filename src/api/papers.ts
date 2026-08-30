@@ -4,6 +4,7 @@ import type {
   PaperVersionsResponse,
   DoiVersionCandidate,
   FullTextReceipt,
+  MergeReceipt,
 } from "../types/api";
 
 // The in-process app serves PDF bytes over the `linxiv://` custom scheme (the
@@ -57,6 +58,20 @@ export async function getDoiVersionCandidates(sfk: number): Promise<DoiVersionCa
     `/api/papers/sfk/${sfk}/doi-candidates`
   );
   return data.candidates;
+}
+
+// Merge a duplicate paper root INTO the paper `winnerSfk` (the open paper's
+// metadata stays canonical; the duplicate's notes, annotations, memberships,
+// tags, missing versions and PDFs move over, then the duplicate is deleted).
+// 409s on self/trashed/share-linked duplicates.
+export async function mergePapers(
+  winnerSfk: number,
+  loserSfk: number
+): Promise<MergeReceipt> {
+  return apiFetch<MergeReceipt>(`/api/papers/sfk/${winnerSfk}/merge`, {
+    method: "POST",
+    body: JSON.stringify({ loser_source_fk: loserSfk }),
+  });
 }
 
 export async function deletePaper(sourceId: string): Promise<{ deleted: string }> {

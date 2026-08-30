@@ -6,6 +6,7 @@ import {
   isReadingListProject,
   queueOf,
   statusLabel,
+  migrateStatus,
 } from "./readingStatus.ts";
 
 test("cycleStatus cycles unread → reading → read → unread", () => {
@@ -48,4 +49,19 @@ test("queueOf derives listed, unread-first papers", () => {
     ["c", "b"]
   );
   assert.deepEqual(queueOf(papers, new Set(), {}), []);
+});
+
+test("migrateStatus re-keys the loser's status onto the winner", () => {
+  assert.deepEqual(migrateStatus({ l: "read" }, "l", "w"), { w: "read" });
+});
+
+test("migrateStatus keeps the winner's status when both exist", () => {
+  assert.deepEqual(migrateStatus({ l: "read", w: "reading" }, "l", "w"), {
+    w: "reading",
+  });
+});
+
+test("migrateStatus is a no-op without a loser entry", () => {
+  const statuses = { w: "read" } as const;
+  assert.equal(migrateStatus(statuses, "l", "w"), statuses);
 });

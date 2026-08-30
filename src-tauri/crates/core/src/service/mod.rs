@@ -10,6 +10,7 @@ pub mod note;
 pub mod orcid_backfill;
 pub mod paper;
 pub mod paper_import;
+pub mod paper_merge;
 pub mod project;
 pub mod reading_list;
 pub mod search_state;

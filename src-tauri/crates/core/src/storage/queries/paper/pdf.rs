@@ -1,6 +1,6 @@
 //! PDF path/flag bookkeeping on PAPER / PAPER_META.
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::error::{CoreError, Result};
 use crate::storage::db::transaction;
@@ -35,6 +35,25 @@ pub fn set_pdf_path(
         )?,
     };
     Ok(())
+}
+
+/// Stored PDF_PATH for one exact (root, version) row, or None (row absent or
+/// path NULL). Post-commit merge cleanup keys on this.
+pub fn pdf_path_for_version(
+    conn: &Connection,
+    source_fk: i64,
+    version: i64,
+) -> Result<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT m.PDF_PATH FROM PAPER p \
+             JOIN PAPER_META m ON m.PAPER_ID = p.PAPER_ID \
+             WHERE p.SOURCE_FK = ?1 AND p.VERSION = ?2",
+            params![source_fk, version],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten())
 }
 
 /// `mark_pdf_saved` — write PDF_PATH and HAS_PDF=1 for one version in a single

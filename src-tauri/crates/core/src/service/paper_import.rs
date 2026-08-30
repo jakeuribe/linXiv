@@ -33,7 +33,7 @@ use std::sync::Mutex;
 /// Serializes the pre-existence check + insert in `import_pdf` so two concurrent
 /// imports of the same upstream paper can't race on check-then-upsert. Mirrors
 /// Python's `threading.Lock`.
-static IMPORT_ROOT_LOCK: Mutex<()> = Mutex::new(());
+pub(crate) static IMPORT_ROOT_LOCK: Mutex<()> = Mutex::new(());
 
 /// Result of a successful `import_pdf` (Python `PaperImportResult`, defined in
 /// `service/paper.py` — a service result, not a storage model).
@@ -327,10 +327,11 @@ fn import_body(
     external: Option<(String, i64)>,
     st: &mut ImportState,
 ) -> Result<String> {
+    // Held for the whole write section (not just check-then-upsert): a merge
+    // holds this same lock end-to-end, and releasing it between the row insert
+    // and mark_pdf_saved would let a merge collapse the half-written root.
+    let _guard = IMPORT_ROOT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let (sid, ver, pre_existing_pdf) = {
-        // Serialize check-then-upsert against concurrent imports of the same paper.
-        let _guard = IMPORT_ROOT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-
         // If enrichment resolved an upstream identity (arXiv/DOI), key on it as
         // this paper's Paper Root, not the content hash.
         if let Some((ext_id, ext_version)) = external {

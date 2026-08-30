@@ -19,6 +19,22 @@ export function cycleStatus(
   return undefined;
 }
 
+/** Merge-papers support: move `fromId`'s status onto `toId` unless the winner
+ * already carries one (winner wins — mirrors the backend merge), dropping the
+ * loser's entry either way. Returns the input object untouched when there is
+ * nothing to migrate. */
+export function migrateStatus(
+  statuses: Record<string, ReadingStatus>,
+  fromId: string,
+  toId: string
+): Record<string, ReadingStatus> {
+  if (!(fromId in statuses)) return statuses;
+  const next = { ...statuses };
+  if (next[toId] === undefined) next[toId] = next[fromId];
+  delete next[fromId];
+  return next;
+}
+
 export function statusLabel(cur: ReadingStatus | undefined): string {
   return cur === "read" ? "Read" : cur === "reading" ? "Reading" : "Unread";
 }

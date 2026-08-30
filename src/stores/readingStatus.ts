@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { cycleStatus, type ReadingStatus } from "../lib/readingStatus";
+import { cycleStatus, migrateStatus, type ReadingStatus } from "../lib/readingStatus";
 
 // Statuses persist to localStorage keyed by paper source_id. This store is the
 // swap point for the backend paper↔reading-status table.
@@ -8,6 +8,8 @@ interface ReadingStatusState {
   statuses: Record<string, ReadingStatus>;
   cycle: (sourceId: string) => void;
   remove: (sourceId: string) => void;
+  /** Re-key a merged-away paper's status onto the surviving paper. */
+  migrate: (fromId: string, toId: string) => void;
 }
 
 export const useReadingStatusStore = create<ReadingStatusState>()(
@@ -29,6 +31,9 @@ export const useReadingStatusStore = create<ReadingStatusState>()(
           delete statuses[sourceId];
           return { statuses };
         });
+      },
+      migrate(fromId, toId) {
+        set((state) => ({ statuses: migrateStatus(state.statuses, fromId, toId) }));
       },
     }),
     {
