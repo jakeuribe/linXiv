@@ -326,24 +326,15 @@ pub async fn search_by_title_checked(
 mod tests {
     use super::*;
 
+    // fixtures live in testdata/crossref/, whitespace inside is load-bearing —
+    // never run a formatter over them.
     // The `{"message": {...}}` envelope api.crossref.org returns for one work.
     // Lifted from test_crossref_source.py::_make_msg.
-    const WORK_BODY: &[u8] = br#"{"message":{
-        "title":["Test Paper"],
-        "author":[{"given":"Jane","family":"Doe"}],
-        "published":{"date-parts":[[2023,6,15]]},
-        "abstract":"<jats:p>Clean <b>text</b> here</jats:p>",
-        "container-title":["Journal of Testing"],
-        "URL":"https://doi.org/10.1000/xyz",
-        "DOI":"10.1000/xyz"}}"#;
+    const WORK_BODY: &[u8] = include_bytes!("testdata/crossref/work_body.json");
 
     // Search envelope with two items + one DOI-less item that must be skipped.
     // Lifted from TestSearchByTitle fixtures.
-    const SEARCH_BODY: &[u8] = br#"{"message":{"items":[
-        {"title":["Paper A"],"DOI":"10.1000/0","author":[],"published":{"date-parts":[[2023]]},"abstract":null,"container-title":[],"URL":null},
-        {"title":["Paper B"],"DOI":"10.1000/1","author":[],"published":{"date-parts":[[2023]]},"abstract":null,"container-title":[],"URL":null},
-        {"title":["Paper Without DOI"]}
-    ]}}"#;
+    const SEARCH_BODY: &[u8] = include_bytes!("testdata/crossref/search_body.json");
 
     fn work() -> Value {
         let v: Value = serde_json::from_slice(WORK_BODY).unwrap();
