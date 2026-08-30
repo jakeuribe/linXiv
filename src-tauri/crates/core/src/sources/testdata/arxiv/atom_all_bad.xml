@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:arxiv="http://arxiv.org/schemas/atom">
+  <title>ArXiv Query</title>
+  <id>http://arxiv.org/api/errors</id>
+  <entry>
+    <id>http://arxiv.org/abs/2204.12985v1</id>
+    <title>Bad Paper 1</title>
+    <summary>Missing published.</summary>
+    <author><name>Alice</name></author>
+    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.LG" scheme="http://arxiv.org/schemas/atom"/>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2301.00123v1</id>
+    <title>Bad Paper 2</title>
+    <summary>Also missing published.</summary>
+    <author><name>Bob</name></author>
+    <arxiv:primary_category xmlns:arxiv="http://arxiv.org/schemas/atom" term="cs.AI" scheme="http://arxiv.org/schemas/atom"/>
+  </entry>
+</feed>
