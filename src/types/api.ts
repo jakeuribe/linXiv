@@ -35,6 +35,15 @@ export type {
   BibtexImportReceipt,
   FilterField,
   FilterAction,
+  TagWithCount,
+  NewVersion,
+  OrcidCandidate,
+  ImportPreview,
+  BackupInfo,
+  DeletedPaperDetails,
+  TrashedProjectRow,
+  RestoredPaper,
+  EditorProjectSummary,
 } from "./generated";
 
 // Frontend names for the generated serializers. The Rust name is the model,

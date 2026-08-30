@@ -18,7 +18,7 @@ use crate::service::project as svc_project;
 
 /// One soft-deleted project: the canonical `ProjectOut` fields (flattened)
 /// plus the deletion time (`delete()` overwrites `archived_at` with it).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct TrashedProjectRow {
     #[serde(flatten)]
     pub project: ProjectOut,
@@ -50,7 +50,7 @@ pub fn list_trash(conn: &Connection) -> Result<TrashListing> {
 }
 
 /// Receipt for a paper restore — one shape on route/CLI/MCP.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct RestoredPaper {
     pub ok: bool,
     pub restored: String,

@@ -31,6 +31,9 @@ export const sharingAvailable = isTauri;
 
 export type MemberRole = "hoster" | "editor" | "viewer";
 
+// Diverged from `crates/share::model::SharedSummary` (not Serialize, no
+// synced_at/paused/project_fk/e2ee/member_count/role/pending; extra
+// annotation_count) — and linxiv-core's generator can't see that crate anyway.
 export interface SharedSummary {
   share_id: string;
   name: string;

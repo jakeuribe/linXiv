@@ -1,12 +1,10 @@
 import { apiFetch } from "./client";
+import type { OrcidCandidate as UpdatedOrcidAuthor } from "../types/api";
 
-/** One author whose ORCID was filled by a backfill pass. */
-export interface UpdatedOrcidAuthor {
-  author_id: number;
-  full_name: string;
-  doi: string;
-}
+/** One author whose ORCID was filled by a backfill pass (core's `OrcidCandidate`). */
+export type { UpdatedOrcidAuthor };
 
+// Envelope assembled inline by route/orcid.rs — no core struct to generate.
 export interface OrcidBackfillResult {
   checked: number;
   updated: UpdatedOrcidAuthor[];

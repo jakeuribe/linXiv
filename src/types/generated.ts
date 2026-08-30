@@ -321,3 +321,84 @@ export type GraphView = {
   categories: Array<string>,
   projects: Array<GraphProject>,
 };
+
+export type TagWithCount = {
+  label: string,
+  paper_count: number,
+};
+
+export type NewVersion = {
+  source_fk: number,
+  source_id: string,
+  title: string,
+  version: number,
+};
+
+export type OrcidCandidate = {
+  author_id: number,
+  full_name: string,
+  doi: string,
+};
+
+export type ImportPreview = {
+  project_name: string,
+  description: string,
+  paper_count: number,
+  note_count: number,
+  annotation_count: number,
+  has_pdfs: boolean,
+  format_version: number,
+};
+
+export type BackupInfo = {
+  path: string,
+  bytes: number,
+};
+
+export type DeletedPaperDetails = {
+  source_fk: number,
+  source_id: string,
+  title: string,
+  authors: Array<string>,
+  published: string | null,
+  deleted_at: string | null,
+  pdf_path: string | null,
+  had_pdf: boolean,
+  project_fks: Array<number>,
+};
+
+export type TrashedProjectRow = {
+  deleted_at: string | null,
+  /**
+   * Never null: `ProjectDetails.id` is optional only because that struct
+   * doubles as the pre-insert shape; `to_out` refuses a row without an id.
+   */
+  id: number,
+  name: string,
+  description: string,
+  color_hex: string | null,
+  project_tags: Array<string>,
+  source_ids: Array<string>,
+  paper_count: number,
+  status: Status,
+  created_at: string | null,
+  updated_at: string | null,
+  archived_at: string | null,
+  share_id: string | null,
+};
+
+export type RestoredPaper = {
+  ok: boolean,
+  restored: string,
+  pdf_path: string | null,
+  project_fks: Array<number>,
+};
+
+export type EditorProjectSummary = {
+  noteId: number,
+  projectName: string,
+  mainFile: string,
+  sourceFk: number,
+  projectId: number | null,
+  updatedAt: string | null,
+};

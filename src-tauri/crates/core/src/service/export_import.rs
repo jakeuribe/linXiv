@@ -269,7 +269,7 @@ pub struct ArchivePdf {
 }
 
 /// `ImportPreview` — what `commit_import` would do, read without touching the DB.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct ImportPreview {
     pub project_name: String,
     pub description: String,

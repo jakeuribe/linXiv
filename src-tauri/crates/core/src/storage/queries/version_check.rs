@@ -19,7 +19,7 @@ pub struct Candidate {
 }
 
 /// A newly discovered (and now captured) version, for the poll report / badge list.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct NewVersion {
     pub source_fk: i64,
     pub source_id: String,

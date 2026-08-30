@@ -103,7 +103,7 @@ fn is_editor_project(meta: &HashMap<String, String>) -> bool {
 }
 
 /// Wire shape of `_to_summary` (camelCase keys to match the FastAPI dicts).
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct EditorProjectSummary {
     pub note_id: i64,

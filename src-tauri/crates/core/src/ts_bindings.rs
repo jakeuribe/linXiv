@@ -128,6 +128,15 @@ pub(crate) fn render() -> String {
     out.push_str(&decl::<crate::graph::GraphEdge>());
     out.push_str(&decl::<crate::graph::GraphProject>());
     out.push_str(&decl::<crate::graph::GraphView>());
+    out.push_str(&decl::<TagWithCount>());
+    out.push_str(&decl::<crate::storage::queries::version_check::NewVersion>());
+    out.push_str(&decl::<crate::storage::queries::author::OrcidCandidate>());
+    out.push_str(&decl::<crate::service::export_import::ImportPreview>());
+    out.push_str(&decl::<crate::storage::backup::BackupInfo>());
+    out.push_str(&decl::<crate::service::paper::DeletedPaperDetails>());
+    out.push_str(&decl::<crate::service::trash::TrashedProjectRow>());
+    out.push_str(&decl::<crate::service::trash::RestoredPaper>());
+    out.push_str(&decl::<crate::service::editor_project::EditorProjectSummary>());
     out
 }
 
