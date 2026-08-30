@@ -310,7 +310,7 @@ pub struct AuthorWithCount {
 }
 
 /// A tag label with its distinct *active*-paper count, for the Tags index table.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct TagWithCount {
     pub label: String,
     pub paper_count: i64,

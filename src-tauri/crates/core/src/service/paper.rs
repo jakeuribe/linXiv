@@ -69,7 +69,7 @@ pub struct Papers {
 
 /// A soft-deleted paper enriched with its project memberships (Python
 /// `DeletedPaperDetails`). Wraps storage's `DeletedPaper` + `project_fks`.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct DeletedPaperDetails {
     pub source_fk: i64,
     pub source_id: String,

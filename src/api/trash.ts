@@ -1,42 +1,15 @@
 import { apiFetch } from "./client";
+import type {
+  DeletedPaperDetails as TrashedPaper,
+  TrashedProjectRow as TrashedProject,
+  RestoredPaper as RestorePaperResult,
+} from "../types/api";
 
-export interface TrashedPaper {
-  source_fk: number;
-  source_id: string;
-  title: string;
-  authors: string[] | null;
-  published: string | null;
-  deleted_at: string | null;
-  pdf_path: string | null;
-  had_pdf: boolean;
-  project_fks: number[];
-}
-
-export interface TrashedProject {
-  id: number;
-  name: string;
-  description: string;
-  color_hex: string | null;
-  project_tags: string[];
-  source_ids: string[];
-  paper_count: number;
-  status: string;
-  created_at: string | null;
-  updated_at: string | null;
-  archived_at: string | null;
-  share_id: string | null;
-  deleted_at: string | null;
-}
+// Core's trash listing rows and restore receipt, under the UI's names.
+export type { TrashedPaper, TrashedProject, RestorePaperResult };
 
 export async function listTrash(): Promise<{ papers: TrashedPaper[]; projects: TrashedProject[] }> {
   return apiFetch<{ papers: TrashedPaper[]; projects: TrashedProject[] }>("/api/trash");
-}
-
-export interface RestorePaperResult {
-  ok: boolean;
-  restored: string;
-  pdf_path: string | null;
-  project_fks: number[];
 }
 
 export async function restorePaper(sourceId: string): Promise<RestorePaperResult> {

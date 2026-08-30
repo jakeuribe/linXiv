@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 
+// Twin of `MpcClientStatus` in src-tauri/src/integrations.rs — the app crate,
+// which the linxiv-core ts_bindings generator can't reach; hand-kept in sync.
 export interface MpcClientStatus {
   id: string;
   name: string;

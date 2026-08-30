@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::{CoreError, Result};
 
 /// Result of a successful `backup`: where it landed and how big it is.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
 pub struct BackupInfo {
     pub path: PathBuf,
     pub bytes: u64,

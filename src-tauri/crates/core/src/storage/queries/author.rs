@@ -152,7 +152,7 @@ pub fn orcid_merge_candidates(
 }
 
 /// An ORCID-less author linked to a DOI-bearing paper, for `service::orcid_backfill`.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, ts_rs::TS)]
 pub struct OrcidCandidate {
     pub author_id: i64,
     pub full_name: String,
