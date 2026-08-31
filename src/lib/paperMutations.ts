@@ -90,7 +90,8 @@ export const PROJECT_MEMBERSHIP_QUERY_KEYS: readonly string[] = [
   "reading-status",
 ];
 
-/** Keys affected by an author rename, delete or merge — the one paper-shaped
+/** Keys affected by an author rename, delete, merge, or a paper↔author
+ *  link/unlink (reassign is unlink+link) — the one paper-shaped
  *  operation class that had no owner here, so each call site spelled out its
  *  own key list. Author nodes and the paper->author edges the graph's Author
  *  filter matches through come from AUTHOR / PAPER_TO_AUTHOR, so a merge or a

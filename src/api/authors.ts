@@ -1,5 +1,5 @@
 import { apiFetch } from "./client";
-import type { Author, AuthorDetail } from "../types/api";
+import type { Author, AuthorDetail, BasicAuthorDetails } from "../types/api";
 
 export interface AuthorUpdateBody {
   full_name?: string | null;
@@ -29,9 +29,27 @@ export async function updateAuthor(
   });
 }
 
-export async function getMergeCandidates(authorId: number): Promise<Author[]> {
-  const data = await apiFetch<{ candidates: Author[] }>(`/api/authors/${authorId}/merge-candidates`);
-  return data.candidates;
+export interface MergeCandidates {
+  /** Shares this author's ORCID — near-certain duplicate. */
+  candidates: BasicAuthorDetails[];
+  /** Shares only the exact full name — weak evidence, never overlaps `candidates`. */
+  name_candidates: BasicAuthorDetails[];
+}
+
+export async function getMergeCandidates(authorId: number): Promise<MergeCandidates> {
+  return apiFetch<MergeCandidates>(`/api/authors/${authorId}/merge-candidates`);
+}
+
+export async function linkAuthorToPaper(authorId: number, paperId: number): Promise<void> {
+  await apiFetch<{ ok: boolean }>(`/api/authors/${authorId}/papers/${paperId}`, {
+    method: "POST",
+  });
+}
+
+export async function unlinkAuthorFromPaper(authorId: number, paperId: number): Promise<void> {
+  await apiFetch<{ ok: boolean }>(`/api/authors/${authorId}/papers/${paperId}`, {
+    method: "DELETE",
+  });
 }
 
 export async function mergeAuthors(

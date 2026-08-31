@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
-import { listAuthors, getAuthor, updateAuthor, deleteAuthor, mergeAuthors, getMergeCandidates } from "../api/authors";
+import { listAuthors, getAuthor, updateAuthor, deleteAuthor, mergeAuthors, getMergeCandidates, linkAuthorToPaper, unlinkAuthorFromPaper } from "../api/authors";
 import type { AuthorUpdateBody } from "../api/authors";
 import { Spinner } from "../components/ui/spinner";
 import { Button } from "../components/ui/button";
@@ -269,12 +269,39 @@ function AuthorDetailView({ authorId }: AuthorDetailViewProps) {
   );
   const mergeOptions = mergeFilterActive ? mergeCandidates : mergeCandidates.slice(0, 50);
 
-  // Other authors sharing this author's ORCID; empty (and not fetched at all)
-  // for an ORCID-less author.
-  const { data: orcidCandidates = [] } = useQuery({
+  // Likely duplicates, split by evidence: `candidates` share this author's
+  // ORCID (strong), `name_candidates` only the exact full name (weak). The
+  // backend keeps the buckets disjoint — an ORCID match never repeats by name.
+  const { data: mergeSuggestions } = useQuery({
     queryKey: ["author-merge-candidates", authorId],
     queryFn: () => getMergeCandidates(authorId),
-    enabled: Boolean(author?.orcid),
+  });
+  const orcidCandidates = mergeSuggestions?.candidates ?? [];
+  const nameCandidates = mergeSuggestions?.name_candidates ?? [];
+
+  // Two-click confirm for the per-paper link surgery below (window.confirm is
+  // unreliable under WebKitGTK): first click arms, second fires.
+  const [armedPaperAction, setArmedPaperAction] = useState<string | null>(null);
+
+  const unlinkMutation = useMutation({
+    mutationFn: (paperId: number) => unlinkAuthorFromPaper(authorId, paperId),
+    onSuccess: () => {
+      invalidateAuthorQueries(queryClient);
+      setArmedPaperAction(null);
+    },
+  });
+
+  // Link to the candidate first, then unlink from here: if the second call
+  // fails the paper is on both authors (harmless), never on neither.
+  const reassignMutation = useMutation({
+    mutationFn: async ({ paperId, toAuthorId }: { paperId: number; toAuthorId: number }) => {
+      await linkAuthorToPaper(toAuthorId, paperId);
+      await unlinkAuthorFromPaper(authorId, paperId);
+    },
+    onSuccess: () => {
+      invalidateAuthorQueries(queryClient);
+      setArmedPaperAction(null);
+    },
   });
 
   const mergeMutation = useMutation({
@@ -448,23 +475,69 @@ function AuthorDetailView({ authorId }: AuthorDetailViewProps) {
               border: "1px solid var(--color-border)",
             }}
           >
-            {authorDetail.papers.map((paper) => (
-              <button
-                key={paper.paper_id}
-                type="button"
-                className="flex items-start gap-3 px-4 py-3 text-left hover:opacity-80 transition-opacity"
-                style={{ backgroundColor: "var(--color-panel)" }}
-                onClick={() => navigate(`/library/${paper.source_fk}`)}
-              >
-                <span className="text-sm flex-1" style={{ color: "var(--color-text)" }}>
-                  <MathText forceInline>{paper.title ?? paper.source_id}</MathText>
-                </span>
-                <span className="text-xs shrink-0 mt-0.5" style={{ color: "var(--color-muted)" }}>
-                  v{paper.version}
-                </span>
-              </button>
-            ))}
+            {authorDetail.papers.map((paper) => {
+              const busy = unlinkMutation.isPending || reassignMutation.isPending;
+              const unlinkKey = `unlink:${paper.paper_id}`;
+              return (
+                <div
+                  key={paper.paper_id}
+                  className="flex items-start gap-3 px-4 py-3"
+                  style={{ backgroundColor: "var(--color-panel)" }}
+                >
+                  <button
+                    type="button"
+                    className="text-sm flex-1 text-left hover:opacity-80 transition-opacity"
+                    style={{ color: "var(--color-text)" }}
+                    onClick={() => navigate(`/library/${paper.source_fk}`)}
+                  >
+                    <MathText forceInline>{paper.title ?? paper.source_id}</MathText>
+                  </button>
+                  <span className="text-xs shrink-0 mt-0.5" style={{ color: "var(--color-muted)" }}>
+                    v{paper.version}
+                  </span>
+                  {/* Light-touch fixes for one misfiled paper: move it to a
+                      same-name author, or just detach it — no author merge. */}
+                  {nameCandidates.map((c) => {
+                    const key = `reassign:${paper.paper_id}:${c.author_id}`;
+                    return (
+                      <ArmedActionButton
+                        key={c.author_id}
+                        armed={armedPaperAction === key}
+                        disabled={busy}
+                        armedLabel="Confirm — moves the paper"
+                        label={`Reassign to ${c.full_name ?? "(unnamed)"}`}
+                        onClick={() => {
+                          if (armedPaperAction === key) {
+                            reassignMutation.mutate({ paperId: paper.paper_id, toAuthorId: c.author_id });
+                          } else {
+                            setArmedPaperAction(key);
+                          }
+                        }}
+                      />
+                    );
+                  })}
+                  <ArmedActionButton
+                    armed={armedPaperAction === unlinkKey}
+                    disabled={busy}
+                    armedLabel="Confirm — removes this paper"
+                    label="Unlink"
+                    onClick={() => {
+                      if (armedPaperAction === unlinkKey) {
+                        unlinkMutation.mutate(paper.paper_id);
+                      } else {
+                        setArmedPaperAction(unlinkKey);
+                      }
+                    }}
+                  />
+                </div>
+              );
+            })}
           </div>
+        )}
+        {(unlinkMutation.error || reassignMutation.error) && (
+          <p className="text-sm" style={{ color: "var(--color-danger)" }}>
+            {((unlinkMutation.error ?? reassignMutation.error) as Error).message}
+          </p>
         )}
       </section>
 
@@ -501,6 +574,38 @@ function AuthorDetailView({ authorId }: AuthorDetailViewProps) {
             >
               Merge duplicate{orcidCandidates.length > 1 ? "s" : ""}
             </Button>
+          </div>
+        )}
+        {/* Weaker evidence than a shared ORCID: same exact name only. No
+            one-click merge here — inspect first, then use the picker below
+            (or reassign a single paper from the list above). */}
+        {nameCandidates.length > 0 && (
+          <div
+            className="rounded-md border px-3 py-2 space-y-1 text-sm"
+            style={{ borderColor: "var(--color-border)" }}
+          >
+            <p style={{ color: "var(--color-muted)" }}>
+              Same name, separate record{nameCandidates.length > 1 ? "s" : ""} — might be the
+              same person, but a shared name alone is weak evidence.
+            </p>
+            <ul className="space-y-0.5">
+              {nameCandidates.map((c) => (
+                <li key={c.author_id}>
+                  <Link
+                    to={`/authors/${c.author_id}`}
+                    className="underline underline-offset-2 hover:opacity-80"
+                    style={{ color: "var(--color-accent)" }}
+                  >
+                    {c.full_name ?? "(unnamed)"}
+                  </Link>
+                  {c.orcid && (
+                    <span className="text-xs ml-2" style={{ color: "var(--color-muted)" }}>
+                      ORCID {c.orcid}
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
           </div>
         )}
         <Input
@@ -612,6 +717,37 @@ function LabeledField({
       </label>
       {children}
     </div>
+  );
+}
+
+/** Two-click destructive button (PaperDetailPage's armed-merge pattern):
+ *  unarmed shows `label`; armed turns danger-colored and shows `armedLabel`. */
+function ArmedActionButton({
+  armed,
+  disabled,
+  label,
+  armedLabel,
+  onClick,
+}: {
+  armed: boolean;
+  disabled: boolean;
+  label: string;
+  armedLabel: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="text-xs rounded border px-1.5 py-0.5 hover:opacity-80 shrink-0 mt-0.5"
+      style={{
+        borderColor: armed ? "var(--color-danger)" : "var(--color-border)",
+        color: armed ? "var(--color-danger)" : "var(--color-muted)",
+      }}
+      disabled={disabled}
+      onClick={onClick}
+    >
+      {armed ? armedLabel : label}
+    </button>
   );
 }
 
