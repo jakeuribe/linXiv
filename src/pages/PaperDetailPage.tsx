@@ -27,7 +27,6 @@ import {
   invalidatePaperQueries,
 } from "../lib/paperMutations";
 import { submitOnCtrlEnter } from "../lib/submitShortcut";
-import { useReadingStatusStore } from "../stores/readingStatus";
 import { Spinner } from "../components/ui/spinner";
 import { Button } from "../components/ui/button";
 import { Badge } from "../components/ui/badge";
@@ -293,13 +292,9 @@ export default function PaperDetailPage() {
   const [armedMergeSfk, setArmedMergeSfk] = useState<number | null>(null);
   const mergeMutation = useMutation({
     mutationFn: (loserSfk: number) => mergePapers(Number(sfk), loserSfk),
-    onSuccess: (receipt) => {
-      // The localStorage reading-status store is keyed by source_id and never
-      // cascaded by the backend — re-key the merged-away id onto the survivor
-      // so the status doesn't orphan.
-      useReadingStatusStore
-        .getState()
-        .migrate(receipt.merged_source_id, receipt.winner_source_id);
+    onSuccess: () => {
+      // Reading statuses move with the merge inside the backend transaction
+      // (winner wins); invalidatePaperQueries covers the "reading-status" key.
       invalidatePaperQueries(queryClient);
       // Covers "saved-pdfs" — a merge renames/deletes/adopts PDF files.
       invalidatePaperMutationQueries(queryClient);

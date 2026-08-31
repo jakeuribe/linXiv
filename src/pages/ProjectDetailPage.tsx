@@ -26,8 +26,7 @@ import { Button } from "../components/ui/button";
 import { TagBadge } from "../components/tags/TagBadge";
 import { Spinner } from "../components/ui/spinner";
 import { EmptyState } from "../components/ui/empty-state";
-import { READING_LIST_TAG, isReadingListProject } from "../lib/readingStatus";
-import { useReadingStatusStore } from "../stores/readingStatus";
+import { READING_LIST_TAG } from "../lib/readingStatus";
 import {
   invalidateProjectMembershipQueries,
   invalidateProjectMutationQueries,
@@ -196,12 +195,8 @@ export default function ProjectDetailPage() {
         selectAll(idsArray.filter((_, i) => results[i].status === "rejected"));
         setRemoveError(`Failed to remove ${failedCount} paper${failedCount !== 1 ? "s" : ""}`);
       } else {
-        // Clean up reading status entries for successfully removed papers (reading-list projects only).
-        if (project && isReadingListProject(project)) {
-          idsArray.forEach((sid) => {
-            useReadingStatusStore.getState().remove(sid);
-          });
-        }
+        // Reading statuses need no client cleanup: PAPER_TO_READING's composite
+        // FK cascades away with the membership row.
         clear();
       }
       await invalidateProjectMembershipQueries(queryClient);
@@ -248,12 +243,6 @@ export default function ProjectDetailPage() {
     setStatusBusy(true);
     setStatusError(null);
     try {
-      // Clean up reading status entries if this is a reading-list project.
-      if (project && isReadingListProject(project)) {
-        projectPapers.forEach((paper) => {
-          useReadingStatusStore.getState().remove(paper.source_id);
-        });
-      }
       await deleteProject(projectId);
       await invalidateProjectMutationQueries(queryClient);
       navigate("/projects");
