@@ -1,5 +1,7 @@
 // Reading-list model: a reading list IS a project carrying the reserved
-// READING_LIST_TAG; per-paper read state lives in stores/readingStatus.
+// READING_LIST_TAG (the single source of truth on both sides — the backend's
+// is_reading_list_project derives from the same tag). Per-paper read state
+// lives in the backend PAPER_TO_READING table, reached via api/readingStatus.
 
 export const READING_LIST_TAG = "reading-list";
 
@@ -19,20 +21,46 @@ export function cycleStatus(
   return undefined;
 }
 
-/** Merge-papers support: move `fromId`'s status onto `toId` unless the winner
- * already carries one (winner wins — mirrors the backend merge), dropping the
- * loser's entry either way. Returns the input object untouched when there is
- * nothing to migrate. */
-export function migrateStatus(
-  statuses: Record<string, ReadingStatus>,
-  fromId: string,
-  toId: string
+/** Salvage statuses from the retired zustand-persist localStorage blob
+ * (`{"state":{"statuses":{...}},"version":n}`). Garbage in any shape — bad
+ * JSON, wrong nesting, invalid values — yields {} / drops the entry, never
+ * throws: this feeds the one-time push to the backend. */
+export function parsePersistedReadingStatuses(
+  raw: string | null
 ): Record<string, ReadingStatus> {
-  if (!(fromId in statuses)) return statuses;
-  const next = { ...statuses };
-  if (next[toId] === undefined) next[toId] = next[fromId];
-  delete next[fromId];
-  return next;
+  if (raw === null) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return {};
+  }
+  const statuses = (parsed as { state?: { statuses?: unknown } })?.state?.statuses;
+  if (typeof statuses !== "object" || statuses === null) return {};
+  const out: Record<string, ReadingStatus> = {};
+  for (const [sid, status] of Object.entries(statuses)) {
+    if (status === "reading" || status === "read") out[sid] = status;
+  }
+  return out;
+}
+
+/** Push legacy entries to the backend via `put` (which swallows skippable
+ * failures itself, e.g. a paper that no longer exists). Resolves true when
+ * every entry went through, false when any push threw — the caller keeps the
+ * blob so an idempotent retry can finish the job later. */
+export async function pushLegacyStatuses(
+  entries: Record<string, ReadingStatus>,
+  put: (sourceId: string, status: ReadingStatus) => Promise<unknown>
+): Promise<boolean> {
+  let allOk = true;
+  for (const [sid, status] of Object.entries(entries)) {
+    try {
+      await put(sid, status);
+    } catch {
+      allOk = false;
+    }
+  }
+  return allOk;
 }
 
 export function statusLabel(cur: ReadingStatus | undefined): string {

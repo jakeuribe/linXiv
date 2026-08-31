@@ -10,12 +10,10 @@ import {
   type TrashedProject,
 } from "../../api/trash";
 import { removeFromAllProjects } from "../../api/papers";
-import { useReadingStatusStore } from "../../stores/readingStatus";
 import {
   invalidatePaperQueries,
   invalidateProjectMembershipQueries,
   invalidateProjectMutationQueries,
-  forgetPurgedPapers,
 } from "../../lib/paperMutations";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
@@ -300,9 +298,8 @@ export function TrashSection() {
     setActionError(null);
     try {
       await hardDeletePaper(sourceId);
-      // Drop the persisted reading status so a re-saved paper reusing this
-      // source_id starts fresh. Soft delete keeps it: trash+restore round-trips.
-      forgetPurgedPapers([sourceId], useReadingStatusStore.getState());
+      // Reading status dies with the paper via the PAPER_TO_READING cascade;
+      // invalidatePaperQueries refreshes the "reading-status" map.
       await invalidatePaperQueries(qc);
     } catch (e) {
       console.error(e);

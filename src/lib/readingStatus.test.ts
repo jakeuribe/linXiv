@@ -4,9 +4,10 @@ import assert from "node:assert/strict";
 import {
   cycleStatus,
   isReadingListProject,
+  parsePersistedReadingStatuses,
+  pushLegacyStatuses,
   queueOf,
   statusLabel,
-  migrateStatus,
 } from "./readingStatus.ts";
 
 test("cycleStatus cycles unread → reading → read → unread", () => {
@@ -51,17 +52,43 @@ test("queueOf derives listed, unread-first papers", () => {
   assert.deepEqual(queueOf(papers, new Set(), {}), []);
 });
 
-test("migrateStatus re-keys the loser's status onto the winner", () => {
-  assert.deepEqual(migrateStatus({ l: "read" }, "l", "w"), { w: "read" });
-});
-
-test("migrateStatus keeps the winner's status when both exist", () => {
-  assert.deepEqual(migrateStatus({ l: "read", w: "reading" }, "l", "w"), {
-    w: "reading",
+test("parsePersistedReadingStatuses salvages valid entries from the legacy blob", () => {
+  const raw = JSON.stringify({
+    state: { statuses: { a: "reading", b: "read", c: "bogus", d: 3 } },
+    version: 1,
+  });
+  assert.deepEqual(parsePersistedReadingStatuses(raw), {
+    a: "reading",
+    b: "read",
   });
 });
 
-test("migrateStatus is a no-op without a loser entry", () => {
-  const statuses = { w: "read" } as const;
-  assert.equal(migrateStatus(statuses, "l", "w"), statuses);
+test("parsePersistedReadingStatuses yields {} on any garbage shape", () => {
+  assert.deepEqual(parsePersistedReadingStatuses(null), {});
+  assert.deepEqual(parsePersistedReadingStatuses("not json"), {});
+  assert.deepEqual(parsePersistedReadingStatuses("null"), {});
+  assert.deepEqual(parsePersistedReadingStatuses('{"state":{}}'), {});
+  assert.deepEqual(parsePersistedReadingStatuses('{"state":{"statuses":7}}'), {});
+});
+
+test("pushLegacyStatuses pushes every entry and reports success", async () => {
+  const pushed: [string, string][] = [];
+  const ok = await pushLegacyStatuses({ a: "reading", b: "read" }, async (sid, s) => {
+    pushed.push([sid, s]);
+  });
+  assert.equal(ok, true);
+  assert.deepEqual(pushed, [
+    ["a", "reading"],
+    ["b", "read"],
+  ]);
+});
+
+test("pushLegacyStatuses keeps going past a failure but reports it", async () => {
+  const pushed: string[] = [];
+  const ok = await pushLegacyStatuses({ a: "reading", b: "read" }, async (sid) => {
+    if (sid === "a") throw new Error("backend down");
+    pushed.push(sid);
+  });
+  assert.equal(ok, false);
+  assert.deepEqual(pushed, ["b"]);
 });

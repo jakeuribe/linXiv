@@ -19,11 +19,9 @@ import {
   invalidateNoteQueries,
   invalidateAnnotationQueries,
   onGraphDirtying,
-  forgetPurgedPapers,
   partialFailureMessage,
   addToProjectMutationOptions,
   createProjectMutationOptions,
-  type ReadingStatusRemover,
   type ProjectPickerActions,
 } from "./paperMutations.ts";
 
@@ -224,13 +222,12 @@ test("author mutations share one key set covering all three call sites", async (
   assert.ok(AUTHOR_MUTATION_QUERY_KEYS.includes(GRAPH_QUERY_KEY));
 });
 
-test("purging papers drops their persisted reading status", () => {
-  const removed: string[] = [];
-  const fake: ReadingStatusRemover = { remove: (id) => removed.push(id) };
-
-  forgetPurgedPapers(["arxiv:1", "arxiv:2"], fake);
-
-  assert.deepEqual(removed, ["arxiv:1", "arxiv:2"]);
+test("reading-status is invalidated by paper, project and membership changes", () => {
+  // Cascades / visibility: paper purge+merge (composite FK, merge move),
+  // membership removal (FK cascade), list trash/restore (STATUS filter).
+  assert.ok(PAPER_QUERY_KEYS.includes("reading-status"));
+  assert.ok(PROJECT_MUTATION_QUERY_KEYS.includes("reading-status"));
+  assert.ok(PROJECT_MEMBERSHIP_QUERY_KEYS.includes("reading-status"));
 });
 
 test("partial-failure message reports the failed count against the total", () => {
