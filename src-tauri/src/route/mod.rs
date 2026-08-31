@@ -38,6 +38,7 @@ mod orcid;
 pub(crate) mod papers; // ingest_full_text reused by the background full-text worker
 pub(crate) mod pdfs; // resolve_local_pdf reused by the linxiv:// protocol handler
 mod projects;
+mod reading_status;
 mod search;
 mod settings;
 pub mod share; // ShareState + share_api command, managed beside AppState in main.rs
@@ -188,6 +189,7 @@ async fn route_inner(state: &AppState, req: ApiRequest) -> Result<Value, ApiErro
         pdfs,
         papers,
         projects,
+        reading_status,
         notes,
         annotations,
         tags,
