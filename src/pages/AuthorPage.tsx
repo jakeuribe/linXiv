@@ -279,8 +279,10 @@ function AuthorDetailView({ authorId }: AuthorDetailViewProps) {
   const orcidCandidates = mergeSuggestions?.candidates ?? [];
   const nameCandidates = mergeSuggestions?.name_candidates ?? [];
 
-  // Two-click confirm for the per-paper link surgery below (window.confirm is
-  // unreliable under WebKitGTK): first click arms, second fires.
+  // Two-click confirm for every destructive action on this page — per-paper
+  // link surgery and both merge buttons (window.confirm is unreliable under
+  // WebKitGTK): first click arms, second fires. One shared key means arming
+  // one action disarms any other.
   const [armedPaperAction, setArmedPaperAction] = useState<string | null>(null);
 
   const unlinkMutation = useMutation({
@@ -310,6 +312,7 @@ function AuthorDetailView({ authorId }: AuthorDetailViewProps) {
       invalidateAuthorQueries(queryClient);
       ids.forEach((dupId) => queryClient.removeQueries({ queryKey: ["author", dupId] }));
       setMergeIds([]);
+      setArmedPaperAction(null);
     },
   });
 
@@ -565,14 +568,17 @@ function AuthorDetailView({ authorId }: AuthorDetailViewProps) {
               variant="outline"
               disabled={mergeMutation.isPending}
               onClick={() => {
-                const ids = orcidCandidates.map((a) => a.author_id);
-                const names = orcidCandidates.map((a) => a.full_name ?? "(unnamed)");
-                if (window.confirm(`Merge ${names.join(", ")} into this author? This cannot be undone.`)) {
-                  mergeMutation.mutate(ids);
+                if (armedPaperAction !== "merge:orcid") {
+                  setArmedPaperAction("merge:orcid");
+                  return;
                 }
+                setArmedPaperAction(null);
+                mergeMutation.mutate(orcidCandidates.map((a) => a.author_id));
               }}
             >
-              Merge duplicate{orcidCandidates.length > 1 ? "s" : ""}
+              {armedPaperAction === "merge:orcid"
+                ? "Confirm merge — cannot be undone"
+                : `Merge duplicate${orcidCandidates.length > 1 ? "s" : ""}`}
             </Button>
           </div>
         )}
@@ -647,18 +653,20 @@ function AuthorDetailView({ authorId }: AuthorDetailViewProps) {
           variant="outline"
           size="sm"
           onClick={() => {
-            const names = allAuthors
-              .filter((a) => mergeIds.includes(a.author_id))
-              .map((a) => a.full_name ?? "(unnamed)");
-            if (window.confirm(`Merge ${names.join(", ")} into this author? This cannot be undone.`)) {
-              mergeMutation.mutate(mergeIds);
+            if (armedPaperAction !== "merge:picker") {
+              setArmedPaperAction("merge:picker");
+              return;
             }
+            setArmedPaperAction(null);
+            mergeMutation.mutate(mergeIds);
           }}
           disabled={mergeIds.length === 0 || mergeMutation.isPending}
         >
           {mergeMutation.isPending
             ? "Merging…"
-            : `Merge${mergeIds.length ? ` ${mergeIds.length}` : ""} into this author`}
+            : armedPaperAction === "merge:picker"
+              ? `Confirm merge of ${mergeIds.length} — cannot be undone`
+              : `Merge${mergeIds.length ? ` ${mergeIds.length}` : ""} into this author`}
         </Button>
       </section>
 
