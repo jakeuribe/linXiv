@@ -274,10 +274,7 @@ pub fn import_bibtex(
         crate::service::project::ensure_membership_writable(conn, pid)?;
     }
     let metas = crate::formats::bibtex_import(text).map_err(CoreError::BadRequest)?;
-    let mut source_ids = Vec::with_capacity(metas.len());
-    for meta in &metas {
-        source_ids.push(crate::service::paper::save_paper_metadata(conn, meta, None)?.0);
-    }
+    let source_ids = crate::service::paper::save_papers_metadata(conn, &metas)?;
     if let Some(pid) = project_id {
         if !source_ids.is_empty() {
             if let Err(e) = crate::service::project::link_imported(conn, pid, &source_ids) {

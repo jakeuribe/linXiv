@@ -80,17 +80,16 @@ fn sync_paper_authors(
             )?;
         }
     }
-    for fk in old_fks {
-        let still: Option<i64> = tx
-            .query_row(
-                "SELECT 1 FROM PAPER_TO_AUTHOR WHERE AUTHOR_FK = ? LIMIT 1",
-                [fk],
-                |r| r.get(0),
-            )
-            .optional()?;
-        if still.is_none() {
-            tx.execute("DELETE FROM AUTHOR WHERE AUTHOR_FK = ?", [fk])?;
-        }
+    for chunk in old_fks.chunks(900) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        tx.execute(
+            &format!(
+                "DELETE FROM AUTHOR WHERE AUTHOR_FK IN ({placeholders}) \
+                 AND NOT EXISTS (SELECT 1 FROM PAPER_TO_AUTHOR \
+                                 WHERE AUTHOR_FK = AUTHOR.AUTHOR_FK)"
+            ),
+            rusqlite::params_from_iter(chunk.iter()),
+        )?;
     }
     Ok(())
 }
@@ -153,9 +152,11 @@ pub(crate) fn write_paper_version_in_tx(
 ) -> Result<()> {
     let merged_tags = merge_tags(&meta.tags, extra_tags);
     let source_fk = ensure_paper_root_row(tx, &meta.source_id)?;
+    // UPDATED_AT is date('now'), not the column's datetime('now') default: the
+    // Python-era post-INSERT UPDATE stored date-only strings, kept for parity.
     let changed = tx.execute(
-        "INSERT OR IGNORE INTO PAPER (SOURCE_ID, VERSION, TITLE, CATEGORY, HAS_PDF, SOURCE_FK) \
-         VALUES (?, ?, ?, ?, 0, ?)",
+        "INSERT OR IGNORE INTO PAPER (SOURCE_ID, VERSION, TITLE, CATEGORY, HAS_PDF, SOURCE_FK, UPDATED_AT) \
+         VALUES (?, ?, ?, ?, 0, ?, date('now'))",
         params![
             meta.source_id,
             meta.version,
@@ -189,10 +190,6 @@ pub(crate) fn write_paper_version_in_tx(
             opt_list_val(&merged_tags),
         ],
     )?;
-    tx.execute(
-        "UPDATE PAPER SET UPDATED_AT = date('now') WHERE PAPER_ID = ?",
-        [paper_id],
-    )?;
     sync_paper_authors(tx, paper_id, &meta.authors, meta.author_orcids.as_deref())?;
     sync_paper_tags(
         tx,
@@ -214,6 +211,22 @@ pub fn save_paper_metadata(
 ) -> Result<(String, i64)> {
     transaction(conn, |tx| write_paper_version_in_tx(tx, meta, extra_tags))?;
     Ok((meta.source_id.clone(), meta.version))
+}
+
+/// `save_papers_metadata` — persist many paper versions in ONE transaction
+/// (bulk import/search-save paths pay one IMMEDIATE tx per batch instead of one
+/// per paper). All-or-nothing: an error rolls back the whole batch. Returns the
+/// source_ids in input order (duplicates included; a dup version is a no-op).
+pub fn save_papers_metadata(conn: &mut Connection, metas: &[PaperMetadata]) -> Result<Vec<String>> {
+    if metas.is_empty() {
+        return Ok(Vec::new());
+    }
+    transaction(conn, |tx| {
+        for m in metas {
+            write_paper_version_in_tx(tx, m, None)?;
+        }
+        Ok(metas.iter().map(|m| m.source_id.clone()).collect())
+    })
 }
 
 /// `db.add_paper_tags` — UNION `tags` onto a paper's existing tags across BOTH
@@ -442,6 +455,34 @@ mod tests {
             get_all_versions(&conn, "arxiv:2204.12985").unwrap().len(),
             1
         );
+    }
+
+    #[test]
+    fn save_papers_metadata_bulk_saves_all_in_input_order() {
+        let mut conn = open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+
+        // Duplicate (source_id, version) inside the batch: id echoed, row not doubled.
+        let ids = save_papers_metadata(
+            &mut conn,
+            &[meta("arxiv:A", 1), meta("arxiv:B", 1), meta("arxiv:A", 1)],
+        )
+        .unwrap();
+        assert_eq!(ids, vec!["arxiv:A", "arxiv:B", "arxiv:A"]);
+        assert_eq!(get_all_versions(&conn, "arxiv:A").unwrap().len(), 1);
+
+        // Same stored shape as the per-paper path (dual author storage populated).
+        let p = get_paper(&conn, "arxiv:B", None).unwrap().unwrap();
+        assert_eq!(p.authors, vec!["Alice".to_string(), "Bob".to_string()]);
+
+        // UPDATED_AT keeps its Python-era date-only precision (now set in the
+        // INSERT rather than a follow-up UPDATE).
+        let updated_at: String = conn
+            .query_row("SELECT UPDATED_AT FROM PAPER LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(updated_at.len(), 10, "date-only, got {updated_at:?}");
+
+        assert!(save_papers_metadata(&mut conn, &[]).unwrap().is_empty());
     }
 
     #[test]

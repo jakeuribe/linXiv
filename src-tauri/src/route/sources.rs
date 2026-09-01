@@ -92,9 +92,7 @@ fn saved_ids(
     }
     state.with_conn(|conn| -> Result<Vec<String>, ApiError> {
         if save {
-            for m in results {
-                svc_paper::save_paper_metadata(conn, m, None)?;
-            }
+            svc_paper::save_papers_metadata(conn, results)?;
         }
         let ids: Vec<String> = results.iter().map(|m| m.source_id.clone()).collect();
         Ok(svc_paper::existing_source_ids(conn, &ids)?

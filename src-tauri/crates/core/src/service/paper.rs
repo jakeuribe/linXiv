@@ -214,6 +214,12 @@ pub fn save_paper_metadata(
     store::save_paper_metadata(conn, meta, tags)
 }
 
+/// Persist many normalized records in one transaction (all-or-nothing).
+/// Returns the source_ids in input order.
+pub fn save_papers_metadata(conn: &mut Connection, metas: &[PaperMetadata]) -> Result<Vec<String>> {
+    store::save_papers_metadata(conn, metas)
+}
+
 /// UNION `tags` onto a paper's existing tags (dual JSON + relational storage).
 /// Import/share merge path. Returns the merged list.
 pub fn add_paper_tags(

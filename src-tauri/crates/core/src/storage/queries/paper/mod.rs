@@ -29,7 +29,9 @@ pub use trash::{
     soft_delete_paper, DeletedPaper,
 };
 pub(crate) use write::write_paper_version_in_tx;
-pub use write::{add_paper_tags, remove_paper_tags, repair_paper, save_paper_metadata};
+pub use write::{
+    add_paper_tags, remove_paper_tags, repair_paper, save_paper_metadata, save_papers_metadata,
+};
 
 /// Shared fixtures for the submodules' test mods.
 #[cfg(test)]
