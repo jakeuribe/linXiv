@@ -26,13 +26,7 @@ pub fn build_manifest(
 ) -> Result<(Manifest, Vec<(String, PathBuf)>)> {
     let details = project::get_required(conn, project_fk)?;
 
-    let papers = paper::get_many(
-        conn,
-        &paper::Papers {
-            source_fks: Some(details.source_fks.clone()),
-            ..Default::default()
-        },
-    )?;
+    let papers = paper::get_by_source_fks(conn, &details.source_fks)?;
 
     let paper_entries: Vec<PaperEntry> = papers
         .iter()

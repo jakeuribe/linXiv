@@ -58,15 +58,6 @@ impl PaperRef {
     }
 }
 
-/// Filter criteria for listing multiple papers.
-#[derive(Debug, Default, Clone)]
-pub struct Papers {
-    pub source_fks: Option<Vec<i64>>,
-    pub paper_ids: Option<Vec<i64>>,
-    pub source_ids: Option<Vec<String>>,
-    pub tags: Option<Vec<String>>,
-}
-
 /// A soft-deleted paper enriched with its project memberships (Python
 /// `DeletedPaperDetails`). Wraps storage's `DeletedPaper` + `project_fks`.
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
@@ -175,38 +166,11 @@ pub fn get_all(conn: &Connection, paper: &PaperRef) -> Result<Option<PaperDetail
     }))
 }
 
-/// Fetch multiple papers matching any combination of `Papers` filters
-/// (latest version per paper). Empty filter lists are no-ops (Python truthiness).
-pub fn get_many(conn: &Connection, papers: &Papers) -> Result<Vec<PaperDetails>> {
-    let mut results = store::list_papers(conn, true, None, 0, None)?;
-
-    results.retain(|row| {
-        if let Some(ids) = &papers.paper_ids {
-            if !ids.is_empty() && !ids.contains(&row.paper_id) {
-                return false;
-            }
-        }
-        if let Some(sids) = &papers.source_ids {
-            if !sids.is_empty() && !sids.contains(&row.source_id) {
-                return false;
-            }
-        }
-        if let Some(tags) = &papers.tags {
-            if !tags.is_empty() && !tags.iter().any(|t| row.tags.contains(t)) {
-                return false;
-            }
-        }
-        true
-    });
-
-    if let Some(fks) = &papers.source_fks {
-        if !fks.is_empty() {
-            // View rows join PAPER_ROOTS on SOURCE_FK, so row.source_fk IS the
-            // root fk — no per-row root lookup needed.
-            results.retain(|row| fks.contains(&row.source_fk));
-        }
-    }
-    Ok(results)
+/// Latest-version rows for the given paper roots (project export/share),
+/// filtered in SQL. Empty input → empty output — a project with no papers
+/// yields no papers.
+pub fn get_by_source_fks(conn: &Connection, source_fks: &[i64]) -> Result<Vec<PaperDetails>> {
+    store::get_papers_by_source_fks(conn, source_fks)
 }
 
 // ── writes ───────────────────────────────────────────────────────────────────
@@ -904,77 +868,32 @@ mod tests {
     }
 
     #[test]
-    fn get_many_filters() {
+    fn get_by_source_fks_filters_latest_rows() {
         let mut conn = db();
         save_paper_metadata(&mut conn, &meta("arxiv:A", 1, "cs.LG", &["ml"]), None).unwrap();
+        save_paper_metadata(&mut conn, &meta("arxiv:A", 2, "cs.LG", &["ml"]), None).unwrap();
         save_paper_metadata(&mut conn, &meta("arxiv:B", 1, "math.CO", &["theory"]), None).unwrap();
         let fk_a = ensure_paper_root(&mut conn, "arxiv:A").unwrap();
-        let pid_b = get(&conn, &PaperRef::source("arxiv:B".into()))
-            .unwrap()
-            .unwrap()
-            .paper_id;
+        let fk_b = ensure_paper_root(&mut conn, "arxiv:B").unwrap();
 
-        // No filters -> both latest papers.
-        assert_eq!(get_many(&conn, &Papers::default()).unwrap().len(), 2);
-        // Empty lists are no-ops, not "match nothing".
-        assert_eq!(
-            get_many(
-                &conn,
-                &Papers {
-                    paper_ids: Some(vec![]),
-                    source_ids: Some(vec![]),
-                    tags: Some(vec![]),
-                    source_fks: Some(vec![]),
-                }
-            )
+        // Empty input -> empty output (an empty project exports no papers).
+        assert!(get_by_source_fks(&conn, &[]).unwrap().is_empty());
+        // One fk -> that root's latest version only.
+        let r = get_by_source_fks(&conn, &[fk_a]).unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!((r[0].source_id.as_str(), r[0].version), ("arxiv:A", 2));
+        // Unknown fks are dropped; result matches the list_papers default order.
+        let r = get_by_source_fks(&conn, &[fk_b, fk_a, 999_999]).unwrap();
+        let expected: Vec<i64> = list_papers(&conn, true, None, 0, None)
             .unwrap()
-            .len(),
-            2
+            .into_iter()
+            .map(|p| p.paper_id)
+            .collect();
+        assert_eq!(
+            r.iter().map(|p| p.paper_id).collect::<Vec<_>>(),
+            expected,
+            "same rows and order as the old whole-library scan-then-filter"
         );
-        // source_ids filter.
-        let r = get_many(
-            &conn,
-            &Papers {
-                source_ids: Some(vec!["arxiv:B".into()]),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(r.len(), 1);
-        assert_eq!(r[0].source_id, "arxiv:B");
-        // tags filter (any-match).
-        let r = get_many(
-            &conn,
-            &Papers {
-                tags: Some(vec!["ml".into()]),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(r.len(), 1);
-        assert_eq!(r[0].source_id, "arxiv:A");
-        // paper_ids filter.
-        let r = get_many(
-            &conn,
-            &Papers {
-                paper_ids: Some(vec![pid_b]),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(r.len(), 1);
-        assert_eq!(r[0].source_id, "arxiv:B");
-        // source_fks filter (resolved via paper root).
-        let r = get_many(
-            &conn,
-            &Papers {
-                source_fks: Some(vec![fk_a]),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(r.len(), 1);
-        assert_eq!(r[0].source_id, "arxiv:A");
     }
 
     #[test]

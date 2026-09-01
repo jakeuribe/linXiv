@@ -257,6 +257,37 @@ pub fn list_pdf_papers(conn: &Connection) -> Result<Vec<PaperDetails>> {
     Ok(out)
 }
 
+/// Latest-version rows for the given paper roots, filtered in SQL so project
+/// export/share never materializes the whole library. Empty input → empty
+/// output. Chunked to stay under SQLite's bound-variable limit, then sorted in
+/// Rust to the `list_papers` default order (published DESC undated-last,
+/// paper_id DESC) since chunking would scramble a SQL ORDER BY across chunks.
+pub fn get_papers_by_source_fks(
+    conn: &Connection,
+    source_fks: &[i64],
+) -> Result<Vec<PaperDetails>> {
+    let mut out = Vec::new();
+    for chunk in source_fks.chunks(900) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let sql = format!(
+            "SELECT {PAPER_COLUMNS_NO_TEXT} FROM latest_papers \
+             WHERE source_fk IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = stmt.query(params_from_iter(chunk.iter()))?;
+        while let Some(row) = rows.next()? {
+            out.push(row_to_paper(row)?);
+        }
+    }
+    // Option<NaiveDate> reversed = DESC with None (undated) last, like SQL DESC.
+    out.sort_by(|a, b| {
+        b.published
+            .cmp(&a.published)
+            .then(b.paper_id.cmp(&a.paper_id))
+    });
+    Ok(out)
+}
+
 /// `storage/db.py::get_categories` — distinct primary categories across latest
 /// active papers, NULLs excluded, ascending. BINARY collation (the default) is
 /// byte order — the same ordering the service's old BTreeSet<String> produced.

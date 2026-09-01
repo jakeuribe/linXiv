@@ -119,37 +119,24 @@ pub fn build_shared_project(conn: &Connection, project_id: i64) -> Result<Shared
     .ok_or_else(|| ShareError::NotFound(project_id.to_string()))?;
     let share_id = project_svc::ensure_share_id(conn, project_id)?;
 
-    // Empty source_fks must short-circuit: paper::get_many treats an empty filter
-    // list as "no filter" and would return every paper in the library.
-    let papers = if project.source_fks.is_empty() {
-        Vec::new()
-    } else {
-        let mut out = Vec::new();
-        for p in paper_svc::get_many(
-            conn,
-            &paper_svc::Papers {
-                source_fks: Some(project.source_fks.clone()),
-                ..Default::default()
-            },
-        )? {
-            let author_orcids = author_svc::get_paper_authors(conn, p.paper_id)?
-                .into_iter()
-                .map(|a| a.orcid)
-                .collect();
-            out.push(SharedPaper {
-                source_id: p.source_id,
-                version: p.version,
-                published: p.published.map(|d| d.to_string()),
-                title: p.title,
-                summary: p.summary.unwrap_or_default(),
-                authors: p.authors,
-                author_orcids,
-                tags: p.tags,
-                pdf_blob: None,
-            });
-        }
-        out
-    };
+    let mut papers = Vec::new();
+    for p in paper_svc::get_by_source_fks(conn, &project.source_fks)? {
+        let author_orcids = author_svc::get_paper_authors(conn, p.paper_id)?
+            .into_iter()
+            .map(|a| a.orcid)
+            .collect();
+        papers.push(SharedPaper {
+            source_id: p.source_id,
+            version: p.version,
+            published: p.published.map(|d| d.to_string()),
+            title: p.title,
+            summary: p.summary.unwrap_or_default(),
+            authors: p.authors,
+            author_orcids,
+            tags: p.tags,
+            pdf_blob: None,
+        });
+    }
 
     let mut notes = Vec::new();
     for n in note_svc::get_many(
