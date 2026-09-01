@@ -76,8 +76,8 @@ pub(super) fn refresh_fts(tx: &Transaction, source_id: &str) -> Result<()> {
 /// Empty text marks the version fetched without taking the paper out of search:
 /// `paper_index_text` falls back to whatever older version still holds a body. A
 /// version bump whose tarball extracts empty (PDF-only or corrupt) is the common
-/// way this happens, and `should_store_full_text` cannot see it — it is handed
-/// one version.
+/// way this happens, and the clobber guard (`has_full_text`) cannot see it — it
+/// is handed one version.
 pub fn set_full_text(
     conn: &mut Connection,
     source_id: &str,
@@ -101,6 +101,22 @@ pub fn set_full_text(
     })
 }
 
+/// Whether this exact active version already stores a non-empty TeX body — the
+/// commit-time guard that keeps an empty re-fetch from erasing an indexed one.
+/// One column on purpose: the body itself can run to megabytes and no caller
+/// wants it, only the answer.
+pub fn has_full_text(conn: &Connection, source_id: &str, version: i64) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT full_text IS NOT NULL AND full_text != '' FROM papers \
+             WHERE source_id = ? AND version = ?",
+            params![source_id, version],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or(false))
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::testutil::{count, meta};
@@ -114,9 +130,13 @@ mod tests {
         init_db(&conn).unwrap();
         save_paper_metadata(&mut conn, &meta("arxiv:ft", 1), None).unwrap();
 
+        assert!(!has_full_text(&conn, "arxiv:ft", 1).unwrap());
         set_full_text(&mut conn, "arxiv:ft", 1, Some("the full tex body")).unwrap();
         let p = get_paper(&conn, "arxiv:ft", Some(1)).unwrap().unwrap();
-        assert_eq!(p.full_text.as_deref(), Some("the full tex body"));
+        // `get_paper` blanks the body; the stored column answers through
+        // `has_full_text`.
+        assert_eq!(p.full_text, None);
+        assert!(has_full_text(&conn, "arxiv:ft", 1).unwrap());
         assert!(p.downloaded_source);
         // FTS searchable under the SOURCE_ID string.
         let hit: i64 = conn

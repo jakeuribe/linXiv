@@ -2,10 +2,8 @@
 //! PDF-name codec.
 
 use chrono::Utc;
-use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
-use crate::error::Result;
 use crate::models::{PaperDetails, PaperMetadata};
 
 pub(super) const FORMAT_VERSION: i64 = 1;
@@ -109,12 +107,10 @@ fn default_version() -> i64 {
 }
 
 impl PaperEntry {
-    pub(super) fn from_details(conn: &Connection, p: &PaperDetails) -> Result<Self> {
-        let author_orcids = crate::storage::queries::author::get_paper_authors(conn, p.paper_id)?
-            .into_iter()
-            .map(|a| a.orcid)
-            .collect();
-        Ok(PaperEntry {
+    /// `author_orcids` comes prefetched from the batched
+    /// `author::paper_author_orcids` lookup in `build_manifest`.
+    pub(super) fn from_details(p: &PaperDetails, author_orcids: Vec<Option<String>>) -> Self {
+        PaperEntry {
             source_id: p.source_id.clone(),
             version: p.version,
             title: p.title.clone(),
@@ -131,7 +127,7 @@ impl PaperEntry {
             url: p.url.clone(),
             tags: p.tags.clone(),
             source: p.source.clone(),
-        })
+        }
     }
 
     /// `_deserialize_paper` — archive record → `PaperMetadata`. Missing `published`

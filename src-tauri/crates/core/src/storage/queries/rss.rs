@@ -12,21 +12,16 @@ use ts_rs::TS;
 use crate::error::Result;
 
 /// Record that a feed entry was seen (idempotent; upserts the root + version row).
+/// Runs once per surviving entry on every feed page, so both statements are
+/// prepare_cached and the root's SOURCE_FK is read inside the version INSERT.
 pub fn upsert_seen(conn: &Connection, source_id: &str, version: i64, title: &str) -> Result<()> {
-    conn.execute(
-        "INSERT OR IGNORE INTO RSS_PAPER_ROOTS (SOURCE_ID) VALUES (?1)",
-        [source_id],
-    )?;
-    let source_fk: i64 = conn.query_row(
-        "SELECT SOURCE_FK FROM RSS_PAPER_ROOTS WHERE SOURCE_ID = ?1",
-        [source_id],
-        |r| r.get(0),
-    )?;
-    conn.execute(
+    conn.prepare_cached("INSERT OR IGNORE INTO RSS_PAPER_ROOTS (SOURCE_ID) VALUES (?1)")?
+        .execute([source_id])?;
+    conn.prepare_cached(
         "INSERT OR IGNORE INTO RSS_PAPER (SOURCE_ID, VERSION, TITLE, SOURCE_FK)
-         VALUES (?1, ?2, ?3, ?4)",
-        params![source_id, version, title, source_fk],
-    )?;
+         SELECT ?1, ?2, ?3, SOURCE_FK FROM RSS_PAPER_ROOTS WHERE SOURCE_ID = ?1",
+    )?
+    .execute(params![source_id, version, title])?;
     Ok(())
 }
 
@@ -146,12 +141,14 @@ pub fn merge_cache_entries(
     entries: &[CacheEntry],
 ) -> Result<()> {
     let tx = conn.transaction()?;
-    for e in entries {
-        tx.execute(
+    {
+        let mut insert = tx.prepare_cached(
             "INSERT OR IGNORE INTO RSS_CACHE_ENTRY
                  (FEED_URL, DEDUP_KEY, SOURCE_ID, ENTRY_JSON, PUBLISHED_AT)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
+        )?;
+        for e in entries {
+            insert.execute(params![
                 feed_url,
                 e.dedup_key,
                 e.source_id,
@@ -160,8 +157,8 @@ pub fn merge_cache_entries(
                 // string below, so 'T' would sort newer than same-day ' '-form times.
                 e.published_at
                     .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string()),
-            ],
-        )?;
+            ])?;
+        }
     }
     tx.commit()?;
     Ok(())
@@ -350,26 +347,57 @@ fn field_value<'a>(
     }
 }
 
-/// True if an enabled DENY rule matches (comma-separated keywords, all must
-/// match, case-insensitive substring) and no enabled ALLOW rule also matches.
-pub fn is_hidden(rules: &[FilterRule], title: &str, summary: &str, authors: &str) -> bool {
-    let rule_matches = |r: &FilterRule| -> bool {
-        if !r.enabled {
-            return false;
+/// A `FilterRule` with keywords pre-split/trimmed/lowercased and rules that
+/// can never match (disabled, or no real keywords) dropped, so per-entry
+/// matching does no re-parsing. Compile once per rule set, match per entry.
+pub struct CompiledRule {
+    field: FilterField,
+    action: FilterAction,
+    keywords: Vec<String>,
+}
+
+pub fn compile_rules(rules: Vec<FilterRule>) -> Vec<CompiledRule> {
+    rules
+        .into_iter()
+        .filter(|r| r.enabled)
+        .filter_map(|r| {
+            let keywords: Vec<String> = r
+                .keywords
+                .split(',')
+                .map(|k| k.trim().to_lowercase())
+                .filter(|k| !k.is_empty())
+                .collect();
+            // Separators-only keywords (e.g. ",") would make `.all()` vacuously
+            // true and match every entry -- require at least one real keyword.
+            (!keywords.is_empty()).then_some(CompiledRule {
+                field: r.field,
+                action: r.action,
+                keywords,
+            })
+        })
+        .collect()
+}
+
+/// True if a DENY rule matches (all keywords, case-insensitive substring)
+/// and no ALLOW rule also matches. Rules come from `compile_rules`.
+pub fn is_hidden(rules: &[CompiledRule], title: &str, summary: &str, authors: &str) -> bool {
+    if rules.is_empty() {
+        return false;
+    }
+    // Lowercase each field at most once, and only when some rule targets it.
+    let lower = |f: FilterField| {
+        if rules.iter().any(|r| r.field == f) {
+            field_value(f, title, summary, authors).to_lowercase()
+        } else {
+            String::new()
         }
-        let keywords: Vec<String> = r
-            .keywords
-            .split(',')
-            .map(|k| k.trim().to_lowercase())
-            .filter(|k| !k.is_empty())
-            .collect();
-        // Separators-only keywords (e.g. ",") would make `.all()` vacuously
-        // true and match every entry -- require at least one real keyword.
-        if keywords.is_empty() {
-            return false;
-        }
-        let field = field_value(r.field, title, summary, authors).to_lowercase();
-        keywords.iter().all(|kw| field.contains(kw))
+    };
+    let title = lower(FilterField::Title);
+    let summary = lower(FilterField::Summary);
+    let authors = lower(FilterField::Author);
+    let rule_matches = |r: &CompiledRule| -> bool {
+        let field = field_value(r.field, &title, &summary, &authors);
+        r.keywords.iter().all(|kw| field.contains(kw.as_str()))
     };
     let denied = rules
         .iter()
@@ -644,7 +672,7 @@ mod tests {
 
     #[test]
     fn deny_matches_all_keywords_and_allow_overrides() {
-        let rules = vec![
+        let rules = compile_rules(vec![
             FilterRule {
                 rule_id: 1,
                 field: FilterField::Title,
@@ -659,7 +687,7 @@ mod tests {
                 action: FilterAction::Allow,
                 enabled: true,
             },
-        ];
+        ]);
         assert!(is_hidden(
             &rules,
             "New AI results in quantum computing",
@@ -678,13 +706,13 @@ mod tests {
 
     #[test]
     fn separators_only_keywords_never_match() {
-        let rules = vec![FilterRule {
+        let rules = compile_rules(vec![FilterRule {
             rule_id: 1,
             field: FilterField::Title,
             keywords: " , ".into(),
             action: FilterAction::Deny,
             enabled: true,
-        }];
+        }]);
         assert!(!is_hidden(&rules, "Anything at all", "", ""));
     }
 
@@ -794,13 +822,13 @@ mod tests {
 
     #[test]
     fn disabled_rule_never_matches() {
-        let rules = vec![FilterRule {
+        let rules = compile_rules(vec![FilterRule {
             rule_id: 1,
             field: FilterField::Title,
             keywords: "spam".into(),
             action: FilterAction::Deny,
             enabled: false,
-        }];
+        }]);
         assert!(!is_hidden(&rules, "spam spam spam", "", ""));
     }
 }

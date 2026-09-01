@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use chrono::{NaiveDateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 
@@ -139,16 +141,69 @@ pub fn release_share_id_from_deleted(conn: &Connection, share_id: &str) -> Resul
 /// `storage/projects.py::_load_source_fks` — active-paper membership in
 /// PROJECT_TO_PAPER_FK (insertion) order; soft-deleted roots are excluded.
 fn load_source_fks(conn: &Connection, project_fk: i64) -> Result<Vec<i64>> {
-    let mut stmt = conn.prepare(
-        "SELECT p2p.SOURCE_FK FROM PROJECT_TO_PAPER p2p \
-         JOIN PAPER_ROOTS r ON r.SOURCE_FK = p2p.SOURCE_FK \
-         WHERE p2p.PROJECT_FK = ? AND r.STATUS = 'active' \
-         ORDER BY p2p.PROJECT_TO_PAPER_FK",
-    )?;
-    let fks = stmt
-        .query_map([project_fk], |r| r.get::<_, i64>(0))?
-        .collect::<rusqlite::Result<Vec<i64>>>()?;
-    Ok(fks)
+    Ok(source_fks_by_project(conn, &[project_fk])?
+        .remove(&project_fk)
+        .unwrap_or_default())
+}
+
+/// Batched [`load_source_fks`]: PROJECT_FK → active-membership SOURCE_FKs (in
+/// PROJECT_TO_PAPER_FK order) for a set of projects in one chunked query, so
+/// list paths are not a membership query per project. Projects with no active
+/// papers are simply absent.
+pub fn source_fks_by_project(
+    conn: &Connection,
+    project_fks: &[i64],
+) -> Result<HashMap<i64, Vec<i64>>> {
+    let mut by_project: HashMap<i64, Vec<i64>> = HashMap::with_capacity(project_fks.len());
+    for chunk in project_fks.chunks(900) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        // Per-project ordering survives chunking: a project's rows never span chunks.
+        let sql = format!(
+            "SELECT p2p.PROJECT_FK, p2p.SOURCE_FK FROM PROJECT_TO_PAPER p2p \
+             JOIN PAPER_ROOTS r ON r.SOURCE_FK = p2p.SOURCE_FK \
+             WHERE p2p.PROJECT_FK IN ({placeholders}) AND r.STATUS = 'active' \
+             ORDER BY p2p.PROJECT_TO_PAPER_FK"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (pfk, sfk) = row?;
+            by_project.entry(pfk).or_default().push(sfk);
+        }
+    }
+    Ok(by_project)
+}
+
+/// Bare existence probe, any status (mirrors `get_project`'s unfiltered row
+/// lookup) — the narrow form for guard sites that discard the row.
+pub fn project_exists(conn: &Connection, project_fk: i64) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM PROJECT WHERE PROJECT_FK = ?1",
+            [project_fk],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
+/// Active-membership count for one project (same PAPER_ROOTS `active` join as
+/// [`source_fks_by_project`]), `None` when the project is absent — the narrow
+/// form of `get_project(..).source_fks.len()`.
+pub fn active_paper_count(conn: &Connection, project_fk: i64) -> Result<Option<usize>> {
+    Ok(conn
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM PROJECT_TO_PAPER p2p \
+               JOIN PAPER_ROOTS r ON r.SOURCE_FK = p2p.SOURCE_FK \
+               WHERE p2p.PROJECT_FK = PROJECT.PROJECT_FK AND r.STATUS = 'active') \
+             FROM PROJECT WHERE PROJECT_FK = ?1",
+            [project_fk],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?
+        .map(|n| n as usize))
 }
 
 /// `storage/projects.py::get_project` — full project row. `load_sources` mirrors
@@ -201,12 +256,17 @@ pub fn list_projects(
         .query_map(params.as_slice(), raw_from_row)?
         .collect::<rusqlite::Result<Vec<RawProject>>>()?;
 
+    let mut by_project = if load_sources {
+        source_fks_by_project(conn, &raws.iter().map(|r| r.id).collect::<Vec<_>>())?
+    } else {
+        HashMap::new()
+    };
     let mut out = Vec::with_capacity(raws.len());
     for raw in raws {
         let id = raw.id;
         let mut proj = to_model(raw)?;
         if load_sources {
-            proj.source_fks = load_source_fks(conn, id)?;
+            proj.source_fks = by_project.remove(&id).unwrap_or_default();
         }
         out.push(proj);
     }
@@ -329,11 +389,37 @@ pub fn replace_papers(conn: &mut Connection, project_fk: i64, source_fks: &[i64]
 /// PROJECT_FKs of every project containing this paper — any status. Python
 /// `get_paper_project_fks`. Callers filter to active themselves.
 pub fn get_paper_project_fks(conn: &Connection, source_fk: i64) -> Result<Vec<i64>> {
-    let mut stmt = conn.prepare("SELECT PROJECT_FK FROM PROJECT_TO_PAPER WHERE SOURCE_FK = ?1")?;
-    let fks = stmt
-        .query_map([source_fk], |r| r.get::<_, i64>(0))?
-        .collect::<rusqlite::Result<Vec<i64>>>()?;
-    Ok(fks)
+    Ok(project_fks_by_source_fk(conn, &[source_fk])?
+        .remove(&source_fk)
+        .unwrap_or_default())
+}
+
+/// Batched [`get_paper_project_fks`]: SOURCE_FK → PROJECT_FKs (any status, in
+/// PROJECT_TO_PAPER_FK order) for a set of papers in one chunked query, so
+/// trash listing is not a membership query per paper. Papers in no project are
+/// simply absent.
+pub fn project_fks_by_source_fk(
+    conn: &Connection,
+    source_fks: &[i64],
+) -> Result<HashMap<i64, Vec<i64>>> {
+    let mut by_paper: HashMap<i64, Vec<i64>> = HashMap::with_capacity(source_fks.len());
+    for chunk in source_fks.chunks(900) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        // Per-paper ordering survives chunking: a paper's rows never span chunks.
+        let sql = format!(
+            "SELECT SOURCE_FK, PROJECT_FK FROM PROJECT_TO_PAPER \
+             WHERE SOURCE_FK IN ({placeholders}) ORDER BY PROJECT_TO_PAPER_FK"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (sfk, pfk) = row?;
+            by_paper.entry(sfk).or_default().push(pfk);
+        }
+    }
+    Ok(by_paper)
 }
 
 /// Remove a paper from every project; returns the FKs it was removed from.
@@ -713,6 +799,29 @@ mod tests {
             get_reading_status(&conn, 1, 12).unwrap(),
             ReadingStatus::Unread
         );
+    }
+
+    #[test]
+    fn project_fks_by_source_fk_batches_any_status_in_insertion_order() {
+        let conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO PAPER_ROOTS (SOURCE_FK, SOURCE_ID, STATUS) VALUES
+                 (10, 'arxiv:1', 'active'), (11, 'arxiv:2', 'active'), (12, 'arxiv:3', 'active');",
+        )
+        .unwrap();
+        let a = insert_project(&conn, "A", "d", None, Status::Active, None).unwrap();
+        let b = insert_project(&conn, "B", "d", None, Status::Deleted, None).unwrap();
+        add_papers(&conn, a, &[10, 11]).unwrap();
+        add_papers(&conn, b, &[11]).unwrap();
+
+        let by_paper = project_fks_by_source_fk(&conn, &[10, 11, 12, 999]).unwrap();
+        assert_eq!(by_paper[&10], vec![a]);
+        // Any status (deleted project b included), PROJECT_TO_PAPER_FK order.
+        assert_eq!(by_paper[&11], vec![a, b]);
+        assert!(!by_paper.contains_key(&12));
+        assert!(!by_paper.contains_key(&999));
+        assert!(project_fks_by_source_fk(&conn, &[]).unwrap().is_empty());
     }
 
     #[test]

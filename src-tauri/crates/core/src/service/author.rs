@@ -48,15 +48,13 @@ fn list_authors(
 
 // ── lookup seam ─────────────────────────────────────────────────────────────
 
-/// Fetch a single author. Resolution order: `author_id` → `orcid` (scan).
+/// Fetch a single author. Resolution order: `author_id` → `orcid`.
 pub fn get(conn: &Connection, author: &Author) -> Result<Option<BasicAuthorDetails>> {
     if let Some(id) = author.author_id {
         return store::get_author(conn, id);
     }
     if let Some(orcid) = author.orcid.as_deref() {
-        return Ok(store::get_many(conn, None)?
-            .into_iter()
-            .find(|r| r.orcid.as_deref() == Some(orcid)));
+        return store::get_author_by_orcid(conn, orcid);
     }
     Ok(None)
 }
@@ -179,9 +177,10 @@ pub fn link_author_to_paper(
     store::link_author_to_paper(conn, author_id, paper_id, author_index)
 }
 
-/// Drop one paper↔author link (per PAPER version row — the route unlinks every
-/// version of a root). No-op if the pair is not linked.
-pub fn unlink_author_from_paper(conn: &Connection, author_id: i64, paper_id: i64) -> Result<()> {
+/// Drop the paper↔author link for every stored version of the paper's root
+/// (link rows are per-version; any version's id addresses the root). No-op if
+/// the pair is not linked; `false` if `paper_id` is no active paper (→ 404).
+pub fn unlink_author_from_paper(conn: &Connection, author_id: i64, paper_id: i64) -> Result<bool> {
     store::unlink_author_from_paper(conn, author_id, paper_id)
 }
 
@@ -195,6 +194,15 @@ pub fn list_with_paper_count(conn: &Connection, min_papers: i64) -> Result<Vec<A
 /// Authors of a paper version, ordered by AUTHOR_INDEX.
 pub fn get_paper_authors(conn: &Connection, paper_id: i64) -> Result<Vec<BasicAuthorDetails>> {
     store::get_paper_authors(conn, paper_id)
+}
+
+/// Batched `get_paper_authors` projected to ORCIDs: each paper's author ORCIDs
+/// in AUTHOR_INDEX order, keyed by PAPER_ID (papers without author links absent).
+pub fn paper_author_orcids(
+    conn: &Connection,
+    paper_ids: &[i64],
+) -> Result<std::collections::HashMap<i64, Vec<Option<String>>>> {
+    store::paper_author_orcids(conn, paper_ids)
 }
 
 /// Other authors sharing this author's ORCID — likely-duplicate suggestions for
@@ -294,7 +302,7 @@ mod tests {
         .unwrap();
         assert_eq!(a.full_name.as_deref(), Some("Bob Stone"));
 
-        // by orcid (scan path)
+        // by orcid
         let a = get(
             &conn,
             &Author {

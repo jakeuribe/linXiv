@@ -86,6 +86,28 @@ pub fn is_paper_deleted(conn: &Connection, source_id: &str) -> Result<bool> {
     Ok(row.is_some())
 }
 
+/// Which of `source_ids` are soft-deleted — the batched sibling of
+/// [`is_paper_deleted`] for callers checking many ids (e.g. share import).
+/// Chunked like the other bulk id queries; unknown ids are simply absent.
+pub fn deleted_source_ids(
+    conn: &Connection,
+    source_ids: &[String],
+) -> Result<std::collections::HashSet<String>> {
+    let mut out = std::collections::HashSet::new();
+    for chunk in source_ids.chunks(900) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let mut stmt = conn.prepare(&format!(
+            "SELECT SOURCE_ID FROM PAPER_ROOTS WHERE STATUS = 'deleted' \
+             AND SOURCE_ID IN ({placeholders})"
+        ))?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(chunk), |r| r.get::<_, String>(0))?;
+        for row in rows {
+            out.insert(row?);
+        }
+    }
+    Ok(out)
+}
+
 /// A soft-deleted paper from the `deleted_papers` view. Local struct (no model;
 /// models.rs out of scope this phase).
 #[derive(Debug, Clone, Serialize)]
@@ -195,5 +217,26 @@ mod tests {
             ),
             0
         );
+    }
+
+    #[test]
+    fn deleted_source_ids_matches_per_id_checks() {
+        let mut conn = open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        save_paper_metadata(&mut conn, &meta("arxiv:kept", 1), None).unwrap();
+        save_paper_metadata(&mut conn, &meta("arxiv:gone", 1), None).unwrap();
+        soft_delete_paper(&mut conn, "arxiv:gone").unwrap();
+
+        let found = deleted_source_ids(
+            &conn,
+            &[
+                "arxiv:kept".into(),    // active -> absent
+                "arxiv:gone".into(),    // trashed -> present
+                "arxiv:unknown".into(), // never saved -> absent
+            ],
+        )
+        .unwrap();
+        assert_eq!(found, ["arxiv:gone".to_string()].into_iter().collect());
+        assert!(deleted_source_ids(&conn, &[]).unwrap().is_empty());
     }
 }

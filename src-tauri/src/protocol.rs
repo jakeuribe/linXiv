@@ -19,10 +19,10 @@ use tauri::http::{header, Request, Response, StatusCode};
 use tauri::{AppHandle, Manager, Runtime, UriSchemeContext, UriSchemeResponder};
 
 use linxiv_core::error::CoreError;
-use linxiv_core::service::paper::{self as svc_paper, PaperRef};
+use linxiv_core::service::paper as svc_paper;
 use linxiv_core::sources::http as core_http;
 
-use crate::route::{pct_decode, pdfs::resolve_local_pdf, split_segments};
+use crate::route::{pct_decode, split_segments};
 use crate::state::AppState;
 
 /// The scheme name registered on the Tauri builder.
@@ -87,22 +87,12 @@ fn serve_local_pdf<R: Runtime>(app: &AppHandle<R>, query: &str) -> Response<Cow<
     let pdf_dir = state.pdf_dir.clone();
     // Pull just the fields out under the DB lock; do the fs stats + read OUTSIDE it
     // so a slow stat can't widen the connection's critical section.
-    let found = state.with_conn(|conn| {
-        svc_paper::get(
-            conn,
-            &PaperRef::Source {
-                source_id: source_id.clone(),
-                version,
-            },
-        )
-        .ok()
-        .flatten()
-        .map(|p| (p.source_id, p.pdf_path, version.unwrap_or(p.version)))
-    });
-    let Some((sid, pdf_path, ver)) = found else {
+    let found =
+        state.with_conn(|conn| svc_paper::pdf_ref(conn, &source_id, version).ok().flatten());
+    let Some((sid, ver, pdf_path)) = found else {
         return empty(StatusCode::NOT_FOUND);
     };
-    match resolve_local_pdf(&pdf_dir, pdf_path.as_deref(), &sid, ver)
+    match linxiv_core::service::files::pdf_path(&pdf_dir, &sid, ver, pdf_path.as_deref())
         .and_then(|p| std::fs::read(p).ok())
     {
         Some(bytes) => pdf_response(bytes),
@@ -132,7 +122,7 @@ async fn fetch_proxy(url: &str) -> Response<Cow<'static, [u8]>> {
                 return empty(StatusCode::PAYLOAD_TOO_LARGE);
             }
             match resp.bytes().await {
-                Ok(bytes) if bytes.len() as u64 <= MAX_PDF_BYTES => pdf_response(bytes.to_vec()),
+                Ok(bytes) if bytes.len() as u64 <= MAX_PDF_BYTES => pdf_response(bytes.into()),
                 Ok(_) => empty(StatusCode::PAYLOAD_TOO_LARGE),
                 Err(_) => empty(StatusCode::BAD_GATEWAY),
             }

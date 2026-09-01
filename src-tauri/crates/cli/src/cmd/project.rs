@@ -163,10 +163,7 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             if status.is_none() {
                 projects.retain(|p| p.status != Status::Deleted);
             }
-            let rows = projects
-                .into_iter()
-                .map(|p| project::to_out(&ctx.conn, p))
-                .collect::<CoreResult<Vec<_>>>()?;
+            let rows = project::to_out_many(&ctx.conn, projects)?;
             output(&rows);
         }
 

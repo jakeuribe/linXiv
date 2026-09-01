@@ -80,10 +80,7 @@ fn doc(state: &AppState, id: &str) -> Result<Value, ApiError> {
 fn vault_fs(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let note_id = path_i64(id)?;
     let op: FsOp = ctx.parse_body()?;
-    if state
-        .with_conn(|conn| editor_project::get_meta(conn, note_id))?
-        .is_none()
-    {
+    if !state.with_conn(|conn| editor_project::is_editor_project_note(conn, note_id))? {
         return Err(ApiError::new(404, "Editor project not found"));
     }
     let vault_root = state.vault_root.join(format!("note_{note_id}"));

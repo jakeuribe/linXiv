@@ -96,15 +96,26 @@ fn mailto_setting(key: &str) -> String {
 /// User settings: bundled defaults overlaid by the user's overrides (shallow merge), mirroring
 /// `user_settings.py`. Only the overrides are persisted, never the defaults.
 pub struct UserSettings {
-    defaults: Map<String, Value>,
+    defaults: &'static Map<String, Value>,
     overrides: Map<String, Value>,
+}
+
+/// The bundled defaults, parsed once per process. Callers hit this on every
+/// settings read (feed polls, uploads, the full-text worker), so re-parsing the
+/// embedded JSON each time was pure waste. The expect is safe: the JSON is
+/// compiled in, so a parse failure is a build defect, not a runtime condition.
+fn bundled_defaults() -> &'static Map<String, Value> {
+    static DEFAULTS: std::sync::OnceLock<Map<String, Value>> = std::sync::OnceLock::new();
+    DEFAULTS.get_or_init(|| {
+        parse_obj(BUNDLED_DEFAULTS).expect("bundled default_settings.json is a JSON object")
+    })
 }
 
 impl UserSettings {
     /// Load overrides from `data_dir()/user_settings.json` over the bundled defaults.
     /// A missing user file yields no overrides (pure defaults).
     pub fn load() -> Result<Self> {
-        let defaults = parse_obj(BUNDLED_DEFAULTS)?;
+        let defaults = bundled_defaults();
         let path = data_dir().join(USER_SETTINGS_FILE);
         let overrides = match std::fs::read_to_string(&path) {
             Ok(s) => parse_obj(&s)?,
@@ -124,7 +135,7 @@ impl UserSettings {
 
     /// Shallow merge `{**defaults, **overrides}` — the effective settings.
     pub fn all(&self) -> Map<String, Value> {
-        let mut merged = self.defaults.clone();
+        let mut merged = (*self.defaults).clone();
         for (k, v) in &self.overrides {
             merged.insert(k.clone(), v.clone());
         }

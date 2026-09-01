@@ -274,10 +274,7 @@ pub fn import_bibtex(
         crate::service::project::ensure_membership_writable(conn, pid)?;
     }
     let metas = crate::formats::bibtex_import(text).map_err(CoreError::BadRequest)?;
-    let mut source_ids = Vec::with_capacity(metas.len());
-    for meta in &metas {
-        source_ids.push(crate::service::paper::save_paper_metadata(conn, meta, None)?.0);
-    }
+    let source_ids = crate::service::paper::save_papers_metadata(conn, &metas)?;
     if let Some(pid) = project_id {
         if !source_ids.is_empty() {
             if let Err(e) = crate::service::project::link_imported(conn, pid, &source_ids) {
@@ -335,18 +332,20 @@ fn import_body(
         // If enrichment resolved an upstream identity (arXiv/DOI), key on it as
         // this paper's Paper Root, not the content hash.
         if let Some((ext_id, ext_version)) = external {
-            if let Some(existing) = store::get_paper_root(conn, &ext_id)? {
-                if existing.status == "deleted" {
-                    // save_paper_metadata's ensure_paper_root will auto-restore;
-                    // record it so rollback can re-trash.
-                    st.restored_deleted_root = true;
-                }
-            }
             meta.source_id = ext_id;
             meta.version = ext_version;
         }
 
-        let pre_existing_root = store::get_paper_root(conn, &meta.source_id)?.is_some();
+        let existing_root = store::get_paper_root(conn, &meta.source_id)?;
+        if existing_root
+            .as_ref()
+            .is_some_and(|r| r.status == "deleted")
+        {
+            // save_paper_metadata's ensure_paper_root will auto-restore;
+            // record it so rollback can re-trash.
+            st.restored_deleted_root = true;
+        }
+        let pre_existing_root = existing_root.is_some();
         let pre_existing_version =
             store::get_paper(conn, &meta.source_id, Some(meta.version))?.is_some();
         // Adopting + the canonical PDF already on disk → preserve the user's copy.
@@ -765,7 +764,7 @@ mod tests {
         // and the failure-injection dir doesn't trip preserve-existing).
         paper::ensure_paper_root(&mut conn, "arxiv:dead").unwrap();
         store::soft_delete_paper(&mut conn, "arxiv:dead").unwrap();
-        assert!(paper::is_paper_deleted(&conn, "arxiv:dead").unwrap());
+        assert!(store::is_paper_deleted(&conn, "arxiv:dead").unwrap());
 
         block_final_path(dir.path(), "arxiv_deadv1.pdf");
 
@@ -781,7 +780,33 @@ mod tests {
         assert!(matches!(err, CoreError::Internal(_)));
 
         // save_paper_metadata auto-restored the root; rollback re-trashed it.
-        assert!(paper::is_paper_deleted(&conn, "arxiv:dead").unwrap());
+        assert!(store::is_paper_deleted(&conn, "arxiv:dead").unwrap());
+    }
+
+    #[test]
+    fn rollback_restored_deleted_local_root_re_soft_deletes() {
+        // Same as above but for a content-hash (external=None) identity: re-importing
+        // a trashed local paper also auto-restores its root, so a failed import must
+        // re-trash it too, not leave it silently restored.
+        let mut conn = db();
+        let dir = tempdir().unwrap();
+        paper::ensure_paper_root(&mut conn, "local:dead").unwrap();
+        store::soft_delete_paper(&mut conn, "local:dead").unwrap();
+
+        block_final_path(dir.path(), "local_deadv1.pdf");
+
+        let err = import_pdf(
+            &mut conn,
+            dir.path(),
+            b"pdf",
+            None,
+            NO_LIMIT,
+            resolver(meta("local:dead", 1), None),
+        )
+        .unwrap_err();
+        assert!(matches!(err, CoreError::Internal(_)));
+
+        assert!(store::is_paper_deleted(&conn, "local:dead").unwrap());
     }
 
     #[tokio::test]

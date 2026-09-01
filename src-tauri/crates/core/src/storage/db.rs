@@ -22,9 +22,18 @@ use crate::error::{CoreError, Result};
 /// `busy_timeout` waits for a writer in another process (the app, the CLI and
 /// the MCP server all open the same file) instead of failing the call outright
 /// with "database is locked".
+///
+/// WAL is best-effort (`let _`), not an open failure: entering WAL can return
+/// SQLITE_BUSY while another process is mid-write, and `backup.rs`'s
+/// `ensure_no_live_connections` relies on `open` failing ONLY for unopenable
+/// files. The mode is sticky per DB file, so any successful open sets it for
+/// good; a busy fallback just stays on the current mode for this connection.
+/// Durability is unchanged (synchronous stays FULL) — WAL buys readers that
+/// don't block on the writer, which is the whole multi-process story above.
 pub fn open(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
     conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")?;
+    let _ = conn.query_row("PRAGMA journal_mode=WAL", [], |_| Ok(()));
     Ok(conn)
 }
 
@@ -122,6 +131,18 @@ mod tests {
         assert_eq!(timestamp_from_sql("2024-03-05 12:00:00").unwrap(), dt);
         assert!(bool_from_sql(1));
         assert!(!bool_from_sql(0));
+    }
+
+    #[test]
+    fn file_backed_open_runs_in_wal_mode() {
+        let dir = std::env::temp_dir().join(format!("linxiv-db-wal-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mode: String = open(&dir.join("papers.db"))
+            .unwrap()
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(mode, "wal");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
