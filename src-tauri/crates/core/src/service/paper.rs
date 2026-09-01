@@ -414,6 +414,15 @@ pub fn is_paper_deleted(conn: &Connection, source_id: &str) -> Result<bool> {
     store::is_paper_deleted(conn, source_id)
 }
 
+/// Which of `source_ids` are soft-deleted — the batched sibling of
+/// [`is_paper_deleted`].
+pub fn deleted_source_ids(
+    conn: &Connection,
+    source_ids: &[String],
+) -> Result<std::collections::HashSet<String>> {
+    store::deleted_source_ids(conn, source_ids)
+}
+
 // ── multi-paper reads ────────────────────────────────────────────────────────
 
 /// Latest-version (default) paper rows, with optional exact-category filter and

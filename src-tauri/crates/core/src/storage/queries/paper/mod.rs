@@ -23,8 +23,8 @@ pub use roots::{
     source_ids_by_fk, PaperRoot,
 };
 pub use trash::{
-    hard_delete_paper, is_paper_deleted, list_deleted_papers, restore_paper, soft_delete_paper,
-    DeletedPaper,
+    deleted_source_ids, hard_delete_paper, is_paper_deleted, list_deleted_papers, restore_paper,
+    soft_delete_paper, DeletedPaper,
 };
 pub(crate) use write::write_paper_version_in_tx;
 pub use write::{add_paper_tags, remove_paper_tags, repair_paper, save_paper_metadata};

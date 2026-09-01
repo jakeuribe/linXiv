@@ -326,6 +326,21 @@ pub fn import_shared_project(conn: &mut Connection, sp: &SharedProject) -> Resul
 
     let mut linked: Vec<String> = Vec::new();
     const MAX_SOURCE_ID: usize = 512;
+    // Deleted/known status is resolved in two bulk queries up front instead of
+    // two queries per paper; nothing in the loop trashes papers, and `known`
+    // is kept current across duplicate source_ids by inserting after a save.
+    let candidate_ids: Vec<String> = sp
+        .papers
+        .iter()
+        .take(MAX_SHARED_ITEMS)
+        .filter(|p| !p.source_id.is_empty() && p.source_id.len() <= MAX_SOURCE_ID)
+        .map(|p| p.source_id.clone())
+        .collect();
+    let trashed = paper_svc::deleted_source_ids(conn, &candidate_ids)?;
+    let mut known: std::collections::HashSet<String> =
+        paper_svc::existing_source_ids(conn, &candidate_ids)?
+            .into_iter()
+            .collect();
     for p in sp.papers.iter().take(MAX_SHARED_ITEMS) {
         // Identity field: skipped, never truncated.
         if p.source_id.is_empty() || p.source_id.len() > MAX_SOURCE_ID {
@@ -336,24 +351,24 @@ pub fn import_shared_project(conn: &mut Connection, sp: &SharedProject) -> Resul
             continue;
         }
         // A locally-trashed paper stays trashed.
-        if paper_svc::is_paper_deleted(conn, &p.source_id)? {
+        if trashed.contains(&p.source_id) {
             continue;
         }
-        let known =
-            paper_svc::get(conn, &paper_svc::PaperRef::source(p.source_id.clone()))?.is_some();
-        if !known {
+        if !known.contains(&p.source_id) {
             // Metadata writes apply only to papers not already in the DB.
+            // This also creates the paper root, so linking below resolves.
             paper_svc::save_paper_metadata(conn, &paper_meta(p), None)?;
+            known.insert(p.source_id.clone());
         } else if !p.tags.is_empty() {
             let truncated_tags: Vec<_> = p.tags.iter().map(|t| truncate_text(t)).collect();
             paper_svc::add_paper_tags(conn, &p.source_id, &truncated_tags)?;
         }
-        paper_svc::ensure_paper_root(conn, &p.source_id)?;
         linked.push(p.source_id.clone());
     }
     if !linked.is_empty() {
         project_svc::link_imported(conn, project_fk, &linked)?;
     }
+    let linked: std::collections::HashSet<&str> = linked.iter().map(String::as_str).collect();
 
     let existing_notes = note_svc::get_many(
         conn,
@@ -362,8 +377,12 @@ pub fn import_shared_project(conn: &mut Connection, sp: &SharedProject) -> Resul
             ..Default::default()
         },
     )?;
+    let notes_by_uuid: std::collections::HashMap<&str, _> = existing_notes
+        .iter()
+        .map(|e| (e.uuid.as_str(), e))
+        .collect();
     for n in sp.notes.iter().take(MAX_SHARED_ITEMS) {
-        if let Some(e) = existing_notes.iter().find(|e| e.uuid == n.uuid) {
+        if let Some(e) = notes_by_uuid.get(n.uuid.as_str()) {
             // Skip when the local row was edited more recently than the remote entry.
             let local_newer = match (e.updated_at.map(|t| t.to_string()), &n.updated_at) {
                 (Some(local), Some(remote)) => &local > remote,
@@ -403,7 +422,7 @@ pub fn import_shared_project(conn: &mut Connection, sp: &SharedProject) -> Resul
             let Some(sid) = n.paper_source_id.as_deref() else {
                 continue;
             };
-            if !linked.iter().any(|s| s == sid) {
+            if !linked.contains(sid) {
                 continue;
             }
             let source_fk = paper_svc::ensure_paper_root(conn, sid)?;
@@ -428,8 +447,10 @@ pub fn import_shared_project(conn: &mut Connection, sp: &SharedProject) -> Resul
             ..Default::default()
         },
     )?;
+    let anns_by_uuid: std::collections::HashMap<&str, _> =
+        existing_anns.iter().map(|e| (e.uuid.as_str(), e)).collect();
     for a in sp.annotations.iter().take(MAX_SHARED_ITEMS) {
-        if let Some(e) = existing_anns.iter().find(|e| e.uuid == a.uuid) {
+        if let Some(e) = anns_by_uuid.get(a.uuid.as_str()) {
             // Skip when the local row was edited more recently than the remote entry.
             let local_newer = match (e.updated_at.map(|t| t.to_string()), &a.updated_at) {
                 (Some(local), Some(remote)) => &local > remote,
@@ -465,9 +486,7 @@ pub fn import_shared_project(conn: &mut Connection, sp: &SharedProject) -> Resul
                 continue;
             }
             // Skip-not-fail on a bad anchor or an unlinked paper (export_import parity).
-            if validate_anchor(&a.anchor).is_err()
-                || !linked.iter().any(|s| s == &a.paper_source_id)
-            {
+            if validate_anchor(&a.anchor).is_err() || !linked.contains(a.paper_source_id.as_str()) {
                 continue;
             }
             let source_fk = paper_svc::ensure_paper_root(conn, &a.paper_source_id)?;
@@ -982,5 +1001,104 @@ mod tests {
         assert_eq!(stored.as_deref(), Some(share_id.as_str()));
         assert_eq!(name, "My Project");
         assert_eq!(description, "a project");
+    }
+
+    // Pins the paper-loop semantics of import_shared_project: a locally-trashed
+    // paper stays trashed and unlinked (its notes/annotations skipped), a known
+    // paper keeps its local metadata but gains the remote tags, and an unknown
+    // paper is created from the remote metadata.
+    #[test]
+    fn import_skips_trashed_tags_known_and_creates_unknown_papers() {
+        let (conn, pid) = seed();
+        let mut sp = build_shared_project(&conn, pid).unwrap();
+        sp.papers.push(SharedPaper {
+            source_id: "arxiv:3".into(),
+            version: 1,
+            published: Some("2024-02-02".into()),
+            title: "Third".into(),
+            summary: "s3".into(),
+            authors: vec!["Dan".into()],
+            tags: vec!["new".into()],
+            pdf_blob: None,
+            author_orcids: Vec::new(),
+        });
+
+        // Target DB: arxiv:1 exists but is locally trashed, arxiv:2 exists
+        // active with different local metadata, arxiv:3 is unknown.
+        let mut conn2 = open_in_memory().unwrap();
+        storage::init_db(&conn2).unwrap();
+        let pin = |sid: &str, title: &str| PaperIn {
+            title: title.into(),
+            published: NaiveDate::from_ymd_opt(2023, 6, 1).unwrap(),
+            source_id: Some(sid.into()),
+            version: None,
+            authors: Some(vec!["Local".into()]),
+            summary: Some("local summary".into()),
+            category: Some("cs.LG".into()),
+            doi: None,
+            url: None,
+            tags: None,
+            source: Some("arxiv".into()),
+        };
+        paper_svc::upsert(&mut conn2, &pin("arxiv:1", "Local First"), None).unwrap();
+        paper_svc::upsert(&mut conn2, &pin("arxiv:2", "Local Second"), None).unwrap();
+        paper_svc::delete(
+            &mut conn2,
+            &paper_svc::PaperRef::source("arxiv:1".to_string()),
+        )
+        .unwrap();
+
+        let pfk = import_shared_project(&mut conn2, &sp).unwrap();
+
+        // Trashed stays trashed and is not linked to the imported project.
+        assert!(paper_svc::is_paper_deleted(&conn2, "arxiv:1").unwrap());
+        let mut linked: Vec<String> = conn2
+            .prepare(
+                "SELECT r.SOURCE_ID FROM PROJECT_TO_PAPER pp \
+                 JOIN PAPER_ROOTS r ON r.SOURCE_FK = pp.SOURCE_FK \
+                 WHERE pp.PROJECT_FK = ?",
+            )
+            .unwrap()
+            .query_map([pfk], |r| r.get(0))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        linked.sort();
+        assert_eq!(linked, vec!["arxiv:2".to_string(), "arxiv:3".to_string()]);
+
+        // Known paper: local metadata kept, remote tags merged in.
+        let p2 = paper_svc::get(&conn2, &paper_svc::PaperRef::source("arxiv:2".to_string()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(p2.title, "Local Second");
+        assert!(p2.tags.contains(&"vision".to_string()));
+
+        // Unknown paper: created from the remote metadata.
+        let p3 = paper_svc::get(&conn2, &paper_svc::PaperRef::source("arxiv:3".to_string()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(p3.title, "Third");
+
+        // Only the note/annotation hanging off a linked paper come across:
+        // note B (arxiv:2) lands, note A and the annotation (arxiv:1) do not.
+        let notes = note_svc::get_many(
+            &conn2,
+            &note_svc::Notes {
+                project_fk: Some(pfk),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].content, "body B");
+        let anns = annotation_svc::get_many(
+            &conn2,
+            &annotation_svc::Annotations {
+                project_fk: Some(pfk),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(anns.is_empty());
     }
 }

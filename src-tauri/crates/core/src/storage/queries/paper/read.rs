@@ -326,16 +326,25 @@ pub fn get_papers_by_json_tag(conn: &Connection, label: &str) -> Result<Vec<Pape
 
 /// Which of `source_ids` are stored and active. Ids are namespaced
 /// (`arxiv:2204.12985`); unknown ids are simply absent from the result.
+/// Chunked to stay under SQLite's bound-variable limit; the seen-set keeps
+/// the output duplicate-free when input duplicates span chunks.
 pub fn existing_source_ids(conn: &Connection, source_ids: &[String]) -> Result<Vec<String>> {
-    if source_ids.is_empty() {
-        return Ok(Vec::new());
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for chunk in source_ids.chunks(900) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let mut stmt = conn.prepare(&format!(
+            "SELECT DISTINCT source_id FROM papers WHERE source_id IN ({placeholders})"
+        ))?;
+        let rows = stmt.query_map(params_from_iter(chunk), |r| r.get::<_, String>(0))?;
+        for row in rows {
+            let sid = row?;
+            if seen.insert(sid.clone()) {
+                out.push(sid);
+            }
+        }
     }
-    let placeholders = vec!["?"; source_ids.len()].join(",");
-    let mut stmt = conn.prepare(&format!(
-        "SELECT DISTINCT source_id FROM papers WHERE source_id IN ({placeholders})"
-    ))?;
-    let rows = stmt.query_map(params_from_iter(source_ids), |r| r.get(0))?;
-    Ok(rows.collect::<std::result::Result<Vec<String>, _>>()?)
+    Ok(out)
 }
 
 /// `get_all_versions` — every stored (active) version, oldest-first.
@@ -748,5 +757,15 @@ mod tests {
         .unwrap();
         assert_eq!(found, vec!["arxiv:2204.12985".to_string()]);
         assert!(existing_source_ids(&conn, &[]).unwrap().is_empty());
+
+        // Over the 900-per-chunk bound: the stored id in the last chunk is
+        // still found, and a duplicate spanning chunks reports only once.
+        let mut many: Vec<String> = (0..1000).map(|i| format!("arxiv:absent{i}")).collect();
+        many[0] = "arxiv:2204.12985".into();
+        many.push("arxiv:2204.12985".into());
+        assert_eq!(
+            existing_source_ids(&conn, &many).unwrap(),
+            vec!["arxiv:2204.12985".to_string()]
+        );
     }
 }
