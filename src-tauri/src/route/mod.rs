@@ -134,11 +134,13 @@ pub async fn api(state: tauri::State<'_, AppState>, req: ApiRequest) -> Result<V
 /// logs 5xx errors to stderr — otherwise a handler failure only exists as a UI
 /// toast and is undiagnosable after the fact.
 pub async fn route(state: &AppState, req: ApiRequest) -> Result<Value, ApiError> {
-    let (method, path) = (req.method.clone(), req.path.clone());
-    let res = route_inner(state, req).await;
+    let res = route_inner(state, &req).await;
     if let Err(e) = &res {
         if e.status >= 500 {
-            eprintln!("[linxiv] {method} {path} -> {}: {}", e.status, e.detail);
+            eprintln!(
+                "[linxiv] {} {} -> {}: {}",
+                req.method, req.path, e.status, e.detail
+            );
         }
     }
     res
@@ -147,7 +149,7 @@ pub async fn route(state: &AppState, req: ApiRequest) -> Result<Value, ApiError>
 /// The router proper. The whole router is `async` so the
 /// source-backed arms (arxiv/openalex/doi) can `.await`; DB-only arms run their
 /// `with_conn` closure to completion (no lock held across an await).
-async fn route_inner(state: &AppState, req: ApiRequest) -> Result<Value, ApiError> {
+async fn route_inner(state: &AppState, req: &ApiRequest) -> Result<Value, ApiError> {
     let (raw_path, raw_query) = req.path.split_once('?').unwrap_or((req.path.as_str(), ""));
     let segs = split_segments(raw_path);
     let query = parse_query(raw_query);

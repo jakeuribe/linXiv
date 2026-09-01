@@ -125,7 +125,7 @@ pub struct GraphTag {
     pub key: String,
     /// `TAG.TAG`, the spelling the Tags index and TagPage show, falling back to
     /// the paper's own casing for a tag the TAG table cannot answer for (the
-    /// reserved reading-list marker, which `list_tags_with_count` filters out).
+    /// reserved reading-list marker, which `list_all_tags` filters out).
     /// Resolving it here is what stops one tag being drawn "ML" on the canvas
     /// and offered as "ml" in the dropdown two panels away.
     pub label: String,
@@ -243,12 +243,12 @@ fn author_rows_sql(exclude_single_authors: bool) -> String {
 pub fn graph_view(conn: &Connection, exclude_single_authors: bool) -> Result<GraphView> {
     let rows = paper_rows(conn)?;
 
-    // Canonical tag spellings, indexed by key. `list_tags_with_count` walks the
-    // whole TAG table, so this answers for tags no paper carries too — the
-    // narrowing below is what keeps those out of the payload.
-    let canonical: HashMap<String, String> = svc_tag::list_tags_with_count(conn)?
+    // Canonical tag spellings, indexed by key. `list_all_tags` walks the whole
+    // TAG table, so this answers for tags no paper carries too — the narrowing
+    // below is what keeps those out of the payload.
+    let canonical: HashMap<String, String> = svc_tag::list_all_tags(conn)?
         .into_iter()
-        .map(|t| (norm_tag(&t.label), t.label.trim().to_string()))
+        .map(|l| (norm_tag(&l), l.trim().to_string()))
         .collect();
 
     // paper SOURCE_FK -> sorted active project ids.
@@ -607,7 +607,7 @@ mod tests {
     #[test]
     fn tag_the_tag_table_cannot_answer_for_keeps_the_papers_spelling() {
         let conn = conn();
-        // `list_tags_with_count` filters the reading-list marker out, so it is
+        // `list_all_tags` filters the reading-list marker out, so it is
         // the one tag on a paper that this map has no entry for.
         seed_paper(&conn, "arxiv:1", "[]", r#"["Reading-List"]"#);
         let v = graph_view(&conn, false).unwrap();

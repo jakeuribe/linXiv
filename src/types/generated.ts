@@ -327,7 +327,7 @@ export type GraphTag = {
   /**
    * `TAG.TAG`, the spelling the Tags index and TagPage show, falling back to
    * the paper's own casing for a tag the TAG table cannot answer for (the
-   * reserved reading-list marker, which `list_tags_with_count` filters out).
+   * reserved reading-list marker, which `list_all_tags` filters out).
    * Resolving it here is what stops one tag being drawn "ML" on the canvas
    * and offered as "ml" in the dropdown two panels away.
    */
