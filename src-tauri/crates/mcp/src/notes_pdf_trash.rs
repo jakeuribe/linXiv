@@ -151,6 +151,8 @@ impl Server {
                     source_fk,
                     title: p.title.clone(),
                     content: p.content.clone(),
+                    media_time_ms: None,
+                    media_item_id: None,
                     paper_id: None,
                     project_fk: p.project_id,
                     uuid: None,

@@ -16,7 +16,7 @@ import { getNotes, deleteNote } from "../api/notes";
 import { getAnnotations, deleteAnnotation, updateAnnotation } from "../api/annotations";
 import { listProjects } from "../api/projects";
 import { apiFetch, bytesToBase64, isTauri } from "../api/client";
-import type { Note, Paper, Annotation } from "../types/api";
+import type { Note, Paper, Annotation, Project } from "../types/api";
 import { PdfReader } from "../components/pdf/PdfReader";
 import { PagePill } from "../components/pdf/PagePill";
 import { parseAnchor } from "../lib/pdfAnchor";
@@ -41,6 +41,10 @@ import { formatDate } from "../lib/date";
 import { TagBadge } from "../components/tags/TagBadge";
 import { openPdfInSystem } from "../api/pdfs";
 import { errText } from "../lib/errText";
+import { YouTubePlayer } from "../components/video/YouTubePlayer";
+import type { YouTubePlayerHandle } from "../components/video/YouTubePlayer";
+import type { YouTubePlaylistState } from "../components/video/YouTubePlayer";
+import { formatMediaTime } from "../lib/mediaTime";
 
 const LATEST_VERSION_KEY = "latest" as const;
 
@@ -59,6 +63,15 @@ export default function PaperDetailPage() {
   const queryClient = useQueryClient();
 
   const [showAddNote, setShowAddNote] = useState(false);
+  const [newNoteTimeMs, setNewNoteTimeMs] = useState<number | null>(null);
+  const [newNoteItemId, setNewNoteItemId] = useState<string | null>(null);
+  const videoPlayerRef = useRef<YouTubePlayerHandle | null>(null);
+  const [playlistState, setPlaylistState] = useState<YouTubePlaylistState>({
+    items: [],
+    currentItemId: null,
+    currentIndex: 0,
+    titles: {},
+  });
   const [editingNoteId, setEditingNoteId] = useState<number | null>(null);
   const [showEditor, setShowEditor] = useState(false);
   const [openNativeError, setOpenNativeError] = useState<string | null>(null);
@@ -181,6 +194,10 @@ export default function PaperDetailPage() {
   });
 
   const versions = versionsData?.versions ?? [];
+  const paperIsLecture =
+    paper?.source === "youtube" ||
+    paper?.source_id.startsWith("youtube:") ||
+    paper?.source_id.startsWith("youtube-playlist:");
 
   // Other paper roots sharing this one's DOI — same work, different source
   // (e.g. arXiv vs OpenAlex/Crossref). Each candidate carries a confirm-guarded
@@ -206,7 +223,7 @@ export default function PaperDetailPage() {
   const { data: annotationsData, isLoading: annotationsLoading } = useQuery({
     queryKey: ["annotations", paper?.source_id, { allProjects: true }],
     queryFn: () => getAnnotations(paper!.source_id, undefined, true),
-    enabled: !!paper?.source_id,
+    enabled: !!paper?.source_id && !paperIsLecture,
   });
 
   const { data: projectsData, isLoading: projectsLoading } = useQuery({
@@ -347,6 +364,8 @@ export default function PaperDetailPage() {
     invalidateNoteQueries(queryClient);
     setShowAddNote(false);
     setEditingNoteId(null);
+    setNewNoteTimeMs(null);
+    setNewNoteItemId(null);
     deleteNoteMutation.reset();
   }
 
@@ -406,7 +425,31 @@ export default function PaperDetailPage() {
   }
 
   const authors = paper.authors;
-  const notes = notesData?.notes ?? [];
+  const isLecture = paperIsLecture;
+  let videoId: string | null = paper.source_id.startsWith("youtube:")
+    ? paper.source_id.replace(/^youtube:/, "")
+    : null;
+  let playlistId: string | null = paper.source_id.startsWith("youtube-playlist:")
+    ? paper.source_id.replace(/^youtube-playlist:/, "")
+    : null;
+  if (paper.url) {
+    try {
+      const sourceUrl = new URL(paper.url);
+      videoId = sourceUrl.searchParams.get("v") ?? videoId;
+      playlistId = sourceUrl.searchParams.get("list") ?? playlistId;
+    } catch {
+      // Stored URLs are backend-validated; retain the source-id fallback.
+    }
+  }
+  const notes = [...(notesData?.notes ?? [])].sort((a, b) => {
+    // A single lecture has a natural timeline. A playlist spans independent
+    // timelines, so retain note creation order while each chip still targets
+    // its exact video item.
+    if (!isLecture || playlistId) return 0;
+    if (a.media_time_ms == null) return 1;
+    if (b.media_time_ms == null) return -1;
+    return a.media_time_ms - b.media_time_ms;
+  });
   const annotations = annotationsData?.annotations ?? [];
   const editingNote =
     editingNoteId != null ? notes.find((n) => n.id === editingNoteId) ?? null : null;
@@ -427,6 +470,7 @@ export default function PaperDetailPage() {
     .sort((a, b) => a.version - b.version);
 
   const hasPdfContent = paper.has_pdf || showPdfPreview;
+  const hasViewerContent = hasPdfContent || isLecture;
 
   // Mirrors the backend guard (service::paper::source_fetch_url): only arXiv
   // publishes a TeX tarball, and only a /pdf/ URL can be rewritten to /src/.
@@ -512,17 +556,28 @@ export default function PaperDetailPage() {
       {/* Two-pane row: each pane scrolls independently */}
       <div
         ref={twoPaneRef}
-        className={`flex-1 min-h-0 overflow-hidden ${hasPdfContent ? "grid grid-rows-[1fr_1fr] grid-cols-1 lg:grid-rows-1 lg:grid-cols-[1fr_388px]" : "flex flex-col"}`}
+        className={`flex-1 min-h-0 overflow-hidden ${hasViewerContent ? "grid grid-rows-[1fr_1fr] grid-cols-1 lg:grid-rows-1 lg:grid-cols-[1fr_388px]" : "flex flex-col"}`}
         style={
-          hasPdfContent && isWide
+          hasViewerContent && isWide
             ? { gridTemplateColumns: `minmax(0,1fr) 6px ${rightWidth}px` }
             : undefined
         }
       >
-        {/* Left pane: PDF */}
-        <div className={hasPdfContent ? "min-h-0 overflow-y-auto bg-surface2 border-r border-border" : "shrink-0 flex items-center gap-3 flex-wrap px-6 py-3 bg-surface2 border-b border-border"}>
-          <div className={hasPdfContent ? "h-full flex flex-col" : "contents"}>
-            <PdfPane
+        {/* Left pane: pass-through lecture player or PDF */}
+        <div className={hasViewerContent ? "min-h-0 overflow-y-auto bg-surface2 border-r border-border" : "shrink-0 flex items-center gap-3 flex-wrap px-6 py-3 bg-surface2 border-b border-border"}>
+          <div className={hasViewerContent ? "h-full flex flex-col" : "contents"}>
+            {isLecture && (videoId || playlistId) ? (
+              <YouTubePlayer
+                ref={videoPlayerRef}
+                videoId={videoId}
+                playlistId={playlistId}
+                onPlaylistStateChange={setPlaylistState}
+                sourceUrl={paper.url ?? (playlistId
+                  ? `https://www.youtube.com/playlist?list=${playlistId}`
+                  : `https://www.youtube.com/watch?v=${videoId}`)}
+              />
+            ) : (
+              <PdfPane
               paper={paper}
               isViewingLatest={isViewingLatest}
               isOnline={isOnline}
@@ -542,13 +597,14 @@ export default function PaperDetailPage() {
               pdfPreviewDocRef={pdfPreviewDocRef}
               pdfContainerRef={pdfContainerRef}
               containerWidth={containerWidth}
-              asStrip={!hasPdfContent}
-            />
+                asStrip={!hasPdfContent}
+              />
+            )}
           </div>
         </div>
 
         {/* Draggable divider (side-by-side layout only) */}
-        {hasPdfContent && isWide && (
+        {hasViewerContent && isWide && (
           <div
             role="separator"
             aria-orientation="vertical"
@@ -568,8 +624,8 @@ export default function PaperDetailPage() {
         )}
 
         {/* Right pane: identity + Details/Notes */}
-        <div className={`overflow-y-auto bg-panel ${hasPdfContent ? "min-h-0" : "flex-1 min-h-0"}`}>
-          <div className={hasPdfContent ? "px-[18px] py-5 space-y-5" : "max-w-[760px] mx-auto px-8 py-6 space-y-5"}>
+        <div className={`overflow-y-auto bg-panel ${hasViewerContent ? "min-h-0" : "flex-1 min-h-0"}`}>
+          <div className={hasViewerContent ? "px-[18px] py-5 space-y-5" : "max-w-[760px] mx-auto px-8 py-6 space-y-5"}>
             {/* Identity block */}
             <div className="space-y-3" style={fadeStyle}>
               <h2 className="font-display text-text text-[21px] leading-snug">
@@ -583,8 +639,8 @@ export default function PaperDetailPage() {
                 </div>
               )}
 
-              {/* Meta row */}
-              <div className="flex flex-wrap items-center gap-3 text-sm">
+              {/* Paper metadata does not leak into the lecture interaction model. */}
+              {!isLecture && <div className="flex flex-wrap items-center gap-3 text-sm">
                 {paper.published && (
                   <span className="text-muted">{formatDate(paper.published)}</span>
                 )}
@@ -642,7 +698,7 @@ export default function PaperDetailPage() {
                 ) : (
                   paper.version > 0 && <Badge>v{paper.version}</Badge>
                 )}
-              </div>
+              </div>}
 
               {/* Tags */}
               {tags.length > 0 && (
@@ -718,58 +774,105 @@ export default function PaperDetailPage() {
               )}
             </div>
 
-            {/* Tabs: Details | Notes */}
-            <Tabs defaultValue="details">
-              <TabsList>
-                <TabsTrigger value="details">Details</TabsTrigger>
-                <TabsTrigger value="notes">
-                  Notes{notes.length > 0 ? ` (${notes.length})` : ""}
-                </TabsTrigger>
-                <TabsTrigger value="annotations">
-                  Annotations{annotations.length > 0 ? ` (${annotations.length})` : ""}
-                </TabsTrigger>
-              </TabsList>
+            {/* Lectures are a notebook surface; papers retain their tabbed metadata surface. */}
+            <Tabs defaultValue={isLecture ? "notes" : "details"}>
+              {!isLecture && (
+                <TabsList>
+                  <TabsTrigger value="details">Details</TabsTrigger>
+                  <TabsTrigger value="notes">
+                    Notes{notes.length > 0 ? ` (${notes.length})` : ""}
+                  </TabsTrigger>
+                  <TabsTrigger value="annotations">
+                    Annotations{annotations.length > 0 ? ` (${annotations.length})` : ""}
+                  </TabsTrigger>
+                </TabsList>
+              )}
 
               {/* Details tab: abstract */}
-              <TabsContent value="details" className="pt-5">
-                {paper.summary ? (
-                  <div className="space-y-2">
-                    <MonoLabel as="h3">Abstract</MonoLabel>
-                    <div className="text-muted text-sm leading-relaxed whitespace-pre-wrap">
-                      <MathText forceInline>{paper.summary}</MathText>
+              {!isLecture && (
+                <TabsContent value="details" className="pt-5">
+                  {paper.summary ? (
+                    <div className="space-y-2">
+                      <MonoLabel as="h3">Abstract</MonoLabel>
+                      <div className="text-muted text-sm leading-relaxed whitespace-pre-wrap">
+                        <MathText forceInline>{paper.summary}</MathText>
+                      </div>
                     </div>
-                  </div>
-                ) : (
-                  <p className="text-muted text-sm">No abstract available.</p>
-                )}
-              </TabsContent>
+                  ) : (
+                    <p className="text-muted text-sm">No abstract available.</p>
+                  )}
+                </TabsContent>
+              )}
 
-              <TabsContent value="notes" forceMount className="pt-5 space-y-4 data-[state=inactive]:hidden">
+              <TabsContent value="notes" forceMount className={`${isLecture ? "pt-1" : "pt-5"} space-y-4 data-[state=inactive]:hidden`}>
                 <div className="flex items-center justify-between">
-                  <MonoLabel as="h3">Notes</MonoLabel>
+                  <MonoLabel as="h3">{isLecture ? "Lecture notes" : "Notes"}</MonoLabel>
                   {!showAddNote && !editingNote && (
-                    <Button
-                      variant="muted"
-                      size="sm"
-                      onClick={() => {
-                        deleteNoteMutation.reset();
-                        setShowAddNote(true);
-                      }}
-                    >
-                      + Add note
-                    </Button>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="muted"
+                        size="sm"
+                        disabled={!!playlistId && !playlistState.currentItemId}
+                        onClick={() => {
+                          deleteNoteMutation.reset();
+                          setNewNoteTimeMs(null);
+                          setNewNoteItemId(
+                            playlistId
+                              ? videoPlayerRef.current?.getCurrentPosition()?.itemId ?? null
+                              : null,
+                          );
+                          setShowAddNote(true);
+                        }}
+                      >
+                        {playlistId ? "+ Video note" : "+ Add note"}
+                      </Button>
+                      {isLecture && (
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          disabled={!playlistState.currentItemId}
+                          onClick={() => {
+                            const position = videoPlayerRef.current?.getCurrentPosition();
+                            if (!position) return;
+                            videoPlayerRef.current?.pause();
+                            deleteNoteMutation.reset();
+                            setNewNoteTimeMs(position.timeMs);
+                            setNewNoteItemId(position.itemId);
+                            setShowAddNote(true);
+                          }}
+                        >
+                          + Note at current time
+                        </Button>
+                      )}
+                    </div>
                   )}
                 </div>
 
                 {showAddNote && !editingNote && (
                   <Card>
+                    {newNoteTimeMs != null && (
+                      <p className="mb-3 font-mono text-xs text-accent">
+                        Timestamp {formatMediaTime(newNoteTimeMs)}
+                      </p>
+                    )}
+                    {playlistId && newNoteItemId && newNoteTimeMs == null && (
+                      <p className="mb-3 text-xs text-accent">
+                        Attached to {playlistItemName(newNoteItemId, playlistState)}
+                      </p>
+                    )}
                     <NoteEditor
                       sourceId={paper.source_id}
                       projects={paperProjects}
                       projectsLoading={projectsLoading}
                       defaultProjectId={defaultProjectId}
+                      mediaTimeMs={newNoteTimeMs}
+                      mediaItemId={newNoteItemId}
                       onSave={handleNotesSaved}
-                      onCancel={() => setShowAddNote(false)}
+                      onCancel={() => {
+                        setShowAddNote(false);
+                        setNewNoteTimeMs(null);
+                        setNewNoteItemId(null);
+                      }}
                     />
                   </Card>
                 )}
@@ -804,31 +907,51 @@ export default function PaperDetailPage() {
                   <>
                     {notes.length === 0 && !showAddNote && !editingNote && (
                       <p className="text-muted text-sm text-center py-8">
-                        No notes yet. Add one above.
+                        {isLecture
+                          ? "No lecture notes yet. Add one at the current playback time."
+                          : "No notes yet. Add one above."}
                       </p>
                     )}
                     {notes.length > 0 && (
-                      <div className="space-y-3">
-                        {notes.map((note) => (
-                          <NoteCard
-                            key={note.id}
-                            note={note}
-                            projects={paperProjects}
-                            onEdit={(n) => {
-                              deleteNoteMutation.reset();
-                              setEditingNoteId(n.id);
-                              setShowAddNote(false);
-                            }}
-                            onDelete={handleDeleteNote}
-                          />
-                        ))}
-                      </div>
+                      playlistId ? (
+                        <PlaylistNoteGroups
+                          notes={notes}
+                          projects={paperProjects}
+                          playlist={playlistState}
+                          onEdit={(n) => {
+                            deleteNoteMutation.reset();
+                            setEditingNoteId(n.id);
+                            setShowAddNote(false);
+                          }}
+                          onDelete={handleDeleteNote}
+                          onSeek={(timeMs, itemId) => videoPlayerRef.current?.seekTo(timeMs, itemId)}
+                          onSelectVideo={(itemId) => videoPlayerRef.current?.seekTo(0, itemId)}
+                        />
+                      ) : (
+                        <div className="space-y-3">
+                          {notes.map((note) => (
+                            <NoteCard
+                              key={note.id}
+                              note={note}
+                              projects={paperProjects}
+                              onEdit={(n) => {
+                                deleteNoteMutation.reset();
+                                setEditingNoteId(n.id);
+                                setShowAddNote(false);
+                              }}
+                              onDelete={handleDeleteNote}
+                              onSeek={isLecture ? (timeMs, itemId) => videoPlayerRef.current?.seekTo(timeMs, itemId) : undefined}
+                            />
+                          ))}
+                        </div>
+                      )
                     )}
                   </>
                 )}
               </TabsContent>
 
-              <TabsContent value="annotations" className="pt-5 space-y-4">
+              {!isLecture && (
+                <TabsContent value="annotations" className="pt-5 space-y-4">
                 <MonoLabel as="h3">Annotations</MonoLabel>
                 {annotationsLoading ? (
                   <div className="flex justify-center py-6">
@@ -866,7 +989,8 @@ export default function PaperDetailPage() {
                     Failed to delete the annotation.
                   </p>
                 )}
-              </TabsContent>
+                </TabsContent>
+              )}
             </Tabs>
           </div>
         </div>
@@ -878,6 +1002,112 @@ export default function PaperDetailPage() {
           paper={paper}
           onSaved={handlePaperSaved}
         />
+      )}
+    </div>
+  );
+}
+
+function playlistItemName(itemId: string, playlist: YouTubePlaylistState): string {
+  const title = playlist.titles[itemId];
+  if (title) return title;
+  const index = playlist.items.indexOf(itemId);
+  return index >= 0 ? `Lecture ${index + 1}` : "Playlist video";
+}
+
+interface PlaylistNoteGroupsProps {
+  notes: Note[];
+  projects: Project[];
+  playlist: YouTubePlaylistState;
+  onEdit: (note: Note) => void;
+  onDelete: (note: Note) => void;
+  onSeek: (timeMs: number, itemId?: string | null) => void;
+  onSelectVideo: (itemId: string) => void;
+}
+
+/** Notes remain one local collection on the playlist paper root, but the UI
+ * projects them into video-scoped groups using NOTE.MEDIA_ITEM_ID. */
+function PlaylistNoteGroups({
+  notes,
+  projects,
+  playlist,
+  onEdit,
+  onDelete,
+  onSeek,
+  onSelectVideo,
+}: PlaylistNoteGroupsProps) {
+  const byVideo = new Map<string, Note[]>();
+  const playlistWide: Note[] = [];
+  for (const note of notes) {
+    if (!note.media_item_id) {
+      playlistWide.push(note);
+      continue;
+    }
+    const group = byVideo.get(note.media_item_id) ?? [];
+    group.push(note);
+    byVideo.set(note.media_item_id, group);
+  }
+
+  const orderedVideoIds = playlist.items.filter((id, index, items) =>
+    byVideo.has(id) && items.indexOf(id) === index
+  );
+  for (const itemId of byVideo.keys()) {
+    if (!orderedVideoIds.includes(itemId)) orderedVideoIds.push(itemId);
+  }
+
+  const renderCards = (group: Note[]) => (
+    <div className="space-y-2.5">
+      {group.map((note) => (
+        <NoteCard
+          key={note.id}
+          note={note}
+          projects={projects}
+          onEdit={onEdit}
+          onDelete={onDelete}
+          onSeek={onSeek}
+        />
+      ))}
+    </div>
+  );
+
+  return (
+    <div className="space-y-4">
+      {orderedVideoIds.map((itemId) => {
+        const group = byVideo.get(itemId)!;
+        const active = itemId === playlist.currentItemId;
+        const index = playlist.items.indexOf(itemId);
+        return (
+          <section
+            key={itemId}
+            className={`rounded-lg border p-2.5 space-y-2.5 ${active ? "border-accent" : "border-border"}`}
+          >
+            <button
+              type="button"
+              className="w-full flex items-center gap-2 text-left rounded px-1 py-0.5 hover:text-accent"
+              onClick={() => onSelectVideo(itemId)}
+              title="Play this lecture from the beginning"
+            >
+              <span className="font-mono text-[10px] text-ink3 shrink-0">
+                {index >= 0 ? String(index + 1).padStart(2, "0") : "—"}
+              </span>
+              <span className="text-sm font-medium truncate flex-1">
+                {playlistItemName(itemId, playlist)}
+              </span>
+              <Badge>{group.length} note{group.length === 1 ? "" : "s"}</Badge>
+              <span className="text-xs text-accent shrink-0">Play →</span>
+            </button>
+            {renderCards(group)}
+          </section>
+        );
+      })}
+
+      {playlistWide.length > 0 && (
+        <section className="rounded-lg border border-border p-2.5 space-y-2.5">
+          <div className="flex items-center gap-2 px-1 py-0.5">
+            <span className="text-sm font-medium flex-1">Playlist-wide notes</span>
+            <Badge>{playlistWide.length}</Badge>
+          </div>
+          {renderCards(playlistWide)}
+        </section>
       )}
     </div>
   );

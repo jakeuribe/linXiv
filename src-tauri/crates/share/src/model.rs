@@ -33,6 +33,11 @@ pub struct SharedPaper {
     pub summary: String,
     pub authors: Vec<String>,
     pub tags: Vec<String>,
+    /// Provider metadata needed to reopen non-PDF sources such as lectures.
+    #[autosurgeon(missing = "Default::default")]
+    pub url: Option<String>,
+    #[autosurgeon(missing = "Default::default")]
+    pub source: Option<String>,
     /// Blob ticket for the paper's PDF, minted by an e2ee hoster
     /// (`ShareNode::store_pdf_blob`).
     #[autosurgeon(missing = "Default::default")]
@@ -70,6 +75,11 @@ pub struct SharedNote {
     pub paper_source_id: Option<String>,
     pub title: String,
     pub body: String,
+    /// Provider-neutral playback position for timestamped lecture notes.
+    #[autosurgeon(missing = "Default::default")]
+    pub media_time_ms: Option<i64>,
+    #[autosurgeon(missing = "Default::default")]
+    pub media_item_id: Option<String>,
     pub created_at: Option<String>,
     pub updated_at: Option<String>,
 }
@@ -122,6 +132,8 @@ mod tests {
             summary: "S".into(),
             authors: vec!["A".into()],
             tags: vec!["t".into()],
+            url: None,
+            source: None,
             pdf_blob: Some("ticket".into()),
             author_orcids: vec![None],
         };
@@ -187,5 +199,6 @@ mod tests {
         .unwrap();
         let note: SharedNote = autosurgeon::hydrate(&doc).unwrap();
         assert_eq!(note.paper_source_id, None);
+        assert_eq!(note.media_time_ms, None);
     }
 }

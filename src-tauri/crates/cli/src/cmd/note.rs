@@ -69,6 +69,8 @@ pub async fn run(cmd: NoteCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                     source_fk,
                     title,
                     content,
+                    media_time_ms: None,
+                    media_item_id: None,
                     paper_id: None,
                     project_fk: project_id,
                     uuid: None,

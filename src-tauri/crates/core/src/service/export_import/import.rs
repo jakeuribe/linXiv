@@ -227,6 +227,8 @@ fn import_notes(
                 source_fk,
                 title: nd.title.clone(),
                 content: nd.content.clone(),
+                media_time_ms: nd.media_time_ms,
+                media_item_id: nd.media_item_id.clone(),
                 paper_id,
                 project_fk: Some(project_fk),
                 uuid: nd.uuid.clone(),

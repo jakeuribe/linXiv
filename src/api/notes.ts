@@ -27,6 +27,8 @@ export interface NoteCreateBody {
   project_id?: number | null;
   title?: string;
   content?: string;
+  media_time_ms?: number | null;
+  media_item_id?: string | null;
 }
 
 export async function createNote(body: NoteCreateBody): Promise<Note> {

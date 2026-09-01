@@ -7,6 +7,7 @@ import { formatDate } from "../../lib/date";
 import { useConfirmWithTimeout } from "../../hooks/useConfirmWithTimeout";
 import { MathText } from "../../lib/tex";
 import { NoteBody, noteEdited } from "./NoteBody";
+import { formatMediaTime } from "../../lib/mediaTime";
 
 interface NoteCardProps {
   note: Note;
@@ -14,9 +15,10 @@ interface NoteCardProps {
   projects?: Project[];
   onEdit: (note: Note) => void;
   onDelete: (note: Note) => void;
+  onSeek?: (timeMs: number, itemId?: string | null) => void;
 }
 
-export function NoteCard({ note, projects = [], onEdit, onDelete }: NoteCardProps) {
+export function NoteCard({ note, projects = [], onEdit, onDelete, onSeek }: NoteCardProps) {
   // Deleting a note is an irreversible hard-delete (no trash/restore), so gate
   // it behind the same arm-to-confirm step used for the app's other destructive
   // actions rather than firing on a single click.
@@ -82,6 +84,21 @@ export function NoteCard({ note, projects = [], onEdit, onDelete }: NoteCardProp
             <MathText forceInline>{note.title || "Untitled note"}</MathText>
           </span>
           <div className="flex items-center gap-2 min-w-0">
+            {note.media_time_ms != null && (
+              <button
+                type="button"
+                className="font-mono text-xs rounded border border-border px-1.5 py-0.5 text-accent hover:border-accent shrink-0"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onSeek?.(note.media_time_ms!, note.media_item_id);
+                }}
+                title={note.media_item_id
+                  ? `Seek video ${note.media_item_id} to this note`
+                  : "Seek lecture to this note"}
+              >
+                {formatMediaTime(note.media_time_ms)}
+              </button>
+            )}
             <Badge className="max-w-[240px] min-w-0" color={scopeProject?.color_hex ?? undefined}>
               <span className="truncate">{scopeLabel}</span>
             </Badge>

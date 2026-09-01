@@ -20,6 +20,9 @@ interface NoteEditorProps {
   /** Pre-selected scope for a new note (e.g. the project navigated from). */
   defaultProjectId?: number | null;
   initialNote?: Note;
+  /** Playback position captured when creating a timestamped media note. */
+  mediaTimeMs?: number | null;
+  mediaItemId?: string | null;
   onSave: () => void;
   onCancel: () => void;
 }
@@ -30,6 +33,8 @@ export function NoteEditor({
   projectsLoading = false,
   defaultProjectId = null,
   initialNote,
+  mediaTimeMs = null,
+  mediaItemId = null,
   onSave,
   onCancel,
 }: NoteEditorProps) {
@@ -82,6 +87,8 @@ export function NoteEditor({
           project_id: projectId,
           title: trimmedTitle,
           content: trimmedContent,
+          media_time_ms: mediaTimeMs,
+          media_item_id: mediaItemId,
         });
       }
       onSave();

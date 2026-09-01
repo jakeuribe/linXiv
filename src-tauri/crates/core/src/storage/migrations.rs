@@ -37,6 +37,8 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     rss_feed_tables(conn)?;
     rss_cache_entry_table(conn)?;
     paper_sort_indexes(conn)?;
+    note_media_time_ms(conn)?;
+    note_media_item_id(conn)?;
     Ok(())
 }
 
@@ -411,6 +413,28 @@ fn paper_sort_indexes(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+// ── 19. NOTE.MEDIA_TIME_MS (provider-neutral timestamped media notes) ──────
+
+fn note_media_time_ms(conn: &Connection) -> Result<()> {
+    if !has_column(conn, "NOTE", "MEDIA_TIME_MS")? {
+        conn.execute_batch(include_str!(
+            "../../sql/migrations/19_note_media_time_ms.sql"
+        ))?;
+    }
+    Ok(())
+}
+
+// ── 20. NOTE.MEDIA_ITEM_ID (item identity within a media collection) ───────
+
+fn note_media_item_id(conn: &Connection) -> Result<()> {
+    if !has_column(conn, "NOTE", "MEDIA_ITEM_ID")? {
+        conn.execute_batch(include_str!(
+            "../../sql/migrations/20_note_media_item_id.sql"
+        ))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -427,6 +451,8 @@ mod tests {
         assert!(has_column(&conn, "PROJECT", "IS_READING_LIST").unwrap());
         assert!(has_column(&conn, "PROJECT", "SHARE_ID").unwrap());
         assert!(has_column(&conn, "NOTE", "NOTE_UUID").unwrap());
+        assert!(has_column(&conn, "NOTE", "MEDIA_TIME_MS").unwrap());
+        assert!(has_column(&conn, "NOTE", "MEDIA_ITEM_ID").unwrap());
         assert!(has_column(&conn, "ANNOTATION", "ANNOTATION_UUID").unwrap());
         assert!(index_exists(&conn, "idx_note_uuid_unique").unwrap());
         assert!(index_exists(&conn, "idx_annotation_uuid_unique").unwrap());

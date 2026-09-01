@@ -708,6 +708,8 @@ mod tests {
             summary: "s".into(),
             authors: vec![],
             tags: vec![],
+            url: None,
+            source: None,
             pdf_blob: None,
             author_orcids: vec![],
         });

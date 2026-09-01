@@ -94,6 +94,8 @@ fn collect_note_entries(conn: &Connection, project_fk: i64) -> Result<Vec<NoteEn
             paper_version: version,
             title: n.title.clone(),
             content: n.content.clone(),
+            media_time_ms: n.media_time_ms,
+            media_item_id: n.media_item_id.clone(),
             uuid: Some(n.uuid.clone()),
         });
     }
