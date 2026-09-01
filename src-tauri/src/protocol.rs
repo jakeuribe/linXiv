@@ -22,7 +22,7 @@ use linxiv_core::error::CoreError;
 use linxiv_core::service::paper::{self as svc_paper, PaperRef};
 use linxiv_core::sources::http as core_http;
 
-use crate::route::{pct_decode, pdfs::resolve_local_pdf, split_segments};
+use crate::route::{pct_decode, split_segments};
 use crate::state::AppState;
 
 /// The scheme name registered on the Tauri builder.
@@ -102,7 +102,7 @@ fn serve_local_pdf<R: Runtime>(app: &AppHandle<R>, query: &str) -> Response<Cow<
     let Some((sid, pdf_path, ver)) = found else {
         return empty(StatusCode::NOT_FOUND);
     };
-    match resolve_local_pdf(&pdf_dir, pdf_path.as_deref(), &sid, ver)
+    match linxiv_core::service::files::pdf_path(&pdf_dir, &sid, ver, pdf_path.as_deref())
         .and_then(|p| std::fs::read(p).ok())
     {
         Some(bytes) => pdf_response(bytes),

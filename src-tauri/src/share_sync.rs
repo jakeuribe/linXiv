@@ -151,11 +151,11 @@ pub(crate) async fn populate_pdf_blobs(
                 None
             }
         };
-        let Some(path) = crate::route::pdfs::resolve_local_pdf(
+        let Some(path) = linxiv_core::service::files::pdf_path(
             &state.pdf_dir,
-            custom.as_deref(),
             &p.source_id,
             p.version,
+            custom.as_deref(),
         ) else {
             // Rekey with no local PDF: re-encrypt from the prior blob under the
             // new epoch; on failure keep the old ticket.
@@ -195,11 +195,15 @@ pub(crate) async fn populate_pdf_blobs(
         let bytes = match tokio::task::spawn_blocking(move || std::fs::read(&read_path)).await {
             Ok(Ok(b)) => b,
             Ok(Err(e)) => {
-                eprintln!("share {}: PDF read {path}: {e}", sp.share_id);
+                eprintln!("share {}: PDF read {}: {e}", sp.share_id, path.display());
                 continue;
             }
             Err(e) => {
-                eprintln!("share {}: PDF read task {path}: {e}", sp.share_id);
+                eprintln!(
+                    "share {}: PDF read task {}: {e}",
+                    sp.share_id,
+                    path.display()
+                );
                 continue;
             }
         };

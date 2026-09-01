@@ -36,7 +36,7 @@ mod graph;
 mod notes;
 mod orcid;
 pub(crate) mod papers; // ingest_full_text reused by the background full-text worker
-pub(crate) mod pdfs; // resolve_local_pdf reused by the linxiv:// protocol handler
+mod pdfs;
 mod projects;
 mod reading_status;
 mod search;
@@ -50,8 +50,7 @@ mod uploads;
 mod versions;
 
 /// One webview→backend call. `body` is the parsed JSON request body (None for
-/// GET/DELETE without a body); file uploads do not come through here (they stay
-/// on the HTTP path until Phase 5c).
+/// GET/DELETE without a body), including base64 file uploads (`uploads.rs`).
 #[derive(Deserialize)]
 pub struct ApiRequest {
     pub method: String,
@@ -110,10 +109,11 @@ impl ReqCtx<'_> {
         matches!(self.q(key), Some("true") | Some("1"))
     }
     /// Deserialize the JSON body into `T`, matching FastAPI's pydantic binding
-    /// (422 on a malformed/missing body).
+    /// (422 on a malformed/missing body). Deserializes from the borrowed `Value`
+    /// rather than cloning it first — bodies can be ~100 MB base64 PDF uploads.
     pub fn parse_body<T: serde::de::DeserializeOwned>(&self) -> Result<T, ApiError> {
-        let v = self.body.cloned().unwrap_or(Value::Null);
-        serde_json::from_value(v).map_err(|e| ApiError::new(422, e.to_string()))
+        T::deserialize(self.body.unwrap_or(&Value::Null))
+            .map_err(|e| ApiError::new(422, e.to_string()))
     }
 }
 
