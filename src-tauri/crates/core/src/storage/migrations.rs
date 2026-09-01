@@ -38,6 +38,7 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     rss_cache_entry_table(conn)?;
     paper_sort_indexes(conn)?;
     link_table_indexes(conn)?;
+    paper_source_fk_index(conn)?;
     Ok(())
 }
 
@@ -425,6 +426,18 @@ fn link_table_indexes(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+// ── 20. PAPER(SOURCE_FK, VERSION) lookup index ──────────────────────────────
+
+/// Purely-for-speed index on PAPER's root-FK column; see the SQL file for the
+/// rationale. Original-schema columns, so no guard is needed beyond the
+/// idempotent CREATE INDEX IF NOT EXISTS.
+fn paper_source_fk_index(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!(
+        "../../sql/migrations/20_paper_source_fk_index.sql"
+    ))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -497,6 +510,7 @@ mod tests {
         ] {
             assert!(index_exists(&conn, idx).unwrap(), "{idx} must exist");
         }
+        assert!(index_exists(&conn, "idx_paper_source_fk").unwrap());
         schema::apply_views(&conn).unwrap();
     }
 
@@ -522,6 +536,27 @@ mod tests {
             plan.iter()
                 .any(|d| d.contains("idx_paper_to_author_paper_id")),
             "plan must use idx_paper_to_author_paper_id, got: {plan:?}"
+        );
+    }
+
+    /// Same existence-vs-use pin for migration 20: the deleted_papers view's
+    /// correlated MAX(VERSION) subquery — run once per trashed row on every
+    /// trash listing — must resolve via idx_paper_source_fk instead of a full
+    /// PAPER scan per row.
+    #[test]
+    fn deleted_papers_version_subquery_uses_paper_source_fk_index() {
+        let conn = crate::storage::db::open_in_memory().unwrap();
+        crate::storage::init_db(&conn).unwrap();
+        let plan: Vec<String> = conn
+            .prepare("EXPLAIN QUERY PLAN SELECT source_fk, title FROM deleted_papers")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(
+            plan.iter().any(|d| d.contains("idx_paper_source_fk")),
+            "plan must use idx_paper_source_fk, got: {plan:?}"
         );
     }
 
