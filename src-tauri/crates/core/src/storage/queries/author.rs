@@ -5,6 +5,8 @@
 //! Python, which relies on `with _connect()` autocommit). The get-or-create is a
 //! SELECT-then-conditional-INSERT — no partial-inconsistent state to roll back.
 
+use std::collections::HashSet;
+
 use rusqlite::types::Value;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
 
@@ -395,13 +397,13 @@ pub fn merge_authors(
             let rows = stmt.query_map(params_from_iter(dups.iter().copied()), |r| r.get(0))?;
             rows.collect::<rusqlite::Result<Vec<_>>>()?
         };
+        let dup_names_lower: HashSet<String> = dup_names.iter().map(|d| d.to_lowercase()).collect();
+        let canonical_lower = canonical_name.as_deref().map(str::to_lowercase);
+        let mut select_meta = tx.prepare("SELECT AUTHORS FROM PAPER_META WHERE PAPER_ID = ?")?;
+        let mut update_meta = tx.prepare("UPDATE PAPER_META SET AUTHORS = ? WHERE PAPER_ID = ?")?;
         for pid in &affected_papers {
-            let authors_json: Option<String> = tx
-                .query_row(
-                    "SELECT AUTHORS FROM PAPER_META WHERE PAPER_ID = ?",
-                    params![pid],
-                    |r| r.get(0),
-                )
+            let authors_json: Option<String> = select_meta
+                .query_row(params![pid], |r| r.get(0))
                 .optional()?
                 .flatten();
             let Some(authors_json) = authors_json else {
@@ -410,29 +412,22 @@ pub fn merge_authors(
             // Replace duplicate names with the canonical name, or drop them if the
             // canonical author has no name; then de-dupe case-insensitively.
             let mut merged: Vec<String> = Vec::new();
+            let mut merged_lower: HashSet<String> = HashSet::new();
             for name in db::list_from_sql(&authors_json)? {
-                let is_dup = dup_names
-                    .iter()
-                    .any(|d| d.to_lowercase() == name.to_lowercase());
-                let resolved = if is_dup {
-                    canonical_name.clone()
+                let name_lower = name.to_lowercase();
+                let (resolved, resolved_lower) = if dup_names_lower.contains(&name_lower) {
+                    let (Some(cn), Some(cl)) = (&canonical_name, &canonical_lower) else {
+                        continue;
+                    };
+                    (cn.clone(), cl.clone())
                 } else {
-                    Some(name)
+                    (name, name_lower)
                 };
-                let Some(resolved) = resolved else {
-                    continue;
-                };
-                if !merged
-                    .iter()
-                    .any(|m: &String| m.to_lowercase() == resolved.to_lowercase())
-                {
+                if merged_lower.insert(resolved_lower) {
                     merged.push(resolved);
                 }
             }
-            tx.execute(
-                "UPDATE PAPER_META SET AUTHORS = ? WHERE PAPER_ID = ?",
-                params![db::list_to_sql(&merged), pid],
-            )?;
+            update_meta.execute(params![db::list_to_sql(&merged), pid])?;
         }
         tx.execute(
             &format!(
