@@ -168,6 +168,24 @@ pub fn get_all(conn: &Connection, paper: &PaperRef) -> Result<Option<PaperDetail
     }))
 }
 
+/// [`get_all`] minus the full-row hydration: the resolved source_id plus each
+/// stored version's listing scalars (version/published/updated/has_pdf),
+/// oldest-first. Same key resolution and `None` (unresolved or version-less
+/// root) semantics as `get_all`.
+pub fn list_version_meta(
+    conn: &Connection,
+    paper: &PaperRef,
+) -> Result<Option<(String, Vec<store::PaperVersionMeta>)>> {
+    let Some(source_id) = resolve_source_id(conn, paper)? else {
+        return Ok(None);
+    };
+    let rows = store::version_meta(conn, &source_id)?;
+    if rows.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some((source_id, rows)))
+}
+
 /// Latest-version rows for the given paper roots (project export/share),
 /// filtered in SQL. Empty input → empty output — a project with no papers
 /// yields no papers.

@@ -62,10 +62,9 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
 /// `GET /api/papers/sfk/{fk}/versions` — `api_get_paper_versions`.
 fn versions(state: &AppState, fk: &str) -> Result<Value, ApiError> {
     let source_fk = path_i64(fk)?;
-    let all = state.with_conn(|conn| svc_paper::get_all(conn, &sfk_key(source_fk)))?;
-    let all = all.ok_or(CoreError::PaperNotFound(source_fk.to_string()))?;
-    let versions: Vec<Value> = all
-        .versions
+    let all = state.with_conn(|conn| svc_paper::list_version_meta(conn, &sfk_key(source_fk)))?;
+    let (source_id, rows) = all.ok_or(CoreError::PaperNotFound(source_fk.to_string()))?;
+    let versions: Vec<Value> = rows
         .iter()
         .map(|v| {
             json!({
@@ -77,8 +76,8 @@ fn versions(state: &AppState, fk: &str) -> Result<Value, ApiError> {
         })
         .collect();
     Ok(json!({
-        "source_id": all.source_id,
-        "latest_version": all.latest_version,
+        "source_id": source_id,
+        "latest_version": rows.last().expect("non-empty").version,
         "versions": versions,
     }))
 }
@@ -551,6 +550,44 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.status, 404);
         assert_eq!(err.detail, "Paper 999 not found");
+    }
+
+    #[tokio::test]
+    async fn versions_lists_scalars_oldest_first() {
+        let st = state();
+        st.with_conn(|conn| {
+            svc_paper::save_paper_metadata(conn, &meta("arxiv:2204.00001", None), None)
+        })
+        .unwrap();
+        let v2: PaperMetadata = serde_json::from_value(json!({
+            "source_id": "arxiv:2204.00001",
+            "version": 2,
+            "title": "T",
+            "authors": ["A"],
+            "published": "2024-02-02",
+            "summary": "S",
+        }))
+        .unwrap();
+        st.with_conn(|conn| svc_paper::save_paper_metadata(conn, &v2, None))
+            .unwrap();
+        let fk = st
+            .with_conn(|conn| svc_paper::ensure_paper_root(conn, "arxiv:2204.00001"))
+            .unwrap();
+
+        let body = req(&st, "GET", &format!("/api/papers/sfk/{fk}/versions"), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            body,
+            json!({
+                "source_id": "arxiv:2204.00001",
+                "latest_version": 2,
+                "versions": [
+                    {"version": 1, "published": "2024-01-01", "updated": null, "has_pdf": false},
+                    {"version": 2, "published": "2024-02-02", "updated": null, "has_pdf": false},
+                ]
+            })
+        );
     }
 
     #[tokio::test]

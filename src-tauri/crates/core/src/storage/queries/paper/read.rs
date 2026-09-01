@@ -366,6 +366,43 @@ pub fn get_all_versions(conn: &Connection, source_id: &str) -> Result<Vec<PaperD
     Ok(out)
 }
 
+/// One `version_meta` row: the four scalars the versions listing needs.
+#[derive(Debug, Clone)]
+pub struct PaperVersionMeta {
+    pub version: i64,
+    pub published: Option<NaiveDate>,
+    pub updated: Option<NaiveDate>,
+    pub has_pdf: bool,
+}
+
+/// `version_meta` — [`get_all_versions`] minus the per-version full-row
+/// hydration: every stored (active) version's four listing scalars, oldest-first.
+pub fn version_meta(conn: &Connection, source_id: &str) -> Result<Vec<PaperVersionMeta>> {
+    let mut stmt = conn.prepare(
+        "SELECT version, published, updated, has_pdf FROM papers \
+         WHERE source_id = ? ORDER BY version ASC",
+    )?;
+    let rows = stmt.query_map([source_id], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, i64>(3)?,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (version, published, updated, has_pdf) = row?;
+        out.push(PaperVersionMeta {
+            version,
+            published: published.as_deref().map(date_from_sql).transpose()?,
+            updated: updated.as_deref().map(date_from_sql).transpose()?,
+            has_pdf: bool_from_sql(has_pdf),
+        });
+    }
+    Ok(out)
+}
+
 /// Another paper root sharing this root's DOI — same underlying work resolved
 /// independently by a different source (e.g. arXiv vs OpenAlex/Crossref).
 /// Local struct (no model; models.rs out of scope this phase).

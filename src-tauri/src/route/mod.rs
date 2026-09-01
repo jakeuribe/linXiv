@@ -267,6 +267,9 @@ pub(crate) fn parse_query(raw: &str) -> HashMap<String, String> {
 /// for space).
 /// Shared with the `linxiv://` protocol handler.
 pub(crate) fn pct_decode(s: &str) -> String {
+    if !s.contains('%') {
+        return s.to_owned();
+    }
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
