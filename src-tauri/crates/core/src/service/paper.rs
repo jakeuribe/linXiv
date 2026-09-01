@@ -570,18 +570,17 @@ const ID_PREFIXES: [&str; 4] = [
 /// empty-result behaviour they already had.
 pub fn canonical_source_id(conn: &Connection, raw: &str) -> String {
     let raw = raw.trim();
-    if store::get_paper_root(conn, raw).is_ok_and(|r| r.is_some()) {
-        return raw.to_string();
-    }
+    let mut candidates = vec![raw.to_string()];
     if !raw.contains(':') {
-        for prefix in ID_PREFIXES {
-            let candidate = format!("{prefix}{raw}");
-            if store::get_paper_root(conn, &candidate).is_ok_and(|r| r.is_some()) {
-                return candidate;
-            }
-        }
+        candidates.extend(ID_PREFIXES.iter().map(|p| format!("{p}{raw}")));
     }
-    raw.to_string()
+    let refs: Vec<&str> = candidates.iter().map(String::as_str).collect();
+    // Errors degrade to unresolved, matching the old per-candidate is_ok_and.
+    let existing = store::source_fks_by_id(conn, &refs).unwrap_or_default();
+    candidates
+        .into_iter()
+        .find(|c| existing.contains_key(c))
+        .unwrap_or_else(|| raw.to_string())
 }
 
 /// SOURCE_FK for an existing paper root — the fail-if-absent counterpart to
@@ -891,6 +890,10 @@ mod tests {
         );
         // a pre-namespacing bare row still resolves verbatim, not as `arxiv:...`
         assert_eq!(canonical_source_id(&conn, "10.1000/alpha"), "10.1000/alpha");
+        // when a bare id exists under two namespaces, arXiv (first prefix) wins
+        ensure_paper_root(&mut conn, "arxiv:5555").unwrap();
+        ensure_paper_root(&mut conn, "doi:5555").unwrap();
+        assert_eq!(canonical_source_id(&conn, "5555"), "arxiv:5555");
         // already namespaced ids pass straight through
         assert_eq!(
             canonical_source_id(&conn, "arxiv:2204.12985"),
