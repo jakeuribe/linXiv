@@ -37,6 +37,7 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     rss_feed_tables(conn)?;
     rss_cache_entry_table(conn)?;
     paper_sort_indexes(conn)?;
+    link_table_indexes(conn)?;
     Ok(())
 }
 
@@ -411,6 +412,19 @@ fn paper_sort_indexes(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+// ── 19. Link-table lookup indexes (PAPER_TO_AUTHOR, PAPER_TO_TAG, NOTE, …) ──
+
+/// Purely-for-speed indexes on the link tables' lookup columns; see the SQL
+/// file for the rationale. Every column indexed here is part of the original
+/// schema, so unlike `paper_sort_indexes` no column guard is needed, and
+/// CREATE INDEX IF NOT EXISTS is itself idempotent.
+fn link_table_indexes(conn: &Connection) -> Result<()> {
+    conn.execute_batch(include_str!(
+        "../../sql/migrations/19_link_table_indexes.sql"
+    ))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,7 +484,45 @@ mod tests {
             assert_eq!(n, 1, "{table} must exist after run_migrations");
         }
         assert!(index_exists(&conn, "IDX_RSS_PAPER_SOURCE_FK").unwrap());
+        for idx in [
+            "idx_paper_to_author_paper_id",
+            "idx_paper_to_author_author_fk",
+            "idx_paper_to_tag_paper_id",
+            "idx_paper_to_tag_tag_fk",
+            "idx_project_to_paper_source_fk",
+            "idx_project_to_tag_tag_fk",
+            "idx_note_source_fk",
+            "idx_note_project_fk",
+            "idx_note_paper_id_fk",
+        ] {
+            assert!(index_exists(&conn, idx).unwrap(), "{idx} must exist");
+        }
         schema::apply_views(&conn).unwrap();
+    }
+
+    /// Existence (asserted above) isn't use: pin that the hottest link-table
+    /// lookup — a paper's author list, run on every paper detail fetch —
+    /// actually goes through the new index rather than scanning PAPER_TO_AUTHOR.
+    #[test]
+    fn paper_author_lookup_uses_link_table_index() {
+        let conn = crate::storage::db::open_in_memory().unwrap();
+        crate::storage::init_db(&conn).unwrap();
+        let plan: Vec<String> = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN SELECT a.AUTHOR_FK FROM AUTHOR a \
+                 JOIN PAPER_TO_AUTHOR pta ON pta.AUTHOR_FK = a.AUTHOR_FK \
+                 WHERE pta.PAPER_ID = 1 ORDER BY pta.AUTHOR_INDEX",
+            )
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(
+            plan.iter()
+                .any(|d| d.contains("idx_paper_to_author_paper_id")),
+            "plan must use idx_paper_to_author_paper_id, got: {plan:?}"
+        );
     }
 
     /// `PRAGMA table_info(table)` rows as (name, type, notnull, dflt_value, pk),
