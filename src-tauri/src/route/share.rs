@@ -366,16 +366,24 @@ async fn list_received_with_role(state: &AppState, share: &ShareState) -> Result
     };
     // Pending mirrors are skipped: there is no content for a role to gate, and
     // one unanswered query per pending share would stall the whole listing.
-    for entry in list
-        .iter_mut()
-        .filter(|e| e["e2ee"] == json!(true) && e["pending"] != json!(true))
-    {
-        let Some(sid) = entry["share_id"].as_str().map(String::from) else {
-            continue;
-        };
+    let targets: Vec<(usize, String)> = list
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e["e2ee"] == json!(true) && e["pending"] != json!(true))
+        .filter_map(|(i, e)| e["share_id"].as_str().map(|s| (i, s.to_string())))
+        .collect();
+    // Queries run concurrently: each keeps its own timeout budget, but a slow
+    // relay no longer stalls the listing by (entries × budget).
+    let roles = futures_util::future::join_all(
+        targets
+            .iter()
+            .map(|(_, sid)| e2ee_timeout(node.query_role(sid, me), "role query")),
+    )
+    .await;
+    for ((i, _), res) in targets.iter().zip(roles) {
         // A failed or empty query leaves `role` unset (degrades editable).
-        if let Ok(Some(role)) = e2ee_timeout(node.query_role(&sid, me), "role query").await {
-            entry["role"] = match role {
+        if let Ok(Some(role)) = res {
+            list[*i]["role"] = match role {
                 Role::Read => json!("viewer"),
                 Role::Edit => json!("editor"),
                 Role::Admin => json!("hoster"),
@@ -1063,17 +1071,30 @@ async fn members(share: &ShareState, id: &str) -> Result<Value, ApiError> {
     let dir = share.share_dir().to_path_buf();
     ensure_e2ee_hosted(&dir, id)?;
     let node = share.node().await;
+    let members = load_members(&dir, id);
+    // One concurrent truth-check per live invited entry; each query keeps its
+    // own timeout budget instead of serially stacking (entries × budget).
+    // `Some(revoked_now)` = query answered; `None` = unqueryable, keep sidecar.
+    let checks = futures_util::future::join_all(members.iter().map(|m| async {
+        if m.revoked || m.role == "hoster" {
+            return None;
+        }
+        let (Some(node), Some(mid)) = (&node, member_id_from_hex(&m.member_id_hex)) else {
+            return None;
+        };
+        match e2ee_timeout(node.query_role(id, mid), "member query").await {
+            Ok(role) => Some(role.is_none()),
+            Err(_) => None,
+        }
+    }))
+    .await;
     let mut out = Vec::new();
-    for m in load_members(&dir, id) {
+    for (m, check) in members.into_iter().zip(checks) {
         let mut revoked = m.revoked;
         let mut verified = m.role == "hoster";
-        if !revoked && m.role != "hoster" {
-            if let (Some(node), Some(mid)) = (&node, member_id_from_hex(&m.member_id_hex)) {
-                if let Ok(role) = e2ee_timeout(node.query_role(id, mid), "member query").await {
-                    revoked = role.is_none();
-                    verified = true;
-                }
-            }
+        if let Some(revoked_now) = check {
+            revoked = revoked_now;
+            verified = true;
         }
         out.push(json!({
             "member_id": m.member_id_hex,
@@ -1951,6 +1972,14 @@ mod tests {
             .unwrap();
         assert_eq!(joined["share_id"], json!(SID));
         assert_eq!(joined["e2ee"], json!(true));
+
+        // B's received listing annotates the live-checked role (spec §7).
+        let listed = slow(list_received_with_role(&state_b, &share_b))
+            .await
+            .unwrap();
+        let entry = &listed["received"][0];
+        assert_eq!(entry["e2ee"], json!(true));
+        assert_eq!(entry["role"], json!("viewer"));
 
         // members: hoster + live-checked viewer.
         let m = slow(members(&share_a, SID)).await.unwrap();
