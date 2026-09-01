@@ -485,13 +485,8 @@ pub fn existing_source_ids(conn: &Connection, source_ids: &[String]) -> Result<V
     store::existing_source_ids(conn, source_ids)
 }
 
-/// True if the paper exists in soft-deleted state.
-pub fn is_paper_deleted(conn: &Connection, source_id: &str) -> Result<bool> {
-    store::is_paper_deleted(conn, source_id)
-}
-
-/// Which of `source_ids` are soft-deleted — the batched sibling of
-/// [`is_paper_deleted`].
+/// Which of `source_ids` are soft-deleted — the batched sibling of the
+/// single-id `store::is_paper_deleted` check.
 pub fn deleted_source_ids(
     conn: &Connection,
     source_ids: &[String],
@@ -614,11 +609,6 @@ pub fn pdf_custom_path(
 /// SOURCE_ID for a SOURCE_FK, or None.
 pub fn get_source_id(conn: &Connection, source_fk: i64) -> Result<Option<String>> {
     store::get_source_id(conn, source_fk)
-}
-
-/// Resolve a list of SOURCE_FKs to SOURCE_IDs, dropping any that don't exist.
-pub fn sfks_to_source_ids(conn: &Connection, source_fks: &[i64]) -> Result<Vec<String>> {
-    store::sfks_to_source_ids(conn, source_fks)
 }
 
 /// SOURCE_FK → SOURCE_ID map (nonexistent fks absent) — the batched sibling of
@@ -1249,7 +1239,7 @@ mod tests {
 
         // Soft-delete resolved via paper_id.
         delete(&mut conn, &PaperRef::Id(v1)).unwrap();
-        assert!(is_paper_deleted(&conn, "arxiv:A").unwrap());
+        assert!(store::is_paper_deleted(&conn, "arxiv:A").unwrap());
         let deleted = list_deleted(&conn).unwrap();
         assert_eq!(deleted.len(), 1);
         assert_eq!(deleted[0].source_id, "arxiv:A");
@@ -1258,7 +1248,7 @@ mod tests {
         // Restore resolved via source_fk -> returns project_fks.
         let (_pdf, fks) = restore(&mut conn, &PaperRef::SourceFk(fk)).unwrap();
         assert_eq!(fks, vec![proj]);
-        assert!(!is_paper_deleted(&conn, "arxiv:A").unwrap());
+        assert!(!store::is_paper_deleted(&conn, "arxiv:A").unwrap());
 
         // Hard-delete resolved via source_id.
         hard_delete(&mut conn, &PaperRef::source("arxiv:A".into())).unwrap();
@@ -1544,10 +1534,9 @@ mod tests {
             get_source_id(&conn, fk).unwrap().as_deref(),
             Some("arxiv:v")
         );
-        assert_eq!(
-            sfks_to_source_ids(&conn, &[fk, 9_999]).unwrap(),
-            vec!["arxiv:v".to_string()]
-        );
+        let by_fk = source_ids_by_fk(&conn, &[fk, 9_999]).unwrap();
+        assert_eq!(by_fk.get(&fk).map(String::as_str), Some("arxiv:v"));
+        assert!(!by_fk.contains_key(&9_999));
     }
 
     // Every front door goes through search_library, so a note-only hit that FTS

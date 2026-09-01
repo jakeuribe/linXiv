@@ -1,4 +1,8 @@
-use super::import::import_pdfs;
+use super::dto::{
+    ArchivePdf, ArchivePdfName, Manifest, NoteEntry, PaperEntry, ProjectEntry, Summary,
+};
+use super::export::build_manifest;
+use super::import::{commit_from_manifest, import_pdfs, preview_from_manifest};
 use super::*;
 use crate::error::CoreError;
 use crate::models::{AnnotationIn, NoteIn, PaperMetadata, ProjectIn, Status};
@@ -414,12 +418,12 @@ fn commit_restores_soft_deleted_paper_on_merge() {
     let tmp = tempfile::tempdir().unwrap();
     paper::save_paper_metadata(&mut conn, &meta("arxiv:1", 1, "T", &[]), None).unwrap();
     paper::delete(&mut conn, &paper::PaperRef::source("arxiv:1".into())).unwrap();
-    assert!(paper::is_paper_deleted(&conn, "arxiv:1").unwrap());
+    assert!(crate::storage::queries::paper::is_paper_deleted(&conn, "arxiv:1").unwrap());
 
     let manifest = base_manifest("P", vec![paper_entry("arxiv:1", 1, "T", &[])], vec![]);
     commit_from_manifest(&mut conn, &manifest, &[], OnConflict::Merge, tmp.path()).unwrap();
     assert!(
-        !paper::is_paper_deleted(&conn, "arxiv:1").unwrap(),
+        !crate::storage::queries::paper::is_paper_deleted(&conn, "arxiv:1").unwrap(),
         "import restored the trashed paper"
     );
 }

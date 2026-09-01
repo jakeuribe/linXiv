@@ -762,7 +762,7 @@ mod tests {
         // and the failure-injection dir doesn't trip preserve-existing).
         paper::ensure_paper_root(&mut conn, "arxiv:dead").unwrap();
         store::soft_delete_paper(&mut conn, "arxiv:dead").unwrap();
-        assert!(paper::is_paper_deleted(&conn, "arxiv:dead").unwrap());
+        assert!(store::is_paper_deleted(&conn, "arxiv:dead").unwrap());
 
         block_final_path(dir.path(), "arxiv_deadv1.pdf");
 
@@ -778,7 +778,7 @@ mod tests {
         assert!(matches!(err, CoreError::Internal(_)));
 
         // save_paper_metadata auto-restored the root; rollback re-trashed it.
-        assert!(paper::is_paper_deleted(&conn, "arxiv:dead").unwrap());
+        assert!(store::is_paper_deleted(&conn, "arxiv:dead").unwrap());
     }
 
     #[tokio::test]

@@ -1088,7 +1088,7 @@ mod tests {
         let pfk = import_shared_project(&mut conn2, &sp).unwrap();
 
         // Trashed stays trashed and is not linked to the imported project.
-        assert!(paper_svc::is_paper_deleted(&conn2, "arxiv:1").unwrap());
+        assert!(storage::queries::paper::is_paper_deleted(&conn2, "arxiv:1").unwrap());
         let mut linked: Vec<String> = conn2
             .prepare(
                 "SELECT r.SOURCE_ID FROM PROJECT_TO_PAPER pp \

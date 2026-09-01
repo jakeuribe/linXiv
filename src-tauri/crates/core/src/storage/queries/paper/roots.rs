@@ -55,23 +55,10 @@ pub fn get_source_id(conn: &Connection, source_fk: i64) -> Result<Option<String>
         .optional()?)
 }
 
-/// `service/paper.py::sfks_to_source_ids` — resolve SOURCE_FKs to SOURCE_IDs,
-/// dropping any that do not exist. Input order is preserved.
-///
-/// Batched: project listings resolve every paper of every project through
-/// here, so this must not be a query per fk. Chunked to stay under SQLite's
-/// bound-variable limit.
-pub fn sfks_to_source_ids(conn: &Connection, source_fks: &[i64]) -> Result<Vec<String>> {
-    let by_fk = source_ids_by_fk(conn, source_fks)?;
-    Ok(source_fks
-        .iter()
-        .filter_map(|fk| by_fk.get(fk).cloned())
-        .collect())
-}
-
 /// SOURCE_FK → SOURCE_ID map for a set of fks; nonexistent fks are simply
 /// absent. The batched sibling of `get_source_id` for callers that resolve
-/// many rows (e.g. share snapshots) — chunked like `sfks_to_source_ids`.
+/// many rows (e.g. share snapshots) — chunked to stay under SQLite's
+/// bound-variable limit.
 pub fn source_ids_by_fk(
     conn: &Connection,
     source_fks: &[i64],
@@ -186,10 +173,9 @@ mod tests {
             Some("arxiv:v")
         );
         assert_eq!(get_source_id(&conn, 999_999).unwrap(), None);
-        assert_eq!(
-            sfks_to_source_ids(&conn, &[fk, 999_999]).unwrap(),
-            vec!["arxiv:v".to_string()]
-        );
+        let by_fk = source_ids_by_fk(&conn, &[fk, 999_999]).unwrap();
+        assert_eq!(by_fk.get(&fk).map(String::as_str), Some("arxiv:v"));
+        assert!(!by_fk.contains_key(&999_999));
         let by_id = source_fks_by_id(&conn, &["arxiv:v", "ghost"]).unwrap();
         assert_eq!(by_id.get("arxiv:v"), Some(&fk));
         assert!(!by_id.contains_key("ghost"));

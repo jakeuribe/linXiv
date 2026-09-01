@@ -163,13 +163,6 @@ async fn route_inner(state: &AppState, req: &ApiRequest) -> Result<Value, ApiErr
 
     // Flat top-level arms (no resource subtree).
     match (ctx.method, ctx.segs) {
-        ("GET", ["api", "health"]) => {
-            return Ok(json!({
-                "ok": true,
-                "service": "linxiv-api",
-                "token": std::env::var("LINXIV_HEALTH_TOKEN").unwrap_or_default(),
-            }))
-        }
         ("GET", ["api", "stats"]) => return stats(state),
         ("GET", ["api", "categories"]) => return categories(state),
         _ => {}
