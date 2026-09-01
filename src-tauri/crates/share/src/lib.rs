@@ -28,7 +28,9 @@ mod transport;
 
 use std::path::{Path, PathBuf};
 
-use automerge::{AutoCommit, ReadDoc};
+// `save` hands back a doc, so callers need to be able to name `AutoCommit`.
+pub use automerge::AutoCommit;
+use automerge::ReadDoc;
 use rusqlite::Connection;
 
 use linxiv_core::error::CoreError;
@@ -44,8 +46,10 @@ use linxiv_core::service::{
 pub use linxiv_p2p::CustomRelay;
 pub use model::{SharedAnnotation, SharedNote, SharedPaper, SharedProject, SharedSummary};
 #[cfg(feature = "sync-beelay")]
-pub use transport::{e2ee_dir, e2ee_received_dir, E2eeSyncOutcome, MemberId, ProjectInvite, Role};
+pub use transport::{e2ee_dir, e2ee_received_dir, member_id_from_hex, member_id_hex};
 pub use transport::{received_dir, valid_share_id, ShareNode, ShareTicket, ALPN};
+#[cfg(feature = "sync-beelay")]
+pub use transport::{E2eeSyncOutcome, MemberId, ProjectInvite, Role};
 
 const SHARE_EXT: &str = "automerge";
 const MAX_SHARED_TEXT: usize = 256 * 1024;

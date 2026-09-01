@@ -110,6 +110,19 @@ fn decode_hex(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
+/// Lowercase hex of a member id — the form member ids take on the wire and in
+/// the members sidecar.
+#[cfg(feature = "sync-beelay")]
+pub fn member_id_hex(m: &MemberId) -> String {
+    m.0.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Inverse of [`member_id_hex`]; `None` unless `s` is exactly 32 hex bytes.
+#[cfg(feature = "sync-beelay")]
+pub fn member_id_from_hex(s: &str) -> Option<MemberId> {
+    Some(MemberId(decode_hex(s)?.try_into().ok()?))
+}
+
 /// Owns the p2p node for the share ALPN. One node both serves its own published
 /// docs (via [`ShareNode::ticket`]) and fetches others' (via [`ShareNode::fetch`]).
 pub struct ShareNode {
@@ -495,7 +508,7 @@ impl ShareNode {
             Ok(invite) => Ok((member, invite)),
             Err(e) => {
                 if let Err(re) = beelay.auth().revoke_member(share_id, member).await {
-                    let hex: String = member.0.iter().map(|b| format!("{b:02x}")).collect();
+                    let hex = member_id_hex(&member);
                     tracing::warn!(
                         "compensating revoke after failed invite also failed for member {hex}: {re}"
                     );
