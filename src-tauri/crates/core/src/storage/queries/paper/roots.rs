@@ -13,15 +13,11 @@ use super::fts::refresh_fts;
 /// `_ensure_paper_root_row` — INSERT OR IGNORE the root, then reactivate it if it
 /// was soft-deleted. Returns SOURCE_FK. Runs in the caller's tx.
 pub(super) fn ensure_paper_root_row(tx: &Transaction, source_id: &str) -> Result<i64> {
-    tx.execute(
-        "INSERT OR IGNORE INTO PAPER_ROOTS (SOURCE_ID) VALUES (?)",
-        [source_id],
-    )?;
-    let (fk, status): (i64, String) = tx.query_row(
-        "SELECT SOURCE_FK, STATUS FROM PAPER_ROOTS WHERE SOURCE_ID = ?",
-        [source_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
+    tx.prepare_cached("INSERT OR IGNORE INTO PAPER_ROOTS (SOURCE_ID) VALUES (?)")?
+        .execute([source_id])?;
+    let (fk, status): (i64, String) = tx
+        .prepare_cached("SELECT SOURCE_FK, STATUS FROM PAPER_ROOTS WHERE SOURCE_ID = ?")?
+        .query_row([source_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
     if status == "deleted" {
         tx.execute(
             "UPDATE PAPER_ROOTS SET STATUS = 'active', DELETED_AT = NULL, \

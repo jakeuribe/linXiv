@@ -56,11 +56,17 @@ fn sync_paper_authors(
     author_orcids: Option<&[Option<String>]>,
 ) -> Result<()> {
     let old_fks: Vec<i64> = {
-        let mut stmt = tx.prepare("SELECT AUTHOR_FK FROM PAPER_TO_AUTHOR WHERE PAPER_ID = ?")?;
+        let mut stmt =
+            tx.prepare_cached("SELECT AUTHOR_FK FROM PAPER_TO_AUTHOR WHERE PAPER_ID = ?")?;
         let rows = stmt.query_map([paper_id], |r| r.get::<_, i64>(0))?;
         rows.collect::<rusqlite::Result<_>>()?
     };
-    tx.execute("DELETE FROM PAPER_TO_AUTHOR WHERE PAPER_ID = ?", [paper_id])?;
+    // No old links (every fresh insert) means the DELETE below has nothing to
+    // delete — same WHERE clause as the SELECT — so skip it.
+    if !old_fks.is_empty() {
+        tx.prepare_cached("DELETE FROM PAPER_TO_AUTHOR WHERE PAPER_ID = ?")?
+            .execute([paper_id])?;
+    }
     let mut link = tx.prepare_cached(
         "INSERT INTO PAPER_TO_AUTHOR (PAPER_ID, AUTHOR_FK, AUTHOR_INDEX) VALUES (?, ?, ?)",
     )?;
@@ -112,8 +118,9 @@ pub(super) fn sync_paper_tags_for_versions(
     source_id: &str,
     tags: Option<&[String]>,
 ) -> Result<()> {
+    let mut delete = tx.prepare_cached("DELETE FROM PAPER_TO_TAG WHERE PAPER_ID = ?")?;
     for (paper_id, _) in rows {
-        tx.execute("DELETE FROM PAPER_TO_TAG WHERE PAPER_ID = ?", [paper_id])?;
+        delete.execute([paper_id])?;
     }
     // No rows means nothing to link — bail before FK resolution so a tag label
     // never gets a TAG row created without any paper referencing it.
@@ -172,9 +179,10 @@ pub(crate) fn write_paper_version_in_tx(
     let source_fk = ensure_paper_root_row(tx, &meta.source_id)?;
     // UPDATED_AT is date('now'), not the column's datetime('now') default: the
     // Python-era post-INSERT UPDATE stored date-only strings, kept for parity.
-    let changed = tx.execute(
+    let changed = tx.prepare_cached(
         "INSERT OR IGNORE INTO PAPER (SOURCE_ID, VERSION, TITLE, CATEGORY, HAS_PDF, SOURCE_FK, UPDATED_AT) \
          VALUES (?, ?, ?, ?, 0, ?, date('now'))",
+    )?.execute(
         params![
             meta.source_id,
             meta.version,
@@ -188,26 +196,26 @@ pub(crate) fn write_paper_version_in_tx(
     }
     let paper_id = tx.last_insert_rowid();
     let source = meta.source.clone().unwrap_or_default();
-    tx.execute(
+    tx.prepare_cached(
         "INSERT INTO PAPER_META (\
             PAPER_ID, URL, PUBLISHED, UPDATED, CATEGORIES, DOI, JOURNAL_REF, \
             COMMENT, SUMMARY, PROVIDER, PDF_PATH, FULL_TEXT, DOWNLOADED_SOURCE, AUTHORS, TAGS\
          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)",
-        params![
-            paper_id,
-            meta.url,
-            date_to_sql(meta.published),
-            opt_date_val(&meta.updated),
-            opt_list_val(&meta.categories),
-            meta.doi,
-            meta.journal_ref,
-            meta.comment,
-            meta.summary,
-            source,
-            list_to_sql(&meta.authors),
-            opt_list_val(&merged_tags),
-        ],
-    )?;
+    )?
+    .execute(params![
+        paper_id,
+        meta.url,
+        date_to_sql(meta.published),
+        opt_date_val(&meta.updated),
+        opt_list_val(&meta.categories),
+        meta.doi,
+        meta.journal_ref,
+        meta.comment,
+        meta.summary,
+        source,
+        list_to_sql(&meta.authors),
+        opt_list_val(&merged_tags),
+    ])?;
     sync_paper_authors(tx, paper_id, &meta.authors, meta.author_orcids.as_deref())?;
     sync_paper_tags(
         tx,
