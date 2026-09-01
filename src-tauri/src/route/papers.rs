@@ -109,7 +109,7 @@ fn by_sfk(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
             let source_id = svc_paper::get_source_id(conn, source_fk)?
                 .ok_or_else(|| CoreError::PaperNotFound(source_fk.to_string()))?;
             let key = PaperRef::Source {
-                source_id: source_id,
+                source_id,
                 version: Some(version),
             };
             svc_paper::get(conn, &key)?

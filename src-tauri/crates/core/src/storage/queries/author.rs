@@ -58,6 +58,19 @@ pub fn get_many(conn: &Connection, name: Option<&str>) -> Result<Vec<BasicAuthor
         .map_err(Into::into)
 }
 
+/// One author by exact ORCID (binary match, like the Rust `==` scan it replaced).
+/// Ties broken by full name to mirror the old find-first-in-`get_many` order.
+pub fn get_author_by_orcid(conn: &Connection, orcid: &str) -> Result<Option<BasicAuthorDetails>> {
+    Ok(conn
+        .query_row(
+            "SELECT AUTHOR_FK, AUTHOR_ORCID, AUTHOR_FULL_NAME, AUTHOR_FIRST, AUTHOR_LAST \
+             FROM AUTHOR WHERE AUTHOR_ORCID = ? ORDER BY AUTHOR_FULL_NAME LIMIT 1",
+            params![orcid],
+            row_to_basic,
+        )
+        .optional()?)
+}
+
 /// `authors.py::list_authors(paper_id=...)` via `_LIST_AUTHORS_FROM_PAPER_SQL` —
 /// authors of one paper, ordered by their stored AUTHOR_INDEX.
 pub fn get_paper_authors(conn: &Connection, paper_id: i64) -> Result<Vec<BasicAuthorDetails>> {

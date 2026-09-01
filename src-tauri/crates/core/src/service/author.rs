@@ -48,15 +48,13 @@ fn list_authors(
 
 // ── lookup seam ─────────────────────────────────────────────────────────────
 
-/// Fetch a single author. Resolution order: `author_id` → `orcid` (scan).
+/// Fetch a single author. Resolution order: `author_id` → `orcid`.
 pub fn get(conn: &Connection, author: &Author) -> Result<Option<BasicAuthorDetails>> {
     if let Some(id) = author.author_id {
         return store::get_author(conn, id);
     }
     if let Some(orcid) = author.orcid.as_deref() {
-        return Ok(store::get_many(conn, None)?
-            .into_iter()
-            .find(|r| r.orcid.as_deref() == Some(orcid)));
+        return store::get_author_by_orcid(conn, orcid);
     }
     Ok(None)
 }
@@ -303,7 +301,7 @@ mod tests {
         .unwrap();
         assert_eq!(a.full_name.as_deref(), Some("Bob Stone"));
 
-        // by orcid (scan path)
+        // by orcid
         let a = get(
             &conn,
             &Author {

@@ -99,13 +99,6 @@ pub struct SharedSummary {
     pub tag_count: usize,
 }
 
-/// Heavyweight listing view — full subgraph, pruned/summarized conservatively.
-#[derive(Debug, Clone, PartialEq)]
-pub struct FullSummary {
-    // NOTE: Not sure this is where this should truly go
-    // TODO: Complete here and elsewhere
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
