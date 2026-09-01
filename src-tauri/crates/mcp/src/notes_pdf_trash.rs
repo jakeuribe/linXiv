@@ -14,7 +14,7 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_router, ErrorData};
 use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::json;
 
 use linxiv_core::config;
 use linxiv_core::error::CoreError;
@@ -330,33 +330,7 @@ impl Server {
         let papers = self
             .with_conn(|conn| svc_paper::list_pdf_papers(conn))
             .map_err(core_err)?;
-        let mut pdfs: Vec<Value> = Vec::new();
-        for paper in papers {
-            let Some(path) = svc_files::pdf_path(
-                &pdf_dir,
-                &paper.source_id,
-                paper.version,
-                paper.pdf_path.as_deref(),
-            ) else {
-                continue;
-            };
-            let Ok(meta) = std::fs::metadata(&path) else {
-                continue;
-            };
-            pdfs.push(json!({
-                "source_id": paper.source_id,
-                "source_fk": paper.source_fk,
-                "title": paper.title,
-                "version": paper.version,
-                "size_bytes": meta.len(),
-            }));
-        }
-        pdfs.sort_by(|a, b| {
-            b["size_bytes"]
-                .as_u64()
-                .cmp(&a["size_bytes"].as_u64())
-                .then_with(|| a["source_id"].as_str().cmp(&b["source_id"].as_str()))
-        });
+        let mut pdfs = svc_files::saved_pdf_sizes(&pdf_dir, papers);
         pdfs.truncate(SAVED_PDF_LIST_CAP);
         json_ok(&json!({ "pdfs": pdfs }))
     }
@@ -371,29 +345,11 @@ impl Server {
     ) -> Result<String, ErrorData> {
         let pdf_dir = self.pdf_dir.clone();
         self.with_conn(|conn| {
-            let all = svc_paper::get_all(conn, &svc_paper::PaperRef::source(p.paper_id.clone()))
-                .map_err(core_err)?
-                .ok_or_else(|| {
-                    crate::util::guard_err(CoreError::PaperNotFound(p.paper_id.clone()))
-                })?;
-            for ver in &all.versions {
-                let path = svc_files::pdf_path(
-                    &pdf_dir,
-                    &p.paper_id,
-                    ver.version,
-                    ver.pdf_path.as_deref(),
-                );
-                if let Some(path) = &path {
-                    if !svc_files::delete_pdf(&pdf_dir, &path.to_string_lossy()) {
-                        return Err(invalid("PDF is outside managed storage"));
-                    }
-                }
-                // Clear the flag/path before a later version may refuse.
-                svc_paper::set_has_pdf(conn, &p.paper_id, ver.version, false).map_err(core_err)?;
-                if path.is_some() {
-                    svc_paper::set_pdf_path(conn, &p.paper_id, "", Some(ver.version))
-                        .map_err(core_err)?;
-                }
+            // guard_err: PaperNotFound → invalid-params, Internal (DB/FS) stays internal.
+            if !svc_paper::delete_saved_pdfs(conn, &pdf_dir, &p.paper_id)
+                .map_err(crate::util::guard_err)?
+            {
+                return Err(invalid("PDF is outside managed storage"));
             }
             json_ok(&json!({ "deleted": true, "paper_id": p.paper_id }))
         })
@@ -536,6 +492,7 @@ mod tests {
 
     use linxiv_core::models::PaperMetadata;
     use linxiv_core::storage;
+    use serde_json::Value;
 
     use super::*;
 

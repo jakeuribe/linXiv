@@ -20,6 +20,7 @@ use crate::formats::pyrepr;
 use crate::models::{
     is_arxiv_source_id, PaperDetails, PaperDetailsAll, PaperIn, PaperMetadata, ARXIV_PDF_MARKER,
 };
+use crate::service::files;
 pub use crate::storage::queries::paper::PaperSort;
 use crate::storage::queries::{
     note as note_store, paper as store, project as proj_store, search as search_store,
@@ -28,6 +29,7 @@ use chrono::{NaiveDate, NaiveDateTime};
 use rusqlite::Connection;
 use serde::Serialize;
 use std::collections::HashSet;
+use std::path::Path;
 
 pub use store::DoiVersionCandidate;
 
@@ -567,6 +569,32 @@ pub fn set_pdf_path(
     version: Option<i64>,
 ) -> Result<()> {
     store::set_pdf_path(conn, source_id, path, version)
+}
+
+/// Delete every stored version's local PDF for `source_id`, clearing
+/// HAS_PDF/PDF_PATH per version as it goes, keeping the paper record. Returns
+/// `Ok(false)` when a version's file resolves outside the managed dir
+/// (deletion stops there; earlier versions' flags stay cleared) so each
+/// surface can word its own conflict envelope. `source_id` is used verbatim
+/// for path/flag lookups, exactly as the surfaces did. Backs
+/// `DELETE /api/pdfs/{id}`, CLI `pdf delete`, and MCP `delete_pdf`.
+pub fn delete_saved_pdfs(conn: &Connection, pdf_dir: &Path, source_id: &str) -> Result<bool> {
+    let all = get_all(conn, &PaperRef::source(source_id.to_string()))?
+        .ok_or_else(|| CoreError::PaperNotFound(source_id.to_string()))?;
+    for ver in &all.versions {
+        let path = files::pdf_path(pdf_dir, source_id, ver.version, ver.pdf_path.as_deref());
+        if let Some(p) = &path {
+            if !files::delete_pdf(pdf_dir, &p.to_string_lossy()) {
+                return Ok(false);
+            }
+        }
+        // Clear the flag/path before the next iteration may refuse.
+        set_has_pdf(conn, source_id, ver.version, false)?;
+        if path.is_some() {
+            set_pdf_path(conn, source_id, "", Some(ver.version))?;
+        }
+    }
+    Ok(true)
 }
 
 /// Atomically record PDF_PATH and set HAS_PDF=1 for one version.

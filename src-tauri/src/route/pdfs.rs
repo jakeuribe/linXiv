@@ -26,39 +26,9 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
 /// `GET /api/pdfs` — `api_list_saved_pdfs`. Latest-version papers whose PDF is on
 /// disk, with file sizes, largest first, capped at 200.
 fn list_saved(state: &AppState) -> Result<Value, ApiError> {
-    let pdf_dir = state.pdf_dir.clone();
     // Pull the rows under the lock; stat the files outside it.
-    let rows = state.with_conn(|conn| {
-        svc_paper::list_pdf_papers(conn).map(|ps| {
-            ps.into_iter()
-                .map(|p| (p.source_id, p.source_fk, p.title, p.version, p.pdf_path))
-                .collect::<Vec<_>>()
-        })
-    })?;
-    let mut out: Vec<Value> = Vec::new();
-    for (source_id, source_fk, title, version, pdf_path) in rows {
-        let Some(path) = files::pdf_path(&pdf_dir, &source_id, version, pdf_path.as_deref()) else {
-            continue;
-        };
-        let Ok(meta) = std::fs::metadata(&path) else {
-            continue;
-        };
-        out.push(json!({
-            "source_id": source_id,
-            "source_fk": source_fk,
-            "title": title,
-            "version": version,
-            "size_bytes": meta.len(),
-        }));
-    }
-    // size desc, then source_id asc — matches app.py (_LIST_PDFS_SQL orders by
-    // source_id, then a stable sort by size_bytes desc keeps that as the tiebreak).
-    out.sort_by(|a, b| {
-        b["size_bytes"]
-            .as_u64()
-            .cmp(&a["size_bytes"].as_u64())
-            .then_with(|| a["source_id"].as_str().cmp(&b["source_id"].as_str()))
-    });
+    let papers = state.with_conn(|conn| svc_paper::list_pdf_papers(conn))?;
+    let mut out = files::saved_pdf_sizes(&state.pdf_dir, papers);
     out.truncate(SAVED_PDF_LIST_CAP);
     Ok(json!({ "pdfs": out }))
 }
@@ -68,20 +38,8 @@ fn list_saved(state: &AppState) -> Result<Value, ApiError> {
 fn delete_saved(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
     let pdf_dir = state.pdf_dir.clone();
     state.with_conn(|conn| -> Result<(), ApiError> {
-        let all = svc_paper::get_all(conn, &PaperRef::source(source_id.to_string()))?
-            .ok_or_else(|| CoreError::PaperNotFound(source_id.to_string()))?;
-        for ver in &all.versions {
-            let path = files::pdf_path(&pdf_dir, source_id, ver.version, ver.pdf_path.as_deref());
-            if let Some(p) = &path {
-                if !files::delete_pdf(&pdf_dir, &p.to_string_lossy()) {
-                    return Err(ApiError::new(409, "PDF is outside managed storage"));
-                }
-            }
-            // Clear the flag/path before the next iteration may raise 409.
-            svc_paper::set_has_pdf(conn, source_id, ver.version, false)?;
-            if path.is_some() {
-                svc_paper::set_pdf_path(conn, source_id, "", Some(ver.version))?;
-            }
+        if !svc_paper::delete_saved_pdfs(conn, &pdf_dir, source_id)? {
+            return Err(ApiError::new(409, "PDF is outside managed storage"));
         }
         Ok(())
     })?;
