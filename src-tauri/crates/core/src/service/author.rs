@@ -177,9 +177,10 @@ pub fn link_author_to_paper(
     store::link_author_to_paper(conn, author_id, paper_id, author_index)
 }
 
-/// Drop one paper↔author link (per PAPER version row — the route unlinks every
-/// version of a root). No-op if the pair is not linked.
-pub fn unlink_author_from_paper(conn: &Connection, author_id: i64, paper_id: i64) -> Result<()> {
+/// Drop the paper↔author link for every stored version of the paper's root
+/// (link rows are per-version; any version's id addresses the root). No-op if
+/// the pair is not linked; `false` if `paper_id` is no active paper (→ 404).
+pub fn unlink_author_from_paper(conn: &Connection, author_id: i64, paper_id: i64) -> Result<bool> {
     store::unlink_author_from_paper(conn, author_id, paper_id)
 }
 

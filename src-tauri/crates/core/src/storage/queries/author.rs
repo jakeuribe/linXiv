@@ -335,14 +335,27 @@ pub fn link_author_to_paper(
     Ok(())
 }
 
-/// `authors.py::unlink_author_from_paper` — delete the link row for one
-/// (author, paper) pair.
-pub fn unlink_author_from_paper(conn: &Connection, author_fk: i64, paper_id: i64) -> Result<()> {
+/// `authors.py::unlink_author_from_paper` — delete the author's link rows for
+/// every stored version of the paper's root (link rows are per-version, the
+/// caller addresses any one version's id). Returns `false` when `paper_id`
+/// doesn't resolve to an active paper, so the route can 404.
+pub fn unlink_author_from_paper(conn: &Connection, author_fk: i64, paper_id: i64) -> Result<bool> {
+    let source_id: Option<String> = conn
+        .query_row(
+            "SELECT source_id FROM papers WHERE paper_id = ?",
+            params![paper_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(source_id) = source_id else {
+        return Ok(false);
+    };
     conn.execute(
-        "DELETE FROM PAPER_TO_AUTHOR WHERE AUTHOR_FK = ? AND PAPER_ID = ?",
-        params![author_fk, paper_id],
+        "DELETE FROM PAPER_TO_AUTHOR WHERE AUTHOR_FK = ?1 AND PAPER_ID IN \
+         (SELECT paper_id FROM papers WHERE source_id = ?2)",
+        params![author_fk, source_id],
     )?;
-    Ok(())
+    Ok(true)
 }
 
 /// Merge `dup_ids` into `canonical_id`: resync PAPER_META.AUTHORS on every paper
@@ -583,7 +596,23 @@ mod tests {
         init_db(&conn).unwrap();
         let (pid, a1, _a2) = seed(&conn);
 
-        unlink_author_from_paper(&conn, a1, pid).unwrap();
+        // A second version of the same root: one unlink call must cover both.
+        conn.execute(
+            "INSERT INTO PAPER (SOURCE_ID, VERSION, TITLE, SOURCE_FK)
+             SELECT SOURCE_ID, 2, 'T1v2', SOURCE_FK FROM PAPER WHERE PAPER_ID = ?",
+            params![pid],
+        )
+        .unwrap();
+        let pid_v2 = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO PAPER_META (PAPER_ID, PUBLISHED) VALUES (?, '2024-02-01')",
+            params![pid_v2],
+        )
+        .unwrap();
+        link_author_to_paper(&conn, a1, pid_v2, Some(0)).unwrap();
+
+        assert!(!unlink_author_from_paper(&conn, a1, 99_999).unwrap()); // unknown paper → false
+        assert!(unlink_author_from_paper(&conn, a1, pid_v2).unwrap()); // any version's id works
         assert_eq!(count_paper_links(&conn, a1).unwrap(), 0);
         assert_eq!(get_paper_authors(&conn, pid).unwrap().len(), 1); // only Alice left
 

@@ -107,10 +107,8 @@ fn unlink_paper(state: &AppState, id: &str, pid: &str) -> Result<Value, ApiError
         if svc_author::get(conn, &author_ref(author_id))?.is_none() {
             return Err(ApiError::new(404, "Author not found"));
         }
-        let all = svc_paper::get_all(conn, &PaperRef::Id(paper_id))?
-            .ok_or_else(|| ApiError::new(404, "Paper not found"))?;
-        for v in &all.versions {
-            svc_author::unlink_author_from_paper(conn, author_id, v.paper_id)?;
+        if !svc_author::unlink_author_from_paper(conn, author_id, paper_id)? {
+            return Err(ApiError::new(404, "Paper not found"));
         }
         Ok(())
     })?;
