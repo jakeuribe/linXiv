@@ -86,6 +86,18 @@ pub fn get_note(conn: &Connection, note_id: i64) -> Result<Option<NoteDetails>> 
         .optional()?)
 }
 
+/// Just one note's content — for frontmatter checks that never need the hydrated
+/// row. `None` if the note is absent; NULL content coalesces to "" like
+/// `note_from_row`.
+pub fn get_note_content(conn: &Connection, note_id: i64) -> Result<Option<String>> {
+    Ok(conn
+        .query_row("SELECT NOTE FROM NOTE WHERE NOTE_SK = ?1", [note_id], |r| {
+            r.get::<_, Option<String>>(0)
+        })
+        .optional()?
+        .map(Option::unwrap_or_default))
+}
+
 /// `storage/notes.py::create_note` — INSERT a note, returns the new NOTE_SK.
 /// CREATED_AT/UPDATED_AT both stamped now (Python `datetime.now(utc)`).
 /// `uuid` None generates a fresh v4; Some preserves an imported identity.
