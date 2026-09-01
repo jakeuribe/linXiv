@@ -167,10 +167,21 @@ fn strip_commands(s: &str) -> String {
     out
 }
 
+/// Append `text` to `out` with each line's TeX comment removed.
+fn push_stripped_lines(out: &mut String, text: &str) {
+    for (i, line) in text.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(strip_line_comment(line));
+    }
+}
+
 /// Remove TeX comments then boilerplate commands. Port of `_strip_tex_noise`.
 pub fn strip_tex_noise(text: &str) -> String {
-    let no_comments: Vec<&str> = text.split('\n').map(strip_line_comment).collect();
-    strip_commands(&no_comments.join("\n"))
+    let mut no_comments = String::with_capacity(text.len());
+    push_stripped_lines(&mut no_comments, text);
+    strip_commands(&no_comments)
 }
 
 // ---------------------------------------------------------------------------
@@ -250,17 +261,27 @@ fn extract_capped(tarpath: &Path, max_decompressed: u64, max_tex: u64) -> Result
     }
     tex.sort_by_key(|(name, _)| name.matches('/').count()); // stable: root first
 
+    // Comment-strip each member straight into one pre-sized buffer (with the
+    // "\n\n" join separators inline) instead of materializing per-member owned
+    // strings, the joined text, and the comment-stripped rejoin — this path can
+    // run to MAX_TEX_BYTES, so each avoided copy is up to 16 MiB.
+    let total: u64 = tex.iter().map(|(_, b)| b.len() as u64).sum();
+    let mut clean = String::with_capacity(total.min(max_tex) as usize + 2 * tex.len());
     let mut remaining = max_tex;
-    let mut parts: Vec<String> = Vec::new();
+    let mut first = true;
     for (_, bytes) in &tex {
         if remaining == 0 {
             break;
         }
         let take = (bytes.len() as u64).min(remaining) as usize;
         remaining -= take as u64;
-        parts.push(String::from_utf8_lossy(&bytes[..take]).into_owned());
+        if !first {
+            clean.push_str("\n\n");
+        }
+        first = false;
+        push_stripped_lines(&mut clean, &String::from_utf8_lossy(&bytes[..take]));
     }
-    Ok(strip_tex_noise(&parts.join("\n\n")))
+    Ok(strip_commands(&clean))
 }
 
 // ---------------------------------------------------------------------------
@@ -598,8 +619,18 @@ mod tests {
             &[("subdir/section.tex", "NESTED"), ("main.tex", "ROOT")],
         );
         let out = extract_source(&p);
-        assert!(out.contains("ROOT") && out.contains("NESTED"));
-        assert!(out.find("ROOT").unwrap() < out.find("NESTED").unwrap());
+        assert_eq!(out, "ROOT\n\nNESTED");
+    }
+
+    #[test]
+    fn extract_member_boundary_comment_does_not_eat_next_member() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = write_tarball(
+            dir.path(),
+            "src.tar.gz",
+            &[("main.tex", "ROOT % trailing"), ("z.tex", "NEXT")],
+        );
+        assert_eq!(extract_source(&p), "ROOT \n\nNEXT");
     }
 
     #[test]
