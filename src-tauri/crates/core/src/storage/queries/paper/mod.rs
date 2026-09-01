@@ -18,7 +18,10 @@ pub use read::{
     get_paper_by_id, get_papers_by_json_tag, get_papers_by_source_fks, list_papers,
     list_papers_sorted, list_pdf_papers, DoiVersionCandidate, PaperSort, PAPER_COLUMNS_NO_TEXT,
 };
-pub use roots::{ensure_paper_root, get_paper_root, get_source_id, sfks_to_source_ids, PaperRoot};
+pub use roots::{
+    ensure_paper_root, get_paper_root, get_source_id, sfks_to_source_ids, source_ids_by_fk,
+    PaperRoot,
+};
 pub use trash::{
     hard_delete_paper, is_paper_deleted, list_deleted_papers, restore_paper, soft_delete_paper,
     DeletedPaper,

@@ -72,6 +72,38 @@ pub fn get_paper_authors(conn: &Connection, paper_id: i64) -> Result<Vec<BasicAu
         .map_err(Into::into)
 }
 
+/// Each paper's author ORCIDs (AUTHOR_INDEX order, so index-aligned with the
+/// paper's authors list), keyed by PAPER_ID. The batched sibling of
+/// `get_paper_authors` for snapshot builders that would otherwise query once
+/// per paper. Papers with no author links are absent from the map. Chunked to
+/// stay under SQLite's bound-variable limit.
+pub fn paper_author_orcids(
+    conn: &Connection,
+    paper_ids: &[i64],
+) -> Result<std::collections::HashMap<i64, Vec<Option<String>>>> {
+    let mut by_paper: std::collections::HashMap<i64, Vec<Option<String>>> =
+        std::collections::HashMap::new();
+    for chunk in paper_ids.chunks(900) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let sql = format!(
+            "SELECT pta.PAPER_ID, a.AUTHOR_ORCID \
+             FROM AUTHOR a \
+             JOIN PAPER_TO_AUTHOR pta ON pta.AUTHOR_FK = a.AUTHOR_FK \
+             WHERE pta.PAPER_ID IN ({placeholders}) \
+             ORDER BY pta.PAPER_ID, pta.AUTHOR_INDEX"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(chunk.iter()), |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))
+        })?;
+        for row in rows {
+            let (pid, orcid) = row?;
+            by_paper.entry(pid).or_default().push(orcid);
+        }
+    }
+    Ok(by_paper)
+}
+
 /// `authors.py::list_authors_with_paper_count` — authors with their distinct
 /// active-paper count (from the `author_paper_counts` view), `>= min_papers`,
 /// ordered last-then-first with NULLs last.
@@ -507,6 +539,13 @@ mod tests {
         assert_eq!(pa.len(), 2);
         assert_eq!(pa[0].full_name.as_deref(), Some("Bob Stone"));
         assert_eq!(pa[1].full_name.as_deref(), Some("Alice Cole"));
+
+        // paper_author_orcids: same AUTHOR_INDEX order, keyed by paper; a paper
+        // with no author links is absent, an unknown id is ignored.
+        let orcids = paper_author_orcids(&conn, &[pid, 9_999]).unwrap();
+        assert_eq!(orcids.len(), 1);
+        assert_eq!(orcids[&pid], vec![None, Some("0000-1".to_string())]);
+        assert!(paper_author_orcids(&conn, &[]).unwrap().is_empty());
 
         // previews: each author sees the one active latest paper.
         let prev = get_paper_previews(&conn, a1).unwrap();

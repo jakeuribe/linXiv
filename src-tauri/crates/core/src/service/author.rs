@@ -197,6 +197,15 @@ pub fn get_paper_authors(conn: &Connection, paper_id: i64) -> Result<Vec<BasicAu
     store::get_paper_authors(conn, paper_id)
 }
 
+/// Batched `get_paper_authors` projected to ORCIDs: each paper's author ORCIDs
+/// in AUTHOR_INDEX order, keyed by PAPER_ID (papers without author links absent).
+pub fn paper_author_orcids(
+    conn: &Connection,
+    paper_ids: &[i64],
+) -> Result<std::collections::HashMap<i64, Vec<Option<String>>>> {
+    store::paper_author_orcids(conn, paper_ids)
+}
+
 /// Other authors sharing this author's ORCID — likely-duplicate suggestions for
 /// the merge UI. Empty if the author has no ORCID.
 pub fn orcid_merge_candidates(

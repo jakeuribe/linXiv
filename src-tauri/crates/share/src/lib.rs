@@ -119,12 +119,14 @@ pub fn build_shared_project(conn: &Connection, project_id: i64) -> Result<Shared
     .ok_or_else(|| ShareError::NotFound(project_id.to_string()))?;
     let share_id = project_svc::ensure_share_id(conn, project_id)?;
 
-    let mut papers = Vec::new();
-    for p in paper_svc::get_by_source_fks(conn, &project.source_fks)? {
-        let author_orcids = author_svc::get_paper_authors(conn, p.paper_id)?
-            .into_iter()
-            .map(|a| a.orcid)
-            .collect();
+    // Batched: this runs once per shared project on every background sync tick,
+    // so the per-paper/per-note/per-annotation lookups it replaces were the
+    // hottest N+1 in the app.
+    let details = paper_svc::get_by_source_fks(conn, &project.source_fks)?;
+    let paper_ids: Vec<i64> = details.iter().map(|p| p.paper_id).collect();
+    let mut orcids = author_svc::paper_author_orcids(conn, &paper_ids)?;
+    let mut papers = Vec::with_capacity(details.len());
+    for p in details {
         papers.push(SharedPaper {
             source_id: p.source_id,
             version: p.version,
@@ -132,27 +134,44 @@ pub fn build_shared_project(conn: &Connection, project_id: i64) -> Result<Shared
             title: p.title,
             summary: p.summary.unwrap_or_default(),
             authors: p.authors,
-            author_orcids,
+            author_orcids: orcids.remove(&p.paper_id).unwrap_or_default(),
             tags: p.tags,
             pdf_blob: None,
         });
     }
 
-    let mut notes = Vec::new();
-    for n in note_svc::get_many(
+    let project_notes = note_svc::get_many(
         conn,
         &note_svc::Notes {
             project_fk: Some(project_id),
             ..Default::default()
         },
-    )? {
+    )?;
+    let project_anns = annotation_svc::get_many(
+        conn,
+        &annotation_svc::Annotations {
+            project_fk: Some(project_id),
+            ..Default::default()
+        },
+    )?;
+    let fks: Vec<i64> = project_notes
+        .iter()
+        .map(|n| n.source_fk)
+        .chain(project_anns.iter().map(|a| a.source_fk))
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let source_ids = paper_svc::source_ids_by_fk(conn, &fks)?;
+
+    let mut notes = Vec::new();
+    for n in project_notes {
         // Skip notes whose source_id no longer resolves (mirrors the annotation loop).
-        let Some(paper_source_id) = paper_svc::get_source_id(conn, n.source_fk)? else {
+        let Some(paper_source_id) = source_ids.get(&n.source_fk) else {
             continue;
         };
         notes.push(SharedNote {
             uuid: n.uuid,
-            paper_source_id: Some(paper_source_id),
+            paper_source_id: Some(paper_source_id.clone()),
             title: n.title,
             body: n.content,
             created_at: n.created_at.map(|t| t.to_string()),
@@ -161,20 +180,14 @@ pub fn build_shared_project(conn: &Connection, project_id: i64) -> Result<Shared
     }
 
     let mut annotations = Vec::new();
-    for a in annotation_svc::get_many(
-        conn,
-        &annotation_svc::Annotations {
-            project_fk: Some(project_id),
-            ..Default::default()
-        },
-    )? {
+    for a in project_anns {
         // Skip annotations whose source_id no longer resolves (mirrors build_manifest).
-        let Some(paper_source_id) = paper_svc::get_source_id(conn, a.source_fk)? else {
+        let Some(paper_source_id) = source_ids.get(&a.source_fk) else {
             continue;
         };
         annotations.push(SharedAnnotation {
             uuid: a.uuid,
-            paper_source_id,
+            paper_source_id: paper_source_id.clone(),
             anchor: a.anchor,
             comment: a.comment,
             created_at: a.created_at.map(|t| t.to_string()),

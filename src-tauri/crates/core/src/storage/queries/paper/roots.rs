@@ -62,6 +62,20 @@ pub fn get_source_id(conn: &Connection, source_fk: i64) -> Result<Option<String>
 /// here, so this must not be a query per fk. Chunked to stay under SQLite's
 /// bound-variable limit.
 pub fn sfks_to_source_ids(conn: &Connection, source_fks: &[i64]) -> Result<Vec<String>> {
+    let by_fk = source_ids_by_fk(conn, source_fks)?;
+    Ok(source_fks
+        .iter()
+        .filter_map(|fk| by_fk.get(fk).cloned())
+        .collect())
+}
+
+/// SOURCE_FK → SOURCE_ID map for a set of fks; nonexistent fks are simply
+/// absent. The batched sibling of `get_source_id` for callers that resolve
+/// many rows (e.g. share snapshots) — chunked like `sfks_to_source_ids`.
+pub fn source_ids_by_fk(
+    conn: &Connection,
+    source_fks: &[i64],
+) -> Result<std::collections::HashMap<i64, String>> {
     let mut by_fk = std::collections::HashMap::with_capacity(source_fks.len());
     for chunk in source_fks.chunks(900) {
         let placeholders = vec!["?"; chunk.len()].join(",");
@@ -77,10 +91,7 @@ pub fn sfks_to_source_ids(conn: &Connection, source_fks: &[i64]) -> Result<Vec<S
             by_fk.insert(fk, sid);
         }
     }
-    Ok(source_fks
-        .iter()
-        .filter_map(|fk| by_fk.get(fk).cloned())
-        .collect())
+    Ok(by_fk)
 }
 
 /// PAPER_ROOTS row. No model exists (PAPER_ROOTS is storage-internal) and

@@ -524,6 +524,15 @@ pub fn sfks_to_source_ids(conn: &Connection, source_fks: &[i64]) -> Result<Vec<S
     store::sfks_to_source_ids(conn, source_fks)
 }
 
+/// SOURCE_FK → SOURCE_ID map (nonexistent fks absent) — the batched sibling of
+/// `get_source_id` for callers resolving many rows in one pass.
+pub fn source_ids_by_fk(
+    conn: &Connection,
+    source_fks: &[i64],
+) -> Result<std::collections::HashMap<i64, String>> {
+    store::source_ids_by_fk(conn, source_fks)
+}
+
 /// Other paper roots sharing this one's DOI — likely the same work resolved by
 /// a different source, for a "these look like the same paper" suggestion.
 pub fn find_doi_version_candidates(
