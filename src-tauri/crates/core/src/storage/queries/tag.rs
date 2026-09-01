@@ -90,6 +90,32 @@ pub fn get_tag(conn: &Connection, tag_id: i64) -> Result<Option<TagDetails>> {
     .map_err(Into::into)
 }
 
+/// Stored-case label for a COLLATE NOCASE match, or `None`. Excludes the
+/// internal `READING_LIST_TAG` marker, matching `list_tags`' visibility.
+pub fn canonical_tag_label(conn: &Connection, label: &str) -> Result<Option<String>> {
+    conn.query_row(
+        "SELECT TAG FROM TAG WHERE TAG = ?1 COLLATE NOCASE \
+         AND TAG <> ?2 COLLATE NOCASE LIMIT 1",
+        [label, READING_LIST_TAG],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// PROJECT_FKs of every project linked (PROJECT_TO_TAG) to a COLLATE NOCASE
+/// label match. Any project status — callers filter.
+pub fn project_fks_by_tag(conn: &Connection, label: &str) -> Result<Vec<i64>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT ptt.PROJECT_FK FROM PROJECT_TO_TAG ptt \
+         JOIN TAG t ON t.TAG_FK = ptt.TAG_FK \
+         WHERE t.TAG = ? COLLATE NOCASE ORDER BY ptt.PROJECT_FK",
+    )?;
+    let rows = stmt.query_map([label], |r| r.get(0))?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(Into::into)
+}
+
 /// Find (COLLATE NOCASE) or create a TAG row inside the caller's transaction.
 /// Shared by `create_tag` and paper.rs's tag sync.
 pub(crate) fn tag_fk_for_label(tx: &rusqlite::Transaction, label: &str) -> Result<i64> {
@@ -281,6 +307,50 @@ mod tests {
         assert_eq!(tags[0].label.as_deref(), Some("alpha"));
         assert_eq!(tags[1].label.as_deref(), Some("zeta"));
         assert!(tags[0].tag_id > 0);
+    }
+
+    #[test]
+    fn canonical_tag_label_matches_nocase_and_hides_reading_list() {
+        let mut conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        create_tag(&mut conn, "Neural").unwrap();
+        create_tag(&mut conn, READING_LIST_TAG).unwrap();
+
+        assert_eq!(
+            canonical_tag_label(&conn, "nEuRaL").unwrap().as_deref(),
+            Some("Neural"),
+            "NOCASE match returns the stored casing"
+        );
+        assert!(canonical_tag_label(&conn, "nope").unwrap().is_none());
+        assert!(
+            canonical_tag_label(&conn, READING_LIST_TAG)
+                .unwrap()
+                .is_none(),
+            "internal marker stays hidden, matching list_tags"
+        );
+    }
+
+    #[test]
+    fn project_fks_by_tag_matches_nocase_any_status() {
+        let mut conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        for (fk, status) in [(1, "active"), (2, "deleted"), (3, "active")] {
+            conn.execute(
+                "INSERT INTO PROJECT (PROJECT_FK, NAME, STATUS) VALUES (?, 'p', ?)",
+                rusqlite::params![fk, status],
+            )
+            .unwrap();
+        }
+        add_project_tags(&mut conn, 1, &["Neural".into()]).unwrap();
+        add_project_tags(&mut conn, 2, &["Neural".into()]).unwrap();
+        add_project_tags(&mut conn, 3, &["Other".into()]).unwrap();
+
+        assert_eq!(
+            project_fks_by_tag(&conn, "nEuRaL").unwrap(),
+            vec![1, 2],
+            "NOCASE match, any status, ordered by fk"
+        );
+        assert!(project_fks_by_tag(&conn, "nope").unwrap().is_empty());
     }
 
     #[test]
