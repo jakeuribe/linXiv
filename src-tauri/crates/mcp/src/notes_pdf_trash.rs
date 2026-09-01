@@ -328,10 +328,10 @@ impl Server {
         let pdf_dir = self.pdf_dir.clone();
         // Pull the rows under the lock; the files are stat'd after it is released.
         let papers = self
-            .with_conn(|conn| svc_paper::list_papers(conn, true, None, 0, None))
+            .with_conn(|conn| svc_paper::list_pdf_papers(conn))
             .map_err(core_err)?;
         let mut pdfs: Vec<Value> = Vec::new();
-        for paper in papers.into_iter().filter(|p| p.has_pdf) {
+        for paper in papers {
             let Some(path) = svc_files::pdf_path(
                 &pdf_dir,
                 &paper.source_id,

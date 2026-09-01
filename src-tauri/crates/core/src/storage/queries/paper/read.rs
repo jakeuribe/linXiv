@@ -243,6 +243,20 @@ pub fn list_papers_sorted(
     Ok(out)
 }
 
+/// Latest-version papers whose PDF flag is set — backs `GET /api/pdfs`. Filters
+/// in SQL so the whole library is never materialized to find the PDF subset.
+pub fn list_pdf_papers(conn: &Connection) -> Result<Vec<PaperDetails>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {PAPER_COLUMNS_NO_TEXT} FROM latest_papers WHERE has_pdf = 1"
+    ))?;
+    let mut rows = stmt.query([])?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push(row_to_paper(row)?);
+    }
+    Ok(out)
+}
+
 /// `storage/db.py::get_categories` — distinct primary categories across latest
 /// active papers, NULLs excluded, ascending. BINARY collation (the default) is
 /// byte order — the same ordering the service's old BTreeSet<String> produced.
@@ -435,6 +449,51 @@ mod tests {
             list_papers(&conn, false, Some(1), 1, None).unwrap().len(),
             1
         );
+    }
+
+    /// Pins `list_pdf_papers` ≡ `list_papers(latest_only)` filtered on has_pdf —
+    /// the SQL-side filter must not change what the old scan-then-filter saw.
+    #[test]
+    fn list_pdf_papers_matches_filtered_full_list() {
+        let conn = open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        seed(&conn); // arxiv:2204.12985, HAS_PDF=1, latest version 2
+        for (sid, has_pdf) in [("arxiv:nopdf", 0), ("arxiv:withpdf", 1)] {
+            conn.execute("INSERT INTO PAPER_ROOTS (SOURCE_ID) VALUES (?1)", [sid])
+                .unwrap();
+            let fk = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO PAPER (SOURCE_ID, VERSION, TITLE, HAS_PDF, SOURCE_FK) \
+                 VALUES (?1, 1, ?1, ?2, ?3)",
+                params![sid, has_pdf, fk],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO PAPER_META (PAPER_ID) VALUES (?1)",
+                [conn.last_insert_rowid()],
+            )
+            .unwrap();
+        }
+
+        let expected: Vec<(String, i64)> = list_papers(&conn, true, None, 0, None)
+            .unwrap()
+            .into_iter()
+            .filter(|p| p.has_pdf)
+            .map(|p| (p.source_id, p.version))
+            .collect();
+        let mut got: Vec<(String, i64)> = list_pdf_papers(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|p| (p.source_id, p.version))
+            .collect();
+        // The new query carries no ORDER BY (its one caller re-sorts by file
+        // size); compare as sets.
+        got.sort();
+        let mut expected_sorted = expected.clone();
+        expected_sorted.sort();
+        assert_eq!(got, expected_sorted);
+        assert_eq!(got.len(), 2);
+        assert!(got.iter().all(|(sid, _)| sid != "arxiv:nopdf"));
     }
 
     #[test]

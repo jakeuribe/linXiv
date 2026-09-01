@@ -138,9 +138,9 @@ pub async fn run(cmd: PdfCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         // GET /api/pdfs: latest-version papers whose PDF is actually on disk,
         // largest first. Uncapped — the route's 200-row cap is for the UI list.
         PdfCmd::List => {
-            let papers = svc_paper::list_papers(&ctx.conn, true, None, 0, None)?;
+            let papers = svc_paper::list_pdf_papers(&ctx.conn)?;
             let mut rows: Vec<Value> = Vec::new();
-            for p in papers.into_iter().filter(|p| p.has_pdf) {
+            for p in papers {
                 let Some(path) = svc_files::pdf_path(
                     &ctx.pdf_dir,
                     &p.source_id,

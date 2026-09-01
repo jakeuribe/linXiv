@@ -201,15 +201,9 @@ pub fn get_many(conn: &Connection, papers: &Papers) -> Result<Vec<PaperDetails>>
 
     if let Some(fks) = &papers.source_fks {
         if !fks.is_empty() {
-            let mut kept = Vec::new();
-            for detail in results {
-                if let Some(root) = store::get_paper_root(conn, &detail.source_id)? {
-                    if fks.contains(&root.source_fk) {
-                        kept.push(detail);
-                    }
-                }
-            }
-            results = kept;
+            // View rows join PAPER_ROOTS on SOURCE_FK, so row.source_fk IS the
+            // root fk — no per-row root lookup needed.
+            results.retain(|row| fks.contains(&row.source_fk));
         }
     }
     Ok(results)
@@ -481,6 +475,11 @@ pub fn list_papers_sorted(
     desc: bool,
 ) -> Result<Vec<PaperDetails>> {
     store::list_papers_sorted(conn, latest_only, limit, offset, category, sort, desc)
+}
+
+/// Latest papers with a local PDF flag set, filtered in SQL (`GET /api/pdfs`).
+pub fn list_pdf_papers(conn: &Connection) -> Result<Vec<PaperDetails>> {
+    store::list_pdf_papers(conn)
 }
 
 /// Sorted distinct primary categories across latest papers (`db.get_categories`).

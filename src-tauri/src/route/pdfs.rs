@@ -31,9 +31,8 @@ fn list_saved(state: &AppState) -> Result<Value, ApiError> {
     let pdf_dir = state.pdf_dir.clone();
     // Pull the rows under the lock; stat the files outside it.
     let rows = state.with_conn(|conn| {
-        svc_paper::list_papers(conn, true, None, 0, None).map(|ps| {
+        svc_paper::list_pdf_papers(conn).map(|ps| {
             ps.into_iter()
-                .filter(|p| p.has_pdf)
                 .map(|p| (p.source_id, p.source_fk, p.title, p.version, p.pdf_path))
                 .collect::<Vec<_>>()
         })
