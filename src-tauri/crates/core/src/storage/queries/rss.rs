@@ -12,21 +12,16 @@ use ts_rs::TS;
 use crate::error::Result;
 
 /// Record that a feed entry was seen (idempotent; upserts the root + version row).
+/// Runs once per surviving entry on every feed page, so both statements are
+/// prepare_cached and the root's SOURCE_FK is read inside the version INSERT.
 pub fn upsert_seen(conn: &Connection, source_id: &str, version: i64, title: &str) -> Result<()> {
-    conn.execute(
-        "INSERT OR IGNORE INTO RSS_PAPER_ROOTS (SOURCE_ID) VALUES (?1)",
-        [source_id],
-    )?;
-    let source_fk: i64 = conn.query_row(
-        "SELECT SOURCE_FK FROM RSS_PAPER_ROOTS WHERE SOURCE_ID = ?1",
-        [source_id],
-        |r| r.get(0),
-    )?;
-    conn.execute(
+    conn.prepare_cached("INSERT OR IGNORE INTO RSS_PAPER_ROOTS (SOURCE_ID) VALUES (?1)")?
+        .execute([source_id])?;
+    conn.prepare_cached(
         "INSERT OR IGNORE INTO RSS_PAPER (SOURCE_ID, VERSION, TITLE, SOURCE_FK)
-         VALUES (?1, ?2, ?3, ?4)",
-        params![source_id, version, title, source_fk],
-    )?;
+         SELECT ?1, ?2, ?3, SOURCE_FK FROM RSS_PAPER_ROOTS WHERE SOURCE_ID = ?1",
+    )?
+    .execute(params![source_id, version, title])?;
     Ok(())
 }
 

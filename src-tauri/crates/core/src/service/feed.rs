@@ -178,20 +178,24 @@ fn annotate_and_filter(conn: &mut Connection, entries: &mut Vec<Value>) -> Vec<S
         }
     }
 
+    let source_ids: Vec<String> = entries
+        .iter()
+        .filter_map(|entry| entry.get("arxiv_id").and_then(|id| id.as_str()))
+        .map(|arxiv_id| format!("arxiv:{arxiv_id}"))
+        .collect();
+    let stored: std::collections::HashSet<String> =
+        match paper::existing_source_ids(&tx, &source_ids) {
+            Ok(ids) => ids.into_iter().collect(),
+            Err(e) => {
+                eprintln!("[linxiv] feed saved-check failed: {e}");
+                Default::default()
+            }
+        };
     let saved_arxiv_ids = entries
         .iter()
         .filter_map(|entry| entry.get("arxiv_id").and_then(|id| id.as_str()))
-        .filter_map(|arxiv_id| {
-            let source_id = format!("arxiv:{arxiv_id}");
-            match paper::get_paper(&tx, &source_id, None) {
-                Ok(Some(_)) => Some(arxiv_id.to_string()),
-                Ok(None) => None,
-                Err(e) => {
-                    eprintln!("[linxiv] feed saved-check failed: source_id={source_id}, error={e}");
-                    None
-                }
-            }
-        })
+        .filter(|arxiv_id| stored.contains(&format!("arxiv:{arxiv_id}")))
+        .map(str::to_string)
         .collect();
 
     if let Err(e) = tx.commit() {
@@ -304,6 +308,67 @@ mod tests {
         let empty = read_page(&mut c, "https://example.com/other", 30).unwrap();
         assert!(empty.window_was_empty);
         assert!(empty.entries.is_empty());
+    }
+
+    /// Saved-check pin: only entries whose paper is stored *and active* are
+    /// annotated — trashed and never-saved papers are not, and duplicate
+    /// arxiv_ids in the window are annotated per entry.
+    #[test]
+    fn read_page_annotates_saved_active_papers_only() {
+        use crate::models::PaperMetadata;
+        use crate::service::paper as svc_paper;
+
+        let mut c = conn();
+        let url = "https://example.com/feed";
+        for sid in ["arxiv:1111.00001", "arxiv:2222.00002"] {
+            let meta = PaperMetadata {
+                source_id: sid.into(),
+                version: 1,
+                title: "T".into(),
+                authors: vec!["Alice".into()],
+                published: chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap(),
+                updated: None,
+                summary: "s".into(),
+                category: None,
+                categories: None,
+                doi: None,
+                journal_ref: None,
+                comment: None,
+                url: None,
+                tags: None,
+                source: Some("arxiv".into()),
+                author_orcids: None,
+            };
+            svc_paper::save_paper_metadata(&mut c, &meta, None).unwrap();
+        }
+        svc_paper::delete(
+            &mut c,
+            &svc_paper::PaperRef::source("arxiv:2222.00002".into()),
+        )
+        .unwrap();
+
+        let entry = |id: &str, key: &str| rss::CacheEntry {
+            dedup_key: key.into(),
+            source_id: Some(format!("arxiv:{id}")),
+            entry_json: format!(r#"{{"title":"T","arxiv_id":"{id}","version":1}}"#),
+            published_at: None,
+        };
+        apply_fetch(
+            &mut c,
+            url,
+            &[
+                entry("1111.00001", "a"),
+                entry("2222.00002", "b"), // trashed -> not saved
+                entry("3333.00003", "c"), // never stored
+                entry("1111.00001", "d"), // duplicate id, distinct dedup key
+            ],
+            30,
+        )
+        .unwrap();
+
+        let page = read_page(&mut c, url, 30).unwrap();
+        assert_eq!(page.entries.len(), 4);
+        assert_eq!(page.saved_arxiv_ids, ["1111.00001", "1111.00001"]);
     }
 
     #[test]
