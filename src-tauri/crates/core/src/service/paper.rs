@@ -370,16 +370,24 @@ fn dedup_nonblank(items: &[String]) -> Vec<String> {
 pub fn search_library(conn: &Connection, query: &str, limit: i64) -> Result<Vec<PaperDetails>> {
     // A missing or corrupt FTS index yields no rows rather than failing the whole
     // search, so note hits still populate.
-    let mut papers = search_store::search_full_text(conn, query, limit).unwrap_or_default();
+    let limit = limit.max(0) as usize;
+    let mut papers = search_store::search_full_text(conn, query, limit as i64).unwrap_or_default();
+    // FTS already filled the limit: every LIKE extra below would be truncated.
+    if papers.len() >= limit {
+        papers.truncate(limit);
+        return Ok(papers);
+    }
     let mut seen: HashSet<String> = papers.iter().map(|p| p.source_id.clone()).collect();
-    for sfk in note_store::search_notes_source_fks(conn, query, limit)? {
+    for sfk in note_store::search_notes_source_fks(conn, query, limit as i64)? {
+        if papers.len() >= limit {
+            break;
+        }
         if let Some(p) = get(conn, &PaperRef::SourceFk(sfk))? {
             if seen.insert(p.source_id.clone()) {
                 papers.push(p);
             }
         }
     }
-    papers.truncate(limit.max(0) as usize);
     Ok(papers)
 }
 
