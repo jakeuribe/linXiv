@@ -168,6 +168,10 @@ pub struct NoteEntry {
     pub title: String,
     #[serde(default)]
     pub content: String,
+    #[serde(default)]
+    pub media_time_ms: Option<i64>,
+    #[serde(default)]
+    pub media_item_id: Option<String>,
     /// Stable note identity; None on pre-uuid archives (a fresh one is generated).
     #[serde(default)]
     pub uuid: Option<String>,

@@ -145,6 +145,8 @@ pub fn build_shared_project(conn: &Connection, project_id: i64) -> Result<Shared
                 authors: p.authors,
                 author_orcids,
                 tags: p.tags,
+                url: p.url,
+                source: p.source,
                 pdf_blob: None,
             });
         }
@@ -168,6 +170,8 @@ pub fn build_shared_project(conn: &Connection, project_id: i64) -> Result<Shared
             paper_source_id: Some(paper_source_id),
             title: n.title,
             body: n.content,
+            media_time_ms: n.media_time_ms,
+            media_item_id: n.media_item_id,
             created_at: n.created_at.map(|t| t.to_string()),
             updated_at: n.updated_at.map(|t| t.to_string()),
         });
@@ -230,9 +234,9 @@ fn paper_meta(p: &SharedPaper) -> PaperMetadata {
         doi: None,
         journal_ref: None,
         comment: None,
-        url: None,
+        url: p.url.clone(),
         tags: (!p.tags.is_empty()).then(|| p.tags.iter().map(|t| truncate_text(t)).collect()),
-        source: None,
+        source: p.source.clone(),
         author_orcids: (!p.author_orcids.is_empty()).then(|| p.author_orcids.clone()),
     }
 }
@@ -413,6 +417,8 @@ pub fn import_shared_project(conn: &mut Connection, sp: &SharedProject) -> Resul
                     source_fk,
                     title: truncate_text(&n.title),
                     content: truncate_text(&n.body),
+                    media_time_ms: n.media_time_ms.filter(|ms| *ms >= 0),
+                    media_item_id: n.media_item_id.clone(),
                     paper_id: None,
                     project_fk: Some(project_fk),
                     uuid: Some(n.uuid.clone()),
@@ -690,6 +696,8 @@ mod tests {
                 source_fk: fk1,
                 title: "note A".into(),
                 content: "body A".into(),
+                media_time_ms: Some(90_500),
+                media_item_id: Some("dQw4w9WgXcQ".into()),
                 paper_id: None,
                 project_fk: Some(project_id),
                 uuid: None,
@@ -702,6 +710,8 @@ mod tests {
                 source_fk: fk2,
                 title: "note B".into(),
                 content: "body B".into(),
+                media_time_ms: None,
+                media_item_id: None,
                 paper_id: None,
                 project_fk: Some(project_id),
                 uuid: None,
@@ -715,6 +725,8 @@ mod tests {
                 source_fk: fk1,
                 title: "lib".into(),
                 content: "library".into(),
+                media_time_ms: None,
+                media_item_id: None,
                 paper_id: None,
                 project_fk: None,
                 uuid: None,
@@ -805,7 +817,7 @@ mod tests {
     }
 
     #[test]
-    fn build_and_import_roundtrip_carries_author_orcids() {
+    fn build_and_import_roundtrip_carries_author_orcids_and_media_position() {
         let (conn, pid) = seed();
         // "First" has authors Alice, Bob (seeded via seed()'s pin() helper); give
         // Alice an ORCID directly on the AUTHOR row (as the harvest path would).
@@ -826,7 +838,7 @@ mod tests {
         // Import into a fresh DB: AUTHOR_ORCID lands via the existing fill-if-null path.
         let mut conn2 = open_in_memory().unwrap();
         storage::init_db(&conn2).unwrap();
-        import_shared_project(&mut conn2, &sp).unwrap();
+        let imported_project_id = import_shared_project(&mut conn2, &sp).unwrap();
         let orcid: Option<String> = conn2
             .query_row(
                 "SELECT AUTHOR_ORCID FROM AUTHOR WHERE AUTHOR_FULL_NAME = ?",
@@ -843,6 +855,19 @@ mod tests {
             )
             .unwrap();
         assert_eq!(bob_orcid, None);
+        let imported_note = note_svc::get_many(
+            &conn2,
+            &note_svc::Notes {
+                project_fk: Some(imported_project_id),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .into_iter()
+        .find(|n| n.title == "note A")
+        .unwrap();
+        assert_eq!(imported_note.media_time_ms, Some(90_500));
+        assert_eq!(imported_note.media_item_id.as_deref(), Some("dQw4w9WgXcQ"));
     }
 
     #[test]

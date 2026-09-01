@@ -2,7 +2,7 @@ import { useState, useRef, useMemo, useDeferredValue, useCallback } from "react"
 import { useNavigate } from "react-router";
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Upload, FileText, SearchX, FilterX } from "lucide-react";
+import { Upload, FileText, SearchX, FilterX, Video } from "lucide-react";
 import { listPapers, deletePaper, searchLibrary } from "../api/papers";
 import type { PaperSort } from "../api/papers";
 import { listProjects } from "../api/projects";
@@ -26,6 +26,7 @@ import { SelectionBar } from "../components/papers/SelectionBar";
 import { ImportDialog } from "../components/import/ImportDialog";
 import { EmptyState } from "../components/ui/empty-state";
 import { errText } from "../lib/errText";
+import { AddLectureDialog } from "../components/video/AddLectureDialog";
 
 const PAPER_FETCH_LIMIT = 5000;
 const VIRTUALIZER_ESTIMATE_HEIGHT = 120;
@@ -74,6 +75,7 @@ export default function LibraryPage() {
   const [projectPickerError, setProjectPickerError] = useState<string | null>(null);
   const [newProjectName, setNewProjectName] = useState("");
   const [importOpen, setImportOpen] = useState(false);
+  const [lectureOpen, setLectureOpen] = useState(false);
   const [pendingDeleteIds, setPendingDeleteIds] = useState<string[]>([]);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
@@ -289,6 +291,9 @@ export default function LibraryPage() {
           <Button variant="primary" size="sm" onClick={() => setImportOpen(true)}>
             <Upload size={13} className="mr-1" />Import
           </Button>
+          <Button variant="muted" size="sm" onClick={() => setLectureOpen(true)}>
+            <Video size={13} className="mr-1" />Lecture
+          </Button>
         </div>
         {deleteError && (
           <p className="text-sm mt-2" style={{ color: "var(--color-danger)" }}>
@@ -444,6 +449,16 @@ export default function LibraryPage() {
           if (newProjectIds.length === 1) {
             navigate(`/projects/${newProjectIds[0]}`);
           }
+        }}
+      />
+
+      <AddLectureDialog
+        open={lectureOpen}
+        onClose={() => setLectureOpen(false)}
+        onDone={(paper) => {
+          setLectureOpen(false);
+          invalidatePaperQueries(queryClient);
+          navigate(`/library/${paper.source_fk}`);
         }}
       />
 

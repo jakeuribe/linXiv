@@ -8,6 +8,11 @@ CREATE TABLE IF NOT EXISTS NOTE(
     PROJECT_FK  INTEGER,
     TITLE       TEXT,
     NOTE        BLOB,
+    -- Optional playback position for media-linked notes. Milliseconds keeps the
+    -- value provider-neutral for export/import and P2P sharing.
+    MEDIA_TIME_MS INTEGER CHECK (MEDIA_TIME_MS IS NULL OR MEDIA_TIME_MS >= 0),
+    -- Optional item inside a media collection (for example, a video in a playlist).
+    MEDIA_ITEM_ID TEXT,
     -- Stable identity across export/import + share (uuid v4). Backfilled + made
     -- UNIQUE by the note_uuid migration; new rows get one at insert.
     NOTE_UUID   TEXT,

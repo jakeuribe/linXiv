@@ -437,6 +437,12 @@ pub struct NoteDetails {
     pub project_id: Option<i64>,
     pub title: String,
     pub content: String,
+    /// Optional position in the linked media, stored provider-neutrally.
+    #[serde(default)]
+    pub media_time_ms: Option<i64>,
+    /// Optional item identity within a media collection such as a playlist.
+    #[serde(default)]
+    pub media_item_id: Option<String>,
     #[serde(default)]
     pub created_at: Option<NaiveDateTime>,
     #[serde(default)]
@@ -571,6 +577,10 @@ pub struct NoteIn {
     pub source_fk: i64,
     pub title: String,
     pub content: String,
+    #[serde(default)]
+    pub media_time_ms: Option<i64>,
+    #[serde(default)]
+    pub media_item_id: Option<String>,
     #[serde(default)]
     pub paper_id: Option<i64>,
     #[serde(default)]
@@ -778,6 +788,8 @@ mod tests {
             project_id: None,
             title: "t".into(),
             content: "c".into(),
+            media_time_ms: None,
+            media_item_id: None,
             created_at: None,
             updated_at: None,
         };

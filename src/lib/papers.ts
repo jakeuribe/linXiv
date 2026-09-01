@@ -10,6 +10,8 @@ export function labelForSource(paper: Paper): string | null {
     return `OpenAlex:${id.replace(/^openalex:/, "")}`;
   if (id.startsWith("doi:")) return `DOI:${id.replace(/^doi:/, "")}`;
   if (id.startsWith("local:")) return "Local";
+  if (paper.source === "youtube" || id.startsWith("youtube:"))
+    return `YouTube:${id.replace(/^youtube:/, "")}`;
   return id || null;
 }
 

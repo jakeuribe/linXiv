@@ -44,6 +44,18 @@ export async function getPaper(sourceId: string): Promise<Paper> {
   return apiFetch<Paper>(`/api/papers/${encodeURIComponent(sourceId)}`);
 }
 
+export interface LectureCreateBody {
+  url: string;
+  title: string;
+}
+
+export async function createLecture(body: LectureCreateBody): Promise<Paper> {
+  return apiFetch<Paper>("/api/papers/lecture", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
 export async function getPaperBySfk(sfk: number, version?: number): Promise<Paper> {
   const query = version !== undefined ? `?version=${version}` : "";
   return apiFetch<Paper>(`/api/papers/sfk/${sfk}${query}`);

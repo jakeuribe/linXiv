@@ -6,8 +6,10 @@
 //! `/pdf-path` subtrees belong to the `pdfs` group (tried first in `mod.rs`).
 //! `POST {source_id}/full-text` is the one 4-segment arm this group owns.
 
+use chrono::Utc;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use url::Url;
 
 use linxiv_core::config;
 use linxiv_core::error::CoreError;
@@ -35,11 +37,134 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
         // `{source_id}` arm (all 3 segments).
         ("GET", ["api", "papers", "search"]) => Some(search(state, ctx)),
         ("GET", ["api", "papers", "full-text-pending"]) => Some(full_text_pending(state)),
+        ("POST", ["api", "papers", "lecture"]) => Some(create_lecture(state, ctx)),
         ("POST", ["api", "papers", id, "full-text"]) => Some(fetch_full_text(state, id, ctx).await),
         ("GET", ["api", "papers", id]) => Some(get_one(state, id)),
         ("DELETE", ["api", "papers", id]) => Some(delete(state, id)),
         _ => None,
     }
+}
+
+/// Store a YouTube lecture as a normal library paper. Only metadata is stored;
+/// playback remains an iframe pass-through to YouTube.
+fn create_lecture(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
+    #[derive(Deserialize)]
+    struct Body {
+        url: String,
+        title: String,
+    }
+
+    let body: Body = ctx.parse_body()?;
+    let title = body.title.trim();
+    if title.is_empty() {
+        return Err(ApiError::new(422, "Lecture title must not be empty"));
+    }
+    let target = youtube_target(&body.url)
+        .ok_or_else(|| ApiError::new(422, "Enter a valid YouTube video URL"))?;
+    let source_id = match &target.playlist_id {
+        Some(id) => format!("youtube-playlist:{id}"),
+        None => format!("youtube:{}", target.video_id.as_deref().unwrap_or_default()),
+    };
+
+    state.with_conn(|conn| -> Result<Value, ApiError> {
+        if let Some(existing) = svc_paper::get(conn, &PaperRef::source(source_id.clone()))? {
+            return to_value(&existing);
+        }
+        let meta = PaperMetadata {
+            source_id: source_id.clone(),
+            version: 1,
+            title: title.to_owned(),
+            authors: Vec::new(),
+            published: Utc::now().date_naive(),
+            updated: None,
+            summary: String::new(),
+            category: Some("Lecture".into()),
+            categories: None,
+            doi: None,
+            journal_ref: None,
+            comment: None,
+            url: Some(target.canonical_url()),
+            tags: None,
+            source: Some("youtube".into()),
+            author_orcids: None,
+        };
+        svc_paper::save_paper_metadata(conn, &meta, None)?;
+        let paper = svc_paper::get(conn, &PaperRef::source(source_id))?
+            .ok_or_else(|| ApiError::new(500, "Lecture was saved but could not be loaded"))?;
+        to_value(&paper)
+    })
+}
+
+/// Accept the common first-party YouTube URL forms while rejecting arbitrary
+/// iframe hosts. The stable 11-character id becomes the local paper identity.
+struct YouTubeTarget {
+    video_id: Option<String>,
+    playlist_id: Option<String>,
+}
+
+impl YouTubeTarget {
+    fn canonical_url(&self) -> String {
+        match (&self.video_id, &self.playlist_id) {
+            (Some(video), Some(list)) => {
+                format!("https://www.youtube.com/watch?v={video}&list={list}")
+            }
+            (Some(video), None) => format!("https://www.youtube.com/watch?v={video}"),
+            (None, Some(list)) => format!("https://www.youtube.com/playlist?list={list}"),
+            (None, None) => unreachable!("validated YouTube target"),
+        }
+    }
+}
+
+fn valid_youtube_id(value: &str, min: usize, max: usize) -> bool {
+    (min..=max).contains(&value.len())
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+fn youtube_target(raw: &str) -> Option<YouTubeTarget> {
+    let url = Url::parse(raw.trim()).ok()?;
+    if !matches!(url.scheme(), "http" | "https")
+        || !url.username().is_empty()
+        || url.password().is_some()
+    {
+        return None;
+    }
+    let host = url.host_str()?.trim_end_matches('.').to_ascii_lowercase();
+    let video_id = match host.as_str() {
+        "youtu.be" | "www.youtu.be" => Some(url.path_segments()?.next()?.to_owned()),
+        "youtube.com" | "www.youtube.com" | "m.youtube.com" => {
+            let mut segments = url.path_segments()?;
+            match segments.next().unwrap_or_default() {
+                "watch" => url
+                    .query_pairs()
+                    .find(|(k, _)| k == "v")
+                    .map(|(_, v)| v.into_owned()),
+                "playlist" => None,
+                "embed" | "shorts" | "live" => Some(segments.next()?.to_owned()),
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+    let playlist_id = url
+        .query_pairs()
+        .find(|(k, _)| k == "list")
+        .map(|(_, v)| v.into_owned());
+    if video_id
+        .as_deref()
+        .is_some_and(|id| !valid_youtube_id(id, 11, 11))
+        || playlist_id
+            .as_deref()
+            .is_some_and(|id| !valid_youtube_id(id, 10, 80))
+        || (video_id.is_none() && playlist_id.is_none())
+    {
+        return None;
+    }
+    Some(YouTubeTarget {
+        video_id,
+        playlist_id,
+    })
 }
 
 /// `GET /api/papers?limit=&offset=&sort=&dir=` — `api_list_papers`.
@@ -329,6 +454,69 @@ mod tests {
             req(&state(), "GET", "/api/papers", None).await.unwrap(),
             json!({ "papers": [] })
         );
+    }
+
+    #[test]
+    fn youtube_url_parser_accepts_first_party_forms_only() {
+        let id = "dQw4w9WgXcQ";
+        for url in [
+            format!("https://www.youtube.com/watch?v={id}&t=30"),
+            format!("https://youtu.be/{id}?si=abc"),
+            format!("https://www.youtube.com/embed/{id}"),
+            format!("https://youtube.com/shorts/{id}"),
+            format!("https://youtube.com/live/{id}"),
+        ] {
+            assert_eq!(
+                youtube_target(&url).and_then(|t| t.video_id).as_deref(),
+                Some(id)
+            );
+        }
+        assert!(youtube_target("https://example.com/watch?v=dQw4w9WgXcQ").is_none());
+        assert!(youtube_target("javascript:alert(1)").is_none());
+        assert!(youtube_target("https://youtube.com/watch?v=too-short").is_none());
+        let playlist = youtube_target(
+            "https://youtube.com/watch?v=5IDHkKwXK4Y&list=PLmsIjFudc1l3RRQfk45xTFC0cvhYxUct8",
+        )
+        .unwrap();
+        assert_eq!(playlist.video_id.as_deref(), Some("5IDHkKwXK4Y"));
+        assert_eq!(
+            playlist.playlist_id.as_deref(),
+            Some("PLmsIjFudc1l3RRQfk45xTFC0cvhYxUct8")
+        );
+    }
+
+    #[tokio::test]
+    async fn create_lecture_stores_metadata_without_video_bytes() {
+        let st = state();
+        let created = req(
+            &st,
+            "POST",
+            "/api/papers/lecture",
+            Some(json!({
+                "url": "https://youtu.be/dQw4w9WgXcQ?t=30",
+                "title": "Research lecture"
+            })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(created["source_id"], "youtube:dQw4w9WgXcQ");
+        assert_eq!(created["source"], "youtube");
+        assert_eq!(
+            created["url"],
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        );
+        assert_eq!(created["has_pdf"], false);
+
+        // Adding the same video again is idempotent and retains one paper root.
+        let second = req(
+            &st,
+            "POST",
+            "/api/papers/lecture",
+            Some(json!({ "url": "https://youtube.com/watch?v=dQw4w9WgXcQ", "title": "Duplicate" })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(second["source_fk"], created["source_fk"]);
     }
 
     #[tokio::test]

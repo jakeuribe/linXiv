@@ -83,6 +83,14 @@ export type NoteDetails = {
   project_id: number | null,
   title: string,
   content: string,
+  /**
+   * Optional position in the linked media, stored provider-neutrally.
+   */
+  media_time_ms: number | null,
+  /**
+   * Optional item identity within a media collection such as a playlist.
+   */
+  media_item_id: string | null,
   created_at: string | null,
   updated_at: string | null,
 };

@@ -9,7 +9,7 @@ use crate::storage::db::{timestamp_from_sql, timestamp_to_sql};
 /// (Python's `_fetch_*`/`get_notes` use `SELECT *`; we spell it out so the
 /// decltype converters line up with the model).
 const NOTE_COLS: &str =
-    "NOTE_SK, NOTE_UUID, SOURCE_FK, PAPER_ID_FK, PROJECT_FK, TITLE, NOTE, CREATED_AT, UPDATED_AT";
+    "NOTE_SK, NOTE_UUID, SOURCE_FK, PAPER_ID_FK, PROJECT_FK, TITLE, NOTE, MEDIA_TIME_MS, MEDIA_ITEM_ID, CREATED_AT, UPDATED_AT";
 
 /// `Note.from_row().to_details()` — TITLE nullable, NOTE is a BLOB holding text,
 /// both coalesce to "" (Python `or ""`); TIMESTAMP cols are NOT NULL.
@@ -26,6 +26,8 @@ fn note_from_row(row: &Row) -> rusqlite::Result<NoteDetails> {
         project_id: row.get::<_, Option<i64>>("PROJECT_FK")?,
         title: row.get::<_, Option<String>>("TITLE")?.unwrap_or_default(),
         content: row.get::<_, Option<String>>("NOTE")?.unwrap_or_default(),
+        media_time_ms: row.get("MEDIA_TIME_MS")?,
+        media_item_id: row.get("MEDIA_ITEM_ID")?,
         created_at: Some(
             timestamp_from_sql(&created)
                 .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
@@ -96,6 +98,8 @@ pub fn create_note(
     project_id: Option<i64>,
     title: &str,
     content: &str,
+    media_time_ms: Option<i64>,
+    media_item_id: Option<&str>,
     uuid: Option<&str>,
 ) -> Result<i64> {
     let now = timestamp_to_sql(Utc::now().naive_utc());
@@ -103,9 +107,9 @@ pub fn create_note(
         .map(str::to_owned)
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     conn.execute(
-        "INSERT INTO NOTE (SOURCE_FK, PAPER_ID_FK, PROJECT_FK, TITLE, NOTE, NOTE_UUID, CREATED_AT, UPDATED_AT) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
-        params![source_fk, paper_id_fk, project_id, title, content, uuid, now],
+        "INSERT INTO NOTE (SOURCE_FK, PAPER_ID_FK, PROJECT_FK, TITLE, NOTE, MEDIA_TIME_MS, MEDIA_ITEM_ID, NOTE_UUID, CREATED_AT, UPDATED_AT) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+        params![source_fk, paper_id_fk, project_id, title, content, media_time_ms, media_item_id, uuid, now],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -351,7 +355,18 @@ mod tests {
         init_db(&conn).unwrap();
         let (src, _, proj) = seed(&conn);
 
-        let id = create_note(&conn, src, None, Some(proj), "t1", "body1", None).unwrap();
+        let id = create_note(
+            &conn,
+            src,
+            None,
+            Some(proj),
+            "t1",
+            "body1",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
         let got = get_note(&conn, id).unwrap().unwrap();
         assert_eq!(got.title, "t1");
         assert_eq!(got.content, "body1");
@@ -390,9 +405,9 @@ mod tests {
         )
         .unwrap();
 
-        create_note(&conn, src, None, Some(proj), "a", "x", None).unwrap();
-        create_note(&conn, src, Some(100), None, "b", "y", None).unwrap();
-        create_note(&conn, src2, None, Some(proj), "c", "z", None).unwrap();
+        create_note(&conn, src, None, Some(proj), "a", "x", None, None, None).unwrap();
+        create_note(&conn, src, Some(100), None, "b", "y", None, None, None).unwrap();
+        create_note(&conn, src2, None, Some(proj), "c", "z", None, None, None).unwrap();
 
         // count_notes: by paper, and narrowed to a project.
         assert_eq!(count_notes(&conn, src, None).unwrap(), 2);
@@ -428,7 +443,7 @@ mod tests {
             [],
         )
         .unwrap();
-        create_note(&conn, src, None, Some(proj), "a", "x", None).unwrap();
+        create_note(&conn, src, None, Some(proj), "a", "x", None, None, None).unwrap();
 
         let counts = note_counts_by_paper_for_project(&conn, proj).unwrap();
         assert_eq!(counts, vec![(src, 1), (src2, 0)]); // src=1 has one, src2=2 has zero, trashed absent
@@ -445,9 +460,42 @@ mod tests {
         )
         .unwrap();
 
-        create_note(&conn, 1, None, None, "title 50%", "neural nets", None).unwrap();
-        create_note(&conn, 2, None, None, "other", "no match here", None).unwrap();
-        create_note(&conn, 3, None, None, "neural", "trashed paper note", None).unwrap(); // excluded: not active
+        create_note(
+            &conn,
+            1,
+            None,
+            None,
+            "title 50%",
+            "neural nets",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        create_note(
+            &conn,
+            2,
+            None,
+            None,
+            "other",
+            "no match here",
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        create_note(
+            &conn,
+            3,
+            None,
+            None,
+            "neural",
+            "trashed paper note",
+            None,
+            None,
+            None,
+        )
+        .unwrap(); // excluded: not active
 
         // body match on active paper only.
         let hits = search_notes_source_fks(&conn, "neural", 50).unwrap();
@@ -468,12 +516,33 @@ mod tests {
         init_db(&conn).unwrap();
         let (src, _, proj) = seed(&conn);
 
-        let id = create_note(&conn, src, None, Some(proj), "t", "body", Some("fixed")).unwrap();
+        let id = create_note(
+            &conn,
+            src,
+            None,
+            Some(proj),
+            "t",
+            "body",
+            None,
+            None,
+            Some("fixed"),
+        )
+        .unwrap();
         let got = get_note(&conn, id).unwrap().unwrap();
         assert_eq!(got.uuid, "fixed");
 
         // Second create_note with the same uuid should fail (unique constraint).
-        let result = create_note(&conn, src, None, Some(proj), "t2", "body2", Some("fixed"));
+        let result = create_note(
+            &conn,
+            src,
+            None,
+            Some(proj),
+            "t2",
+            "body2",
+            None,
+            None,
+            Some("fixed"),
+        );
         assert!(result.is_err());
     }
 }

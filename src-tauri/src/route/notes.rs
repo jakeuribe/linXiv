@@ -72,12 +72,17 @@ fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
         title: String,
         #[serde(default)]
         content: String,
+        media_time_ms: Option<i64>,
+        media_item_id: Option<String>,
     }
     let b: Body = ctx.parse_body()?;
     // Pydantic NoteCreate.source_id is Field(min_length=1): an empty source_id is a
     // 422 before the handler, not a 404. (Checked pre-trim, like pydantic.)
     if b.source_id.is_empty() {
         return Err(ApiError::new(422, "source_id must not be empty"));
+    }
+    if b.media_time_ms.is_some_and(|ms| ms < 0) {
+        return Err(ApiError::new(422, "media_time_ms must be non-negative"));
     }
     state.with_conn(|conn| {
         let source_fk = svc_paper::resolve_source_fk(conn, &b.source_id)?;
@@ -89,6 +94,8 @@ fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
                 paper_id: b.paper_id,
                 title: b.title,
                 content: b.content,
+                media_time_ms: b.media_time_ms,
+                media_item_id: b.media_item_id,
                 uuid: None,
             },
         )?;
@@ -212,17 +219,52 @@ mod tests {
                 "project_id",
                 "title",
                 "content",
+                "media_time_ms",
+                "media_item_id",
                 "created_at",
                 "updated_at"
             ]
         );
         assert_eq!(created["id"], json!(1));
         assert_eq!(created["title"], json!("t"));
+        assert_eq!(created["media_time_ms"], Value::Null);
+        assert_eq!(created["media_item_id"], Value::Null);
         assert_eq!(created["content"], json!("c"));
         let listed = req(&st, "GET", "/api/notes?source_id=arxiv:1", None)
             .await
             .unwrap();
         assert_eq!(listed["notes"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn timestamped_note_roundtrips_and_rejects_negative_time() {
+        let st = state();
+        seed_paper(&st, "youtube:dQw4w9WgXcQ");
+        let created = req(
+            &st,
+            "POST",
+            "/api/notes",
+            Some(json!({
+                "source_id": "youtube:dQw4w9WgXcQ",
+                "content": "Key result",
+                "media_time_ms": 90500,
+                "media_item_id": "dQw4w9WgXcQ"
+            })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(created["media_time_ms"], 90500);
+        assert_eq!(created["media_item_id"], "dQw4w9WgXcQ");
+
+        let err = req(
+            &st,
+            "POST",
+            "/api/notes",
+            Some(json!({ "source_id": "youtube:dQw4w9WgXcQ", "media_time_ms": -1 })),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status, 422);
     }
 
     /// Update and delete emit the shared canonical envelopes (full NoteDetails /
