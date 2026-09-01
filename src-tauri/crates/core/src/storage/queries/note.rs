@@ -98,7 +98,8 @@ pub fn get_note_content(conn: &Connection, note_id: i64) -> Result<Option<String
         .map(Option::unwrap_or_default))
 }
 
-/// `storage/notes.py::create_note` — INSERT a note, returns the new NOTE_SK.
+/// `storage/notes.py::create_note` — INSERT a note, RETURNING the created row
+/// (saves the re-SELECT every surface did for the canonical create envelope).
 /// CREATED_AT/UPDATED_AT both stamped now (Python `datetime.now(utc)`).
 /// `uuid` None generates a fresh v4; Some preserves an imported identity.
 pub fn create_note(
@@ -109,34 +110,41 @@ pub fn create_note(
     title: &str,
     content: &str,
     uuid: Option<&str>,
-) -> Result<i64> {
+) -> Result<NoteDetails> {
     let now = timestamp_to_sql(Utc::now().naive_utc());
     let uuid = uuid
         .map(str::to_owned)
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    conn.execute(
-        "INSERT INTO NOTE (SOURCE_FK, PAPER_ID_FK, PROJECT_FK, TITLE, NOTE, NOTE_UUID, CREATED_AT, UPDATED_AT) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+    Ok(conn.query_row(
+        &format!(
+            "INSERT INTO NOTE (SOURCE_FK, PAPER_ID_FK, PROJECT_FK, TITLE, NOTE, NOTE_UUID, CREATED_AT, UPDATED_AT) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7) RETURNING {NOTE_COLS}"
+        ),
         params![source_fk, paper_id_fk, project_id, title, content, uuid, now],
-    )?;
-    Ok(conn.last_insert_rowid())
+        note_from_row,
+    )?)
 }
 
 /// `storage/notes.py::patch_note` — partial update via COALESCE: a None arg
-/// leaves the column unchanged. Returns false if no row matched NOTE_SK.
+/// leaves the column unchanged. RETURNING the updated row; None if no row
+/// matched NOTE_SK.
 pub fn patch_note(
     conn: &Connection,
     note_id: i64,
     title: Option<&str>,
     content: Option<&str>,
-) -> Result<bool> {
+) -> Result<Option<NoteDetails>> {
     let now = timestamp_to_sql(Utc::now().naive_utc());
-    let n = conn.execute(
-        "UPDATE NOTE SET TITLE = COALESCE(?1, TITLE), NOTE = COALESCE(?2, NOTE), \
-         UPDATED_AT = ?3 WHERE NOTE_SK = ?4",
-        params![title, content, now, note_id],
-    )?;
-    Ok(n > 0)
+    Ok(conn
+        .query_row(
+            &format!(
+                "UPDATE NOTE SET TITLE = COALESCE(?1, TITLE), NOTE = COALESCE(?2, NOTE), \
+                 UPDATED_AT = ?3 WHERE NOTE_SK = ?4 RETURNING {NOTE_COLS}"
+            ),
+            params![title, content, now, note_id],
+            note_from_row,
+        )
+        .optional()?)
 }
 
 /// `storage/notes.py::delete_note` — hard-delete one note row; false if absent.
@@ -373,24 +381,33 @@ mod tests {
         init_db(&conn).unwrap();
         let (src, _, proj) = seed(&conn);
 
-        let id = create_note(&conn, src, None, Some(proj), "t1", "body1", None).unwrap();
+        let created = create_note(&conn, src, None, Some(proj), "t1", "body1", None).unwrap();
+        let id = created.note_id;
+        // The RETURNING row must be identical to a fresh SELECT of the same note.
         let got = get_note(&conn, id).unwrap().unwrap();
+        assert_eq!(
+            serde_json::to_value(&created).unwrap(),
+            serde_json::to_value(&got).unwrap()
+        );
         assert_eq!(got.title, "t1");
         assert_eq!(got.content, "body1");
         assert_eq!(got.project_id, Some(proj));
         assert!(got.created_at.is_some());
 
-        // patch: None leaves column unchanged; Some replaces it.
-        assert!(patch_note(&conn, id, None, Some("body2")).unwrap());
+        // patch: None leaves column unchanged; Some replaces it, and the
+        // RETURNING row reflects the post-update state.
+        let patched = patch_note(&conn, id, None, Some("body2")).unwrap().unwrap();
+        assert_eq!(patched.title, "t1"); // unchanged
+        assert_eq!(patched.content, "body2");
         let got = get_note(&conn, id).unwrap().unwrap();
         assert_eq!(got.title, "t1"); // unchanged
         assert_eq!(got.content, "body2");
 
-        assert!(patch_note(&conn, id, Some("t2"), None).unwrap());
+        assert!(patch_note(&conn, id, Some("t2"), None).unwrap().is_some());
         assert_eq!(get_note(&conn, id).unwrap().unwrap().title, "t2");
 
-        // patch/delete of an absent row report false.
-        assert!(!patch_note(&conn, 999, Some("x"), None).unwrap());
+        // patch/delete of an absent row report None/false.
+        assert!(patch_note(&conn, 999, Some("x"), None).unwrap().is_none());
         assert!(!delete_note(&conn, 999).unwrap());
 
         // delete actually removes the row.
@@ -489,7 +506,9 @@ mod tests {
         init_db(&conn).unwrap();
         let (src, _, proj) = seed(&conn);
 
-        let id = create_note(&conn, src, None, Some(proj), "t", "body", Some("fixed")).unwrap();
+        let id = create_note(&conn, src, None, Some(proj), "t", "body", Some("fixed"))
+            .unwrap()
+            .note_id;
         let got = get_note(&conn, id).unwrap().unwrap();
         assert_eq!(got.uuid, "fixed");
 

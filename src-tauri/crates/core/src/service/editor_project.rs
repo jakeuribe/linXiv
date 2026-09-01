@@ -224,7 +224,8 @@ pub fn create_project(
             content: build_content(&name, &main, ""),
             uuid: None,
         },
-    )?;
+    )?
+    .note_id;
 
     // Scaffold the vault; on failure roll back the note so no flagged project is left
     // without a vault.

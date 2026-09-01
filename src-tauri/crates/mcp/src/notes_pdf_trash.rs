@@ -145,7 +145,8 @@ impl Server {
                     }
                     other => core_err(other),
                 })?;
-            let note_id = svc_note::create(
+            // Canonical create envelope: the full NoteDetails serialization.
+            let note = svc_note::create(
                 conn,
                 &NoteIn {
                     source_fk,
@@ -157,8 +158,7 @@ impl Server {
                 },
             )
             .map_err(core_err)?;
-            // Canonical create envelope: the full NoteDetails serialization.
-            json_ok(&svc_note::get_required(conn, note_id).map_err(core_err)?)
+            json_ok(&note)
         })
     }
 
@@ -194,7 +194,9 @@ impl Server {
         Parameters(p): Parameters<UpdateNoteParams>,
     ) -> Result<String, ErrorData> {
         self.with_conn(|conn| {
-            svc_note::update(
+            // No row matched -> the shared not-found; else the canonical update
+            // envelope is the full NoteDetails serialization.
+            let note = svc_note::update(
                 conn,
                 &NoteUpdateIn {
                     note_id: p.note_id,
@@ -202,10 +204,9 @@ impl Server {
                     content: p.content.clone(),
                 },
             )
-            .map_err(guard_err)?;
-            // No row matched -> get_required raises the shared not-found; else
-            // the canonical update envelope is the full NoteDetails serialization.
-            json_ok(&svc_note::get_required(conn, p.note_id).map_err(guard_err)?)
+            .map_err(guard_err)?
+            .ok_or_else(|| guard_err(svc_note::not_found(p.note_id)))?;
+            json_ok(&note)
         })
     }
 

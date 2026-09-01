@@ -63,7 +63,8 @@ pub async fn run(cmd: NoteCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             }
             let source_id = as_source_id(&ctx.conn, &source_id);
             let source_fk = svc_paper::resolve_source_fk(conn, &source_id)?;
-            let note_id = svc_note::create(
+            // Canonical create envelope: the full NoteDetails serialization.
+            output(&svc_note::create(
                 conn,
                 &NoteIn {
                     source_fk,
@@ -73,9 +74,7 @@ pub async fn run(cmd: NoteCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                     project_fk: project_id,
                     uuid: None,
                 },
-            )?;
-            // Canonical create envelope: the full NoteDetails serialization.
-            output(&svc_note::get_required(conn, note_id)?);
+            )?);
         }
         NoteCmd::Get { note_id } => {
             output(&svc_note::get_required(conn, note_id).unwrap_or_else(|e| fail(e)));
@@ -97,16 +96,18 @@ pub async fn run(cmd: NoteCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             if title.is_none() && content.is_none() {
                 fail("at least one of --title or --content must be provided");
             }
-            svc_note::update(
+            // Canonical update envelope: the full NoteDetails serialization.
+            // (Existence was checked above, so the row always matches.)
+            let note = svc_note::update(
                 conn,
                 &NoteUpdateIn {
                     note_id,
                     title,
                     content,
                 },
-            )?;
-            // Canonical update envelope: the full NoteDetails serialization.
-            output(&svc_note::get_required(conn, note_id)?);
+            )?
+            .ok_or_else(|| svc_note::not_found(note_id))?;
+            output(&note);
         }
         NoteCmd::Delete { note_id } => {
             if !svc_editor::delete_note(conn, &config::vault_dir(), note_id)? {
