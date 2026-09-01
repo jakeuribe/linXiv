@@ -16,7 +16,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use linxiv_core::error::CoreError;
-use linxiv_core::models::{PaperMetadata, SearchResultOut};
+use linxiv_core::models::SearchResultOut;
 use linxiv_core::service::paper::{self as svc_paper, PaperSort};
 use linxiv_core::service::paper_merge as svc_merge;
 use linxiv_core::service::source as svc_source;
@@ -423,33 +423,24 @@ impl Server {
                     Ok(fk) => fk,
                     Err(e) => return Ok(Err(crate::util::guard_err(e))),
                 };
-                // Date validated after the existence check, matching Python ordering.
-                let published_date = match svc_paper::parse_published(&published) {
-                    Ok(d) => d,
-                    Err(e) => return Ok(Err(ErrorData::invalid_params(e.to_string(), None))),
-                };
                 // Python `existing.version if existing else 1`.
                 let version = svc_paper::get(conn, &paper_key(&paper_id))?
                     .map(|p| p.version)
                     .unwrap_or(1);
-                let meta = PaperMetadata {
-                    source_id: paper_id.clone(),
-                    version,
-                    title: title.clone(),
-                    authors: authors.clone(),
-                    published: published_date,
-                    updated: None,
-                    summary: summary.clone(),
-                    category: category.clone(),
-                    categories: None,
-                    doi: doi.clone(),
-                    journal_ref: None,
-                    comment: None,
-                    url: url.clone(),
-                    // Python `tags or None`: an empty list becomes None.
-                    tags: tags.clone().filter(|t| !t.is_empty()),
-                    source: None,
-                    author_orcids: None,
+                let fields = svc_paper::RepairFields {
+                    title,
+                    authors,
+                    published,
+                    summary,
+                    category,
+                    doi,
+                    url,
+                    tags,
+                };
+                // Date validated after the existence check, matching Python ordering.
+                let meta = match fields.into_metadata(paper_id.clone(), version, None) {
+                    Ok(m) => m,
+                    Err(e) => return Ok(Err(invalid(e.to_string()))),
                 };
                 // Validation lives in the service so every front door refuses the same input.
                 if let Err(e) = svc_paper::repair_paper(conn, source_fk, &meta) {
@@ -527,6 +518,7 @@ impl Server {
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use linxiv_core::models::PaperMetadata;
     use linxiv_core::storage;
 
     use super::*;

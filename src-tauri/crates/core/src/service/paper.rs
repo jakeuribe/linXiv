@@ -27,7 +27,7 @@ use crate::storage::queries::{
 };
 use chrono::{NaiveDate, NaiveDateTime};
 use rusqlite::Connection;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -266,6 +266,59 @@ pub fn repair_paper_unvalidated(
 pub fn parse_published(s: &str) -> Result<NaiveDate> {
     NaiveDate::parse_from_str(s, "%Y-%m-%d")
         .map_err(|_| CoreError::Validation(format!("Invalid date {}; use YYYY-MM-DD", pyrepr(s))))
+}
+
+/// The user-editable Paper Repair fields, shared by all three front doors:
+/// the route PUT body (mirrors `PaperRepairBody` in `src/api/papers.ts`),
+/// the CLI flags, and the MCP tool params. `published` stays a `String` so
+/// the date is parsed here by [`parse_published`], identically per surface.
+#[derive(Debug, Deserialize)]
+pub struct RepairFields {
+    pub title: String,
+    pub authors: Vec<String>,
+    /// Publication date (YYYY-MM-DD).
+    pub published: String,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub doi: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
+}
+
+impl RepairFields {
+    /// Assemble repair metadata around the identity each surface resolves
+    /// (source_id/version/source are not changeable here — ADR-0008). Fails
+    /// with `Validation` on a bad `published` date.
+    pub fn into_metadata(
+        self,
+        source_id: String,
+        version: i64,
+        source: Option<String>,
+    ) -> Result<PaperMetadata> {
+        Ok(PaperMetadata {
+            source_id,
+            version,
+            title: self.title,
+            authors: self.authors,
+            published: parse_published(&self.published)?,
+            updated: None,
+            summary: self.summary,
+            category: self.category,
+            categories: None,
+            doi: self.doi,
+            journal_ref: None,
+            comment: None,
+            url: self.url,
+            tags: self.tags,
+            source,
+            author_orcids: None,
+        })
+    }
 }
 
 /// Trim title/summary, dedup non-blank authors/tags (empty tag list → None), and
@@ -1512,12 +1565,24 @@ mod tests {
         let dupes = PaperMetadata {
             title: "  Fixed  ".into(),
             authors: vec!["Ada".into(), " Ada ".into(), "".into(), "Bo".into()],
+            tags: Some(vec!["nlp".into(), " nlp ".into(), "  ".into()]),
             ..meta("arxiv:R", 1, "cs.LG", &[])
         };
         repair_paper(&mut conn, fk, &dupes).unwrap();
         let got = get(&conn, &PaperRef::SourceFk(fk)).unwrap().unwrap();
         assert_eq!(got.title, "Fixed");
         assert_eq!(got.authors, vec!["Ada".to_string(), "Bo".to_string()]);
+        assert_eq!(got.tags, vec!["nlp".to_string()]);
+
+        // Blank-only tags collapse to None (Python `tags or None`) — every
+        // front door hands raw tags to repair and relies on this.
+        let blank_tags = PaperMetadata {
+            tags: Some(vec!["  ".into()]),
+            ..meta("arxiv:R", 1, "cs.LG", &[])
+        };
+        repair_paper(&mut conn, fk, &blank_tags).unwrap();
+        let got = get(&conn, &PaperRef::SourceFk(fk)).unwrap().unwrap();
+        assert!(got.tags.is_empty());
 
         assert!(parse_published("2024-13-01").is_err());
         assert_eq!(

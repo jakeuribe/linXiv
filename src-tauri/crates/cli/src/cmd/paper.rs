@@ -7,7 +7,6 @@ use crate::ctx::Ctx;
 use crate::output::{as_source_id, fail, output};
 
 use linxiv_core::config;
-use linxiv_core::models::PaperMetadata;
 use linxiv_core::service::{paper as svc_paper, paper_merge as svc_merge, project as svc_project};
 
 #[derive(Subcommand)]
@@ -145,27 +144,19 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             let version = svc_paper::get(&ctx.conn, &paper(&source_id))?
                 .map(|e| e.version)
                 .unwrap_or(1);
-            let meta = PaperMetadata {
-                source_id: source_id.clone(),
-                version,
+            let fields = svc_paper::RepairFields {
                 title,
                 authors,
-                published: match svc_paper::parse_published(&published) {
-                    Ok(d) => d,
-                    Err(e) => fail(e.to_string()),
-                },
-                updated: None,
+                published,
                 summary,
                 category,
-                categories: None,
                 doi,
-                journal_ref: None,
-                comment: None,
                 url,
                 tags,
-                source: None,
-                author_orcids: None,
             };
+            let meta = fields
+                .into_metadata(source_id.clone(), version, None)
+                .unwrap_or_else(|e| fail(e.to_string()));
             // repair_paper normalizes and validates (blank title, no authors, empty DOI).
             match svc_paper::repair_paper(&mut ctx.conn, source_fk, &meta) {
                 Ok(()) => {}
@@ -347,6 +338,7 @@ async fn index_sources_result(ctx: &mut Ctx, limit: usize) -> serde_json::Value 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use linxiv_core::models::PaperMetadata;
     use linxiv_core::storage;
     use std::env;
 

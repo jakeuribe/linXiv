@@ -11,7 +11,6 @@ use serde_json::{json, Value};
 
 use linxiv_core::config;
 use linxiv_core::error::CoreError;
-use linxiv_core::models::PaperMetadata;
 use linxiv_core::service::paper::{self as svc_paper, PaperRef};
 use linxiv_core::service::paper_merge as svc_merge;
 use linxiv_core::service::project as svc_project;
@@ -201,30 +200,12 @@ fn delete(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
 /// existing paper's identity (source_id/version/source) + the PUT body.
 fn repair(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let source_fk = path_i64(fk)?;
-    let b: RepairBody = ctx.parse_body()?;
+    let b: svc_paper::RepairFields = ctx.parse_body()?;
     state.with_conn(|conn| -> Result<Value, ApiError> {
         let paper = svc_paper::get(conn, &sfk_key(source_fk))?
             .ok_or_else(|| CoreError::PaperNotFound(source_fk.to_string()))?;
         // Date validated after the existence check, matching MCP and Python.
-        let published = svc_paper::parse_published(&b.published)?;
-        let meta = PaperMetadata {
-            source_id: paper.source_id, // identity key; not changeable here (ADR-0008)
-            version: paper.version,
-            title: b.title,
-            authors: b.authors,
-            published,
-            updated: None,
-            summary: b.summary,
-            category: b.category,
-            categories: None,
-            doi: b.doi,
-            journal_ref: None,
-            comment: None,
-            url: b.url,
-            tags: b.tags,
-            source: paper.source,
-            author_orcids: None,
-        };
+        let meta = b.into_metadata(paper.source_id, paper.version, paper.source)?;
         // Python maps sqlite3.IntegrityError -> 409, but this endpoint
         // never renames source_id so no UNIQUE conflict can arise; a stray rusqlite
         // error surfaces as CoreError::Internal (500). Reachable paths stay faithful.
@@ -269,21 +250,6 @@ fn remove_from_projects(state: &AppState, fk: &str) -> Result<Value, ApiError> {
     Ok(json!({ "ok": true, "removed_from_projects": removed }))
 }
 
-/// `PaperRepairBody` (`src/api/papers.ts`). `published` stays a `String` so the
-/// date is parsed by `svc_paper::parse_published`, shared with the CLI and MCP.
-#[derive(Deserialize)]
-struct RepairBody {
-    title: String,
-    authors: Vec<String>,
-    published: String,
-    #[serde(default)]
-    summary: String,
-    category: Option<String>,
-    doi: Option<String>,
-    url: Option<String>,
-    tags: Option<Vec<String>>,
-}
-
 fn sfk_key(source_fk: i64) -> PaperRef {
     PaperRef::SourceFk(source_fk)
 }
@@ -298,6 +264,7 @@ use super::to_value;
 mod tests {
     use super::*;
     use crate::route::{route, ApiRequest};
+    use linxiv_core::models::PaperMetadata;
     use linxiv_core::storage;
 
     fn state() -> AppState {
