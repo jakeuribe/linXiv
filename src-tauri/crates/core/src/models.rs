@@ -88,7 +88,7 @@ pub(crate) fn date_min() -> NaiveDate {
 // PaperMetadata — normalized, source-agnostic record (sources/base.py)
 // ---------------------------------------------------------------------------
 
-/// Normalized paper representation produced by every `PaperSource`.
+/// Normalized paper representation produced by every Provider module.
 /// `categories`/`tags` stay `Option` here (pydantic `list[str] | None`),
 /// unlike the DB-row `PaperDetails` where they default to an empty `Vec`.
 #[derive(Debug, Clone, Serialize, Deserialize)]

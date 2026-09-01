@@ -21,7 +21,7 @@ pub use crate::storage::queries::version_check::{
 };
 
 /// Latest arXiv metadata for many roots in ONE rate-limited request. Batched and
-/// arXiv-only, so it stays outside `PaperSource`; consumers get it here rather
+/// arXiv-only, so it stays outside the per-Provider dispatch; consumers get it here rather
 /// than reaching into `sources::arxiv` (ADR-0010). Hold no DB lock across it.
 pub async fn fetch_latest(source_ids: &[String]) -> Result<Vec<PaperMetadata>> {
     crate::sources::arxiv::fetch_by_ids(source_ids, &config::data_dir()).await

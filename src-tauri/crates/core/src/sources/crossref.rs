@@ -3,7 +3,7 @@
 //! The pure parser (`parse_work` + the JATS tag-stripper + date-parts handling)
 //! is the load-bearing piece and is fixture-tested below. `doi_resolve` reuses
 //! `parse_work`. The async fetch wrappers route through `sources::http` and are
-//! wiremock-tested below; the `PaperSource` adapter over them is covered in
+//! wiremock-tested below; the `service::source` dispatch over them is covered in
 //! `tests/paper_source.rs`.
 //!
 //! Plan §5.4. No auth required; `api.crossref.org` only. Every request carries
@@ -244,7 +244,7 @@ async fn fetch_by_doi_checked_at(
 
 /// `(sort, order)` query values for the public sort keys — CrossRef's `score` is
 /// its relevance metric. Unknown keys are refused rather than silently dropped
-/// (the `PaperSource` contract); `search_by_title` pins "relevance" itself.
+/// (the Provider contract); `search_by_title` pins "relevance" itself.
 fn sort_params(sort: &str) -> Result<(&'static str, &'static str)> {
     Ok(match sort {
         "relevance" => ("score", "desc"),
@@ -483,7 +483,7 @@ mod tests {
         assert!(parse_search_body(b"garbage").is_empty());
     }
 
-    // ---- sort (honoured, not ignored — the PaperSource contract) ----
+    // ---- sort (honoured, not ignored — the Provider contract) ----
     #[test]
     fn search_url_carries_sort_and_order() {
         let url = search_url("attention", 5, "newest").unwrap();
