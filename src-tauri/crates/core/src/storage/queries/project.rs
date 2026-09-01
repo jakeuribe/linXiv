@@ -176,6 +176,36 @@ pub fn source_fks_by_project(
     Ok(by_project)
 }
 
+/// Bare existence probe, any status (mirrors `get_project`'s unfiltered row
+/// lookup) — the narrow form for guard sites that discard the row.
+pub fn project_exists(conn: &Connection, project_fk: i64) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT 1 FROM PROJECT WHERE PROJECT_FK = ?1",
+            [project_fk],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some())
+}
+
+/// Active-membership count for one project (same PAPER_ROOTS `active` join as
+/// [`source_fks_by_project`]), `None` when the project is absent — the narrow
+/// form of `get_project(..).source_fks.len()`.
+pub fn active_paper_count(conn: &Connection, project_fk: i64) -> Result<Option<usize>> {
+    Ok(conn
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM PROJECT_TO_PAPER p2p \
+               JOIN PAPER_ROOTS r ON r.SOURCE_FK = p2p.SOURCE_FK \
+               WHERE p2p.PROJECT_FK = PROJECT.PROJECT_FK AND r.STATUS = 'active') \
+             FROM PROJECT WHERE PROJECT_FK = ?1",
+            [project_fk],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?
+        .map(|n| n as usize))
+}
+
 /// `storage/projects.py::get_project` — full project row. `load_sources` mirrors
 /// Python (default true): when false, `source_fks` stays empty and the caller
 /// fills counts via the bulk loader (port of `list_project_source_ids_bulk` in

@@ -42,11 +42,9 @@ fn get_project(conn: &rusqlite::Connection, id: i64) -> Result<Option<ProjectDet
     project::get(conn, &proj(id)).map_err(core_err)
 }
 
-/// Existence guard — core's `get_required` owns the not-found wording.
+/// Existence guard — core's `require` owns the not-found wording.
 fn ensure_project(conn: &rusqlite::Connection, id: i64) -> Result<(), ErrorData> {
-    project::get_required(conn, id)
-        .map(|_| ())
-        .map_err(guard_err)
+    project::require(conn, id).map_err(guard_err)
 }
 
 /// Shared body of add_paper_to_project / remove_paper_from_project — core's

@@ -126,6 +126,17 @@ pub fn get_required(conn: &Connection, project_fk: i64) -> Result<ProjectDetails
     .ok_or(CoreError::ProjectNotFound(project_fk))
 }
 
+/// Existence-only [`get_required`] (same any-status semantics and
+/// `ProjectNotFound` wording) for guard sites that discard the row: one
+/// SELECT instead of the row + membership + tags triple.
+pub fn require(conn: &Connection, project_fk: i64) -> Result<()> {
+    if pq::project_exists(conn, project_fk)? {
+        Ok(())
+    } else {
+        Err(CoreError::ProjectNotFound(project_fk))
+    }
+}
+
 /// Link `tags` to a project, creating any that don't exist yet. Guards existence
 /// first so CLI and MCP stop each doing it by hand. Returns the resulting tags.
 pub fn add_project_tags(
@@ -133,7 +144,7 @@ pub fn add_project_tags(
     project_fk: i64,
     tags: &[String],
 ) -> Result<Vec<String>> {
-    get_required(conn, project_fk)?;
+    require(conn, project_fk)?;
     tq::add_project_tags(conn, project_fk, tags)
 }
 
@@ -144,7 +155,7 @@ pub fn remove_project_tags(
     project_fk: i64,
     tags: &[String],
 ) -> Result<Vec<String>> {
-    get_required(conn, project_fk)?;
+    require(conn, project_fk)?;
     tq::remove_project_tags(conn, project_fk, tags)
 }
 
@@ -487,7 +498,8 @@ fn membership_receipt(
     if !failed.is_empty() {
         return Err(CoreError::PaperNotFound(source_id.to_string()));
     }
-    let paper_count = get_required(conn, project_fk)?.source_fks.len();
+    let paper_count =
+        pq::active_paper_count(conn, project_fk)?.ok_or(CoreError::ProjectNotFound(project_fk))?;
     Ok(PaperMembershipReceipt {
         ok: true,
         project_id: project_fk,
@@ -685,7 +697,9 @@ mod tests {
     #[test]
     fn membership_receipt_counts_and_pins_wire_shape() {
         let mut conn = setup();
-        let id = create(&mut conn, &pin("Proj", vec![10], vec![])).unwrap();
+        // fk 12 is a trashed root: linked but excluded from paper_count
+        // (active-membership semantics, same as source_fks.len()).
+        let id = create(&mut conn, &pin("Proj", vec![10, 12], vec![])).unwrap();
 
         let receipt = add_paper(&conn, id, "arxiv:2").unwrap();
         assert_eq!(
@@ -698,6 +712,26 @@ mod tests {
         assert!(matches!(
             add_paper(&conn, id, "arxiv:ghost").unwrap_err(),
             CoreError::PaperNotFound(sid) if sid == "arxiv:ghost"
+        ));
+    }
+
+    #[test]
+    fn require_matches_get_required_semantics() {
+        let mut conn = setup();
+        let id = create(&mut conn, &pin("Proj", vec![], vec![])).unwrap();
+        require(&conn, id).unwrap();
+        // Any-status, like get_required: a trashed project still resolves.
+        delete(
+            &conn,
+            &Project {
+                project_fk: Some(id),
+            },
+        )
+        .unwrap();
+        require(&conn, id).unwrap();
+        assert!(matches!(
+            require(&conn, 999).unwrap_err(),
+            CoreError::ProjectNotFound(999)
         ));
     }
 

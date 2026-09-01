@@ -240,7 +240,7 @@ fn delete(state: &AppState, id: &str) -> Result<Value, ApiError> {
         project_fk: Some(pid),
     };
     state.with_conn(|conn| -> Result<(), ApiError> {
-        project::get_required(conn, pid)?;
+        project::require(conn, pid)?;
         project::delete(conn, &proj)?;
         Ok(())
     })?;
