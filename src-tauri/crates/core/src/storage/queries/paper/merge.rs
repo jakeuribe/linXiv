@@ -15,7 +15,7 @@ use crate::error::{CoreError, Result};
 use crate::storage::db::{list_from_sql, list_to_sql, transaction};
 
 use super::fts::refresh_fts;
-use super::write::sync_paper_tags;
+use super::write::sync_paper_tags_for_versions;
 
 /// What happens to one loser version, decided by [`merge_plan`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -424,9 +424,7 @@ pub fn merge_paper_roots(
             let rows = stmt.query_map([w], |r| Ok((r.get(0)?, r.get(1)?)))?;
             rows.collect::<rusqlite::Result<_>>()?
         };
-        for (pid, ver) in winner_rows {
-            sync_paper_tags(tx, pid, &plan.winner_id, ver, Some(&merged_tags))?;
-        }
+        sync_paper_tags_for_versions(tx, &winner_rows, &plan.winner_id, Some(&merged_tags))?;
 
         // VERSION_CHECK: the loser's row dies with its root (cascade), but the
         // winner's NEW_VERSION was computed against a version series the

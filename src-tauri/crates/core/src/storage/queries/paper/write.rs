@@ -103,17 +103,38 @@ pub(super) fn sync_paper_tags(
     version: i64,
     tags: Option<&[String]>,
 ) -> Result<()> {
-    tx.execute("DELETE FROM PAPER_TO_TAG WHERE PAPER_ID = ?", [paper_id])?;
-    let Some(tags) = tags else { return Ok(()) };
-    for label in tags {
-        if label.is_empty() {
-            continue;
+    sync_paper_tags_for_versions(tx, &[(paper_id, version)], source_id, tags)
+}
+
+/// Multi-version form of `sync_paper_tags`: same replacement for every
+/// (PAPER_ID, VERSION) row of one source_id, resolving each tag label's TAG_FK
+/// once instead of once per version.
+pub(super) fn sync_paper_tags_for_versions(
+    tx: &Transaction,
+    rows: &[(i64, i64)],
+    source_id: &str,
+    tags: Option<&[String]>,
+) -> Result<()> {
+    for (paper_id, _) in rows {
+        tx.execute("DELETE FROM PAPER_TO_TAG WHERE PAPER_ID = ?", [paper_id])?;
+    }
+    // No rows means nothing to link — bail before FK resolution so a tag label
+    // never gets a TAG row created without any paper referencing it.
+    let Some(tags) = tags.filter(|_| !rows.is_empty()) else {
+        return Ok(());
+    };
+    let tag_fks: Vec<i64> = tags
+        .iter()
+        .filter(|label| !label.is_empty())
+        .map(|label| super::super::tag::tag_fk_for_label(tx, label))
+        .collect::<Result<_>>()?;
+    for (paper_id, version) in rows {
+        for tid in &tag_fks {
+            tx.execute(
+                "INSERT INTO PAPER_TO_TAG (PAPER_ID, SOURCE_ID, VERSION, TAG_FK) VALUES (?, ?, ?, ?)",
+                params![paper_id, source_id, version, tid],
+            )?;
         }
-        let tid = super::super::tag::tag_fk_for_label(tx, label)?;
-        tx.execute(
-            "INSERT INTO PAPER_TO_TAG (PAPER_ID, SOURCE_ID, VERSION, TAG_FK) VALUES (?, ?, ?, ?)",
-            params![paper_id, source_id, version, tid],
-        )?;
     }
     Ok(())
 }
@@ -271,9 +292,7 @@ pub fn add_paper_tags(
             let rows = stmt.query_map([source_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
             rows.collect::<rusqlite::Result<_>>()?
         };
-        for (pid, ver) in versions {
-            sync_paper_tags(tx, pid, source_id, ver, Some(&merged))?;
-        }
+        sync_paper_tags_for_versions(tx, &versions, source_id, Some(&merged))?;
         Ok(merged)
     })
 }
@@ -318,9 +337,7 @@ pub fn remove_paper_tags(
             let rows = stmt.query_map([source_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
             rows.collect::<rusqlite::Result<_>>()?
         };
-        for (pid, ver) in versions {
-            sync_paper_tags(tx, pid, source_id, ver, Some(&updated))?;
-        }
+        sync_paper_tags_for_versions(tx, &versions, source_id, Some(&updated))?;
         Ok(updated)
     })
 }
