@@ -359,11 +359,37 @@ pub fn replace_papers(conn: &mut Connection, project_fk: i64, source_fks: &[i64]
 /// PROJECT_FKs of every project containing this paper — any status. Python
 /// `get_paper_project_fks`. Callers filter to active themselves.
 pub fn get_paper_project_fks(conn: &Connection, source_fk: i64) -> Result<Vec<i64>> {
-    let mut stmt = conn.prepare("SELECT PROJECT_FK FROM PROJECT_TO_PAPER WHERE SOURCE_FK = ?1")?;
-    let fks = stmt
-        .query_map([source_fk], |r| r.get::<_, i64>(0))?
-        .collect::<rusqlite::Result<Vec<i64>>>()?;
-    Ok(fks)
+    Ok(project_fks_by_source_fk(conn, &[source_fk])?
+        .remove(&source_fk)
+        .unwrap_or_default())
+}
+
+/// Batched [`get_paper_project_fks`]: SOURCE_FK → PROJECT_FKs (any status, in
+/// PROJECT_TO_PAPER_FK order) for a set of papers in one chunked query, so
+/// trash listing is not a membership query per paper. Papers in no project are
+/// simply absent.
+pub fn project_fks_by_source_fk(
+    conn: &Connection,
+    source_fks: &[i64],
+) -> Result<HashMap<i64, Vec<i64>>> {
+    let mut by_paper: HashMap<i64, Vec<i64>> = HashMap::with_capacity(source_fks.len());
+    for chunk in source_fks.chunks(900) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        // Per-paper ordering survives chunking: a paper's rows never span chunks.
+        let sql = format!(
+            "SELECT SOURCE_FK, PROJECT_FK FROM PROJECT_TO_PAPER \
+             WHERE SOURCE_FK IN ({placeholders}) ORDER BY PROJECT_TO_PAPER_FK"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (sfk, pfk) = row?;
+            by_paper.entry(sfk).or_default().push(pfk);
+        }
+    }
+    Ok(by_paper)
 }
 
 /// Remove a paper from every project; returns the FKs it was removed from.
@@ -743,6 +769,29 @@ mod tests {
             get_reading_status(&conn, 1, 12).unwrap(),
             ReadingStatus::Unread
         );
+    }
+
+    #[test]
+    fn project_fks_by_source_fk_batches_any_status_in_insertion_order() {
+        let conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        conn.execute_batch(
+            "INSERT INTO PAPER_ROOTS (SOURCE_FK, SOURCE_ID, STATUS) VALUES
+                 (10, 'arxiv:1', 'active'), (11, 'arxiv:2', 'active'), (12, 'arxiv:3', 'active');",
+        )
+        .unwrap();
+        let a = insert_project(&conn, "A", "d", None, Status::Active, None).unwrap();
+        let b = insert_project(&conn, "B", "d", None, Status::Deleted, None).unwrap();
+        add_papers(&conn, a, &[10, 11]).unwrap();
+        add_papers(&conn, b, &[11]).unwrap();
+
+        let by_paper = project_fks_by_source_fk(&conn, &[10, 11, 12, 999]).unwrap();
+        assert_eq!(by_paper[&10], vec![a]);
+        // Any status (deleted project b included), PROJECT_TO_PAPER_FK order.
+        assert_eq!(by_paper[&11], vec![a, b]);
+        assert!(!by_paper.contains_key(&12));
+        assert!(!by_paper.contains_key(&999));
+        assert!(project_fks_by_source_fk(&conn, &[]).unwrap().is_empty());
     }
 
     #[test]

@@ -94,6 +94,32 @@ pub fn source_ids_by_fk(
     Ok(by_fk)
 }
 
+/// SOURCE_ID → SOURCE_FK map for a set of ids; unknown ids are simply absent.
+/// The inverse of [`source_ids_by_fk`], for callers resolving many ids at once
+/// (e.g. bulk project membership ops) — chunked the same way. No status filter,
+/// matching `get_paper_root`: trashed papers resolve.
+pub fn source_fks_by_id(
+    conn: &Connection,
+    source_ids: &[&str],
+) -> Result<std::collections::HashMap<String, i64>> {
+    let mut by_id = std::collections::HashMap::with_capacity(source_ids.len());
+    for chunk in source_ids.chunks(900) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let sql = format!(
+            "SELECT SOURCE_ID, SOURCE_FK FROM PAPER_ROOTS WHERE SOURCE_ID IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (sid, fk) = row?;
+            by_id.insert(sid, fk);
+        }
+    }
+    Ok(by_id)
+}
+
 /// PAPER_ROOTS row. No model exists (PAPER_ROOTS is storage-internal) and
 /// models.rs is out of scope this phase, so this local struct carries the row.
 #[derive(Debug, Clone, Serialize)]
@@ -164,6 +190,10 @@ mod tests {
             sfks_to_source_ids(&conn, &[fk, 999_999]).unwrap(),
             vec!["arxiv:v".to_string()]
         );
+        let by_id = source_fks_by_id(&conn, &["arxiv:v", "ghost"]).unwrap();
+        assert_eq!(by_id.get("arxiv:v"), Some(&fk));
+        assert!(!by_id.contains_key("ghost"));
+        assert!(source_fks_by_id(&conn, &[]).unwrap().is_empty());
 
         let versions = get_all_versions(&conn, "arxiv:v").unwrap();
         assert_eq!(
@@ -174,6 +204,11 @@ mod tests {
         // ensure_paper_root reactivates a soft-deleted root.
         soft_delete_paper(&mut conn, "arxiv:v").unwrap();
         assert!(is_paper_deleted(&conn, "arxiv:v").unwrap());
+        // No status filter: trashed papers still resolve, like get_paper_root.
+        assert_eq!(
+            source_fks_by_id(&conn, &["arxiv:v"]).unwrap()["arxiv:v"],
+            fk
+        );
         ensure_paper_root(&mut conn, "arxiv:v").unwrap();
         assert!(!is_paper_deleted(&conn, "arxiv:v").unwrap());
     }

@@ -385,10 +385,13 @@ pub fn hard_delete(conn: &mut Connection, paper: &PaperRef) -> Result<Option<Str
 
 /// All soft-deleted papers, each enriched with its project memberships.
 pub fn list_deleted(conn: &Connection) -> Result<Vec<DeletedPaperDetails>> {
-    let mut out = Vec::new();
-    for row in store::list_deleted_papers(conn)? {
-        let project_fks = proj_store::get_paper_project_fks(conn, row.source_fk)?;
-        out.push(DeletedPaperDetails {
+    let rows = store::list_deleted_papers(conn)?;
+    let fks: Vec<i64> = rows.iter().map(|r| r.source_fk).collect();
+    let mut by_paper = proj_store::project_fks_by_source_fk(conn, &fks)?;
+    Ok(rows
+        .into_iter()
+        .map(|row| DeletedPaperDetails {
+            project_fks: by_paper.remove(&row.source_fk).unwrap_or_default(),
             source_fk: row.source_fk,
             source_id: row.source_id,
             title: row.title,
@@ -397,10 +400,8 @@ pub fn list_deleted(conn: &Connection) -> Result<Vec<DeletedPaperDetails>> {
             deleted_at: row.deleted_at,
             pdf_path: row.pdf_path,
             had_pdf: row.had_pdf,
-            project_fks,
-        });
-    }
-    Ok(out)
+        })
+        .collect())
 }
 
 /// Which of `source_ids` (namespaced) are already in the library.

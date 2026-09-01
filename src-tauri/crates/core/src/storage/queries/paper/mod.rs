@@ -19,8 +19,8 @@ pub use read::{
     list_papers_sorted, list_pdf_papers, DoiVersionCandidate, PaperSort, PAPER_COLUMNS_NO_TEXT,
 };
 pub use roots::{
-    ensure_paper_root, get_paper_root, get_source_id, sfks_to_source_ids, source_ids_by_fk,
-    PaperRoot,
+    ensure_paper_root, get_paper_root, get_source_id, sfks_to_source_ids, source_fks_by_id,
+    source_ids_by_fk, PaperRoot,
 };
 pub use trash::{
     hard_delete_paper, is_paper_deleted, list_deleted_papers, restore_paper, soft_delete_paper,

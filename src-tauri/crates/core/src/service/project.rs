@@ -397,18 +397,23 @@ pub fn ensure_membership_writable(conn: &Connection, project_fk: i64) -> Result<
 /// `service/project.py::_resolve_source_ids` — paper ids → SOURCE_FKs. Ids are
 /// stripped and deduped (keyed on the stripped form, reported once). Returns
 /// (fks in first-seen order, unresolved ids verbatim). Trashed papers resolve —
-/// `get_paper_root` has no status filter, matching `get_paper_roots_bulk`.
+/// `source_fks_by_id` has no status filter, matching `get_paper_root`.
 fn resolve_source_ids(conn: &Connection, source_ids: &[String]) -> Result<(Vec<i64>, Vec<String>)> {
+    let mut seen = HashSet::new();
+    let deduped: Vec<(&str, &String)> = source_ids
+        .iter()
+        .filter_map(|sid| {
+            let stripped = sid.trim();
+            seen.insert(stripped.to_string()).then_some((stripped, sid))
+        })
+        .collect();
+    let stripped: Vec<&str> = deduped.iter().map(|(s, _)| *s).collect();
+    let by_id = paperq::source_fks_by_id(conn, &stripped)?;
     let mut fks = Vec::new();
     let mut failed = Vec::new();
-    let mut seen = HashSet::new();
-    for sid in source_ids {
-        let stripped = sid.trim();
-        if !seen.insert(stripped.to_string()) {
-            continue;
-        }
-        match paperq::get_paper_root(conn, stripped)? {
-            Some(root) => fks.push(root.source_fk),
+    for (stripped, sid) in deduped {
+        match by_id.get(stripped) {
+            Some(fk) => fks.push(*fk),
             None => failed.push(sid.clone()),
         }
     }
