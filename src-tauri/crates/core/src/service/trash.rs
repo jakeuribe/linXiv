@@ -36,16 +36,18 @@ pub struct TrashListing {
 pub fn list_trash(conn: &Connection) -> Result<TrashListing> {
     Ok(TrashListing {
         papers: svc_paper::list_deleted(conn)?,
-        projects: svc_project::list_deleted(conn)?
-            .into_iter()
-            .map(|p| {
-                let deleted_at = p.archived_at;
-                Ok(TrashedProjectRow {
-                    project: svc_project::to_out(conn, p)?,
+        projects: {
+            let deleted = svc_project::list_deleted(conn)?;
+            let deleted_ats: Vec<_> = deleted.iter().map(|p| p.archived_at).collect();
+            svc_project::to_out_many(conn, deleted)?
+                .into_iter()
+                .zip(deleted_ats)
+                .map(|(project, deleted_at)| TrashedProjectRow {
+                    project,
                     deleted_at,
                 })
-            })
-            .collect::<Result<Vec<_>>>()?,
+                .collect()
+        },
     })
 }
 

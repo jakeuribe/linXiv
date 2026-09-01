@@ -62,12 +62,12 @@ fn detail(state: &AppState, label: &str) -> Result<Value, ApiError> {
             project_fks: None,
             status: Some(Status::Active),
         };
-        let mut projects = Vec::new();
-        for p in svc_project::get_many(conn, &active)? {
-            if p.project_tags.iter().any(|t| t.eq_ignore_ascii_case(label)) {
-                projects.push(super::projects::project_out(conn, p)?);
-            }
-        }
+        let mut tagged = svc_project::get_many(conn, &active)?;
+        tagged.retain(|p| p.project_tags.iter().any(|t| t.eq_ignore_ascii_case(label)));
+        let projects = svc_project::to_out_many(conn, tagged)?
+            .into_iter()
+            .map(|p| serde_json::to_value(p).map_err(|e| ApiError::new(500, e.to_string())))
+            .collect::<Result<Vec<_>, _>>()?;
 
         Ok(json!({ "label": canonical, "papers": papers, "projects": projects }))
     })

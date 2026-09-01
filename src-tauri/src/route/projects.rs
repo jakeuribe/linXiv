@@ -118,14 +118,13 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
                 Err(_) => return Ok(Vec::new()),
             },
         };
-        let mut out = Vec::new();
-        for p in project::get_many(conn, &filter)? {
-            if p.id.is_none() {
-                continue; // app.py drops null-id rows (data-integrity guard)
-            }
-            out.push(project_out(conn, p)?);
-        }
-        Ok(out)
+        let mut projects = project::get_many(conn, &filter)?;
+        // app.py drops null-id rows (data-integrity guard)
+        projects.retain(|p| p.id.is_some());
+        project::to_out_many(conn, projects)?
+            .into_iter()
+            .map(|p| serde_json::to_value(p).map_err(|e| ApiError::new(500, e.to_string())))
+            .collect()
     })?;
     Ok(json!({ "projects": out }))
 }

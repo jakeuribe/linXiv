@@ -190,11 +190,7 @@ impl Server {
                     .filter(|p| p.status != Status::Deleted)
                     .collect(),
             };
-            let out = projects
-                .into_iter()
-                .map(|p| project::to_out(conn, p))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(core_err)?;
+            let out = project::to_out_many(conn, projects).map_err(core_err)?;
             jval(out)
         })
     }

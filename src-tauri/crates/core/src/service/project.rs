@@ -97,6 +97,19 @@ fn fill_tags(conn: &Connection, mut p: ProjectDetails) -> Result<ProjectDetails>
     Ok(p)
 }
 
+/// Batched [`fill_tags`] for list paths: one tag query for the whole slice
+/// instead of one per project.
+fn fill_tags_bulk(conn: &Connection, projects: &mut [ProjectDetails]) -> Result<()> {
+    let ids: Vec<i64> = projects.iter().filter_map(|p| p.id).collect();
+    let mut by_project = tq::project_tags_by_project(conn, &ids)?;
+    for p in projects {
+        if let Some(id) = p.id {
+            p.project_tags = by_project.remove(&id).unwrap_or_default();
+        }
+    }
+    Ok(())
+}
+
 // ── Reads ─────────────────────────────────────────────────────────────────────
 
 /// `service/project.py::get` — single project by project_fk (with tags). `None`
@@ -149,23 +162,48 @@ pub fn remove_project_tags(
 /// SERIALIZER 3): resolves `source_fks` to namespaced source ids and renders
 /// `color` as `#rrggbb`. All three surfaces serialize projects through here.
 pub fn to_out(conn: &Connection, p: ProjectDetails) -> Result<ProjectOut> {
-    let source_ids = crate::service::paper::sfks_to_source_ids(conn, &p.source_fks)?;
-    Ok(ProjectOut {
-        id: p
-            .id
-            .ok_or_else(|| CoreError::Internal("Project has no id".into()))?,
-        name: p.name,
-        description: p.description,
-        color_hex: p.color.map(color_to_hex),
-        project_tags: p.project_tags,
-        paper_count: source_ids.len(),
-        source_ids,
-        status: p.status,
-        created_at: p.created_at,
-        updated_at: p.updated_at,
-        archived_at: p.archived_at,
-        share_id: p.share_id,
-    })
+    let mut out = to_out_many(conn, vec![p])?;
+    out.pop()
+        .ok_or_else(|| CoreError::Internal("to_out_many dropped its input".into()))
+}
+
+/// Batched [`to_out`] for list paths: resolves every project's `source_fks` in
+/// one chunked lookup instead of one query per project. Order and per-project
+/// semantics (input-order source_ids, dropped unknown fks) match `to_out`.
+pub fn to_out_many(conn: &Connection, projects: Vec<ProjectDetails>) -> Result<Vec<ProjectOut>> {
+    let mut seen = HashSet::new();
+    let all_fks: Vec<i64> = projects
+        .iter()
+        .flat_map(|p| p.source_fks.iter().copied())
+        .filter(|fk| seen.insert(*fk))
+        .collect();
+    let by_fk = crate::service::paper::source_ids_by_fk(conn, &all_fks)?;
+    projects
+        .into_iter()
+        .map(|p| {
+            let source_ids: Vec<String> = p
+                .source_fks
+                .iter()
+                .filter_map(|fk| by_fk.get(fk).cloned())
+                .collect();
+            Ok(ProjectOut {
+                id: p
+                    .id
+                    .ok_or_else(|| CoreError::Internal("Project has no id".into()))?,
+                name: p.name,
+                description: p.description,
+                color_hex: p.color.map(color_to_hex),
+                project_tags: p.project_tags,
+                paper_count: source_ids.len(),
+                source_ids,
+                status: p.status,
+                created_at: p.created_at,
+                updated_at: p.updated_at,
+                archived_at: p.archived_at,
+                share_id: p.share_id,
+            })
+        })
+        .collect()
 }
 
 /// `service/project.py::get_many` — projects matching any combination of the
@@ -184,10 +222,9 @@ pub fn get_many(conn: &Connection, projects: &Projects) -> Result<Vec<ProjectDet
     .into_iter()
     .flatten()
     .reduce(Q::and);
-    pq::list_projects(conn, condition, true)?
-        .into_iter()
-        .map(|p| fill_tags(conn, p))
-        .collect()
+    let mut projects = pq::list_projects(conn, condition, true)?;
+    fill_tags_bulk(conn, &mut projects)?;
+    Ok(projects)
 }
 
 /// Persisted share identity: generate + store a uuid v4 on first call, return the
@@ -572,7 +609,8 @@ pub fn hard_delete(conn: &mut Connection, project: &Project) -> Result<()> {
 pub fn list_deleted(conn: &Connection) -> Result<Vec<ProjectDetails>> {
     let mut projects = pq::list_projects(conn, Some(Q::new("STATUS = ?", "deleted")), true)?;
     projects.sort_by_key(|p| std::cmp::Reverse(p.archived_at));
-    projects.into_iter().map(|p| fill_tags(conn, p)).collect()
+    fill_tags_bulk(conn, &mut projects)?;
+    Ok(projects)
 }
 
 /// `service/project.py::purge_old` — hard-delete projects trashed more than `days`
@@ -689,6 +727,36 @@ mod tests {
             add_paper(&conn, id, "arxiv:ghost").unwrap_err(),
             CoreError::PaperNotFound(sid) if sid == "arxiv:ghost"
         ));
+    }
+
+    /// Pins the batched list path (bulk membership, bulk tags, to_out_many)
+    /// against the single-project path for every field, per project.
+    #[test]
+    fn get_many_and_to_out_many_match_single_paths() {
+        let mut conn = setup();
+        let a = create(&mut conn, &pin("A", vec![11, 10], vec!["RL", "Vision"])).unwrap();
+        let b = create(&mut conn, &pin("B", vec![10], vec![])).unwrap();
+
+        let many = get_many(&conn, &Projects::default()).unwrap();
+        assert_eq!(many.len(), 2);
+        for p in &many {
+            let single = get(&conn, &Project { project_fk: p.id }).unwrap().unwrap();
+            assert_eq!(p.source_fks, single.source_fks);
+            assert_eq!(p.project_tags, single.project_tags);
+        }
+        let by_id = |id| many.iter().find(|p| p.id == Some(id)).unwrap();
+        assert_eq!(by_id(a).source_fks, vec![11, 10]); // insertion order kept
+        assert_eq!(by_id(b).project_tags, Vec::<String>::new());
+
+        let singles: Vec<_> = many
+            .iter()
+            .map(|p| to_out(&conn, p.clone()).unwrap())
+            .collect();
+        let bulk = to_out_many(&conn, many).unwrap();
+        assert_eq!(
+            serde_json::to_value(&bulk).unwrap(),
+            serde_json::to_value(&singles).unwrap()
+        );
     }
 
     #[test]

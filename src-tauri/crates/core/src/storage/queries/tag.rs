@@ -163,17 +163,43 @@ pub fn delete_tag(conn: &mut Connection, tag_id: i64) -> Result<()> {
 /// `storage/tags.py::get_project_tags` — labels of every tag linked to a project,
 /// ordered by label. Mirrors `_TAGS_BY_PROJECT_BASE_SQL` (DISTINCT join).
 pub fn get_project_tags(conn: &Connection, project_id: i64) -> Result<Vec<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT DISTINCT t.TAG_FK, t.TAG FROM TAG t \
-         JOIN PROJECT_TO_TAG ptt ON ptt.TAG_FK = t.TAG_FK \
-         WHERE ptt.PROJECT_FK = ? ORDER BY t.TAG",
-    )?;
-    let rows = stmt.query_map([project_id], |r| r.get::<_, Option<String>>(1))?;
-    // TAG is nullable; Python keeps None rows, but linked tags always carry a
-    // label in practice — drop nulls rather than surface a None label.
-    rows.filter_map(|r| r.transpose())
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(Into::into)
+    Ok(project_tags_by_project(conn, &[project_id])?
+        .remove(&project_id)
+        .unwrap_or_default())
+}
+
+/// Batched [`get_project_tags`]: PROJECT_FK → label-ordered tags for a set of
+/// projects in one chunked query, so list paths are not a tag query per
+/// project. Untagged projects are simply absent.
+pub fn project_tags_by_project(
+    conn: &Connection,
+    project_ids: &[i64],
+) -> Result<std::collections::HashMap<i64, Vec<String>>> {
+    let mut by_project: std::collections::HashMap<i64, Vec<String>> =
+        std::collections::HashMap::with_capacity(project_ids.len());
+    for chunk in project_ids.chunks(900) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        // Per-project label ordering survives chunking: a project's rows never
+        // span chunks.
+        let sql = format!(
+            "SELECT DISTINCT ptt.PROJECT_FK, t.TAG_FK, t.TAG FROM TAG t \
+             JOIN PROJECT_TO_TAG ptt ON ptt.TAG_FK = t.TAG_FK \
+             WHERE ptt.PROJECT_FK IN ({placeholders}) ORDER BY t.TAG"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(2)?))
+        })?;
+        for row in rows {
+            let (pfk, label) = row?;
+            // TAG is nullable; Python keeps None rows, but linked tags always carry
+            // a label in practice — drop nulls rather than surface a None label.
+            if let Some(label) = label {
+                by_project.entry(pfk).or_default().push(label);
+            }
+        }
+    }
+    Ok(by_project)
 }
 
 /// `storage/tags.py::add_project_tags` — get-or-create each (trimmed, deduped

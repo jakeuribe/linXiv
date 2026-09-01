@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use chrono::{NaiveDateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 
@@ -139,16 +141,39 @@ pub fn release_share_id_from_deleted(conn: &Connection, share_id: &str) -> Resul
 /// `storage/projects.py::_load_source_fks` — active-paper membership in
 /// PROJECT_TO_PAPER_FK (insertion) order; soft-deleted roots are excluded.
 fn load_source_fks(conn: &Connection, project_fk: i64) -> Result<Vec<i64>> {
-    let mut stmt = conn.prepare(
-        "SELECT p2p.SOURCE_FK FROM PROJECT_TO_PAPER p2p \
-         JOIN PAPER_ROOTS r ON r.SOURCE_FK = p2p.SOURCE_FK \
-         WHERE p2p.PROJECT_FK = ? AND r.STATUS = 'active' \
-         ORDER BY p2p.PROJECT_TO_PAPER_FK",
-    )?;
-    let fks = stmt
-        .query_map([project_fk], |r| r.get::<_, i64>(0))?
-        .collect::<rusqlite::Result<Vec<i64>>>()?;
-    Ok(fks)
+    Ok(source_fks_by_project(conn, &[project_fk])?
+        .remove(&project_fk)
+        .unwrap_or_default())
+}
+
+/// Batched [`load_source_fks`]: PROJECT_FK → active-membership SOURCE_FKs (in
+/// PROJECT_TO_PAPER_FK order) for a set of projects in one chunked query, so
+/// list paths are not a membership query per project. Projects with no active
+/// papers are simply absent.
+pub fn source_fks_by_project(
+    conn: &Connection,
+    project_fks: &[i64],
+) -> Result<HashMap<i64, Vec<i64>>> {
+    let mut by_project: HashMap<i64, Vec<i64>> = HashMap::with_capacity(project_fks.len());
+    for chunk in project_fks.chunks(900) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        // Per-project ordering survives chunking: a project's rows never span chunks.
+        let sql = format!(
+            "SELECT p2p.PROJECT_FK, p2p.SOURCE_FK FROM PROJECT_TO_PAPER p2p \
+             JOIN PAPER_ROOTS r ON r.SOURCE_FK = p2p.SOURCE_FK \
+             WHERE p2p.PROJECT_FK IN ({placeholders}) AND r.STATUS = 'active' \
+             ORDER BY p2p.PROJECT_TO_PAPER_FK"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (pfk, sfk) = row?;
+            by_project.entry(pfk).or_default().push(sfk);
+        }
+    }
+    Ok(by_project)
 }
 
 /// `storage/projects.py::get_project` — full project row. `load_sources` mirrors
@@ -201,12 +226,17 @@ pub fn list_projects(
         .query_map(params.as_slice(), raw_from_row)?
         .collect::<rusqlite::Result<Vec<RawProject>>>()?;
 
+    let mut by_project = if load_sources {
+        source_fks_by_project(conn, &raws.iter().map(|r| r.id).collect::<Vec<_>>())?
+    } else {
+        HashMap::new()
+    };
     let mut out = Vec::with_capacity(raws.len());
     for raw in raws {
         let id = raw.id;
         let mut proj = to_model(raw)?;
         if load_sources {
-            proj.source_fks = load_source_fks(conn, id)?;
+            proj.source_fks = by_project.remove(&id).unwrap_or_default();
         }
         out.push(proj);
     }
