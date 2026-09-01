@@ -605,18 +605,16 @@ impl ShareNode {
             // merge in the in-memory doc, and this write must never persist
             // it. A fresh adopt is an empty doc — nothing to validate.
             if !doc.get_heads().is_empty() {
-                let sp: SharedProject = autosurgeon::hydrate(&doc).map_err(super::crdt)?;
-                if sp.share_id != share_id {
+                let doc_id = doc_share_id(&doc)?;
+                if doc_id != share_id {
                     return Err(net(format!(
-                        "remote share_id {:?} does not match invite id {share_id:?}",
-                        sp.share_id
+                        "remote share_id {doc_id:?} does not match invite id {share_id:?}"
                     )));
                 }
             }
             let dir = e2ee_received_dir(&self.share_dir);
             let id = share_id.clone();
-            let bytes = doc.save();
-            tokio::task::spawn_blocking(move || write_doc_bytes(&dir, &id, bytes))
+            tokio::task::spawn_blocking(move || write_doc_bytes(&dir, &id, doc.save()))
                 .await
                 .map_err(net)??;
         }
@@ -669,12 +667,11 @@ impl ShareNode {
         if doc.get_heads().is_empty() {
             return Ok(outcome);
         }
-        let sp: SharedProject = autosurgeon::hydrate(&doc).map_err(super::crdt)?;
         // The doc-internal share_id is host-controlled; same check as fetch().
-        if sp.share_id != share_id {
+        let doc_id = doc_share_id(&doc)?;
+        if doc_id != share_id {
             return Err(net(format!(
-                "remote share_id {:?} does not match invite id {share_id:?}",
-                sp.share_id
+                "remote share_id {doc_id:?} does not match invite id {share_id:?}"
             )));
         }
         let dir = e2ee_received_dir(&self.share_dir);
@@ -689,7 +686,6 @@ impl ShareNode {
     /// Invites do this on their own; this repairs shares invited before that,
     /// whose members fetch every commit and can decrypt none.
     /// TODO: Revisit if this should be exposed via the GUI
-    #[cfg(feature = "sync-beelay")]
     pub async fn rekey_e2ee(&self, share_id: &str) -> Result<()> {
         if !valid_share_id(share_id) {
             return Err(ShareError::NotFound(share_id.to_string()));
@@ -704,7 +700,6 @@ impl ShareNode {
     /// invite, so a later re-accept of the same invite adopts from scratch
     /// instead of reusing a doc whose commits never decrypted. Returns whether
     /// beelay had it registered. The caller deletes the on-disk mirror.
-    #[cfg(feature = "sync-beelay")]
     pub async fn forget_e2ee(&self, share_id: &str) -> Result<bool> {
         if !valid_share_id(share_id) {
             return Err(ShareError::NotFound(share_id.to_string()));
@@ -734,6 +729,18 @@ impl ShareNode {
         }
         load(&e2ee_received_dir(share_dir), share_id)
     }
+}
+
+/// The doc-internal `share_id`, hydrated alone — the host-controlled-id guard's
+/// one input, so the check never materializes the full SharedProject subgraphs.
+#[cfg(feature = "sync-beelay")]
+fn doc_share_id(doc: &Automerge) -> Result<String> {
+    #[derive(autosurgeon::Hydrate)]
+    struct Meta {
+        share_id: String,
+    }
+    let meta: Meta = autosurgeon::hydrate(doc).map_err(super::crdt)?;
+    Ok(meta.share_id)
 }
 
 #[cfg(test)]
