@@ -28,7 +28,7 @@ use crate::storage::queries::{
 use chrono::{NaiveDate, NaiveDateTime};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 pub use store::DoiVersionCandidate;
@@ -378,11 +378,18 @@ pub fn search_library(conn: &Connection, query: &str, limit: i64) -> Result<Vec<
         return Ok(papers);
     }
     let mut seen: HashSet<String> = papers.iter().map(|p| p.source_id.clone()).collect();
-    for sfk in note_store::search_notes_source_fks(conn, query, limit as i64)? {
+    // One bulk fetch for every note hit (full_text pruned — it's skip_serializing
+    // anyway), re-walked in note-recency order since the bulk read sorts by date.
+    let note_fks = note_store::search_notes_source_fks(conn, query, limit as i64)?;
+    let mut by_fk: HashMap<i64, PaperDetails> = store::get_papers_by_source_fks(conn, &note_fks)?
+        .into_iter()
+        .map(|p| (p.source_fk, p))
+        .collect();
+    for sfk in note_fks {
         if papers.len() >= limit {
             break;
         }
-        if let Some(p) = get(conn, &PaperRef::SourceFk(sfk))? {
+        if let Some(p) = by_fk.remove(&sfk) {
             if seen.insert(p.source_id.clone()) {
                 papers.push(p);
             }
@@ -1558,6 +1565,38 @@ mod tests {
         let hits = search_library(&conn, "orpholog", 10).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].source_id, "arxiv:N");
+    }
+
+    // Note-only extras trail in note-recency order (MAX(UPDATED_AT) DESC), not
+    // the bulk read's published/paper_id order — B is inserted first (lower
+    // paper_id, same published date) so the bulk sort alone would yield [A, B].
+    #[test]
+    fn search_library_orders_note_hits_by_note_recency() {
+        let mut conn = db();
+        for sid in ["arxiv:noteB", "arxiv:noteA"] {
+            save_paper_metadata(&mut conn, &meta(sid, 1, "cs.LG", &[]), None).unwrap();
+            ensure_paper_root(&mut conn, sid).unwrap();
+        }
+        for (sid, updated_at) in [
+            ("arxiv:noteA", "2024-01-01 00:00:00"),
+            ("arxiv:noteB", "2024-06-01 00:00:00"),
+        ] {
+            conn.execute(
+                "INSERT INTO NOTE (SOURCE_FK, TITLE, NOTE, UPDATED_AT) \
+                 SELECT SOURCE_FK, 'n', 'on zephyranthes morphology', ?2 \
+                 FROM PAPER_ROOTS WHERE SOURCE_ID = ?1",
+                rusqlite::params![sid, updated_at],
+            )
+            .unwrap();
+        }
+
+        let hits = search_library(&conn, "orpholog", 10).unwrap();
+        assert_eq!(
+            hits.iter()
+                .map(|p| p.source_id.as_str())
+                .collect::<Vec<_>>(),
+            ["arxiv:noteB", "arxiv:noteA"]
+        );
     }
 
     // The case MCP used to drop before the merge was hoisted here: one query

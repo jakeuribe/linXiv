@@ -132,7 +132,7 @@ async fn fetch_proxy(url: &str) -> Response<Cow<'static, [u8]>> {
                 return empty(StatusCode::PAYLOAD_TOO_LARGE);
             }
             match resp.bytes().await {
-                Ok(bytes) if bytes.len() as u64 <= MAX_PDF_BYTES => pdf_response(bytes.to_vec()),
+                Ok(bytes) if bytes.len() as u64 <= MAX_PDF_BYTES => pdf_response(bytes.into()),
                 Ok(_) => empty(StatusCode::PAYLOAD_TOO_LARGE),
                 Err(_) => empty(StatusCode::BAD_GATEWAY),
             }

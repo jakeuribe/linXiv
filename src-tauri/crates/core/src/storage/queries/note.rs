@@ -143,16 +143,6 @@ pub fn count_notes(conn: &Connection, source_fk: i64, project_id: Option<i64>) -
     )?)
 }
 
-/// `storage/notes.py::count_project_notes` — total notes scoped to a project.
-pub fn count_project_notes(conn: &Connection, project_id: i64) -> Result<i64> {
-    let n = conn.query_row(
-        "SELECT COUNT(*) FROM NOTE WHERE PROJECT_FK = ?1",
-        [project_id],
-        |r| r.get(0),
-    )?;
-    Ok(n)
-}
-
 /// Check if a NOTE_UUID is already taken (exists in the database).
 pub fn uuid_taken(conn: &Connection, uuid: &str) -> Result<bool> {
     Ok(conn
@@ -417,7 +407,6 @@ mod tests {
         // count_notes: by paper, and narrowed to a project.
         assert_eq!(count_notes(&conn, src, None).unwrap(), 2);
         assert_eq!(count_notes(&conn, src, Some(proj)).unwrap(), 1);
-        assert_eq!(count_project_notes(&conn, proj).unwrap(), 2);
 
         assert_eq!(list_all_notes(&conn).unwrap().len(), 3);
 

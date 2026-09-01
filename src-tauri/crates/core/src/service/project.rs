@@ -2,7 +2,7 @@
 //!
 //! Thin orchestration over `storage::queries::{project,tag,note,paper}`. DB-touching
 //! fns take `conn` first (DI seam — never open from config). The `Project`/`Projects`
-//! query objects and `ProjectPage` live in `service/project.py` itself, so they stay
+//! query objects live in `service/project.py` itself, so they stay
 //! local here too; `ProjectIn`/`ProjectUpdateIn` are the shared *In DTOs (models.rs).
 //!
 //! Two write contracts that are deliberately opposite (do NOT unify):
@@ -20,7 +20,7 @@ use rusqlite::Connection;
 use crate::error::{CoreError, Result};
 use crate::models::{PaperDetails, ProjectDetails, ProjectIn, ProjectOut, ProjectUpdateIn, Status};
 use crate::storage::db::transaction;
-use crate::storage::queries::{note as nq, paper as paperq, project as pq, tag as tq};
+use crate::storage::queries::{paper as paperq, project as pq, tag as tq};
 use crate::storage::query::{self, Q};
 
 /// `service/project.py::Project` — single-project lookup key. `None` short-circuits
@@ -35,16 +35,6 @@ pub struct Project {
 pub struct Projects {
     pub project_fks: Option<Vec<i64>>,
     pub status: Option<Status>,
-}
-
-/// `service/project.py::ProjectPage` — the legacy list view (names/ids/counts).
-#[derive(Debug, Clone, Default)]
-pub struct ProjectPage {
-    pub num_projects: usize,
-    pub project_names: Vec<String>,
-    pub project_ids: Vec<Option<i64>>,
-    pub paper_counts: Vec<usize>,
-    pub note_counts: Vec<i64>,
 }
 
 // ── Tag helpers (shared by create/update) — Python `_normalize_tags`/`_sync_tags`. ──
@@ -634,29 +624,6 @@ pub fn purge_old(conn: &mut Connection, days: i64) -> Result<usize> {
     Ok(old.len())
 }
 
-/// `service/project.py::get_projects` — the legacy `ProjectPage` list (default ACTIVE).
-pub fn get_projects(conn: &Connection, status: Status) -> Result<ProjectPage> {
-    let projects = pq::list_projects(
-        conn,
-        Some(Q::new("STATUS = ?", pq::status_to_sql(status))),
-        true,
-    )?;
-    let mut page = ProjectPage {
-        num_projects: projects.len(),
-        ..Default::default()
-    };
-    for p in &projects {
-        page.project_names.push(p.name.clone());
-        page.project_ids.push(p.id);
-        page.paper_counts.push(p.source_fks.len());
-        page.note_counts.push(match p.id {
-            Some(id) => nq::count_project_notes(conn, id)?,
-            None => 0,
-        });
-    }
-    Ok(page)
-}
-
 // ── Colour helpers — Python `projects.py::color_to_hex`/`color_from_hex`. ──────
 
 pub fn color_to_hex(color: i32) -> String {
@@ -1219,12 +1186,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(by_ids.len(), 2);
-
-        let page = get_projects(&conn, Status::Active).unwrap();
-        assert_eq!(page.num_projects, 1);
-        assert_eq!(page.project_ids, vec![Some(a)]);
-        assert_eq!(page.paper_counts, vec![2]);
-        assert_eq!(page.note_counts, vec![1]);
     }
 
     #[test]
