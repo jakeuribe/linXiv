@@ -12,7 +12,7 @@ use super::dto::{
 };
 use crate::error::{CoreError, Result};
 use crate::models::PaperDetails;
-use crate::service::{annotation, note, paper, project};
+use crate::service::{annotation, author, note, paper, project};
 
 /// Build the in-memory manifest for a project plus the list of
 /// `(archive_name, local_pdf_path)` entries to bundle. This is all of
@@ -28,10 +28,13 @@ pub fn build_manifest(
 
     let papers = paper::get_by_source_fks(conn, &details.source_fks)?;
 
+    // Batched author lookup — one query for all papers instead of one each.
+    let paper_ids: Vec<i64> = papers.iter().map(|p| p.paper_id).collect();
+    let mut orcids = author::paper_author_orcids(conn, &paper_ids)?;
     let paper_entries: Vec<PaperEntry> = papers
         .iter()
-        .map(|p| PaperEntry::from_details(conn, p))
-        .collect::<Result<Vec<_>>>()?;
+        .map(|p| PaperEntry::from_details(p, orcids.remove(&p.paper_id).unwrap_or_default()))
+        .collect();
     let note_entries = collect_note_entries(conn, project_fk)?;
     let annotation_entries = collect_annotation_entries(conn, project_fk)?;
     let pdf_files = if include_pdfs {
@@ -74,17 +77,27 @@ fn collect_note_entries(conn: &Connection, project_fk: i64) -> Result<Vec<NoteEn
             ..Default::default()
         },
     )?;
+    let fks: Vec<i64> = notes.iter().map(|n| n.source_fk).collect();
+    let source_ids = paper::source_ids_by_fk(conn, &fks)?;
+    // Memoized per-paper version lookup — one query per distinct linked paper.
+    let mut versions: std::collections::HashMap<i64, Option<i64>> =
+        std::collections::HashMap::new();
     let mut note_entries = Vec::new();
     for n in &notes {
-        let Some(source_id) = paper::get_source_id(conn, n.source_fk)? else {
+        let Some(source_id) = source_ids.get(&n.source_fk) else {
             continue; // Python skips notes whose source_id no longer resolves.
         };
         let version = match n.paper_id_fk {
-            Some(pid) => paper::get(conn, &paper::PaperRef::Id(pid))?.map(|p| p.version),
+            Some(pid) => match versions.entry(pid) {
+                std::collections::hash_map::Entry::Occupied(e) => *e.get(),
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    *e.insert(paper::get(conn, &paper::PaperRef::Id(pid))?.map(|p| p.version))
+                }
+            },
             None => None,
         };
         note_entries.push(NoteEntry {
-            paper_source_id: Some(source_id),
+            paper_source_id: Some(source_id.clone()),
             paper_version: version,
             title: n.title.clone(),
             content: n.content.clone(),
@@ -103,13 +116,15 @@ fn collect_annotation_entries(conn: &Connection, project_fk: i64) -> Result<Vec<
             ..Default::default()
         },
     )?;
+    let fks: Vec<i64> = annotations.iter().map(|a| a.source_fk).collect();
+    let source_ids = paper::source_ids_by_fk(conn, &fks)?;
     let mut annotation_entries = Vec::new();
     for a in &annotations {
-        let Some(source_id) = paper::get_source_id(conn, a.source_fk)? else {
+        let Some(source_id) = source_ids.get(&a.source_fk) else {
             continue; // skip annotations whose source_id no longer resolves.
         };
         annotation_entries.push(AnnotationEntry {
-            paper_source_id: source_id,
+            paper_source_id: source_id.clone(),
             anchor: a.anchor.clone(),
             comment: a.comment.clone(),
             uuid: Some(a.uuid.clone()),
