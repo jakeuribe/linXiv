@@ -31,19 +31,16 @@ fn opt_date_val(d: &Option<NaiveDate>) -> Value {
 /// `_author_fk_for_name` — find (case-insensitive) or create an AUTHOR row.
 fn author_fk_for_name(tx: &Transaction, full_name: &str) -> Result<i64> {
     if let Some(fk) = tx
-        .query_row(
+        .prepare_cached(
             "SELECT AUTHOR_FK FROM AUTHOR WHERE AUTHOR_FULL_NAME = ? COLLATE NOCASE LIMIT 1",
-            [full_name],
-            |r| r.get::<_, i64>(0),
-        )
+        )?
+        .query_row([full_name], |r| r.get::<_, i64>(0))
         .optional()?
     {
         return Ok(fk);
     }
-    tx.execute(
-        "INSERT INTO AUTHOR (AUTHOR_FULL_NAME) VALUES (?)",
-        [full_name],
-    )?;
+    tx.prepare_cached("INSERT INTO AUTHOR (AUTHOR_FULL_NAME) VALUES (?)")?
+        .execute([full_name])?;
     Ok(tx.last_insert_rowid())
 }
 
@@ -64,20 +61,20 @@ fn sync_paper_authors(
         rows.collect::<rusqlite::Result<_>>()?
     };
     tx.execute("DELETE FROM PAPER_TO_AUTHOR WHERE PAPER_ID = ?", [paper_id])?;
+    let mut link = tx.prepare_cached(
+        "INSERT INTO PAPER_TO_AUTHOR (PAPER_ID, AUTHOR_FK, AUTHOR_INDEX) VALUES (?, ?, ?)",
+    )?;
+    let mut fill_orcid = tx.prepare_cached(
+        "UPDATE AUTHOR SET AUTHOR_ORCID = ? WHERE AUTHOR_FK = ? AND AUTHOR_ORCID IS NULL",
+    )?;
     for (i, name) in authors.iter().enumerate() {
         let aid = author_fk_for_name(tx, name)?;
-        tx.execute(
-            "INSERT INTO PAPER_TO_AUTHOR (PAPER_ID, AUTHOR_FK, AUTHOR_INDEX) VALUES (?, ?, ?)",
-            params![paper_id, aid, i as i64],
-        )?;
+        link.execute(params![paper_id, aid, i as i64])?;
         if let Some(orcid) = author_orcids
             .and_then(|v| v.get(i))
             .and_then(|o| o.as_deref())
         {
-            tx.execute(
-                "UPDATE AUTHOR SET AUTHOR_ORCID = ? WHERE AUTHOR_FK = ? AND AUTHOR_ORCID IS NULL",
-                params![orcid, aid],
-            )?;
+            fill_orcid.execute(params![orcid, aid])?;
         }
     }
     for chunk in old_fks.chunks(900) {
@@ -128,12 +125,12 @@ pub(super) fn sync_paper_tags_for_versions(
         .filter(|label| !label.is_empty())
         .map(|label| super::super::tag::tag_fk_for_label(tx, label))
         .collect::<Result<_>>()?;
+    let mut insert = tx.prepare_cached(
+        "INSERT INTO PAPER_TO_TAG (PAPER_ID, SOURCE_ID, VERSION, TAG_FK) VALUES (?, ?, ?, ?)",
+    )?;
     for (paper_id, version) in rows {
         for tid in &tag_fks {
-            tx.execute(
-                "INSERT INTO PAPER_TO_TAG (PAPER_ID, SOURCE_ID, VERSION, TAG_FK) VALUES (?, ?, ?, ?)",
-                params![paper_id, source_id, version, tid],
-            )?;
+            insert.execute(params![paper_id, source_id, version, tid])?;
         }
     }
     Ok(())

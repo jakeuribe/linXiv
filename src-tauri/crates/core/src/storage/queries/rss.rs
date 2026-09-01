@@ -146,12 +146,14 @@ pub fn merge_cache_entries(
     entries: &[CacheEntry],
 ) -> Result<()> {
     let tx = conn.transaction()?;
-    for e in entries {
-        tx.execute(
+    {
+        let mut insert = tx.prepare_cached(
             "INSERT OR IGNORE INTO RSS_CACHE_ENTRY
                  (FEED_URL, DEDUP_KEY, SOURCE_ID, ENTRY_JSON, PUBLISHED_AT)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
+        )?;
+        for e in entries {
+            insert.execute(params![
                 feed_url,
                 e.dedup_key,
                 e.source_id,
@@ -160,8 +162,8 @@ pub fn merge_cache_entries(
                 // string below, so 'T' would sort newer than same-day ' '-form times.
                 e.published_at
                     .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string()),
-            ],
-        )?;
+            ])?;
+        }
     }
     tx.commit()?;
     Ok(())
