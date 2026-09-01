@@ -146,7 +146,7 @@ jobs:
           cp "src-tauri/target/release/linxiv-cli$exe" "raw-binaries/raw-linxiv-cli-$triple$exe"
 
       - name: Hand the raw binaries to the upload job
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: raw-binaries-${{ matrix.platform }}
           path: raw-binaries/
@@ -192,7 +192,7 @@ jobs:
             npm run build:arch
           '
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linxiv-arch-package
           path: packaging/arch/*.pkg.tar.zst
