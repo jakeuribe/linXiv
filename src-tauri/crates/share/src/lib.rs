@@ -28,7 +28,7 @@ mod transport;
 
 use std::path::{Path, PathBuf};
 
-use automerge::AutoCommit;
+use automerge::{AutoCommit, ReadDoc};
 use rusqlite::Connection;
 
 use linxiv_core::error::CoreError;
@@ -586,8 +586,8 @@ pub fn list_shared(share_dir: &Path) -> Result<Vec<SharedSummary>> {
         };
         // Skip a corrupt or partially-written doc rather than failing the whole
         // listing on one bad file.
-        let sp = match load(share_dir, share_id) {
-            Ok(sp) => sp,
+        let summary = match summarize(&path, share_id) {
+            Ok(s) => s,
             Err(e) => {
                 tracing::warn!("share list: skipping unreadable doc {share_id}: {e}");
                 continue;
@@ -595,20 +595,48 @@ pub fn list_shared(share_dir: &Path) -> Result<Vec<SharedSummary>> {
         };
         // Skip a doc whose hydrated id doesn't match its filename stem (e.g. a
         // fresh pre-first-sync e2ee mirror hydrates to an empty share_id).
-        if sp.share_id != share_id {
+        if summary.share_id != share_id {
             tracing::warn!("share list: skipping mismatched doc {share_id}");
             continue;
         }
-        out.push(SharedSummary {
-            share_id: sp.share_id,
-            name: sp.name,
-            paper_count: sp.papers.len(),
-            note_count: sp.notes.len(),
-            annotation_count: sp.annotations.len(),
-            tag_count: sp.tags.len(),
-        });
+        out.push(summary);
     }
     Ok(out)
+}
+
+/// A doc's listing summary read straight off the automerge document: only
+/// `share_id`/`name` are hydrated and the subgraphs are counted by list length,
+/// so listing never materializes paper summaries, note bodies, or annotation
+/// anchors the way a full `load` does.
+fn summarize(path: &Path, share_id: &str) -> Result<SharedSummary> {
+    let mut doc = AutoCommit::load(&std::fs::read(path)?).map_err(crdt)?;
+    // Empty pre-first-sync e2ee placeholder: nothing here yet (mirrors `load`).
+    if doc.get_heads().is_empty() {
+        return Err(ShareError::NotFound(share_id.to_string()));
+    }
+    #[derive(autosurgeon::Hydrate)]
+    struct Meta {
+        share_id: String,
+        name: String,
+    }
+    let meta: Meta = autosurgeon::hydrate(&doc).map_err(crdt)?;
+    Ok(SharedSummary {
+        share_id: meta.share_id,
+        name: meta.name,
+        paper_count: list_len(&doc, "papers")?,
+        note_count: list_len(&doc, "notes")?,
+        annotation_count: list_len(&doc, "annotations")?,
+        tag_count: list_len(&doc, "tags")?,
+    })
+}
+
+/// Length of a top-level list in the doc; a missing or non-list key is a
+/// malformed doc (the listing skips it), matching hydrate's failure on it.
+fn list_len(doc: &AutoCommit, key: &str) -> Result<usize> {
+    match doc.get(automerge::ROOT, key).map_err(crdt)? {
+        Some((automerge::Value::Object(automerge::ObjType::List), id)) => Ok(doc.length(&id)),
+        _ => Err(ShareError::Crdt(format!("doc has no {key} list"))),
+    }
 }
 
 /// Hydrate one shared project by id (alias of `load` for the public read API).
@@ -931,6 +959,9 @@ mod tests {
         let share_id = publish(&conn, dir.path(), project_id).unwrap();
         // A garbage doc beside the valid one must not break the whole listing.
         std::fs::write(doc_path(dir.path(), "999"), b"not a valid automerge doc").unwrap();
+        // Nor an empty pre-first-sync e2ee placeholder doc.
+        let placeholder = "11111111-2222-4333-8444-555555555555";
+        std::fs::write(doc_path(dir.path(), placeholder), AutoCommit::new().save()).unwrap();
         let listed = list_shared(dir.path()).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].share_id, share_id);
