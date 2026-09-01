@@ -736,18 +736,6 @@ pub fn source_fetch_url(paper: &PaperDetails) -> Result<&str> {
     Ok(url)
 }
 
-/// Whether a freshly extracted body should replace what is already stored.
-///
-/// `extract_source` yields `""` for a corrupt, truncated, or PDF-only tarball,
-/// and that is indistinguishable from "this paper genuinely has no TeX". Storing
-/// it is right the first time (it marks DOWNLOADED_SOURCE so the backfill stops
-/// retrying), but a re-fetch that comes back empty must not erase a body that
-/// already indexes — one bad download would silently drop the paper out of
-/// search results.
-pub fn should_store_full_text(paper: &PaperDetails, extracted: &str) -> bool {
-    !extracted.is_empty() || paper.full_text.as_deref().unwrap_or_default().is_empty()
-}
-
 /// Receipt for one full-text ingest attempt — the wire shape route, CLI and MCP
 /// all emit (`{source_id, version, indexed}` + `chars` or `reason`).
 #[derive(Debug, Serialize, ts_rs::TS)]
@@ -790,7 +778,6 @@ pub async fn fetch_full_text(
     Ok(FetchedFullText {
         source_id: paper.source_id.clone(),
         version: paper.version,
-        store: should_store_full_text(paper, &text),
         text,
     })
 }
@@ -801,17 +788,20 @@ pub struct FetchedFullText {
     source_id: String,
     version: i64,
     text: String,
-    store: bool,
 }
 
 impl FetchedFullText {
     /// Phase 2, under the caller's DB lock: store + index the body, or refuse to
-    /// clobber an already-indexed one with an empty re-fetch. An empty extract is
-    /// otherwise stored — arXiv serves PDF-only submissions from the same `/src/`
-    /// path, and writing "" marks the paper DOWNLOADED_SOURCE so the backfill
-    /// stops re-fetching it (`force` re-opens it).
+    /// clobber an already-indexed one with an empty re-fetch. `extract_source`
+    /// yields `""` for a corrupt, truncated, or PDF-only tarball, which is
+    /// indistinguishable from "this paper genuinely has no TeX" — storing it is
+    /// right the first time (it marks DOWNLOADED_SOURCE so the backfill stops
+    /// retrying; `force` re-opens it), but overwriting a body that already
+    /// indexes would silently drop the paper out of search results. The guard
+    /// reads one stored column here, under the lock, so it sees the freshest
+    /// state without ever hauling the body.
     pub fn commit(self, conn: &mut Connection) -> Result<FullTextReceipt> {
-        if !self.store {
+        if self.text.is_empty() && store::has_full_text(conn, &self.source_id, self.version)? {
             return Ok(FullTextReceipt {
                 source_id: self.source_id,
                 version: self.version,
@@ -1317,7 +1307,10 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(got.full_text.as_deref(), Some("the full tex body"));
+        // The body is stored but never hydrated through `get` — every
+        // PaperDetails read blanks FULL_TEXT.
+        assert_eq!(got.full_text, None);
+        assert!(store::has_full_text(&conn, "arxiv:p", 1).unwrap());
         assert!(got.downloaded_source);
     }
 
@@ -1340,7 +1333,7 @@ mod tests {
 
         // The FTS row is keyed by SOURCE_ID, so a later version indexing empty
         // (corrupt tarball, PDF-only submission) must not take the paper out of
-        // search — should_store_full_text only ever sees one version's body.
+        // search — the clobber guard only ever sees one version's body.
         save_paper_metadata(&mut conn, &meta("arxiv:ft", 2, "cs.LG", &[]), None).unwrap();
         set_full_text(&mut conn, "arxiv:ft", 2, "").unwrap();
         assert_eq!(
@@ -1366,26 +1359,32 @@ mod tests {
     /// A re-fetch that extracts nothing must not wipe a body that already
     /// indexes — `extract_source` returns "" for a corrupt download too.
     #[test]
-    fn should_store_full_text_refuses_to_clobber_with_empty() {
+    fn commit_refuses_to_clobber_indexed_text_with_empty() {
+        let commit = |conn: &mut Connection, text: &str| {
+            FetchedFullText {
+                source_id: "arxiv:clob".into(),
+                version: 1,
+                text: text.into(),
+            }
+            .commit(conn)
+            .unwrap()
+        };
         let mut conn = db();
         save_paper_metadata(&mut conn, &meta("arxiv:clob", 1, "cs.LG", &[]), None).unwrap();
-        let key = PaperRef::source("arxiv:clob".into());
 
         // Nothing stored yet: an empty extract is written, marking it attempted.
-        let fresh = get(&conn, &key).unwrap().unwrap();
-        assert!(should_store_full_text(&fresh, ""));
-        assert!(should_store_full_text(&fresh, "some tex"));
-
-        set_full_text(&mut conn, "arxiv:clob", 1, "real body text").unwrap();
-        let indexed = get(&conn, &key).unwrap().unwrap();
-        // Now an empty extract is refused, but a real one still replaces it.
-        assert!(!should_store_full_text(&indexed, ""));
-        assert!(should_store_full_text(&indexed, "newer body text"));
-
+        assert!(commit(&mut conn, "").indexed);
         // A paper stored as empty is not protected — retrying it is the point.
-        set_full_text(&mut conn, "arxiv:clob", 1, "").unwrap();
-        let blank = get(&conn, &key).unwrap().unwrap();
-        assert!(should_store_full_text(&blank, ""));
+        assert!(commit(&mut conn, "real body text").indexed);
+
+        // Now an empty extract is refused and the stored body survives…
+        let refused = commit(&mut conn, "");
+        assert!(!refused.indexed);
+        assert!(refused.reason.unwrap().contains("kept the text"));
+        assert!(store::has_full_text(&conn, "arxiv:clob", 1).unwrap());
+
+        // …but a real re-fetch still replaces it.
+        assert!(commit(&mut conn, "newer body text").indexed);
     }
 
     #[test]

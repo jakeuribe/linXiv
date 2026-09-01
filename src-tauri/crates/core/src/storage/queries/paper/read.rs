@@ -10,9 +10,10 @@ use crate::error::Result;
 use crate::models::{PaperDetails, NO_PUBLISHED_DATE};
 use crate::storage::db::{bool_from_sql, date_from_sql, list_from_sql};
 
-// Both functions select `*` from the `papers` / `latest_papers` views (same
-// column set), so one row->model mapper serves both. LIST/DATE/BOOL columns go
-// through the storage::db decltype converters — no inline re-parsing.
+// Every read selects `PAPER_COLUMNS_NO_TEXT` from the `papers` /
+// `latest_papers` views (same column set), so one row->model mapper serves all.
+// LIST/DATE/BOOL columns go through the storage::db decltype converters — no
+// inline re-parsing.
 pub(in crate::storage::queries) fn row_to_paper(row: &Row) -> Result<PaperDetails> {
     // LIST column (JSON TEXT) -> Vec<String>; NULL -> empty (model default).
     let list = |name: &str| -> Result<Vec<String>> {
@@ -55,23 +56,28 @@ pub(in crate::storage::queries) fn row_to_paper(row: &Row) -> Result<PaperDetail
 
 /// `storage/db.py::get_paper` — a specific version, or the latest if `None`.
 /// `conn` is an opened storage::db connection (FK PRAGMA already ON).
+/// Reads the list column set (FULL_TEXT blanked) like every other paper read:
+/// nothing consumes the body through `PaperDetails`, and the fts module's
+/// `has_full_text` answers the one stored-body question without hauling it.
 pub fn get_paper(
     conn: &Connection,
     source_id: &str,
     version: Option<i64>,
 ) -> Result<Option<PaperDetails>> {
     // Python `if version:` treats 0 as falsy too -> fall through to latest.
-    let (sql, params): (&str, Vec<Value>) = match version.filter(|v| *v != 0) {
+    let (sql, params): (String, Vec<Value>) = match version.filter(|v| *v != 0) {
         Some(v) => (
-            "SELECT * FROM papers WHERE source_id = ? AND version = ?",
+            format!(
+                "SELECT {PAPER_COLUMNS_NO_TEXT} FROM papers WHERE source_id = ? AND version = ?"
+            ),
             vec![Value::Text(source_id.to_string()), Value::Integer(v)],
         ),
         None => (
-            "SELECT * FROM latest_papers WHERE source_id = ?",
+            format!("SELECT {PAPER_COLUMNS_NO_TEXT} FROM latest_papers WHERE source_id = ?"),
             vec![Value::Text(source_id.to_string())],
         ),
     };
-    let mut stmt = conn.prepare(sql)?;
+    let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query(params_from_iter(&params))?;
     match rows.next()? {
         Some(row) => Ok(Some(row_to_paper(row)?)),
@@ -99,12 +105,12 @@ pub fn get_paper_by_id(conn: &Connection, paper_id: i64) -> Result<Option<PaperD
 /// no difference; the CLI's raw-row `linxiv library list`, which dumps whatever
 /// columns come back, now reports `full_text` as null instead of the body.
 ///
-/// Multi-row reads use this instead of `SELECT *`. Nothing outside
-/// `should_store_full_text` (which reads one paper at a time via `get_paper`)
-/// looks at the body, and `PaperDetails.full_text` is not serialized; with the
-/// background indexer filling the column for a whole library, `SELECT *` would
-/// make every list call haul the entire corpus into memory under the connection
-/// lock and drop it again.
+/// Every `PaperDetails` read uses this instead of `SELECT *`. Nothing consumes
+/// the body through the struct (`full_text` is not serialized; the empty-refetch
+/// clobber guard reads one column via `has_full_text`), and with the background
+/// indexer filling the column for a whole library, `SELECT *` would make every
+/// read haul a multi-MB TeX body into memory under the connection lock and drop
+/// it again.
 pub const PAPER_COLUMNS_NO_TEXT: &str = "paper_id, source_id, source_fk, version, title, url, \
      published, updated, category, categories, doi, journal_ref, comment, summary, authors, tags, \
      has_pdf, source, pdf_path, NULL AS full_text, downloaded_source, created_at, updated_at";

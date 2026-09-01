@@ -9,7 +9,9 @@ mod roots;
 mod trash;
 mod write;
 
-pub use fts::{full_text_backfill_candidates, full_text_backfill_count, set_full_text};
+pub use fts::{
+    full_text_backfill_candidates, full_text_backfill_count, has_full_text, set_full_text,
+};
 pub use merge::{merge_paper_roots, merge_plan, MergePlan, MergeStats, VersionAction};
 pub use pdf::{
     mark_pdf_saved, pdf_path_for_source, pdf_path_for_version, set_has_pdf, set_pdf_path,

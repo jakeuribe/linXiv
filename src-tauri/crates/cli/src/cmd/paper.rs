@@ -385,10 +385,18 @@ mod tests {
         assert_eq!(v["indexed"], false);
         // The reason is single-sourced from core (route wording: force=true).
         assert!(v["reason"].as_str().unwrap().contains("force"));
-        let unchanged = svc_paper::get(&ctx.conn, &paper("arxiv:skip1"))
-            .unwrap()
+        // Stored body untouched — read the column directly, since PaperDetails
+        // reads blank FULL_TEXT.
+        let unchanged: String = ctx
+            .conn
+            .query_row(
+                "SELECT FULL_TEXT FROM PAPER_META JOIN PAPER USING (PAPER_ID) \
+                 WHERE SOURCE_ID = 'arxiv:skip1' AND VERSION = 1",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(unchanged.full_text.as_deref(), Some("already have this"));
+        assert_eq!(unchanged, "already have this");
 
         // (b) an arXiv paper with no /pdf/ URL has no tarball URL to derive.
         svc_paper::save_paper_metadata(
