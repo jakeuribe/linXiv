@@ -56,27 +56,28 @@ pub fn pdf_path_for_version(
         .flatten())
 }
 
-/// Stored PDF_PATH for one active (source_id, version) row — the single-column
-/// sibling of `get_paper` (same view, same version-0-means-latest fallthrough),
-/// for callers that need the custom path without materializing the row.
+/// Resolved (version, stored PDF_PATH) for one active (source_id, version) row,
+/// or None when the row is absent — the two-column sibling of `get_paper` (same
+/// view, same version-0-means-latest fallthrough), for callers that need the
+/// concrete version and custom path without materializing the row.
 pub fn pdf_path_for_source(
     conn: &Connection,
     source_id: &str,
     version: Option<i64>,
-) -> Result<Option<String>> {
+) -> Result<Option<(i64, Option<String>)>> {
     let row = match version.filter(|v| *v != 0) {
         Some(v) => conn.query_row(
-            "SELECT pdf_path FROM papers WHERE source_id = ?1 AND version = ?2",
+            "SELECT version, pdf_path FROM papers WHERE source_id = ?1 AND version = ?2",
             params![source_id, v],
-            |r| r.get::<_, Option<String>>(0),
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?)),
         ),
         None => conn.query_row(
-            "SELECT pdf_path FROM latest_papers WHERE source_id = ?1",
+            "SELECT version, pdf_path FROM latest_papers WHERE source_id = ?1",
             params![source_id],
-            |r| r.get::<_, Option<String>>(0),
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?)),
         ),
     };
-    Ok(row.optional()?.flatten())
+    Ok(row.optional()?)
 }
 
 /// `mark_pdf_saved` — write PDF_PATH and HAS_PDF=1 for one version in a single

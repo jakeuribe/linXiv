@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 
 use linxiv_core::error::CoreError;
 use linxiv_core::service::files;
-use linxiv_core::service::paper::{self as svc_paper, PaperRef};
+use linxiv_core::service::paper as svc_paper;
 
 use crate::route::{ApiError, ReqCtx};
 use crate::state::AppState;
@@ -52,20 +52,13 @@ fn pdf_path(state: &AppState, source_id: &str, ctx: &ReqCtx<'_>) -> Result<Value
     let version = crate::route::q_version(ctx)?;
     let pdf_dir = state.pdf_dir.clone();
     state.with_conn(|conn| {
-        let paper = svc_paper::get(
-            conn,
-            &PaperRef::Source {
-                source_id: source_id.to_string(),
-                version,
-            },
-        )?
-        .ok_or_else(|| CoreError::PaperNotFound(source_id.to_string()))?;
-        let ver = version.unwrap_or(paper.version);
-        let path = files::pdf_path(&pdf_dir, &paper.source_id, ver, paper.pdf_path.as_deref())
+        let (sid, ver, custom) = svc_paper::pdf_ref(conn, source_id, version)?
+            .ok_or_else(|| CoreError::PaperNotFound(source_id.to_string()))?;
+        let path = files::pdf_path(&pdf_dir, &sid, ver, custom.as_deref())
             .ok_or_else(|| ApiError::new(404, "PDF file not found on disk"))?;
         // Canonical location envelope (path is always Some here — missing is 404).
         crate::route::to_value(&files::PdfLocation {
-            source_id: paper.source_id,
+            source_id: sid,
             version: ver,
             path: Some(path),
         })

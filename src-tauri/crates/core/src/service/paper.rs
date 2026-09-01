@@ -594,16 +594,28 @@ pub fn get_paper_root(conn: &Connection, source_id: &str) -> Result<Option<store
     store::get_paper_root(conn, source_id)
 }
 
-/// Stored custom PDF_PATH for one (source_id, version) — the single-column
-/// sibling of `get`'s `Source` arm (same key resolution, same version-0-means-
-/// latest fallthrough), for callers that only need the path (share publish
-/// loops) without materializing the full row incl. FULL_TEXT.
+/// Resolved (canonical source_id, concrete version, stored custom PDF_PATH) for
+/// one (source_id, version) — the three-scalar sibling of `get`'s `Source` arm
+/// (same key resolution, same version-0-means-latest fallthrough, None when the
+/// paper is absent/trashed), for PDF-locating callers that don't need the full
+/// row incl. FULL_TEXT.
+pub fn pdf_ref(
+    conn: &Connection,
+    source_id: &str,
+    version: Option<i64>,
+) -> Result<Option<(String, i64, Option<String>)>> {
+    let sid = canonical_source_id(conn, source_id);
+    Ok(store::pdf_path_for_source(conn, &sid, version)?.map(|(ver, path)| (sid, ver, path)))
+}
+
+/// Stored custom PDF_PATH for one (source_id, version) — [`pdf_ref`] for callers
+/// that only need the path (share publish loops).
 pub fn pdf_custom_path(
     conn: &Connection,
     source_id: &str,
     version: Option<i64>,
 ) -> Result<Option<String>> {
-    store::pdf_path_for_source(conn, &canonical_source_id(conn, source_id), version)
+    Ok(pdf_ref(conn, source_id, version)?.and_then(|(_, _, path)| path))
 }
 
 /// SOURCE_ID for a SOURCE_FK, or None.
@@ -937,6 +949,19 @@ mod tests {
             pdf_custom_path(&conn, "A", Some(1)).unwrap().as_deref(),
             Some("/tmp/v1.pdf")
         );
+
+        // `pdf_ref` carries the canonical id and concrete version alongside the
+        // path, and distinguishes a pathless row (Some with None path) from an
+        // absent paper (None).
+        assert_eq!(
+            pdf_ref(&conn, "A", Some(1)).unwrap(),
+            Some(("arxiv:A".into(), 1, Some("/tmp/v1.pdf".into())))
+        );
+        assert_eq!(
+            pdf_ref(&conn, "A", None).unwrap(),
+            Some(("arxiv:A".into(), 2, None))
+        );
+        assert_eq!(pdf_ref(&conn, "arxiv:404", None).unwrap(), None);
 
         // Trashing hides the path from both, like the papers view does.
         delete(&mut conn, &PaperRef::source("arxiv:A".into())).unwrap();

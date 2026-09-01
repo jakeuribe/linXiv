@@ -263,21 +263,15 @@ impl Server {
     ) -> Result<String, ErrorData> {
         let pdf_dir = self.pdf_dir.clone();
         self.with_conn(|conn| {
-            let paper = svc_paper::get(
-                conn,
-                &svc_paper::PaperRef::Source {
-                    source_id: p.paper_id.clone(),
-                    version: p.version,
-                },
-            )
-            .map_err(core_err)?
-            .ok_or_else(|| crate::util::guard_err(CoreError::PaperNotFound(p.paper_id.clone())))?;
-            let ver = paper.version;
-            let path =
-                svc_files::pdf_path(&pdf_dir, &paper.source_id, ver, paper.pdf_path.as_deref());
+            let (sid, ver, custom) = svc_paper::pdf_ref(conn, &p.paper_id, p.version)
+                .map_err(core_err)?
+                .ok_or_else(|| {
+                    crate::util::guard_err(CoreError::PaperNotFound(p.paper_id.clone()))
+                })?;
+            let path = svc_files::pdf_path(&pdf_dir, &sid, ver, custom.as_deref());
             // Canonical location envelope, shared with `pdf path` and the route.
             json_ok(&svc_files::PdfLocation {
-                source_id: paper.source_id,
+                source_id: sid,
                 version: ver,
                 path,
             })
@@ -293,16 +287,10 @@ impl Server {
         // Resolve the paper (and its concrete version) under the lock, then drop
         // it before the network download — the mutex must not span the await.
         let (source_id, ver) = self.with_conn(|conn| {
-            svc_paper::get(
-                conn,
-                &svc_paper::PaperRef::Source {
-                    source_id: p.paper_id.clone(),
-                    version: p.version,
-                },
-            )
-            .map_err(core_err)?
-            .ok_or_else(|| crate::util::guard_err(CoreError::PaperNotFound(p.paper_id.clone())))
-            .map(|paper| (paper.source_id, paper.version))
+            svc_paper::pdf_ref(conn, &p.paper_id, p.version)
+                .map_err(core_err)?
+                .ok_or_else(|| crate::util::guard_err(CoreError::PaperNotFound(p.paper_id.clone())))
+                .map(|(sid, ver, _)| (sid, ver))
         })?;
         let max_pdf_bytes = config::UserSettings::load()
             .map_err(core_err)?
