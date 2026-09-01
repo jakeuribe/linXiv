@@ -409,22 +409,11 @@ pub fn remove_papers(
 }
 
 /// A project's papers for the text exporters, resolved ONE way for every
-/// surface: the latest-papers view in library order, filtered to the project
-/// (the shipped GUI contract — app.py's
-/// `[p for p in list_paper_details(latest) if id in ids]`).
+/// surface: the project's latest-version rows in library order (the shipped
+/// GUI contract — app.py's `[p for p in list_paper_details(latest) if id in
+/// ids]`), filtered in SQL rather than scanning the whole library.
 pub fn export_papers(conn: &Connection, source_fks: &[i64]) -> Result<Vec<PaperDetails>> {
-    if source_fks.is_empty() {
-        return Ok(Vec::new());
-    }
-    let ids: HashSet<String> = crate::service::paper::sfks_to_source_ids(conn, source_fks)?
-        .into_iter()
-        .collect();
-    Ok(
-        crate::service::paper::list_papers(conn, true, None, 0, None)?
-            .into_iter()
-            .filter(|p| ids.contains(&p.source_id))
-            .collect(),
-    )
+    crate::service::paper::get_by_source_fks(conn, source_fks)
 }
 
 /// Receipt for the single-paper membership ops — one shape for all three
