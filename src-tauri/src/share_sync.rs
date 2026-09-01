@@ -133,16 +133,10 @@ pub(crate) async fn populate_pdf_blobs(
                 continue;
             }
         }
-        let custom = match state.with_conn(|c| {
-            paper_svc::get(
-                c,
-                &paper_svc::PaperRef::Source {
-                    source_id: p.source_id.clone(),
-                    version: Some(p.version),
-                },
-            )
-        }) {
-            Ok(row) => row.and_then(|row| row.pdf_path),
+        let custom = match state
+            .with_conn(|c| paper_svc::pdf_custom_path(c, &p.source_id, Some(p.version)))
+        {
+            Ok(path) => path,
             Err(e) => {
                 eprintln!(
                     "share {}: paper lookup for {}: {e}",

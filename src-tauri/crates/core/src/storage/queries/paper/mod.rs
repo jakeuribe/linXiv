@@ -11,7 +11,9 @@ mod write;
 
 pub use fts::{full_text_backfill_candidates, full_text_backfill_count, set_full_text};
 pub use merge::{merge_paper_roots, merge_plan, MergePlan, MergeStats, VersionAction};
-pub use pdf::{mark_pdf_saved, pdf_path_for_version, set_has_pdf, set_pdf_path};
+pub use pdf::{
+    mark_pdf_saved, pdf_path_for_source, pdf_path_for_version, set_has_pdf, set_pdf_path,
+};
 pub(in crate::storage::queries) use read::row_to_paper;
 pub use read::{
     existing_source_ids, find_doi_version_candidates, get_all_versions, get_categories, get_paper,

@@ -56,6 +56,29 @@ pub fn pdf_path_for_version(
         .flatten())
 }
 
+/// Stored PDF_PATH for one active (source_id, version) row — the single-column
+/// sibling of `get_paper` (same view, same version-0-means-latest fallthrough),
+/// for callers that need the custom path without materializing the row.
+pub fn pdf_path_for_source(
+    conn: &Connection,
+    source_id: &str,
+    version: Option<i64>,
+) -> Result<Option<String>> {
+    let row = match version.filter(|v| *v != 0) {
+        Some(v) => conn.query_row(
+            "SELECT pdf_path FROM papers WHERE source_id = ?1 AND version = ?2",
+            params![source_id, v],
+            |r| r.get::<_, Option<String>>(0),
+        ),
+        None => conn.query_row(
+            "SELECT pdf_path FROM latest_papers WHERE source_id = ?1",
+            params![source_id],
+            |r| r.get::<_, Option<String>>(0),
+        ),
+    };
+    Ok(row.optional()?.flatten())
+}
+
 /// `mark_pdf_saved` — write PDF_PATH and HAS_PDF=1 for one version in a single
 /// transaction so a crash cannot leave the two disagreeing. Errors if no matching
 /// PAPER_META or PAPER row (0 rows updated).

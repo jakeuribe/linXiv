@@ -579,6 +579,18 @@ pub fn get_paper_root(conn: &Connection, source_id: &str) -> Result<Option<store
     store::get_paper_root(conn, source_id)
 }
 
+/// Stored custom PDF_PATH for one (source_id, version) — the single-column
+/// sibling of `get`'s `Source` arm (same key resolution, same version-0-means-
+/// latest fallthrough), for callers that only need the path (share publish
+/// loops) without materializing the full row incl. FULL_TEXT.
+pub fn pdf_custom_path(
+    conn: &Connection,
+    source_id: &str,
+    version: Option<i64>,
+) -> Result<Option<String>> {
+    store::pdf_path_for_source(conn, &canonical_source_id(conn, source_id), version)
+}
+
 /// SOURCE_ID for a SOURCE_FK, or None.
 pub fn get_source_id(conn: &Connection, source_fk: i64) -> Result<Option<String>> {
     store::get_source_id(conn, source_fk)
@@ -880,6 +892,51 @@ mod tests {
             let root = store::get_paper_root(&conn, "doi:10.1000/beta").unwrap();
             root.unwrap().source_fk
         });
+    }
+
+    /// `pdf_custom_path` is the single-column sibling of `get`'s `Source` arm:
+    /// same key resolution (canonical id, version-0 → latest) and same
+    /// visibility (trashed roots yield None), pinned against `get` itself.
+    #[test]
+    fn pdf_custom_path_matches_get_source_arm() {
+        let mut conn = db();
+        seed_two_versions(&mut conn);
+        store::set_pdf_path(&conn, "arxiv:A", "/tmp/v1.pdf", Some(1)).unwrap();
+
+        let get_path = |conn: &Connection, sid: &str, ver: Option<i64>| {
+            get(
+                conn,
+                &PaperRef::Source {
+                    source_id: sid.into(),
+                    version: ver,
+                },
+            )
+            .unwrap()
+            .and_then(|p| p.pdf_path)
+        };
+        for (sid, ver) in [
+            ("arxiv:A", Some(1)),   // custom path stored
+            ("arxiv:A", Some(2)),   // version without a path
+            ("arxiv:A", Some(9)),   // absent version
+            ("arxiv:A", None),      // latest fallthrough
+            ("arxiv:A", Some(0)),   // 0 means latest, like `get`
+            ("A", Some(1)),         // bare id resolves via canonical_source_id
+            ("arxiv:404", Some(1)), // unknown paper
+        ] {
+            assert_eq!(
+                pdf_custom_path(&conn, sid, ver).unwrap(),
+                get_path(&conn, sid, ver),
+                "mismatch for ({sid:?}, {ver:?})"
+            );
+        }
+        assert_eq!(
+            pdf_custom_path(&conn, "A", Some(1)).unwrap().as_deref(),
+            Some("/tmp/v1.pdf")
+        );
+
+        // Trashing hides the path from both, like the papers view does.
+        delete(&mut conn, &PaperRef::source("arxiv:A".into())).unwrap();
+        assert_eq!(pdf_custom_path(&conn, "arxiv:A", Some(1)).unwrap(), None);
     }
 
     // Two versions of one paper. Returns (source_fk, paper_id_v1, paper_id_v2).
