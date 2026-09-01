@@ -136,7 +136,7 @@ fn annotate_and_filter(conn: &mut Connection, entries: &mut Vec<Value>) -> Vec<S
     };
     let blocked = rss::blocked_source_ids(&tx).unwrap_or_default();
     let dismissed_versions = rss::dismissed_versions(&tx).unwrap_or_default();
-    let rules = rss::list_rules(&tx).unwrap_or_default();
+    let rules = rss::compile_rules(rss::list_rules(&tx).unwrap_or_default());
 
     entries.retain(|entry| {
         let title = entry.get("title").and_then(|v| v.as_str()).unwrap_or("");
