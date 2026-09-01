@@ -181,6 +181,26 @@ pub fn list_all_notes(conn: &Connection) -> Result<Vec<NoteDetails>> {
     )
 }
 
+/// Notes whose body contains `needle`, optionally scoped to a project,
+/// CREATED_AT ASC. A prefilter for flag-in-content scans (editor projects):
+/// callers must still verify the match exactly — `instr` finds the needle
+/// anywhere in the body, not just where the caller means it. `instr` (not
+/// LIKE) because NOTE has BLOB affinity: it byte-searches blob rows and
+/// char-searches text rows alike.
+pub fn list_notes_containing(
+    conn: &Connection,
+    needle: &str,
+    project_id: Option<i64>,
+) -> Result<Vec<NoteDetails>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {NOTE_COLS} FROM NOTE \
+         WHERE instr(NOTE, ?1) > 0 AND (?2 IS NULL OR PROJECT_FK = ?2) \
+         ORDER BY CREATED_AT ASC"
+    ))?;
+    let rows = stmt.query_map(params![needle, project_id], note_from_row)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 /// `storage/notes.py::get_notes_by_paper_id` — notes pinned to a specific paper
 /// version (PAPER_ID_FK), CREATED_AT ASC.
 pub fn get_notes_by_paper_id(conn: &Connection, paper_id: i64) -> Result<Vec<NoteDetails>> {

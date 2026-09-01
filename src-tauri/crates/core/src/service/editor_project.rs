@@ -31,7 +31,7 @@ use crate::error::Result;
 use crate::models::{NoteDetails, NoteIn};
 use crate::service::note::{self, Note};
 use crate::service::vault;
-use crate::storage::queries::paper;
+use crate::storage::queries::{note as note_q, paper};
 
 /// Sentinel paper root for standalone editor projects (not about a specific paper).
 pub const STANDALONE_SOURCE_ID: &str = "texbrain:local";
@@ -163,12 +163,12 @@ pub fn list_projects(
     project_id: Option<i64>,
 ) -> Result<Vec<EditorProjectSummary>> {
     let mut out: Vec<EditorProjectSummary> = Vec::new();
-    for note in note::list_all(conn)? {
+    // SQL prefilters on the flag substring + project scope so we never load every
+    // note body; parse_frontmatter stays the exactness guard (the substring could
+    // appear in a plain note's body).
+    for note in note_q::list_notes_containing(conn, VAULT_FLAG, project_id)? {
         let (meta, _) = parse_frontmatter(&note.content);
         if !is_editor_project(&meta) {
-            continue;
-        }
-        if project_id.is_some() && note.project_id != project_id {
             continue;
         }
         out.push(to_summary(&note, &meta));
@@ -397,6 +397,15 @@ mod tests {
         conn.execute(
             "INSERT INTO NOTE (SOURCE_FK, PROJECT_FK, TITLE, NOTE, CREATED_AT, UPDATED_AT) \
              VALUES (1, NULL, 'plain', 'just an annotation', '2024-03-03 10:00:00', '2024-03-03 10:00:00')",
+            [],
+        )
+        .unwrap();
+        // Mentions the flag in its body but has no frontmatter — the SQL prefilter
+        // matches it, so this pins that parse_frontmatter still excludes it.
+        conn.execute(
+            "INSERT INTO NOTE (SOURCE_FK, PROJECT_FK, TITLE, NOTE, CREATED_AT, UPDATED_AT) \
+             VALUES (1, NULL, 'impostor', 'talking about linxiv-editor-vault: true in prose', \
+             '2024-04-04 10:00:00', '2024-04-04 10:00:00')",
             [],
         )
         .unwrap();
