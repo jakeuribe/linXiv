@@ -688,9 +688,9 @@ async fn publish(state: &AppState, share: &ShareState, id: &str) -> Result<Value
     }
     let _lock = share.lock_writes(&sp.share_id).await;
     restore_unpublished(dir, &sp.share_id);
-    save(dir, &sp)?;
+    let doc = save(dir, &sp)?;
     if let Some(node) = share.node().await {
-        node.refresh(&sp.share_id).await?;
+        node.register_doc(&sp.share_id, doc)?;
     }
     Ok(json!({ "share_id": sp.share_id }))
 }

@@ -247,7 +247,7 @@ pub async fn sync_share(
     }
 
     if hoster_doc.is_file() {
-        // Hoster leg = local_to_shared: rebuild + save + refresh the registry.
+        // Hoster leg = local_to_shared: rebuild + save + re-register the doc.
         // Its shared_to_local leg is a no-op until W4 editors give readers edits.
         if settings.direction == SyncDirection::SharedToLocal {
             return Ok(json!({ "synced": false, "reason": "direction", "role": "hoster" }));
@@ -257,9 +257,9 @@ pub async fn sync_share(
             return Ok(json!({ "synced": false, "reason": "project gone" }));
         };
         let sp = state.with_conn(|c| build_shared_project(c, fk))?;
-        save(&dir, &sp)?;
+        let doc = save(&dir, &sp)?;
         if let Some(node) = share.node().await {
-            node.refresh(share_id).await?;
+            node.register_doc(share_id, doc)?;
         }
         touch(&hoster_doc);
         return Ok(json!({ "synced": true, "role": "hoster" }));

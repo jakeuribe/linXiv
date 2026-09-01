@@ -519,7 +519,9 @@ fn crdt<E: std::fmt::Display>(e: E) -> ShareError {
 /// Reconcile `sp` into `<share_id>.automerge`, EVOLVING the existing doc when one
 /// is on disk (so republish extends CRDT history instead of rebuilding it); a
 /// missing or unloadable doc falls back to a fresh one (corrupt-skip spirit).
-pub fn save(share_dir: &Path, sp: &SharedProject) -> Result<()> {
+/// Returns the reconciled doc so callers can register it in the p2p registry
+/// without re-reading and re-parsing the file just written.
+pub fn save(share_dir: &Path, sp: &SharedProject) -> Result<AutoCommit> {
     std::fs::create_dir_all(share_dir)?;
     let final_path = doc_path(share_dir, &sp.share_id);
     let mut doc = std::fs::read(&final_path)
@@ -530,13 +532,13 @@ pub fn save(share_dir: &Path, sp: &SharedProject) -> Result<()> {
     autosurgeon::reconcile(&mut doc, sp).map_err(crdt)?;
     // No-op reconcile (heads unchanged) with the file already on disk: skip the write.
     if doc.get_heads() == before && final_path.is_file() {
-        return Ok(());
+        return Ok(doc);
     }
     // Write to a sibling temp file then rename.
     let tmp_path = share_dir.join(format!("{}.{SHARE_EXT}.tmp", sp.share_id));
     std::fs::write(&tmp_path, doc.save())?;
     std::fs::rename(&tmp_path, &final_path)?;
-    Ok(())
+    Ok(doc)
 }
 
 /// Load `<share_id>.automerge` and hydrate it back into a `SharedProject`.

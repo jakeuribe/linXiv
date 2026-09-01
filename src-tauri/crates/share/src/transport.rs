@@ -307,6 +307,18 @@ impl ShareNode {
         Ok(())
     }
 
+    /// Register `share_id` from the just-reconciled doc `save()` returned,
+    /// skipping [`Self::refresh`]'s re-read and re-parse of the file that was
+    /// written moments ago. Callers must have `save()`d the doc first, or the
+    /// access check will refuse to serve it.
+    pub fn register_doc(&self, share_id: &str, mut doc: automerge::AutoCommit) -> Result<()> {
+        if !valid_share_id(share_id) {
+            return Err(ShareError::NotFound(share_id.to_string()));
+        }
+        self.inner.register(share_id, doc.document().clone());
+        Ok(())
+    }
+
     /// Build a pasteable ticket for a published share. Refreshes the registered
     /// doc from disk first; an unpublished id errors.
     pub async fn ticket(&self, share_id: &str) -> Result<ShareTicket> {
@@ -819,6 +831,30 @@ mod tests {
         let listed = ShareNode::list_received(b_dir.path()).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].share_id, "7");
+
+        a.shutdown().await.unwrap();
+        b.shutdown().await.unwrap();
+    }
+
+    // The sync tick's save + register_doc path (no refresh re-read) must serve
+    // the updated doc: B's second fetch with the original ticket sees the edit.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn register_doc_serves_the_updated_doc() {
+        let a_dir = tempfile::tempdir().unwrap();
+        let b_dir = tempfile::tempdir().unwrap();
+        let a = node(a_dir.path()).await;
+        let b = node(b_dir.path()).await;
+
+        save(a_dir.path(), &sample("7", "Before")).unwrap();
+        let ticket = with_timeout(a.ticket("7")).await.unwrap();
+        with_timeout(b.fetch(&ticket, b_dir.path())).await.unwrap();
+
+        let after = sample("7", "After");
+        let doc = save(a_dir.path(), &after).unwrap();
+        a.register_doc("7", doc).unwrap();
+
+        let got = with_timeout(b.fetch(&ticket, b_dir.path())).await.unwrap();
+        assert_eq!(got, after);
 
         a.shutdown().await.unwrap();
         b.shutdown().await.unwrap();
