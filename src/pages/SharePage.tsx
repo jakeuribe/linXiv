@@ -15,6 +15,7 @@ import { Button } from "../components/ui/button";
 import { Input, Textarea } from "../components/ui/input";
 import { Spinner } from "../components/ui/spinner";
 import { ShareCard, type ShareRole } from "../components/share/ShareCard";
+import { SyncStatusPill } from "../components/share/SyncStatusPill";
 import { ShareSettingsDialog } from "../components/share/ShareSettingsDialog";
 import { ShareProjectDialog } from "../components/share/ShareProjectDialog";
 
@@ -153,6 +154,7 @@ export default function SharePage() {
           </p>
         </div>
         <div className="flex-1" />
+        <SyncStatusPill shares={cards.map((c) => c.share)} />
         <Button onClick={() => setDialogOpen(true)}>Share a project</Button>
       </div>
 
