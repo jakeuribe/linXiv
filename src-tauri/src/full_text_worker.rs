@@ -15,6 +15,7 @@
 //! like pdf_save_limit_mb, if that bites.`
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -71,17 +72,37 @@ impl Park {
 /// which stays poisoned for the process: restarting into it forever would just
 /// print a panic a minute.
 pub fn spawn(app: tauri::AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        for attempt in 1..=MAX_RESTARTS {
-            let task = tauri::async_runtime::spawn(run(app.clone()));
-            match task.await {
-                Ok(()) => return,
-                Err(e) => eprintln!("[full-text] worker stopped ({attempt}/{MAX_RESTARTS}): {e}"),
-            }
-            tokio::time::sleep(RESTART_DELAY).await;
+    tauri::async_runtime::spawn(supervise(move || {
+        let app = app.clone();
+        async move { run(&app.state::<AppState>()).await }
+    }));
+}
+
+/// Same worker minus the `AppHandle` — the headless bin passes its state Arc.
+/// Same restart-on-panic semantics as [`spawn`].
+pub fn spawn_headless(state: Arc<AppState>) {
+    tokio::spawn(supervise(move || {
+        let state = state.clone();
+        async move { run(&state).await }
+    }));
+}
+
+/// Bounded restart-on-panic driver shared by both spawn paths: each restart
+/// spawns a fresh task so a panic surfaces as a `JoinError` instead of taking
+/// the supervisor down with it.
+async fn supervise<F, Fut>(mut task: F)
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    for attempt in 1..=MAX_RESTARTS {
+        match tokio::spawn(task()).await {
+            Ok(()) => return,
+            Err(e) => eprintln!("[full-text] worker stopped ({attempt}/{MAX_RESTARTS}): {e}"),
         }
-        eprintln!("[full-text] worker kept failing; not restarting again this session");
-    });
+        tokio::time::sleep(RESTART_DELAY).await;
+    }
+    eprintln!("[full-text] worker kept failing; not restarting again this session");
 }
 
 /// Sleep, but in `OFF_POLL` steps, giving up the rest as soon as the setting is
@@ -103,7 +124,7 @@ async fn nap(total: Duration) {
 /// The loop itself. Reads the setting at the top of each pass and during long
 /// waits, so switching it off takes effect within `OFF_POLL` and switching it on
 /// within `OFF_POLL` of the current wait ending.
-async fn run(app: tauri::AppHandle) {
+async fn run(state: &AppState) {
     // A failed fetch leaves DOWNLOADED_SOURCE unset, so without parking the loop
     // would retry the head of the list forever and never reach the rest.
     let mut parked: HashMap<String, Park> = HashMap::new();
@@ -118,7 +139,6 @@ async fn run(app: tauri::AppHandle) {
             tokio::time::sleep(OFF_POLL).await;
             continue;
         }
-        let state = app.state::<AppState>();
         let now = Instant::now();
         let next = state.with_conn(|conn| {
             if queue.is_empty() {
@@ -142,7 +162,7 @@ async fn run(app: tauri::AppHandle) {
             continue;
         }
         let sid = paper.source_id.clone();
-        match ingest_full_text(&state, &paper).await {
+        match ingest_full_text(state, &paper).await {
             Ok(receipt) => {
                 match (receipt.indexed, receipt.chars) {
                     (true, Some(0)) => {

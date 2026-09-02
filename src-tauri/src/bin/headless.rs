@@ -26,7 +26,7 @@ use axum::{
 use linxiv_app::route::share::ShareState;
 use linxiv_app::route::{route, share, ApiRequest};
 use linxiv_app::state::AppState;
-use linxiv_app::{p2p_config, share_sync};
+use linxiv_app::{full_text_worker, p2p_config, share_sync};
 
 /// Base64 file uploads ride the JSON body, so allow a large request body.
 const MAX_BODY: usize = 200 * 1024 * 1024;
@@ -78,6 +78,8 @@ async fn main() {
     if node_bound && ctx.share.mark_sync_started() {
         spawn_interval_sync(&ctx);
     }
+    // Idles until `full_text_worker_enabled` is switched on, same as the app.
+    full_text_worker::spawn_headless(ctx.state.clone());
 
     let share = ctx.share.clone();
     let auth = if ctx.token.is_some() {
