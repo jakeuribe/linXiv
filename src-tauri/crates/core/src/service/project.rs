@@ -2,7 +2,7 @@
 //!
 //! Thin orchestration over `storage::queries::{project,tag,note,paper}`. DB-touching
 //! fns take `conn` first (DI seam — never open from config). The `Project`/`Projects`
-//! query objects and `ProjectPage` live in `service/project.py` itself, so they stay
+//! query objects live in `service/project.py` itself, so they stay
 //! local here too; `ProjectIn`/`ProjectUpdateIn` are the shared *In DTOs (models.rs).
 //!
 //! Two write contracts that are deliberately opposite (do NOT unify):
@@ -20,7 +20,7 @@ use rusqlite::Connection;
 use crate::error::{CoreError, Result};
 use crate::models::{PaperDetails, ProjectDetails, ProjectIn, ProjectOut, ProjectUpdateIn, Status};
 use crate::storage::db::transaction;
-use crate::storage::queries::{note as nq, paper as paperq, project as pq, tag as tq};
+use crate::storage::queries::{paper as paperq, project as pq, tag as tq};
 use crate::storage::query::{self, Q};
 
 /// `service/project.py::Project` — single-project lookup key. `None` short-circuits
@@ -35,16 +35,6 @@ pub struct Project {
 pub struct Projects {
     pub project_fks: Option<Vec<i64>>,
     pub status: Option<Status>,
-}
-
-/// `service/project.py::ProjectPage` — the legacy list view (names/ids/counts).
-#[derive(Debug, Clone, Default)]
-pub struct ProjectPage {
-    pub num_projects: usize,
-    pub project_names: Vec<String>,
-    pub project_ids: Vec<Option<i64>>,
-    pub paper_counts: Vec<usize>,
-    pub note_counts: Vec<i64>,
 }
 
 // ── Tag helpers (shared by create/update) — Python `_normalize_tags`/`_sync_tags`. ──
@@ -97,6 +87,19 @@ fn fill_tags(conn: &Connection, mut p: ProjectDetails) -> Result<ProjectDetails>
     Ok(p)
 }
 
+/// Batched [`fill_tags`] for list paths: one tag query for the whole slice
+/// instead of one per project.
+fn fill_tags_bulk(conn: &Connection, projects: &mut [ProjectDetails]) -> Result<()> {
+    let ids: Vec<i64> = projects.iter().filter_map(|p| p.id).collect();
+    let mut by_project = tq::project_tags_by_project(conn, &ids)?;
+    for p in projects {
+        if let Some(id) = p.id {
+            p.project_tags = by_project.remove(&id).unwrap_or_default();
+        }
+    }
+    Ok(())
+}
+
 // ── Reads ─────────────────────────────────────────────────────────────────────
 
 /// `service/project.py::get` — single project by project_fk (with tags). `None`
@@ -123,6 +126,17 @@ pub fn get_required(conn: &Connection, project_fk: i64) -> Result<ProjectDetails
     .ok_or(CoreError::ProjectNotFound(project_fk))
 }
 
+/// Existence-only [`get_required`] (same any-status semantics and
+/// `ProjectNotFound` wording) for guard sites that discard the row: one
+/// SELECT instead of the row + membership + tags triple.
+pub fn require(conn: &Connection, project_fk: i64) -> Result<()> {
+    if pq::project_exists(conn, project_fk)? {
+        Ok(())
+    } else {
+        Err(CoreError::ProjectNotFound(project_fk))
+    }
+}
+
 /// Link `tags` to a project, creating any that don't exist yet. Guards existence
 /// first so CLI and MCP stop each doing it by hand. Returns the resulting tags.
 pub fn add_project_tags(
@@ -130,7 +144,7 @@ pub fn add_project_tags(
     project_fk: i64,
     tags: &[String],
 ) -> Result<Vec<String>> {
-    get_required(conn, project_fk)?;
+    require(conn, project_fk)?;
     tq::add_project_tags(conn, project_fk, tags)
 }
 
@@ -141,7 +155,7 @@ pub fn remove_project_tags(
     project_fk: i64,
     tags: &[String],
 ) -> Result<Vec<String>> {
-    get_required(conn, project_fk)?;
+    require(conn, project_fk)?;
     tq::remove_project_tags(conn, project_fk, tags)
 }
 
@@ -149,23 +163,48 @@ pub fn remove_project_tags(
 /// SERIALIZER 3): resolves `source_fks` to namespaced source ids and renders
 /// `color` as `#rrggbb`. All three surfaces serialize projects through here.
 pub fn to_out(conn: &Connection, p: ProjectDetails) -> Result<ProjectOut> {
-    let source_ids = crate::service::paper::sfks_to_source_ids(conn, &p.source_fks)?;
-    Ok(ProjectOut {
-        id: p
-            .id
-            .ok_or_else(|| CoreError::Internal("Project has no id".into()))?,
-        name: p.name,
-        description: p.description,
-        color_hex: p.color.map(color_to_hex),
-        project_tags: p.project_tags,
-        paper_count: source_ids.len(),
-        source_ids,
-        status: p.status,
-        created_at: p.created_at,
-        updated_at: p.updated_at,
-        archived_at: p.archived_at,
-        share_id: p.share_id,
-    })
+    let mut out = to_out_many(conn, vec![p])?;
+    out.pop()
+        .ok_or_else(|| CoreError::Internal("to_out_many dropped its input".into()))
+}
+
+/// Batched [`to_out`] for list paths: resolves every project's `source_fks` in
+/// one chunked lookup instead of one query per project. Order and per-project
+/// semantics (input-order source_ids, dropped unknown fks) match `to_out`.
+pub fn to_out_many(conn: &Connection, projects: Vec<ProjectDetails>) -> Result<Vec<ProjectOut>> {
+    let mut seen = HashSet::new();
+    let all_fks: Vec<i64> = projects
+        .iter()
+        .flat_map(|p| p.source_fks.iter().copied())
+        .filter(|fk| seen.insert(*fk))
+        .collect();
+    let by_fk = crate::service::paper::source_ids_by_fk(conn, &all_fks)?;
+    projects
+        .into_iter()
+        .map(|p| {
+            let source_ids: Vec<String> = p
+                .source_fks
+                .iter()
+                .filter_map(|fk| by_fk.get(fk).cloned())
+                .collect();
+            Ok(ProjectOut {
+                id: p
+                    .id
+                    .ok_or_else(|| CoreError::Internal("Project has no id".into()))?,
+                name: p.name,
+                description: p.description,
+                color_hex: p.color.map(color_to_hex),
+                project_tags: p.project_tags,
+                paper_count: source_ids.len(),
+                source_ids,
+                status: p.status,
+                created_at: p.created_at,
+                updated_at: p.updated_at,
+                archived_at: p.archived_at,
+                share_id: p.share_id,
+            })
+        })
+        .collect()
 }
 
 /// `service/project.py::get_many` — projects matching any combination of the
@@ -184,10 +223,9 @@ pub fn get_many(conn: &Connection, projects: &Projects) -> Result<Vec<ProjectDet
     .into_iter()
     .flatten()
     .reduce(Q::and);
-    pq::list_projects(conn, condition, true)?
-        .into_iter()
-        .map(|p| fill_tags(conn, p))
-        .collect()
+    let mut projects = pq::list_projects(conn, condition, true)?;
+    fill_tags_bulk(conn, &mut projects)?;
+    Ok(projects)
 }
 
 /// Persisted share identity: generate + store a uuid v4 on first call, return the
@@ -360,18 +398,23 @@ pub fn ensure_membership_writable(conn: &Connection, project_fk: i64) -> Result<
 /// `service/project.py::_resolve_source_ids` — paper ids → SOURCE_FKs. Ids are
 /// stripped and deduped (keyed on the stripped form, reported once). Returns
 /// (fks in first-seen order, unresolved ids verbatim). Trashed papers resolve —
-/// `get_paper_root` has no status filter, matching `get_paper_roots_bulk`.
+/// `source_fks_by_id` has no status filter, matching `get_paper_root`.
 fn resolve_source_ids(conn: &Connection, source_ids: &[String]) -> Result<(Vec<i64>, Vec<String>)> {
+    let mut seen = HashSet::new();
+    let deduped: Vec<(&str, &String)> = source_ids
+        .iter()
+        .filter_map(|sid| {
+            let stripped = sid.trim();
+            seen.insert(stripped.to_string()).then_some((stripped, sid))
+        })
+        .collect();
+    let stripped: Vec<&str> = deduped.iter().map(|(s, _)| *s).collect();
+    let by_id = paperq::source_fks_by_id(conn, &stripped)?;
     let mut fks = Vec::new();
     let mut failed = Vec::new();
-    let mut seen = HashSet::new();
-    for sid in source_ids {
-        let stripped = sid.trim();
-        if !seen.insert(stripped.to_string()) {
-            continue;
-        }
-        match paperq::get_paper_root(conn, stripped)? {
-            Some(root) => fks.push(root.source_fk),
+    for (stripped, sid) in deduped {
+        match by_id.get(stripped) {
+            Some(fk) => fks.push(*fk),
             None => failed.push(sid.clone()),
         }
     }
@@ -409,22 +452,11 @@ pub fn remove_papers(
 }
 
 /// A project's papers for the text exporters, resolved ONE way for every
-/// surface: the latest-papers view in library order, filtered to the project
-/// (the shipped GUI contract — app.py's
-/// `[p for p in list_paper_details(latest) if id in ids]`).
+/// surface: the project's latest-version rows in library order (the shipped
+/// GUI contract — app.py's `[p for p in list_paper_details(latest) if id in
+/// ids]`), filtered in SQL rather than scanning the whole library.
 pub fn export_papers(conn: &Connection, source_fks: &[i64]) -> Result<Vec<PaperDetails>> {
-    if source_fks.is_empty() {
-        return Ok(Vec::new());
-    }
-    let ids: HashSet<String> = crate::service::paper::sfks_to_source_ids(conn, source_fks)?
-        .into_iter()
-        .collect();
-    Ok(
-        crate::service::paper::list_papers(conn, true, None, 0, None)?
-            .into_iter()
-            .filter(|p| ids.contains(&p.source_id))
-            .collect(),
-    )
+    crate::service::paper::get_by_source_fks(conn, source_fks)
 }
 
 /// Receipt for the single-paper membership ops — one shape for all three
@@ -466,7 +498,8 @@ fn membership_receipt(
     if !failed.is_empty() {
         return Err(CoreError::PaperNotFound(source_id.to_string()));
     }
-    let paper_count = get_required(conn, project_fk)?.source_fks.len();
+    let paper_count =
+        pq::active_paper_count(conn, project_fk)?.ok_or(CoreError::ProjectNotFound(project_fk))?;
     Ok(PaperMembershipReceipt {
         ok: true,
         project_id: project_fk,
@@ -583,7 +616,8 @@ pub fn hard_delete(conn: &mut Connection, project: &Project) -> Result<()> {
 pub fn list_deleted(conn: &Connection) -> Result<Vec<ProjectDetails>> {
     let mut projects = pq::list_projects(conn, Some(Q::new("STATUS = ?", "deleted")), true)?;
     projects.sort_by_key(|p| std::cmp::Reverse(p.archived_at));
-    projects.into_iter().map(|p| fill_tags(conn, p)).collect()
+    fill_tags_bulk(conn, &mut projects)?;
+    Ok(projects)
 }
 
 /// `service/project.py::purge_old` — hard-delete projects trashed more than `days`
@@ -600,29 +634,6 @@ pub fn purge_old(conn: &mut Connection, days: i64) -> Result<usize> {
         pq::hard_delete_project(conn, *fk)?;
     }
     Ok(old.len())
-}
-
-/// `service/project.py::get_projects` — the legacy `ProjectPage` list (default ACTIVE).
-pub fn get_projects(conn: &Connection, status: Status) -> Result<ProjectPage> {
-    let projects = pq::list_projects(
-        conn,
-        Some(Q::new("STATUS = ?", pq::status_to_sql(status))),
-        true,
-    )?;
-    let mut page = ProjectPage {
-        num_projects: projects.len(),
-        ..Default::default()
-    };
-    for p in &projects {
-        page.project_names.push(p.name.clone());
-        page.project_ids.push(p.id);
-        page.paper_counts.push(p.source_fks.len());
-        page.note_counts.push(match p.id {
-            Some(id) => nq::count_project_notes(conn, id)?,
-            None => 0,
-        });
-    }
-    Ok(page)
 }
 
 // ── Colour helpers — Python `projects.py::color_to_hex`/`color_from_hex`. ──────
@@ -686,7 +697,9 @@ mod tests {
     #[test]
     fn membership_receipt_counts_and_pins_wire_shape() {
         let mut conn = setup();
-        let id = create(&mut conn, &pin("Proj", vec![10], vec![])).unwrap();
+        // fk 12 is a trashed root: linked but excluded from paper_count
+        // (active-membership semantics, same as source_fks.len()).
+        let id = create(&mut conn, &pin("Proj", vec![10, 12], vec![])).unwrap();
 
         let receipt = add_paper(&conn, id, "arxiv:2").unwrap();
         assert_eq!(
@@ -700,6 +713,56 @@ mod tests {
             add_paper(&conn, id, "arxiv:ghost").unwrap_err(),
             CoreError::PaperNotFound(sid) if sid == "arxiv:ghost"
         ));
+    }
+
+    #[test]
+    fn require_matches_get_required_semantics() {
+        let mut conn = setup();
+        let id = create(&mut conn, &pin("Proj", vec![], vec![])).unwrap();
+        require(&conn, id).unwrap();
+        // Any-status, like get_required: a trashed project still resolves.
+        delete(
+            &conn,
+            &Project {
+                project_fk: Some(id),
+            },
+        )
+        .unwrap();
+        require(&conn, id).unwrap();
+        assert!(matches!(
+            require(&conn, 999).unwrap_err(),
+            CoreError::ProjectNotFound(999)
+        ));
+    }
+
+    /// Pins the batched list path (bulk membership, bulk tags, to_out_many)
+    /// against the single-project path for every field, per project.
+    #[test]
+    fn get_many_and_to_out_many_match_single_paths() {
+        let mut conn = setup();
+        let a = create(&mut conn, &pin("A", vec![11, 10], vec!["RL", "Vision"])).unwrap();
+        let b = create(&mut conn, &pin("B", vec![10], vec![])).unwrap();
+
+        let many = get_many(&conn, &Projects::default()).unwrap();
+        assert_eq!(many.len(), 2);
+        for p in &many {
+            let single = get(&conn, &Project { project_fk: p.id }).unwrap().unwrap();
+            assert_eq!(p.source_fks, single.source_fks);
+            assert_eq!(p.project_tags, single.project_tags);
+        }
+        let by_id = |id| many.iter().find(|p| p.id == Some(id)).unwrap();
+        assert_eq!(by_id(a).source_fks, vec![11, 10]); // insertion order kept
+        assert_eq!(by_id(b).project_tags, Vec::<String>::new());
+
+        let singles: Vec<_> = many
+            .iter()
+            .map(|p| to_out(&conn, p.clone()).unwrap())
+            .collect();
+        let bulk = to_out_many(&conn, many).unwrap();
+        assert_eq!(
+            serde_json::to_value(&bulk).unwrap(),
+            serde_json::to_value(&singles).unwrap()
+        );
     }
 
     #[test]
@@ -1157,12 +1220,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(by_ids.len(), 2);
-
-        let page = get_projects(&conn, Status::Active).unwrap();
-        assert_eq!(page.num_projects, 1);
-        assert_eq!(page.project_ids, vec![Some(a)]);
-        assert_eq!(page.paper_counts, vec![2]);
-        assert_eq!(page.note_counts, vec![1]);
     }
 
     #[test]

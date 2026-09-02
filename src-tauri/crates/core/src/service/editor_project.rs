@@ -31,7 +31,7 @@ use crate::error::Result;
 use crate::models::{NoteDetails, NoteIn};
 use crate::service::note::{self, Note};
 use crate::service::vault;
-use crate::storage::queries::paper;
+use crate::storage::queries::{note as note_q, paper};
 
 /// Sentinel paper root for standalone editor projects (not about a specific paper).
 pub const STANDALONE_SOURCE_ID: &str = "texbrain:local";
@@ -57,25 +57,25 @@ Hello, world!
 
 // ── frontmatter parse / build ───────────────────────────────────────────────────
 
-/// Split a note body into (frontmatter map, remaining body). A note with no leading
-/// `---` block (or an unterminated one) yields `({}, content)`. Mirrors
-/// `parse_frontmatter`.
-pub fn parse_frontmatter(content: &str) -> (HashMap<String, String>, String) {
-    let lines: Vec<&str> = content.lines().collect();
-    if lines.first().map(|l| l.trim()) != Some("---") {
-        return (HashMap::new(), content.to_string());
+/// Parse a note body's frontmatter map. A note with no leading `---` block (or an
+/// unterminated one) yields an empty map. Mirrors `parse_frontmatter`, minus the
+/// body split: no production caller reads the body, so it is never materialized.
+pub fn parse_frontmatter(content: &str) -> HashMap<String, String> {
+    let mut lines = content.lines();
+    if lines.next().map(str::trim) != Some("---") {
+        return HashMap::new();
     }
-    let end = match (1..lines.len()).find(|&i| lines[i].trim() == "---") {
-        Some(e) => e,
-        None => return (HashMap::new(), content.to_string()),
-    };
     let mut meta = HashMap::new();
-    for line in &lines[1..end] {
+    for line in lines {
+        if line.trim() == "---" {
+            return meta;
+        }
         if let Some((k, v)) = line.split_once(':') {
             meta.insert(k.trim().to_string(), v.trim().to_string());
         }
     }
-    (meta, lines[end + 1..].join("\n"))
+    // Unterminated fence: not frontmatter at all.
+    HashMap::new()
 }
 
 /// Collapse CR/LF to spaces and trim. Frontmatter is line-oriented, so a newline in a
@@ -163,12 +163,12 @@ pub fn list_projects(
     project_id: Option<i64>,
 ) -> Result<Vec<EditorProjectSummary>> {
     let mut out: Vec<EditorProjectSummary> = Vec::new();
-    for note in note::list_all(conn)? {
-        let (meta, _) = parse_frontmatter(&note.content);
+    // SQL prefilters on the flag substring + project scope so we never load every
+    // note body; parse_frontmatter stays the exactness guard (the substring could
+    // appear in a plain note's body).
+    for note in note_q::list_notes_containing(conn, VAULT_FLAG, project_id)? {
+        let meta = parse_frontmatter(&note.content);
         if !is_editor_project(&meta) {
-            continue;
-        }
-        if project_id.is_some() && note.project_id != project_id {
             continue;
         }
         out.push(to_summary(&note, &meta));
@@ -224,7 +224,8 @@ pub fn create_project(
             content: build_content(&name, &main, ""),
             uuid: None,
         },
-    )?;
+    )?
+    .note_id;
 
     // Scaffold the vault; on failure roll back the note so no flagged project is left
     // without a vault.
@@ -260,11 +261,19 @@ pub fn get_meta(
         Some(n) => n,
         None => return Ok(None),
     };
-    let (meta, _) = parse_frontmatter(&note.content);
+    let meta = parse_frontmatter(&note.content);
     if !is_editor_project(&meta) {
         return Ok(None);
     }
     Ok(Some((note, meta)))
+}
+
+/// `true` iff the note exists and is an editor project. The per-FS-RPC vault
+/// ownership guard: reads only the content column instead of hydrating the full
+/// note row like `get_meta`.
+pub fn is_editor_project_note(conn: &rusqlite::Connection, note_id: i64) -> Result<bool> {
+    Ok(note_q::get_note_content(conn, note_id)?
+        .is_some_and(|c| is_editor_project(&parse_frontmatter(&c))))
 }
 
 /// Assemble the DocOpenPayload for the editor, or `None` if not an editor project.
@@ -306,7 +315,7 @@ pub fn get_doc(
 /// is read first — after the row is gone the vault can no longer be identified.
 /// `false` if no note matched (nothing deleted).
 pub fn delete_note(conn: &rusqlite::Connection, vault_dir: &Path, note_id: i64) -> Result<bool> {
-    let is_editor_project = get_meta(conn, note_id)?.is_some();
+    let is_editor_project = is_editor_project_note(conn, note_id)?;
     if !note::delete(
         conn,
         &Note {
@@ -329,42 +338,35 @@ mod tests {
 
     #[test]
     fn parse_frontmatter_variants() {
-        // Full block: meta parsed, body is everything after the closing fence.
-        let (m, body) = parse_frontmatter(
+        // Full block: meta parsed, body after the closing fence ignored.
+        let m = parse_frontmatter(
             "---\nlinxiv-editor-vault: true\nprojectName: My Draft\n---\nhello\nworld",
         );
         assert_eq!(m.get(VAULT_FLAG).map(String::as_str), Some("true"));
         assert_eq!(m.get("projectName").map(String::as_str), Some("My Draft"));
-        assert_eq!(body, "hello\nworld");
 
-        // No leading fence: original content returned untouched.
-        let (m, body) = parse_frontmatter("just a note");
-        assert!(m.is_empty());
-        assert_eq!(body, "just a note");
+        // No leading fence.
+        assert!(parse_frontmatter("just a note").is_empty());
 
-        // Unterminated fence: no parse, original content returned.
-        let (m, body) = parse_frontmatter("---\nprojectName: X\nno closing fence");
-        assert!(m.is_empty());
-        assert_eq!(body, "---\nprojectName: X\nno closing fence");
+        // Unterminated fence: no partial parse.
+        assert!(parse_frontmatter("---\nprojectName: X\nno closing fence").is_empty());
 
         // Empty.
-        let (m, body) = parse_frontmatter("");
-        assert!(m.is_empty());
-        assert_eq!(body, "");
+        assert!(parse_frontmatter("").is_empty());
     }
 
     #[test]
     fn build_content_sanitizes_and_roundtrips() {
         // A newline in the project name must not forge/terminate the fence.
         let c = build_content("evil\n---\nmainFile: hacked.tex", "main.tex", "body");
-        let (m, body) = parse_frontmatter(&c);
+        let m = parse_frontmatter(&c);
         assert!(is_editor_project(&m));
         assert_eq!(
             m.get("projectName").map(String::as_str),
             Some("evil --- mainFile: hacked.tex"),
         );
         assert_eq!(m.get("mainFile").map(String::as_str), Some("main.tex"));
-        assert_eq!(body, "body");
+        assert!(c.ends_with("\n---\nbody"));
     }
 
     /// Seed two editor-project notes (one project-scoped) + one plain note.
@@ -397,6 +399,15 @@ mod tests {
         conn.execute(
             "INSERT INTO NOTE (SOURCE_FK, PROJECT_FK, TITLE, NOTE, CREATED_AT, UPDATED_AT) \
              VALUES (1, NULL, 'plain', 'just an annotation', '2024-03-03 10:00:00', '2024-03-03 10:00:00')",
+            [],
+        )
+        .unwrap();
+        // Mentions the flag in its body but has no frontmatter — the SQL prefilter
+        // matches it, so this pins that parse_frontmatter still excludes it.
+        conn.execute(
+            "INSERT INTO NOTE (SOURCE_FK, PROJECT_FK, TITLE, NOTE, CREATED_AT, UPDATED_AT) \
+             VALUES (1, NULL, 'impostor', 'talking about linxiv-editor-vault: true in prose', \
+             '2024-04-04 10:00:00', '2024-04-04 10:00:00')",
             [],
         )
         .unwrap();

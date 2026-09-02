@@ -10,9 +10,10 @@ use crate::error::Result;
 use crate::models::{PaperDetails, NO_PUBLISHED_DATE};
 use crate::storage::db::{bool_from_sql, date_from_sql, list_from_sql};
 
-// Both functions select `*` from the `papers` / `latest_papers` views (same
-// column set), so one row->model mapper serves both. LIST/DATE/BOOL columns go
-// through the storage::db decltype converters — no inline re-parsing.
+// Every read selects `PAPER_COLUMNS_NO_TEXT` from the `papers` /
+// `latest_papers` views (same column set), so one row->model mapper serves all.
+// LIST/DATE/BOOL columns go through the storage::db decltype converters — no
+// inline re-parsing.
 pub(in crate::storage::queries) fn row_to_paper(row: &Row) -> Result<PaperDetails> {
     // LIST column (JSON TEXT) -> Vec<String>; NULL -> empty (model default).
     let list = |name: &str| -> Result<Vec<String>> {
@@ -55,23 +56,28 @@ pub(in crate::storage::queries) fn row_to_paper(row: &Row) -> Result<PaperDetail
 
 /// `storage/db.py::get_paper` — a specific version, or the latest if `None`.
 /// `conn` is an opened storage::db connection (FK PRAGMA already ON).
+/// Reads the list column set (FULL_TEXT blanked) like every other paper read:
+/// nothing consumes the body through `PaperDetails`, and the fts module's
+/// `has_full_text` answers the one stored-body question without hauling it.
 pub fn get_paper(
     conn: &Connection,
     source_id: &str,
     version: Option<i64>,
 ) -> Result<Option<PaperDetails>> {
     // Python `if version:` treats 0 as falsy too -> fall through to latest.
-    let (sql, params): (&str, Vec<Value>) = match version.filter(|v| *v != 0) {
+    let (sql, params): (String, Vec<Value>) = match version.filter(|v| *v != 0) {
         Some(v) => (
-            "SELECT * FROM papers WHERE source_id = ? AND version = ?",
+            format!(
+                "SELECT {PAPER_COLUMNS_NO_TEXT} FROM papers WHERE source_id = ? AND version = ?"
+            ),
             vec![Value::Text(source_id.to_string()), Value::Integer(v)],
         ),
         None => (
-            "SELECT * FROM latest_papers WHERE source_id = ?",
+            format!("SELECT {PAPER_COLUMNS_NO_TEXT} FROM latest_papers WHERE source_id = ?"),
             vec![Value::Text(source_id.to_string())],
         ),
     };
-    let mut stmt = conn.prepare(sql)?;
+    let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query(params_from_iter(&params))?;
     match rows.next()? {
         Some(row) => Ok(Some(row_to_paper(row)?)),
@@ -99,12 +105,12 @@ pub fn get_paper_by_id(conn: &Connection, paper_id: i64) -> Result<Option<PaperD
 /// no difference; the CLI's raw-row `linxiv library list`, which dumps whatever
 /// columns come back, now reports `full_text` as null instead of the body.
 ///
-/// Multi-row reads use this instead of `SELECT *`. Nothing outside
-/// `should_store_full_text` (which reads one paper at a time via `get_paper`)
-/// looks at the body, and `PaperDetails.full_text` is not serialized; with the
-/// background indexer filling the column for a whole library, `SELECT *` would
-/// make every list call haul the entire corpus into memory under the connection
-/// lock and drop it again.
+/// Every `PaperDetails` read uses this instead of `SELECT *`. Nothing consumes
+/// the body through the struct (`full_text` is not serialized; the empty-refetch
+/// clobber guard reads one column via `has_full_text`), and with the background
+/// indexer filling the column for a whole library, `SELECT *` would make every
+/// read haul a multi-MB TeX body into memory under the connection lock and drop
+/// it again.
 pub const PAPER_COLUMNS_NO_TEXT: &str = "paper_id, source_id, source_fk, version, title, url, \
      published, updated, category, categories, doi, journal_ref, comment, summary, authors, tags, \
      has_pdf, source, pdf_path, NULL AS full_text, downloaded_source, created_at, updated_at";
@@ -243,6 +249,51 @@ pub fn list_papers_sorted(
     Ok(out)
 }
 
+/// Latest-version papers whose PDF flag is set — backs `GET /api/pdfs`. Filters
+/// in SQL so the whole library is never materialized to find the PDF subset.
+pub fn list_pdf_papers(conn: &Connection) -> Result<Vec<PaperDetails>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {PAPER_COLUMNS_NO_TEXT} FROM latest_papers WHERE has_pdf = 1"
+    ))?;
+    let mut rows = stmt.query([])?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next()? {
+        out.push(row_to_paper(row)?);
+    }
+    Ok(out)
+}
+
+/// Latest-version rows for the given paper roots, filtered in SQL so project
+/// export/share never materializes the whole library. Empty input → empty
+/// output. Chunked to stay under SQLite's bound-variable limit, then sorted in
+/// Rust to the `list_papers` default order (published DESC undated-last,
+/// paper_id DESC) since chunking would scramble a SQL ORDER BY across chunks.
+pub fn get_papers_by_source_fks(
+    conn: &Connection,
+    source_fks: &[i64],
+) -> Result<Vec<PaperDetails>> {
+    let mut out = Vec::new();
+    for chunk in source_fks.chunks(900) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let sql = format!(
+            "SELECT {PAPER_COLUMNS_NO_TEXT} FROM latest_papers \
+             WHERE source_fk IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = stmt.query(params_from_iter(chunk.iter()))?;
+        while let Some(row) = rows.next()? {
+            out.push(row_to_paper(row)?);
+        }
+    }
+    // Option<NaiveDate> reversed = DESC with None (undated) last, like SQL DESC.
+    out.sort_by(|a, b| {
+        b.published
+            .cmp(&a.published)
+            .then(b.paper_id.cmp(&a.paper_id))
+    });
+    Ok(out)
+}
+
 /// `storage/db.py::get_categories` — distinct primary categories across latest
 /// active papers, NULLs excluded, ascending. BINARY collation (the default) is
 /// byte order — the same ordering the service's old BTreeSet<String> produced.
@@ -281,16 +332,25 @@ pub fn get_papers_by_json_tag(conn: &Connection, label: &str) -> Result<Vec<Pape
 
 /// Which of `source_ids` are stored and active. Ids are namespaced
 /// (`arxiv:2204.12985`); unknown ids are simply absent from the result.
+/// Chunked to stay under SQLite's bound-variable limit; the seen-set keeps
+/// the output duplicate-free when input duplicates span chunks.
 pub fn existing_source_ids(conn: &Connection, source_ids: &[String]) -> Result<Vec<String>> {
-    if source_ids.is_empty() {
-        return Ok(Vec::new());
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for chunk in source_ids.chunks(900) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let mut stmt = conn.prepare(&format!(
+            "SELECT DISTINCT source_id FROM papers WHERE source_id IN ({placeholders})"
+        ))?;
+        let rows = stmt.query_map(params_from_iter(chunk), |r| r.get::<_, String>(0))?;
+        for row in rows {
+            let sid = row?;
+            if seen.insert(sid.clone()) {
+                out.push(sid);
+            }
+        }
     }
-    let placeholders = vec!["?"; source_ids.len()].join(",");
-    let mut stmt = conn.prepare(&format!(
-        "SELECT DISTINCT source_id FROM papers WHERE source_id IN ({placeholders})"
-    ))?;
-    let rows = stmt.query_map(params_from_iter(source_ids), |r| r.get(0))?;
-    Ok(rows.collect::<std::result::Result<Vec<String>, _>>()?)
+    Ok(out)
 }
 
 /// `get_all_versions` — every stored (active) version, oldest-first.
@@ -302,6 +362,43 @@ pub fn get_all_versions(conn: &Connection, source_id: &str) -> Result<Vec<PaperD
     let mut out = Vec::new();
     while let Some(row) = rows.next()? {
         out.push(row_to_paper(row)?);
+    }
+    Ok(out)
+}
+
+/// One `version_meta` row: the four scalars the versions listing needs.
+#[derive(Debug, Clone)]
+pub struct PaperVersionMeta {
+    pub version: i64,
+    pub published: Option<NaiveDate>,
+    pub updated: Option<NaiveDate>,
+    pub has_pdf: bool,
+}
+
+/// `version_meta` — [`get_all_versions`] minus the per-version full-row
+/// hydration: every stored (active) version's four listing scalars, oldest-first.
+pub fn version_meta(conn: &Connection, source_id: &str) -> Result<Vec<PaperVersionMeta>> {
+    let mut stmt = conn.prepare(
+        "SELECT version, published, updated, has_pdf FROM papers \
+         WHERE source_id = ? ORDER BY version ASC",
+    )?;
+    let rows = stmt.query_map([source_id], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+            row.get::<_, i64>(3)?,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (version, published, updated, has_pdf) = row?;
+        out.push(PaperVersionMeta {
+            version,
+            published: published.as_deref().map(date_from_sql).transpose()?,
+            updated: updated.as_deref().map(date_from_sql).transpose()?,
+            has_pdf: bool_from_sql(has_pdf),
+        });
     }
     Ok(out)
 }
@@ -435,6 +532,51 @@ mod tests {
             list_papers(&conn, false, Some(1), 1, None).unwrap().len(),
             1
         );
+    }
+
+    /// Pins `list_pdf_papers` ≡ `list_papers(latest_only)` filtered on has_pdf —
+    /// the SQL-side filter must not change what the old scan-then-filter saw.
+    #[test]
+    fn list_pdf_papers_matches_filtered_full_list() {
+        let conn = open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        seed(&conn); // arxiv:2204.12985, HAS_PDF=1, latest version 2
+        for (sid, has_pdf) in [("arxiv:nopdf", 0), ("arxiv:withpdf", 1)] {
+            conn.execute("INSERT INTO PAPER_ROOTS (SOURCE_ID) VALUES (?1)", [sid])
+                .unwrap();
+            let fk = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO PAPER (SOURCE_ID, VERSION, TITLE, HAS_PDF, SOURCE_FK) \
+                 VALUES (?1, 1, ?1, ?2, ?3)",
+                params![sid, has_pdf, fk],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO PAPER_META (PAPER_ID) VALUES (?1)",
+                [conn.last_insert_rowid()],
+            )
+            .unwrap();
+        }
+
+        let expected: Vec<(String, i64)> = list_papers(&conn, true, None, 0, None)
+            .unwrap()
+            .into_iter()
+            .filter(|p| p.has_pdf)
+            .map(|p| (p.source_id, p.version))
+            .collect();
+        let mut got: Vec<(String, i64)> = list_pdf_papers(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|p| (p.source_id, p.version))
+            .collect();
+        // The new query carries no ORDER BY (its one caller re-sorts by file
+        // size); compare as sets.
+        got.sort();
+        let mut expected_sorted = expected.clone();
+        expected_sorted.sort();
+        assert_eq!(got, expected_sorted);
+        assert_eq!(got.len(), 2);
+        assert!(got.iter().all(|(sid, _)| sid != "arxiv:nopdf"));
     }
 
     #[test]
@@ -658,5 +800,15 @@ mod tests {
         .unwrap();
         assert_eq!(found, vec!["arxiv:2204.12985".to_string()]);
         assert!(existing_source_ids(&conn, &[]).unwrap().is_empty());
+
+        // Over the 900-per-chunk bound: the stored id in the last chunk is
+        // still found, and a duplicate spanning chunks reports only once.
+        let mut many: Vec<String> = (0..1000).map(|i| format!("arxiv:absent{i}")).collect();
+        many[0] = "arxiv:2204.12985".into();
+        many.push("arxiv:2204.12985".into());
+        assert_eq!(
+            existing_source_ids(&conn, &many).unwrap(),
+            vec!["arxiv:2204.12985".to_string()]
+        );
     }
 }

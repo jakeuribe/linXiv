@@ -19,7 +19,10 @@ import {
   queueOf,
 } from "../lib/readingStatus";
 import { invalidateProjectMutationQueries } from "../lib/paperMutations";
-import { useReadingStatusStore } from "../stores/readingStatus";
+import {
+  READING_STATUS_QUERY_KEY,
+  fetchReadingStatuses,
+} from "../api/readingStatus";
 import { errText } from "../lib/errText";
 
 function NewReadingListDialog({
@@ -108,7 +111,10 @@ export default function ReadingListsPage() {
   const navigate = useNavigate();
   const [view, setView] = useState<"lists" | "queue">("lists");
   const [dialogOpen, setDialogOpen] = useState(false);
-  const statuses = useReadingStatusStore((s) => s.statuses);
+  const { data: statuses = {} } = useQuery({
+    queryKey: READING_STATUS_QUERY_KEY,
+    queryFn: fetchReadingStatuses,
+  });
 
   const { data: projectsData, isLoading: projectsLoading, isError: projectsError, error: projectsErrorMsg } = useQuery({
     queryKey: ["projects", "active"],

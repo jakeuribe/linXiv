@@ -2,27 +2,38 @@
 //! (`storage::queries::paper::X`) via the re-exports below.
 
 mod fts;
+mod merge;
 mod pdf;
 mod read;
 mod roots;
 mod trash;
 mod write;
 
-pub use fts::{full_text_backfill_candidates, full_text_backfill_count, set_full_text};
-pub use pdf::{mark_pdf_saved, set_has_pdf, set_pdf_path};
+pub use fts::{
+    full_text_backfill_candidates, full_text_backfill_count, has_full_text, set_full_text,
+};
+pub use merge::{merge_paper_roots, merge_plan, MergePlan, MergeStats, VersionAction};
+pub use pdf::{
+    mark_pdf_saved, pdf_path_for_source, pdf_path_for_version, set_has_pdf, set_pdf_path,
+};
 pub(in crate::storage::queries) use read::row_to_paper;
 pub use read::{
     existing_source_ids, find_doi_version_candidates, get_all_versions, get_categories, get_paper,
-    get_paper_by_id, get_papers_by_json_tag, list_papers, list_papers_sorted, DoiVersionCandidate,
-    PaperSort, PAPER_COLUMNS_NO_TEXT,
+    get_paper_by_id, get_papers_by_json_tag, get_papers_by_source_fks, list_papers,
+    list_papers_sorted, list_pdf_papers, version_meta, DoiVersionCandidate, PaperSort,
+    PaperVersionMeta, PAPER_COLUMNS_NO_TEXT,
 };
-pub use roots::{ensure_paper_root, get_paper_root, get_source_id, sfks_to_source_ids, PaperRoot};
+pub use roots::{
+    ensure_paper_root, get_paper_root, get_source_id, source_fks_by_id, source_ids_by_fk, PaperRoot,
+};
 pub use trash::{
-    hard_delete_paper, is_paper_deleted, list_deleted_papers, restore_paper, soft_delete_paper,
-    DeletedPaper,
+    deleted_source_ids, hard_delete_paper, is_paper_deleted, list_deleted_papers, restore_paper,
+    soft_delete_paper, DeletedPaper,
 };
 pub(crate) use write::write_paper_version_in_tx;
-pub use write::{add_paper_tags, remove_paper_tags, repair_paper, save_paper_metadata};
+pub use write::{
+    add_paper_tags, remove_paper_tags, repair_paper, save_paper_metadata, save_papers_metadata,
+};
 
 /// Shared fixtures for the submodules' test mods.
 #[cfg(test)]

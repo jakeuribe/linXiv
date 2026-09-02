@@ -33,12 +33,9 @@ mod import;
 mod share_id;
 
 pub use archive::preview_import;
-pub use dto::{
-    AnnotationEntry, ArchivePdf, ArchivePdfName, ImportPreview, Manifest, NoteEntry, OnConflict,
-    PaperEntry, ProjectEntry, Summary,
-};
-pub use export::{build_manifest, export_project};
-pub use import::{commit_from_manifest, commit_import, preview_from_manifest};
+pub use dto::{ImportPreview, OnConflict};
+pub use export::export_project;
+pub use import::commit_import;
 pub use share_id::valid_share_id;
 
 #[cfg(test)]

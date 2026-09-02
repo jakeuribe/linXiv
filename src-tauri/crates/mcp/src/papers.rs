@@ -16,8 +16,9 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use linxiv_core::error::CoreError;
-use linxiv_core::models::{PaperMetadata, SearchResultOut};
+use linxiv_core::models::SearchResultOut;
 use linxiv_core::service::paper::{self as svc_paper, PaperSort};
+use linxiv_core::service::paper_merge as svc_merge;
 use linxiv_core::service::source as svc_source;
 use linxiv_core::{config, service::project as svc_project};
 
@@ -107,6 +108,14 @@ impl From<SortKey> for PaperSort {
 pub struct PaperIdParams {
     /// The paper source id (e.g. "arxiv:2204.12985").
     pub paper_id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct MergePapersParams {
+    /// The paper that survives; its metadata stays canonical.
+    pub winner_paper_id: String,
+    /// The duplicate to merge into the winner; it is deleted afterwards.
+    pub loser_paper_id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -365,6 +374,33 @@ impl Server {
         }))
     }
 
+    #[tool(
+        description = "Merge a duplicate paper into another: the winner's metadata stays \
+                       canonical; the duplicate's notes, annotations, project memberships, \
+                       tags, missing versions and PDFs move over, then the duplicate is \
+                       deleted. Refuses self-merges, trashed papers, and duplicates that \
+                       belong to a shared project."
+    )]
+    pub async fn merge_papers(
+        &self,
+        Parameters(MergePapersParams {
+            winner_paper_id,
+            loser_paper_id,
+        }): Parameters<MergePapersParams>,
+    ) -> Result<String, ErrorData> {
+        let pdf_dir = self.pdf_dir.clone();
+        let receipt = self.with_conn(|conn| {
+            svc_merge::merge_papers(
+                conn,
+                &pdf_dir,
+                &svc_paper::PaperRef::source(winner_paper_id.clone()),
+                &svc_paper::PaperRef::source(loser_paper_id.clone()),
+            )
+            .map_err(crate::util::guard_err)
+        })?;
+        json_ok(&receipt)
+    }
+
     #[tool(description = "Overwrite a paper's metadata in-place to fix a bad import.")]
     pub async fn repair_paper(
         &self,
@@ -387,33 +423,24 @@ impl Server {
                     Ok(fk) => fk,
                     Err(e) => return Ok(Err(crate::util::guard_err(e))),
                 };
-                // Date validated after the existence check, matching Python ordering.
-                let published_date = match svc_paper::parse_published(&published) {
-                    Ok(d) => d,
-                    Err(e) => return Ok(Err(ErrorData::invalid_params(e.to_string(), None))),
-                };
                 // Python `existing.version if existing else 1`.
                 let version = svc_paper::get(conn, &paper_key(&paper_id))?
                     .map(|p| p.version)
                     .unwrap_or(1);
-                let meta = PaperMetadata {
-                    source_id: paper_id.clone(),
-                    version,
-                    title: title.clone(),
-                    authors: authors.clone(),
-                    published: published_date,
-                    updated: None,
-                    summary: summary.clone(),
-                    category: category.clone(),
-                    categories: None,
-                    doi: doi.clone(),
-                    journal_ref: None,
-                    comment: None,
-                    url: url.clone(),
-                    // Python `tags or None`: an empty list becomes None.
-                    tags: tags.clone().filter(|t| !t.is_empty()),
-                    source: None,
-                    author_orcids: None,
+                let fields = svc_paper::RepairFields {
+                    title,
+                    authors,
+                    published,
+                    summary,
+                    category,
+                    doi,
+                    url,
+                    tags,
+                };
+                // Date validated after the existence check, matching Python ordering.
+                let meta = match fields.into_metadata(paper_id.clone(), version, None) {
+                    Ok(m) => m,
+                    Err(e) => return Ok(Err(invalid(e.to_string()))),
                 };
                 // Validation lives in the service so every front door refuses the same input.
                 if let Err(e) = svc_paper::repair_paper(conn, source_fk, &meta) {
@@ -491,6 +518,7 @@ impl Server {
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use linxiv_core::models::PaperMetadata;
     use linxiv_core::storage;
 
     use super::*;
@@ -591,6 +619,57 @@ mod tests {
         let one: Value = serde_json::from_str(&one).unwrap();
         assert_eq!(one["pending"], serde_json::json!(2));
         assert_eq!(one["candidates"].as_array().unwrap().len(), 1);
+    }
+
+    /// Merge parity with `POST /api/papers/sfk/{fk}/merge`: guard failures are
+    /// invalid-params (unknown paper, self-merge), and the happy path returns
+    /// the receipt with the loser gone. Row-level coverage lives in core.
+    #[tokio::test]
+    async fn merge_papers_guards_and_merges() {
+        let srv = server();
+        srv.with_conn(|conn| {
+            svc_paper::save_paper_metadata(conn, &meta("arxiv:W", Some("arxiv"), None), None)?;
+            svc_paper::save_paper_metadata(conn, &meta("local:L", Some("local"), None), None)
+        })
+        .unwrap();
+
+        let err = srv
+            .merge_papers(Parameters(MergePapersParams {
+                winner_paper_id: "arxiv:W".into(),
+                loser_paper_id: "arxiv:nope".into(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.message.as_ref(), "Paper arxiv:nope not found");
+
+        let err = srv
+            .merge_papers(Parameters(MergePapersParams {
+                winner_paper_id: "arxiv:W".into(),
+                loser_paper_id: "arxiv:W".into(),
+            }))
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("into itself"), "{}", err.message);
+
+        let out = srv
+            .merge_papers(Parameters(MergePapersParams {
+                winner_paper_id: "arxiv:W".into(),
+                loser_paper_id: "local:L".into(),
+            }))
+            .await
+            .unwrap();
+        let receipt: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(receipt["winner_source_id"], "arxiv:W");
+        assert_eq!(receipt["merged_source_id"], "local:L");
+
+        // The loser no longer resolves on any tool.
+        let err = srv
+            .find_doi_candidates(Parameters(PaperIdParams {
+                paper_id: "local:L".to_string(),
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(err.message.as_ref(), "Paper local:L not found");
     }
 
     /// An unknown id is refused with the service's typed not-found (no root

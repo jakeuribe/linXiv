@@ -1,6 +1,7 @@
 //! Import side: preview over a decoded manifest and the two-phase commit with
 //! whole-project rollback.
 
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::Path;
 
@@ -96,11 +97,13 @@ fn commit_body(
     on_conflict: OnConflict,
     pdf_dir: &Path,
 ) -> Result<()> {
-    // Resolve every archived paper to a SOURCE_FK, in first-seen order.
+    // Resolve every archived paper to a SOURCE_FK, in first-seen order. The
+    // id→fk map feeds the note/annotation passes so they never re-resolve roots.
     let mut source_ids: Vec<String> = Vec::new();
+    let mut resolved: HashMap<String, i64> = HashMap::new();
     for pe in &manifest.papers {
         let source_id = pe.source_id.clone();
-        match paper::get_paper_root(conn, &source_id)? {
+        let source_fk = match paper::get_paper_root(conn, &source_id)? {
             Some(root) => {
                 if root.status == "deleted" {
                     paper::restore(conn, &paper::PaperRef::source(source_id.clone()))?;
@@ -115,14 +118,16 @@ fn commit_body(
                 if !pe.tags.is_empty() {
                     paper::add_paper_tags(conn, &source_id, &pe.tags)?;
                 }
+                root.source_fk
             }
             None => {
                 let meta = pe.to_metadata();
                 let extra = (!pe.tags.is_empty()).then(|| pe.tags.clone());
                 paper::save_paper_metadata(conn, &meta, extra.as_deref())?;
-                paper::ensure_paper_root(conn, &source_id)?;
+                paper::ensure_paper_root(conn, &source_id)?
             }
-        }
+        };
+        resolved.insert(source_id.clone(), source_fk);
         source_ids.push(source_id);
     }
 
@@ -142,8 +147,8 @@ fn commit_body(
     }
 
     import_pdfs(conn, pdfs, &source_ids, pdf_dir)?;
-    import_notes(conn, project_fk, manifest, &source_ids)?;
-    import_annotations(conn, project_fk, manifest, &source_ids)?;
+    import_notes(conn, project_fk, manifest, &resolved)?;
+    import_annotations(conn, project_fk, manifest, &resolved)?;
     Ok(())
 }
 
@@ -162,11 +167,12 @@ pub(super) fn import_pdfs(
     }
     std::fs::create_dir_all(pdf_dir).map_err(|e| CoreError::Internal(e.to_string()))?;
 
+    let known: HashSet<&str> = source_ids.iter().map(String::as_str).collect();
     for entry in pdfs {
         let Some(name) = ArchivePdfName::parse_entry(&entry.archive_name) else {
             continue;
         };
-        if !source_ids.iter().any(|s| s == &name.source_id) {
+        if !known.contains(name.source_id.as_str()) {
             continue;
         }
 
@@ -194,18 +200,14 @@ fn import_notes(
     conn: &Connection,
     project_fk: i64,
     manifest: &Manifest,
-    source_ids: &[String],
+    resolved: &HashMap<String, i64>,
 ) -> Result<()> {
     for nd in &manifest.notes {
         let Some(paper_source_id) = &nd.paper_source_id else {
             continue;
         };
-        if !source_ids.iter().any(|s| s == paper_source_id) {
+        let Some(&source_fk) = resolved.get(paper_source_id) else {
             continue;
-        }
-        let source_fk = match paper::get_paper_root(conn, paper_source_id)? {
-            Some(r) => r.source_fk,
-            None => continue,
         };
 
         // Re-pin to a specific PAPER version if the note named one.
@@ -240,7 +242,7 @@ fn import_annotations(
     conn: &Connection,
     project_fk: i64,
     manifest: &Manifest,
-    source_ids: &[String],
+    resolved: &HashMap<String, i64>,
 ) -> Result<()> {
     for ad in &manifest.annotations {
         // Same anchor rule as the live write boundaries, but skip-not-fail: one
@@ -252,12 +254,8 @@ fn import_annotations(
             );
             continue;
         }
-        if !source_ids.iter().any(|s| s == &ad.paper_source_id) {
+        let Some(&source_fk) = resolved.get(&ad.paper_source_id) else {
             continue;
-        }
-        let source_fk = match paper::get_paper_root(conn, &ad.paper_source_id)? {
-            Some(r) => r.source_fk,
-            None => continue,
         };
         annotation::create(
             conn,

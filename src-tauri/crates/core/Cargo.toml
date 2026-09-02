@@ -43,6 +43,9 @@ uuid = { version = "1", features = ["v4"] }
 # NFC-folds base letter + combining accent into precomposed chars (sources::feed's
 # LaTeX-accent decoder). Already in the tree transitively; promoted to a direct dep.
 unicode-normalization = "0.1"
+# Deterministic local:<sha256[:16]> PDF ids (sources::pdf_metadata::identity).
+# Already in the tree transitively (0.10.9); promoted to a direct dep.
+sha2 = "0.10"
 # Scratch dir for the TeX-source tarball (sources::arxiv_downloads::fetch_source_text):
 # RAII cleanup plus a unique dir per call. Was already present as a dev-dependency.
 tempfile = "3"

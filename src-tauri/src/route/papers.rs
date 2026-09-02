@@ -11,8 +11,8 @@ use serde_json::{json, Value};
 
 use linxiv_core::config;
 use linxiv_core::error::CoreError;
-use linxiv_core::models::PaperMetadata;
 use linxiv_core::service::paper::{self as svc_paper, PaperRef};
+use linxiv_core::service::paper_merge as svc_merge;
 use linxiv_core::service::project as svc_project;
 
 use crate::route::{path_i64, ApiError, ReqCtx};
@@ -26,6 +26,7 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
         ("GET", ["api", "papers", "sfk", fk, "doi-candidates"]) => Some(doi_candidates(state, fk)),
         ("GET", ["api", "papers", "sfk", fk]) => Some(by_sfk(state, fk, ctx)),
         ("PUT", ["api", "papers", "sfk", fk]) => Some(repair(state, fk, ctx)),
+        ("POST", ["api", "papers", "sfk", fk, "merge"]) => Some(merge(state, fk, ctx)),
         ("DELETE", ["api", "papers", "sfk", fk, "projects"]) => {
             Some(remove_from_projects(state, fk))
         }
@@ -61,10 +62,9 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
 /// `GET /api/papers/sfk/{fk}/versions` — `api_get_paper_versions`.
 fn versions(state: &AppState, fk: &str) -> Result<Value, ApiError> {
     let source_fk = path_i64(fk)?;
-    let all = state.with_conn(|conn| svc_paper::get_all(conn, &sfk_key(source_fk)))?;
-    let all = all.ok_or(CoreError::PaperNotFound(source_fk.to_string()))?;
-    let versions: Vec<Value> = all
-        .versions
+    let all = state.with_conn(|conn| svc_paper::list_version_meta(conn, &sfk_key(source_fk)))?;
+    let (source_id, rows) = all.ok_or(CoreError::PaperNotFound(source_fk.to_string()))?;
+    let versions: Vec<Value> = rows
         .iter()
         .map(|v| {
             json!({
@@ -76,8 +76,8 @@ fn versions(state: &AppState, fk: &str) -> Result<Value, ApiError> {
         })
         .collect();
     Ok(json!({
-        "source_id": all.source_id,
-        "latest_version": all.latest_version,
+        "source_id": source_id,
+        "latest_version": rows.last().expect("non-empty").version,
         "versions": versions,
     }))
 }
@@ -107,7 +107,7 @@ fn by_sfk(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
             let source_id = svc_paper::get_source_id(conn, source_fk)?
                 .ok_or_else(|| CoreError::PaperNotFound(source_fk.to_string()))?;
             let key = PaperRef::Source {
-                source_id: source_id,
+                source_id,
                 version: Some(version),
             };
             svc_paper::get(conn, &key)?
@@ -199,30 +199,12 @@ fn delete(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
 /// existing paper's identity (source_id/version/source) + the PUT body.
 fn repair(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let source_fk = path_i64(fk)?;
-    let b: RepairBody = ctx.parse_body()?;
+    let b: svc_paper::RepairFields = ctx.parse_body()?;
     state.with_conn(|conn| -> Result<Value, ApiError> {
         let paper = svc_paper::get(conn, &sfk_key(source_fk))?
             .ok_or_else(|| CoreError::PaperNotFound(source_fk.to_string()))?;
         // Date validated after the existence check, matching MCP and Python.
-        let published = svc_paper::parse_published(&b.published)?;
-        let meta = PaperMetadata {
-            source_id: paper.source_id, // identity key; not changeable here (ADR-0008)
-            version: paper.version,
-            title: b.title,
-            authors: b.authors,
-            published,
-            updated: None,
-            summary: b.summary,
-            category: b.category,
-            categories: None,
-            doi: b.doi,
-            journal_ref: None,
-            comment: None,
-            url: b.url,
-            tags: b.tags,
-            source: paper.source,
-            author_orcids: None,
-        };
+        let meta = b.into_metadata(paper.source_id, paper.version, paper.source)?;
         // Python maps sqlite3.IntegrityError -> 409, but this endpoint
         // never renames source_id so no UNIQUE conflict can arise; a stray rusqlite
         // error surfaces as CoreError::Internal (500). Reachable paths stay faithful.
@@ -233,27 +215,38 @@ fn repair(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     })
 }
 
+/// `POST /api/papers/sfk/{fk}/merge` — `merge_papers`. Merges the duplicate
+/// root named in the body INTO this paper (this paper's metadata is canonical;
+/// the duplicate's notes, annotations, memberships, tags, missing versions and
+/// PDFs move over, then the duplicate root is deleted). 404 on unknown roots,
+/// 409 on self/trashed/share-linked duplicates (see `merge_plan`'s guards).
+fn merge(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
+    let winner_fk = path_i64(fk)?;
+    #[derive(Deserialize)]
+    struct Body {
+        loser_source_fk: i64,
+    }
+    let b: Body = ctx.parse_body()?;
+    let pdf_dir = state.pdf_dir.clone();
+    // Holds the conn lock across the FS phase too — same-dir renames, bounded
+    // by the loser's version count.
+    let receipt = state.with_conn(|conn| {
+        svc_merge::merge_papers(
+            conn,
+            &pdf_dir,
+            &PaperRef::SourceFk(winner_fk),
+            &PaperRef::SourceFk(b.loser_source_fk),
+        )
+    })?;
+    to_value(&receipt)
+}
+
 /// `DELETE /api/papers/sfk/{fk}/projects` — `api_remove_paper_from_all_projects`.
 fn remove_from_projects(state: &AppState, fk: &str) -> Result<Value, ApiError> {
     let source_fk = path_i64(fk)?;
     let removed =
         state.with_conn(|conn| svc_project::remove_paper_from_all_projects(conn, source_fk))?;
     Ok(json!({ "ok": true, "removed_from_projects": removed }))
-}
-
-/// `PaperRepairBody` (`src/api/papers.ts`). `published` stays a `String` so the
-/// date is parsed by `svc_paper::parse_published`, shared with the CLI and MCP.
-#[derive(Deserialize)]
-struct RepairBody {
-    title: String,
-    authors: Vec<String>,
-    published: String,
-    #[serde(default)]
-    summary: String,
-    category: Option<String>,
-    doi: Option<String>,
-    url: Option<String>,
-    tags: Option<Vec<String>>,
 }
 
 fn sfk_key(source_fk: i64) -> PaperRef {
@@ -270,6 +263,7 @@ use super::to_value;
 mod tests {
     use super::*;
     use crate::route::{route, ApiRequest};
+    use linxiv_core::models::PaperMetadata;
     use linxiv_core::storage;
 
     fn state() -> AppState {
@@ -333,6 +327,74 @@ mod tests {
         .unwrap();
         m.doi = doi.map(String::from);
         m
+    }
+
+    /// The merge endpoint's three faces: 404 for an unknown duplicate, 409 for
+    /// a self-merge, and the happy path returning the receipt with the loser
+    /// gone afterwards. The row-level matrix lives with the service/storage
+    /// tests; this covers the HTTP mapping.
+    #[tokio::test]
+    async fn merge_maps_guards_to_404_409_and_returns_the_receipt() {
+        let st = state();
+        let winner = meta("arxiv:W", Some("10.1/x"));
+        let loser = meta("local:L", Some("10.1/x"));
+        st.with_conn(|conn| svc_paper::save_paper_metadata(conn, &winner, None))
+            .unwrap();
+        st.with_conn(|conn| svc_paper::save_paper_metadata(conn, &loser, None))
+            .unwrap();
+        let sfk_of = |sid: &str| -> i64 {
+            st.with_conn(|conn| svc_paper::resolve_source_fk(conn, sid))
+                .unwrap()
+        };
+        let (w, l) = (sfk_of("arxiv:W"), sfk_of("local:L"));
+
+        let err = req(
+            &st,
+            "POST",
+            &format!("/api/papers/sfk/{w}/merge"),
+            Some(json!({ "loser_source_fk": 9999 })),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status, 404);
+
+        let err = req(
+            &st,
+            "POST",
+            &format!("/api/papers/sfk/{w}/merge"),
+            Some(json!({ "loser_source_fk": w })),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status, 409, "self-merge must 409: {}", err.detail);
+
+        let receipt = req(
+            &st,
+            "POST",
+            &format!("/api/papers/sfk/{w}/merge"),
+            Some(json!({ "loser_source_fk": l })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(receipt["winner_source_id"], "arxiv:W");
+        assert_eq!(receipt["merged_source_id"], "local:L");
+        assert_eq!(receipt["versions_collapsed"], 1);
+
+        // The duplicate root is gone from every read surface.
+        let err = req(&st, "GET", &format!("/api/papers/sfk/{l}"), None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, 404);
+        // And no DOI twin is suggested any more.
+        let cands = req(
+            &st,
+            "GET",
+            &format!("/api/papers/sfk/{w}/doi-candidates"),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(cands, json!({ "candidates": [] }));
     }
 
     /// The guards that run BEFORE any network call, so they are the testable part
@@ -488,6 +550,44 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.status, 404);
         assert_eq!(err.detail, "Paper 999 not found");
+    }
+
+    #[tokio::test]
+    async fn versions_lists_scalars_oldest_first() {
+        let st = state();
+        st.with_conn(|conn| {
+            svc_paper::save_paper_metadata(conn, &meta("arxiv:2204.00001", None), None)
+        })
+        .unwrap();
+        let v2: PaperMetadata = serde_json::from_value(json!({
+            "source_id": "arxiv:2204.00001",
+            "version": 2,
+            "title": "T",
+            "authors": ["A"],
+            "published": "2024-02-02",
+            "summary": "S",
+        }))
+        .unwrap();
+        st.with_conn(|conn| svc_paper::save_paper_metadata(conn, &v2, None))
+            .unwrap();
+        let fk = st
+            .with_conn(|conn| svc_paper::ensure_paper_root(conn, "arxiv:2204.00001"))
+            .unwrap();
+
+        let body = req(&st, "GET", &format!("/api/papers/sfk/{fk}/versions"), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            body,
+            json!({
+                "source_id": "arxiv:2204.00001",
+                "latest_version": 2,
+                "versions": [
+                    {"version": 1, "published": "2024-01-01", "updated": null, "has_pdf": false},
+                    {"version": 2, "published": "2024-02-02", "updated": null, "has_pdf": false},
+                ]
+            })
+        );
     }
 
     #[tokio::test]

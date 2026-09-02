@@ -43,6 +43,9 @@ export const PAPER_QUERY_KEYS: readonly string[] = [
   GRAPH_QUERY_KEY,
   "stats",
   "trash",
+  // Reading-status rows cascade with papers/memberships and move on merge
+  // (api/readingStatus.ts).
+  "reading-status",
 ];
 
 /** Keys affected by a paper mutation short of deletion: save from
@@ -70,6 +73,8 @@ export const PROJECT_MUTATION_QUERY_KEYS: readonly string[] = [
   // graph's Projects / Project Tags filter rows resolve their free text through
   // exactly that list.
   GRAPH_QUERY_KEY,
+  // Trashing/restoring a reading list hides/reveals its status rows.
+  "reading-status",
 ];
 
 /** Keys affected by changing which papers belong to a project. */
@@ -81,9 +86,12 @@ export const PROJECT_MEMBERSHIP_QUERY_KEYS: readonly string[] = [
   // (crates/core/src/graph.rs sets `project_ids`), which is what the graph's
   // Projects filter matches on — so a membership change is graph data.
   GRAPH_QUERY_KEY,
+  // Removing a paper from a reading list cascades its status row away.
+  "reading-status",
 ];
 
-/** Keys affected by an author rename, delete or merge — the one paper-shaped
+/** Keys affected by an author rename, delete, merge, or a paper↔author
+ *  link/unlink (reassign is unlink+link) — the one paper-shaped
  *  operation class that had no owner here, so each call site spelled out its
  *  own key list. Author nodes and the paper->author edges the graph's Author
  *  filter matches through come from AUTHOR / PAPER_TO_AUTHOR, so a merge or a
@@ -184,16 +192,6 @@ export function invalidateNoteQueries(qc: QueryClient): Promise<void> {
 
 export function invalidateAnnotationQueries(qc: QueryClient): Promise<void> {
   return invalidateAll(qc, ANNOTATION_QUERY_KEYS);
-}
-
-export interface ReadingStatusRemover {
-  remove: (sourceId: string) => void;
-}
-
-/** Drop client-only state keyed by source_id. Permanent removal only — a soft
- *  delete must keep it so a trash → restore round-trip preserves the status. */
-export function forgetPurgedPapers(sourceIds: string[], store: ReadingStatusRemover): void {
-  for (const sid of sourceIds) store.remove(sid);
 }
 
 /** Shared wording for the partial-failure contract: some papers added, some not. */

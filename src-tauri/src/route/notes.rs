@@ -81,7 +81,8 @@ fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     }
     state.with_conn(|conn| {
         let source_fk = svc_paper::resolve_source_fk(conn, &b.source_id)?;
-        let note_id = svc_note::create(
+        // Canonical create envelope: the full NoteDetails serialization.
+        crate::route::to_value(&svc_note::create(
             conn,
             &NoteIn {
                 source_fk,
@@ -91,9 +92,7 @@ fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
                 content: b.content,
                 uuid: None,
             },
-        )?;
-        // Canonical create envelope: the full NoteDetails serialization.
-        crate::route::to_value(&svc_note::get_required(conn, note_id)?)
+        )?)
     })
 }
 
@@ -107,17 +106,18 @@ fn update(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     }
     let b: Body = ctx.parse_body()?;
     state.with_conn(|conn| {
-        svc_note::update(
+        // No row matched -> the shared 404; else the canonical update envelope
+        // is the full NoteDetails serialization.
+        let note = svc_note::update(
             conn,
             &NoteUpdateIn {
                 note_id,
                 title: b.title,
                 content: b.content,
             },
-        )?;
-        // No row matched -> get_required raises the shared 404; else the
-        // canonical update envelope is the full NoteDetails serialization.
-        crate::route::to_value(&svc_note::get_required(conn, note_id)?)
+        )?
+        .ok_or_else(|| svc_note::not_found(note_id))?;
+        crate::route::to_value(&note)
     })
 }
 

@@ -25,9 +25,9 @@ use linxiv_core::service::paper::{self as paper_svc, pdf_on_disk_name};
 use linxiv_core::service::paper_import;
 use linxiv_core::service::project as project_svc;
 use linxiv_share::{
-    build_shared_project, doc_path, e2ee_dir, e2ee_received_dir, received_dir, save,
-    valid_share_id, CustomRelay, MemberId, ProjectInvite, Role, ShareError, ShareNode, ShareStore,
-    ShareTicket,
+    build_shared_project, doc_path, e2ee_dir, e2ee_received_dir, member_id_from_hex, member_id_hex,
+    received_dir, save, valid_share_id, AutoCommit, CustomRelay, ProjectInvite, Role, ShareError,
+    ShareNode, ShareStore, ShareTicket, SharedProject,
 };
 
 use crate::p2p_config::{self, RelaySetting};
@@ -366,16 +366,24 @@ async fn list_received_with_role(state: &AppState, share: &ShareState) -> Result
     };
     // Pending mirrors are skipped: there is no content for a role to gate, and
     // one unanswered query per pending share would stall the whole listing.
-    for entry in list
-        .iter_mut()
-        .filter(|e| e["e2ee"] == json!(true) && e["pending"] != json!(true))
-    {
-        let Some(sid) = entry["share_id"].as_str().map(String::from) else {
-            continue;
-        };
+    let targets: Vec<(usize, String)> = list
+        .iter()
+        .enumerate()
+        .filter(|(_, e)| e["e2ee"] == json!(true) && e["pending"] != json!(true))
+        .filter_map(|(i, e)| e["share_id"].as_str().map(|s| (i, s.to_string())))
+        .collect();
+    // Queries run concurrently: each keeps its own timeout budget, but a slow
+    // relay no longer stalls the listing by (entries × budget).
+    let roles = futures_util::future::join_all(
+        targets
+            .iter()
+            .map(|(_, sid)| e2ee_timeout(node.query_role(sid, me), "role query")),
+    )
+    .await;
+    for ((i, _), res) in targets.iter().zip(roles) {
         // A failed or empty query leaves `role` unset (degrades editable).
-        if let Ok(Some(role)) = e2ee_timeout(node.query_role(&sid, me), "role query").await {
-            entry["role"] = match role {
+        if let Ok(Some(role)) = res {
+            list[*i]["role"] = match role {
                 Role::Read => json!("viewer"),
                 Role::Edit => json!("editor"),
                 Role::Admin => json!("hoster"),
@@ -491,21 +499,6 @@ fn save_members(share_dir: &Path, share_id: &str, list: &[MemberEntry]) -> std::
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, serde_json::to_vec(list).expect("members serialize"))?;
     std::fs::rename(&tmp, &path)
-}
-
-fn member_id_hex(m: &MemberId) -> String {
-    m.0.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-fn member_id_from_hex(s: &str) -> Option<MemberId> {
-    if s.len() != 64 || !s.is_ascii() {
-        return None;
-    }
-    let bytes: Vec<u8> = (0..64)
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
-        .collect::<Option<_>>()?;
-    Some(MemberId(bytes.try_into().ok()?))
 }
 
 /// 404 unless `share_id` is a hoster-owned e2ee doc.
@@ -669,6 +662,21 @@ fn get_received(share: &ShareState, id: &str) -> Result<Value, ApiError> {
 /// `POST /api/share/project/{id}/publish` — snapshot a canonical project into the
 /// CRDT store (read-only over the canonical connection) and return its share_id.
 async fn publish(state: &AppState, share: &ShareState, id: &str) -> Result<Value, ApiError> {
+    let (sp, doc, _lock) = publish_plain(state, share, id).await?;
+    if let Some(node) = share.node().await {
+        node.register_doc(&sp.share_id, doc)?;
+    }
+    Ok(json!({ "share_id": sp.share_id }))
+}
+
+/// Snapshot the project, refuse ids owned by a received or e2ee share, and save
+/// the plain doc under the share's write lock — the shared half of `publish` and
+/// `ticket`. The returned lock guard is held until the caller drops it.
+async fn publish_plain(
+    state: &AppState,
+    share: &ShareState,
+    id: &str,
+) -> Result<(SharedProject, AutoCommit, tokio::sync::OwnedMutexGuard<()>), ApiError> {
     let project_id = path_i64(id)?;
     let sp = state.with_conn(|conn| build_shared_project(conn, project_id))?;
     let dir = share.store.share_dir();
@@ -686,23 +694,18 @@ async fn publish(state: &AppState, share: &ShareState, id: &str) -> Result<Value
             "project is published as an encrypted share; unpublish it before publishing plain",
         ));
     }
-    let _lock = share.lock_writes(&sp.share_id).await;
+    let lock = share.lock_writes(&sp.share_id).await;
     restore_unpublished(dir, &sp.share_id);
-    save(dir, &sp)?;
-    if let Some(node) = share.node().await {
-        node.refresh(&sp.share_id).await?;
-    }
-    Ok(json!({ "share_id": sp.share_id }))
+    let doc = save(dir, &sp)?;
+    Ok((sp, doc, lock))
 }
 
 // Clone the node Arc out from under the lock, then release it: the 30s network
 // op must not hold the guard `shutdown()` also needs.
 async fn live_node(share: &ShareState) -> Result<Arc<ShareNode>, ApiError> {
     share
-        .node
-        .lock()
+        .node()
         .await
-        .clone()
         .ok_or_else(|| ApiError::new(503, "share transport not initialized"))
 }
 
@@ -711,26 +714,9 @@ async fn live_node(share: &ShareState) -> Result<Arc<ShareNode>, ApiError> {
 /// pasteable ticket carrying the sender's address + share id; access is gated
 /// by whether that id is currently published, not a per-recipient secret.
 async fn ticket(state: &AppState, share: &ShareState, id: &str) -> Result<Value, ApiError> {
-    let project_id = path_i64(id)?;
-    let sp = state.with_conn(|conn| build_shared_project(conn, project_id))?;
-    let dir = share.store.share_dir();
-    if doc_path(&received_dir(dir), &sp.share_id).is_file() {
-        return Err(ApiError::new(
-            409,
-            "project is linked to a received share; leave the share before publishing",
-        ));
-    }
-    if doc_path(&e2ee_dir(dir), &sp.share_id).is_file()
-        || doc_path(&e2ee_received_dir(dir), &sp.share_id).is_file()
-    {
-        return Err(ApiError::new(
-            409,
-            "project is published as an encrypted share; unpublish it before publishing plain",
-        ));
-    }
-    let _lock = share.lock_writes(&sp.share_id).await;
-    restore_unpublished(dir, &sp.share_id);
-    save(dir, &sp)?;
+    // `_` (not `_doc`): drop the saved doc now rather than holding it across the
+    // network call — `ticket` re-reads it from disk anyway.
+    let (sp, _, _lock) = publish_plain(state, share, id).await?;
 
     let node = live_node(share).await?;
     let ticket = tokio::time::timeout(SHARE_NET_TIMEOUT, node.ticket(&sp.share_id))
@@ -1063,17 +1049,30 @@ async fn members(share: &ShareState, id: &str) -> Result<Value, ApiError> {
     let dir = share.share_dir().to_path_buf();
     ensure_e2ee_hosted(&dir, id)?;
     let node = share.node().await;
+    let members = load_members(&dir, id);
+    // One concurrent truth-check per live invited entry; each query keeps its
+    // own timeout budget instead of serially stacking (entries × budget).
+    // `Some(revoked_now)` = query answered; `None` = unqueryable, keep sidecar.
+    let checks = futures_util::future::join_all(members.iter().map(|m| async {
+        if m.revoked || m.role == "hoster" {
+            return None;
+        }
+        let (Some(node), Some(mid)) = (&node, member_id_from_hex(&m.member_id_hex)) else {
+            return None;
+        };
+        match e2ee_timeout(node.query_role(id, mid), "member query").await {
+            Ok(role) => Some(role.is_none()),
+            Err(_) => None,
+        }
+    }))
+    .await;
     let mut out = Vec::new();
-    for m in load_members(&dir, id) {
+    for (m, check) in members.into_iter().zip(checks) {
         let mut revoked = m.revoked;
         let mut verified = m.role == "hoster";
-        if !revoked && m.role != "hoster" {
-            if let (Some(node), Some(mid)) = (&node, member_id_from_hex(&m.member_id_hex)) {
-                if let Ok(role) = e2ee_timeout(node.query_role(id, mid), "member query").await {
-                    revoked = role.is_none();
-                    verified = true;
-                }
-            }
+        if let Some(revoked_now) = check {
+            revoked = revoked_now;
+            verified = true;
         }
         out.push(json!({
             "member_id": m.member_id_hex,
@@ -1951,6 +1950,14 @@ mod tests {
             .unwrap();
         assert_eq!(joined["share_id"], json!(SID));
         assert_eq!(joined["e2ee"], json!(true));
+
+        // B's received listing annotates the live-checked role (spec §7).
+        let listed = slow(list_received_with_role(&state_b, &share_b))
+            .await
+            .unwrap();
+        let entry = &listed["received"][0];
+        assert_eq!(entry["e2ee"], json!(true));
+        assert_eq!(entry["role"], json!("viewer"));
 
         // members: hoster + live-checked viewer.
         let m = slow(members(&share_a, SID)).await.unwrap();

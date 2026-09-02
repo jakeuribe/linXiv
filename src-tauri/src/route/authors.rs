@@ -6,7 +6,8 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use linxiv_core::service::author::{self as svc_author, Author};
+use linxiv_core::service::author::{self as svc_author, Author, Authors};
+use linxiv_core::service::paper::{self as svc_paper, PaperRef};
 
 use crate::route::{path_i64, ApiError, ReqCtx};
 use crate::state::AppState;
@@ -20,6 +21,8 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
         ("GET", ["api", "authors", id, "merge-candidates"]) => Some(merge_candidates(state, id)),
         ("PATCH", ["api", "authors", id]) => Some(update(state, id, ctx)),
         ("POST", ["api", "authors", id, "merge"]) => Some(merge(state, id, ctx)),
+        ("POST", ["api", "authors", id, "papers", pid]) => Some(link_paper(state, id, pid)),
+        ("DELETE", ["api", "authors", id, "papers", pid]) => Some(unlink_paper(state, id, pid)),
         ("DELETE", ["api", "authors", id]) => Some(delete(state, id)),
         _ => None,
     }
@@ -37,17 +40,79 @@ fn detail(state: &AppState, id: &str) -> Result<Value, ApiError> {
     detail_response(state, path_i64(id)?)
 }
 
-/// `GET /api/authors/{id}/merge-candidates` — other authors sharing this
-/// author's ORCID, for the merge UI's "likely duplicate" suggestion.
+/// `GET /api/authors/{id}/merge-candidates` — likely-duplicate suggestions for
+/// the merge UI, split by evidence strength: `candidates` shares this author's
+/// ORCID (near-certain duplicate), `name_candidates` only its exact full name
+/// (NOCASE — weak evidence). An author matching both surfaces once, as ORCID.
 fn merge_candidates(state: &AppState, id: &str) -> Result<Value, ApiError> {
     let author_id = path_i64(id)?;
-    let candidates = state.with_conn(|conn| -> Result<_, ApiError> {
+    let (orcid, by_name) = state.with_conn(|conn| -> Result<_, ApiError> {
+        let author = svc_author::get(conn, &author_ref(author_id))?
+            .ok_or_else(|| ApiError::new(404, "Author not found"))?;
+        let orcid = svc_author::orcid_merge_candidates(conn, author_id)?;
+        let mut by_name = match author.full_name {
+            Some(name) => svc_author::get_many(
+                conn,
+                &Authors {
+                    paper_id: None,
+                    name: Some(vec![name]),
+                    author_ids: None,
+                },
+            )?,
+            None => Vec::new(),
+        };
+        let taken: std::collections::HashSet<i64> = orcid
+            .iter()
+            .map(|c| c.author_id)
+            .chain([author_id])
+            .collect();
+        by_name.retain(|c| !taken.contains(&c.author_id));
+        by_name.sort_by_key(|c| c.author_id);
+        Ok((orcid, by_name))
+    })?;
+    Ok(json!({ "candidates": orcid, "name_candidates": by_name }))
+}
+
+/// `POST /api/authors/{id}/papers/{paper_id}` — attach one paper to an author
+/// without merging whole author records. Idempotent: relinking an existing pair
+/// is a no-op (storage INSERT OR IGNORE). 404 if either side is absent — the
+/// FK constraint would otherwise surface as a 500.
+fn link_paper(state: &AppState, id: &str, pid: &str) -> Result<Value, ApiError> {
+    let author_id = path_i64(id)?;
+    let paper_id = path_i64(pid)?;
+    state.with_conn(|conn| -> Result<(), ApiError> {
         if svc_author::get(conn, &author_ref(author_id))?.is_none() {
             return Err(ApiError::new(404, "Author not found"));
         }
-        Ok(svc_author::orcid_merge_candidates(conn, author_id)?)
+        if svc_paper::get(conn, &PaperRef::Id(paper_id))?.is_none() {
+            return Err(ApiError::new(404, "Paper not found"));
+        }
+        Ok(svc_author::link_author_to_paper(
+            conn, author_id, paper_id, None,
+        )?)
     })?;
-    Ok(json!({ "candidates": candidates }))
+    Ok(json!({ "ok": true }))
+}
+
+/// `DELETE /api/authors/{id}/papers/{paper_id}` — detach one paper from an
+/// author. Unlinks every stored version of the paper's root: link rows are
+/// per-version and the author detail page shows latest-version ids, so an
+/// author linked only to v1 must still detach when addressed by v2's id.
+/// Idempotent on an absent link; unlinking a paper's last author is allowed
+/// (author-less papers are a legal state — `delete` requires it).
+fn unlink_paper(state: &AppState, id: &str, pid: &str) -> Result<Value, ApiError> {
+    let author_id = path_i64(id)?;
+    let paper_id = path_i64(pid)?;
+    state.with_conn(|conn| -> Result<(), ApiError> {
+        if svc_author::get(conn, &author_ref(author_id))?.is_none() {
+            return Err(ApiError::new(404, "Author not found"));
+        }
+        if !svc_author::unlink_author_from_paper(conn, author_id, paper_id)? {
+            return Err(ApiError::new(404, "Paper not found"));
+        }
+        Ok(())
+    })?;
+    Ok(json!({ "ok": true }))
 }
 
 /// `PATCH /api/authors/{id}` — `api_author_update`. Forwards the (all-optional)
@@ -323,6 +388,183 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(resp["candidates"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn merge_candidates_splits_orcid_from_name_matches() {
+        let st = state();
+        let (target, orcid_twin, name_twin_a, name_twin_b) = st.with_conn(|conn| {
+            let mk = |c: &mut Connection, name: &str, orcid: Option<&str>| {
+                svc_author::create(
+                    c,
+                    &AuthorIn {
+                        full_name: name.into(),
+                        first_name: None,
+                        last_name: None,
+                        orcid: orcid.map(String::from),
+                    },
+                )
+                .unwrap()
+            };
+            let target = mk(conn, "Bob Stone", Some("0000-1"));
+            // Same ORCID *and* same name -> must surface as ORCID only, not twice.
+            let orcid_twin = mk(conn, "Bob Stone", Some("0000-1"));
+            let name_twin_b = mk(conn, "bob stone", None); // NOCASE match
+            let name_twin_a = mk(conn, "Bob Stone", Some("0000-2"));
+            mk(conn, "Someone Else", None);
+            (target, orcid_twin, name_twin_a, name_twin_b)
+        });
+
+        let resp = req(
+            &st,
+            "GET",
+            &format!("/api/authors/{target}/merge-candidates"),
+            None,
+        )
+        .await
+        .unwrap();
+        let ids = |key: &str| -> Vec<i64> {
+            resp[key]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v["author_id"].as_i64().unwrap())
+                .collect()
+        };
+        assert_eq!(ids("candidates"), vec![orcid_twin]);
+        // Name bucket excludes self and the ORCID match; ordered by author_id.
+        assert_eq!(
+            ids("name_candidates"),
+            vec![name_twin_b.min(name_twin_a), name_twin_b.max(name_twin_a)]
+        );
+    }
+
+    #[tokio::test]
+    async fn merge_candidates_nameless_author_has_no_name_bucket() {
+        let st = state();
+        let target = st.with_conn(|conn| {
+            conn.execute("INSERT INTO AUTHOR (AUTHOR_ORCID) VALUES ('0000-9')", [])
+                .unwrap();
+            conn.last_insert_rowid()
+        });
+        let resp = req(
+            &st,
+            "GET",
+            &format!("/api/authors/{target}/merge-candidates"),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp["name_candidates"], json!([]));
+    }
+
+    #[tokio::test]
+    async fn link_and_unlink_move_a_single_paper() {
+        let st = state();
+        let (canonical, dup, _pid1, pid2) = st.with_conn(seed_two_authors_with_papers);
+
+        // Reassign pid2 from dup to canonical: link, then unlink.
+        req(
+            &st,
+            "POST",
+            &format!("/api/authors/{canonical}/papers/{pid2}"),
+            None,
+        )
+        .await
+        .unwrap();
+        req(
+            &st,
+            "DELETE",
+            &format!("/api/authors/{dup}/papers/{pid2}"),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let canonical_detail = req(&st, "GET", &format!("/api/authors/{canonical}"), None)
+            .await
+            .unwrap();
+        assert_eq!(canonical_detail["paper_count"], json!(2));
+        let dup_detail = req(&st, "GET", &format!("/api/authors/{dup}"), None)
+            .await
+            .unwrap();
+        // Unlike merge, the duplicate author survives — only the link moved.
+        assert_eq!(dup_detail["paper_count"], json!(0));
+    }
+
+    #[tokio::test]
+    async fn link_is_idempotent_on_existing_pair() {
+        let st = state();
+        let (canonical, _dup, pid1, _pid2) = st.with_conn(seed_two_authors_with_papers);
+        req(
+            &st,
+            "POST",
+            &format!("/api/authors/{canonical}/papers/{pid1}"),
+            None,
+        )
+        .await
+        .unwrap();
+        let detail = req(&st, "GET", &format!("/api/authors/{canonical}"), None)
+            .await
+            .unwrap();
+        assert_eq!(detail["paper_count"], json!(1));
+    }
+
+    #[tokio::test]
+    async fn link_and_unlink_missing_author_or_paper_is_404() {
+        let st = state();
+        let (canonical, _dup, pid1, _pid2) = st.with_conn(seed_two_authors_with_papers);
+        for (method, path) in [
+            ("POST", format!("/api/authors/999/papers/{pid1}")),
+            ("POST", format!("/api/authors/{canonical}/papers/999")),
+            ("DELETE", format!("/api/authors/999/papers/{pid1}")),
+            ("DELETE", format!("/api/authors/{canonical}/papers/999")),
+        ] {
+            let err = req(&st, method, &path, None).await.unwrap_err();
+            assert_eq!(err.status, 404, "{method} {path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn unlink_covers_every_version_of_the_root() {
+        let st = state();
+        let (canonical, _dup, pid1, _pid2) = st.with_conn(seed_two_authors_with_papers);
+        // A second version of paper 1: the author stays linked to v1's row only,
+        // while the UI addresses the paper by the latest version's id.
+        let pid1_v2 = st.with_conn(|conn| {
+            let fk: i64 = conn
+                .query_row(
+                    "SELECT SOURCE_FK FROM PAPER WHERE PAPER_ID = ?",
+                    params![pid1],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            conn.execute(
+                "INSERT INTO PAPER (SOURCE_ID, VERSION, TITLE, SOURCE_FK) VALUES ('arxiv:1', 2, 'T1v2', ?)",
+                params![fk],
+            )
+            .unwrap();
+            let pid = conn.last_insert_rowid();
+            conn.execute(
+                "INSERT INTO PAPER_META (PAPER_ID, PUBLISHED) VALUES (?, '2024-02-01')",
+                params![pid],
+            )
+            .unwrap();
+            pid
+        });
+
+        req(
+            &st,
+            "DELETE",
+            &format!("/api/authors/{canonical}/papers/{pid1_v2}"),
+            None,
+        )
+        .await
+        .unwrap();
+        let detail = req(&st, "GET", &format!("/api/authors/{canonical}"), None)
+            .await
+            .unwrap();
+        assert_eq!(detail["paper_count"], json!(0));
     }
 
     #[tokio::test]

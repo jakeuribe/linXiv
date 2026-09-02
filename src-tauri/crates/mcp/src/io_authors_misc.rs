@@ -179,7 +179,7 @@ impl Server {
         } = params.0;
         let pdf_dir = self.pdf_dir.clone();
         let path = self.with_conn(|conn| -> Result<String, ErrorData> {
-            svc_project::get_required(conn, project_id).map_err(guard_err)?;
+            svc_project::require(conn, project_id).map_err(guard_err)?;
             let out =
                 svc_ei::export_project(conn, project_id, Path::new(&dest), include_pdfs, &pdf_dir)
                     .map_err(map_core)?;

@@ -86,7 +86,20 @@ pub fn get_note(conn: &Connection, note_id: i64) -> Result<Option<NoteDetails>> 
         .optional()?)
 }
 
-/// `storage/notes.py::create_note` — INSERT a note, returns the new NOTE_SK.
+/// Just one note's content — for frontmatter checks that never need the hydrated
+/// row. `None` if the note is absent; NULL content coalesces to "" like
+/// `note_from_row`.
+pub fn get_note_content(conn: &Connection, note_id: i64) -> Result<Option<String>> {
+    Ok(conn
+        .query_row("SELECT NOTE FROM NOTE WHERE NOTE_SK = ?1", [note_id], |r| {
+            r.get::<_, Option<String>>(0)
+        })
+        .optional()?
+        .map(Option::unwrap_or_default))
+}
+
+/// `storage/notes.py::create_note` — INSERT a note, RETURNING the created row
+/// (saves the re-SELECT every surface did for the canonical create envelope).
 /// CREATED_AT/UPDATED_AT both stamped now (Python `datetime.now(utc)`).
 /// `uuid` None generates a fresh v4; Some preserves an imported identity.
 pub fn create_note(
@@ -97,34 +110,41 @@ pub fn create_note(
     title: &str,
     content: &str,
     uuid: Option<&str>,
-) -> Result<i64> {
+) -> Result<NoteDetails> {
     let now = timestamp_to_sql(Utc::now().naive_utc());
     let uuid = uuid
         .map(str::to_owned)
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    conn.execute(
-        "INSERT INTO NOTE (SOURCE_FK, PAPER_ID_FK, PROJECT_FK, TITLE, NOTE, NOTE_UUID, CREATED_AT, UPDATED_AT) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+    Ok(conn.query_row(
+        &format!(
+            "INSERT INTO NOTE (SOURCE_FK, PAPER_ID_FK, PROJECT_FK, TITLE, NOTE, NOTE_UUID, CREATED_AT, UPDATED_AT) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7) RETURNING {NOTE_COLS}"
+        ),
         params![source_fk, paper_id_fk, project_id, title, content, uuid, now],
-    )?;
-    Ok(conn.last_insert_rowid())
+        note_from_row,
+    )?)
 }
 
 /// `storage/notes.py::patch_note` — partial update via COALESCE: a None arg
-/// leaves the column unchanged. Returns false if no row matched NOTE_SK.
+/// leaves the column unchanged. RETURNING the updated row; None if no row
+/// matched NOTE_SK.
 pub fn patch_note(
     conn: &Connection,
     note_id: i64,
     title: Option<&str>,
     content: Option<&str>,
-) -> Result<bool> {
+) -> Result<Option<NoteDetails>> {
     let now = timestamp_to_sql(Utc::now().naive_utc());
-    let n = conn.execute(
-        "UPDATE NOTE SET TITLE = COALESCE(?1, TITLE), NOTE = COALESCE(?2, NOTE), \
-         UPDATED_AT = ?3 WHERE NOTE_SK = ?4",
-        params![title, content, now, note_id],
-    )?;
-    Ok(n > 0)
+    Ok(conn
+        .query_row(
+            &format!(
+                "UPDATE NOTE SET TITLE = COALESCE(?1, TITLE), NOTE = COALESCE(?2, NOTE), \
+                 UPDATED_AT = ?3 WHERE NOTE_SK = ?4 RETURNING {NOTE_COLS}"
+            ),
+            params![title, content, now, note_id],
+            note_from_row,
+        )
+        .optional()?)
 }
 
 /// `storage/notes.py::delete_note` — hard-delete one note row; false if absent.
@@ -141,16 +161,6 @@ pub fn count_notes(conn: &Connection, source_fk: i64, project_id: Option<i64>) -
         params![source_fk, project_id],
         |r| r.get(0),
     )?)
-}
-
-/// `storage/notes.py::count_project_notes` — total notes scoped to a project.
-pub fn count_project_notes(conn: &Connection, project_id: i64) -> Result<i64> {
-    let n = conn.query_row(
-        "SELECT COUNT(*) FROM NOTE WHERE PROJECT_FK = ?1",
-        [project_id],
-        |r| r.get(0),
-    )?;
-    Ok(n)
 }
 
 /// Check if a NOTE_UUID is already taken (exists in the database).
@@ -179,6 +189,26 @@ pub fn list_all_notes(conn: &Connection) -> Result<Vec<NoteDetails>> {
         &format!("SELECT {NOTE_COLS} FROM NOTE ORDER BY CREATED_AT ASC"),
         &[],
     )
+}
+
+/// Notes whose body contains `needle`, optionally scoped to a project,
+/// CREATED_AT ASC. A prefilter for flag-in-content scans (editor projects):
+/// callers must still verify the match exactly — `instr` finds the needle
+/// anywhere in the body, not just where the caller means it. `instr` (not
+/// LIKE) because NOTE has BLOB affinity: it byte-searches blob rows and
+/// char-searches text rows alike.
+pub fn list_notes_containing(
+    conn: &Connection,
+    needle: &str,
+    project_id: Option<i64>,
+) -> Result<Vec<NoteDetails>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {NOTE_COLS} FROM NOTE \
+         WHERE instr(NOTE, ?1) > 0 AND (?2 IS NULL OR PROJECT_FK = ?2) \
+         ORDER BY CREATED_AT ASC"
+    ))?;
+    let rows = stmt.query_map(params![needle, project_id], note_from_row)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 /// `storage/notes.py::get_notes_by_paper_id` — notes pinned to a specific paper
@@ -351,24 +381,33 @@ mod tests {
         init_db(&conn).unwrap();
         let (src, _, proj) = seed(&conn);
 
-        let id = create_note(&conn, src, None, Some(proj), "t1", "body1", None).unwrap();
+        let created = create_note(&conn, src, None, Some(proj), "t1", "body1", None).unwrap();
+        let id = created.note_id;
+        // The RETURNING row must be identical to a fresh SELECT of the same note.
         let got = get_note(&conn, id).unwrap().unwrap();
+        assert_eq!(
+            serde_json::to_value(&created).unwrap(),
+            serde_json::to_value(&got).unwrap()
+        );
         assert_eq!(got.title, "t1");
         assert_eq!(got.content, "body1");
         assert_eq!(got.project_id, Some(proj));
         assert!(got.created_at.is_some());
 
-        // patch: None leaves column unchanged; Some replaces it.
-        assert!(patch_note(&conn, id, None, Some("body2")).unwrap());
+        // patch: None leaves column unchanged; Some replaces it, and the
+        // RETURNING row reflects the post-update state.
+        let patched = patch_note(&conn, id, None, Some("body2")).unwrap().unwrap();
+        assert_eq!(patched.title, "t1"); // unchanged
+        assert_eq!(patched.content, "body2");
         let got = get_note(&conn, id).unwrap().unwrap();
         assert_eq!(got.title, "t1"); // unchanged
         assert_eq!(got.content, "body2");
 
-        assert!(patch_note(&conn, id, Some("t2"), None).unwrap());
+        assert!(patch_note(&conn, id, Some("t2"), None).unwrap().is_some());
         assert_eq!(get_note(&conn, id).unwrap().unwrap().title, "t2");
 
-        // patch/delete of an absent row report false.
-        assert!(!patch_note(&conn, 999, Some("x"), None).unwrap());
+        // patch/delete of an absent row report None/false.
+        assert!(patch_note(&conn, 999, Some("x"), None).unwrap().is_none());
         assert!(!delete_note(&conn, 999).unwrap());
 
         // delete actually removes the row.
@@ -397,7 +436,6 @@ mod tests {
         // count_notes: by paper, and narrowed to a project.
         assert_eq!(count_notes(&conn, src, None).unwrap(), 2);
         assert_eq!(count_notes(&conn, src, Some(proj)).unwrap(), 1);
-        assert_eq!(count_project_notes(&conn, proj).unwrap(), 2);
 
         assert_eq!(list_all_notes(&conn).unwrap().len(), 3);
 
@@ -468,7 +506,9 @@ mod tests {
         init_db(&conn).unwrap();
         let (src, _, proj) = seed(&conn);
 
-        let id = create_note(&conn, src, None, Some(proj), "t", "body", Some("fixed")).unwrap();
+        let id = create_note(&conn, src, None, Some(proj), "t", "body", Some("fixed"))
+            .unwrap()
+            .note_id;
         let got = get_note(&conn, id).unwrap().unwrap();
         assert_eq!(got.uuid, "fixed");
 

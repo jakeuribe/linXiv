@@ -36,8 +36,9 @@ mod graph;
 mod notes;
 mod orcid;
 pub(crate) mod papers; // ingest_full_text reused by the background full-text worker
-pub(crate) mod pdfs; // resolve_local_pdf reused by the linxiv:// protocol handler
+mod pdfs;
 mod projects;
+mod reading_status;
 mod search;
 mod settings;
 pub mod share; // ShareState + share_api command, managed beside AppState in main.rs
@@ -49,8 +50,7 @@ mod uploads;
 mod versions;
 
 /// One webview→backend call. `body` is the parsed JSON request body (None for
-/// GET/DELETE without a body); file uploads do not come through here (they stay
-/// on the HTTP path until Phase 5c).
+/// GET/DELETE without a body), including base64 file uploads (`uploads.rs`).
 #[derive(Deserialize)]
 pub struct ApiRequest {
     pub method: String,
@@ -109,10 +109,11 @@ impl ReqCtx<'_> {
         matches!(self.q(key), Some("true") | Some("1"))
     }
     /// Deserialize the JSON body into `T`, matching FastAPI's pydantic binding
-    /// (422 on a malformed/missing body).
+    /// (422 on a malformed/missing body). Deserializes from the borrowed `Value`
+    /// rather than cloning it first — bodies can be ~100 MB base64 PDF uploads.
     pub fn parse_body<T: serde::de::DeserializeOwned>(&self) -> Result<T, ApiError> {
-        let v = self.body.cloned().unwrap_or(Value::Null);
-        serde_json::from_value(v).map_err(|e| ApiError::new(422, e.to_string()))
+        T::deserialize(self.body.unwrap_or(&Value::Null))
+            .map_err(|e| ApiError::new(422, e.to_string()))
     }
 }
 
@@ -133,11 +134,13 @@ pub async fn api(state: tauri::State<'_, AppState>, req: ApiRequest) -> Result<V
 /// logs 5xx errors to stderr — otherwise a handler failure only exists as a UI
 /// toast and is undiagnosable after the fact.
 pub async fn route(state: &AppState, req: ApiRequest) -> Result<Value, ApiError> {
-    let (method, path) = (req.method.clone(), req.path.clone());
-    let res = route_inner(state, req).await;
+    let res = route_inner(state, &req).await;
     if let Err(e) = &res {
         if e.status >= 500 {
-            eprintln!("[linxiv] {method} {path} -> {}: {}", e.status, e.detail);
+            eprintln!(
+                "[linxiv] {} {} -> {}: {}",
+                req.method, req.path, e.status, e.detail
+            );
         }
     }
     res
@@ -146,7 +149,7 @@ pub async fn route(state: &AppState, req: ApiRequest) -> Result<Value, ApiError>
 /// The router proper. The whole router is `async` so the
 /// source-backed arms (arxiv/openalex/doi) can `.await`; DB-only arms run their
 /// `with_conn` closure to completion (no lock held across an await).
-async fn route_inner(state: &AppState, req: ApiRequest) -> Result<Value, ApiError> {
+async fn route_inner(state: &AppState, req: &ApiRequest) -> Result<Value, ApiError> {
     let (raw_path, raw_query) = req.path.split_once('?').unwrap_or((req.path.as_str(), ""));
     let segs = split_segments(raw_path);
     let query = parse_query(raw_query);
@@ -160,13 +163,6 @@ async fn route_inner(state: &AppState, req: ApiRequest) -> Result<Value, ApiErro
 
     // Flat top-level arms (no resource subtree).
     match (ctx.method, ctx.segs) {
-        ("GET", ["api", "health"]) => {
-            return Ok(json!({
-                "ok": true,
-                "service": "linxiv-api",
-                "token": std::env::var("LINXIV_HEALTH_TOKEN").unwrap_or_default(),
-            }))
-        }
         ("GET", ["api", "stats"]) => return stats(state),
         ("GET", ["api", "categories"]) => return categories(state),
         _ => {}
@@ -188,6 +184,7 @@ async fn route_inner(state: &AppState, req: ApiRequest) -> Result<Value, ApiErro
         pdfs,
         papers,
         projects,
+        reading_status,
         notes,
         annotations,
         tags,
@@ -270,6 +267,9 @@ pub(crate) fn parse_query(raw: &str) -> HashMap<String, String> {
 /// for space).
 /// Shared with the `linxiv://` protocol handler.
 pub(crate) fn pct_decode(s: &str) -> String {
+    if !s.contains('%') {
+        return s.to_owned();
+    }
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
