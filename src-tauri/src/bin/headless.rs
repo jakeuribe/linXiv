@@ -202,9 +202,12 @@ fn spawn_feed_poll(state: Arc<AppState>) {
 
 // --- Relay access control -------------------------------------------------
 // iroh-relay's `access.http` POSTs `/api/relay-access` with an
-// `X-Iroh-Endpoint-Id` header per connecting endpoint; only an exact 200
-// `true` (text/plain) allows. Decision source: the endpoint-id allowlist at
-// `<data_dir>/relay_allowlist.json` — missing/empty file denies everyone.
+// `X-Iroh-NodeId` header per connecting endpoint (that exact name — the 1.0.2
+// source's X_IROH_ENDPOINT_ID const is "X-Iroh-NodeId"; we also accept
+// `X-Iroh-Endpoint-Id`, the name the docs use, in case a later release renames
+// it). Only an exact 200 `true` (text/plain) allows. Decision source: the
+// endpoint-id allowlist at `<data_dir>/relay_allowlist.json` — missing/empty
+// file denies everyone.
 
 const RELAY_LOG_CAP: usize = 200;
 
@@ -248,12 +251,16 @@ fn allowlist_path() -> std::path::PathBuf {
     linxiv_core::config::data_dir().join("relay_allowlist.json")
 }
 
-/// Missing or unparseable file => empty list (deny everyone).
-fn load_allowlist() -> Vec<String> {
-    std::fs::read_to_string(allowlist_path())
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+/// Missing file => empty list (deny everyone). A present-but-unparseable file
+/// is an error so access still denies (`unwrap_or_default`) but admin writes
+/// refuse to clobber it — e.g. a botched hand-edit must not be silently
+/// replaced with an empty list.
+fn load_allowlist() -> Result<Vec<String>, String> {
+    match std::fs::read_to_string(allowlist_path()) {
+        Err(_) => Ok(Vec::new()),
+        Ok(s) => serde_json::from_str(&s)
+            .map_err(|e| format!("relay_allowlist.json is unparseable ({e}); fix or delete it")),
+    }
 }
 
 /// Sibling tmp + rename, same atomic-write pattern as `sources/download.rs`.
@@ -269,10 +276,11 @@ fn save_allowlist(list: &[String]) -> std::io::Result<()> {
 fn relay_access(ctx: &Ctx, req: &Request) -> Response {
     let id = req
         .headers()
-        .get("x-iroh-endpoint-id")
+        .get("x-iroh-nodeid")
+        .or_else(|| req.headers().get("x-iroh-endpoint-id"))
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
-    let allowed = relay_allow(&load_allowlist(), id.as_deref());
+    let allowed = relay_allow(&load_allowlist().unwrap_or_default(), id.as_deref());
     ctx.relay.lock().unwrap().push(id.as_deref(), allowed);
     (
         StatusCode::OK,
@@ -288,8 +296,15 @@ fn relay_admin(ctx: &Ctx, req: &ApiRequest) -> Option<Response> {
     const MEMBERS: &str = "/api/admin/relay/members";
     let path = req.path.split('?').next().unwrap_or("");
     let list = |l: &[String]| serde_json::json!({ "members": l });
+    // Corrupt allowlist: surface it and refuse writes rather than clobbering.
+    let loaded = |r: Result<Vec<String>, String>| {
+        r.map_err(|e| json(StatusCode::CONFLICT, &serde_json::json!({ "detail": e })))
+    };
     match (req.method.as_str(), path) {
-        ("GET", MEMBERS) => Some(json(StatusCode::OK, &list(&load_allowlist()))),
+        ("GET", MEMBERS) => Some(match loaded(load_allowlist()) {
+            Ok(l) => json(StatusCode::OK, &list(&l)),
+            Err(resp) => resp,
+        }),
         ("GET", "/api/admin/relay/log") => {
             let log = ctx.relay.lock().unwrap();
             Some(json(
@@ -311,7 +326,10 @@ fn relay_admin(ctx: &Ctx, req: &ApiRequest) -> Option<Response> {
                 ));
             }
             let _guard = ctx.relay.lock().unwrap(); // serialize read-modify-write
-            let mut members = load_allowlist();
+            let mut members = match loaded(load_allowlist()) {
+                Ok(l) => l,
+                Err(resp) => return Some(resp),
+            };
             if !members.iter().any(|a| a.eq_ignore_ascii_case(&id)) {
                 members.push(id);
             }
@@ -320,7 +338,10 @@ fn relay_admin(ctx: &Ctx, req: &ApiRequest) -> Option<Response> {
         ("DELETE", p) if p.starts_with("/api/admin/relay/members/") => {
             let id = &p["/api/admin/relay/members/".len()..];
             let _guard = ctx.relay.lock().unwrap();
-            let mut members = load_allowlist();
+            let mut members = match loaded(load_allowlist()) {
+                Ok(l) => l,
+                Err(resp) => return Some(resp),
+            };
             members.retain(|a| !a.eq_ignore_ascii_case(id));
             Some(persist(members, &list))
         }
