@@ -1,7 +1,7 @@
 // Run: node --experimental-strip-types --test src/lib/syncPill.test.ts
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { latestSyncedAt } from "./syncPill.ts";
+import { isSyncFailure, latestSyncedAt } from "./syncPill.ts";
 import type { SharedSummary } from "../api/share";
 
 const summary = (overrides: Partial<SharedSummary>): SharedSummary => ({
@@ -26,4 +26,24 @@ test("latestSyncedAt picks the most recent synced_at across shares", () => {
     summary({ share_id: "d", synced_at: "not-a-date" }), // unreadable mtime
   ];
   assert.equal(latestSyncedAt(shares), "2026-09-01T12:30:00Z");
+});
+
+test("isSyncFailure: synced=false is a failure unless intentionally skipped", () => {
+  assert.equal(isSyncFailure({ synced: true }), false);
+  // Intentional skips, not failures.
+  assert.equal(isSyncFailure({ synced: false, reason: "paused" }), false);
+  assert.equal(isSyncFailure({ synced: false, reason: "direction" }), false);
+  // Real failures syncShare resolves with instead of throwing.
+  for (const reason of [
+    "p2p offline",
+    "no ticket",
+    "bad ticket",
+    "project gone",
+    "revoked or awaiting key",
+    "awaiting first sync",
+    "no key for any content",
+  ] as const) {
+    assert.equal(isSyncFailure({ synced: false, reason }), true, reason);
+  }
+  assert.equal(isSyncFailure({ synced: false }), true); // no reason given
 });
