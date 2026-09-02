@@ -36,7 +36,7 @@ mod graph;
 mod notes;
 mod orcid;
 pub(crate) mod papers; // ingest_full_text reused by the background full-text worker
-mod pdfs;
+pub(crate) mod pdfs; // resolve_pdf reused by remote_query's byte lane
 mod projects;
 mod reading_status;
 mod search;

@@ -52,7 +52,14 @@ pub struct ShareState {
     // bound node — guards against spawning the background interval-sync loop
     // twice (or never, if startup found no node but a reconnect later does).
     sync_started: AtomicBool,
+    // Remote Query Mode (headless only): re-applied to every fresh node, so
+    // a relay reconnect's rebind doesn't silently drop the api handler.
+    api_installer: std::sync::Mutex<Option<ApiInstallFn>>,
 }
+
+/// Installs the `linxiv-api/1` handler on a freshly bound node (headless bin;
+/// the desktop app never sets one).
+pub type ApiInstallFn = Arc<dyn Fn(&ShareNode) + Send + Sync>;
 
 impl ShareState {
     /// Store-only state (no network node). Used by the Phase-0 sync unit tests.
@@ -62,6 +69,7 @@ impl ShareState {
             node: Mutex::new(None),
             write_locks: Mutex::new(HashMap::new()),
             sync_started: AtomicBool::new(false),
+            api_installer: std::sync::Mutex::new(None),
         }
     }
 
@@ -72,6 +80,7 @@ impl ShareState {
             node: Mutex::new(Some(Arc::new(node))),
             write_locks: Mutex::new(HashMap::new()),
             sync_started: AtomicBool::new(false),
+            api_installer: std::sync::Mutex::new(None),
         }
     }
 
@@ -137,8 +146,20 @@ impl ShareState {
             old.shutdown().await?;
         }
         let fresh = ShareNode::bind_with_dek(self.store.share_dir(), p2p_dir, dek, relay).await?;
+        if let Some(install) = self.api_installer.lock().unwrap().clone() {
+            install(&fresh);
+        }
         *guard = Some(Arc::new(fresh));
         Ok(())
+    }
+
+    /// Registers the Remote Query Mode installer and applies it to the
+    /// current node (if bound). `rebind` re-applies it to every fresh node.
+    pub async fn install_api(&self, install: ApiInstallFn) {
+        *self.api_installer.lock().unwrap() = Some(install.clone());
+        if let Some(node) = self.node().await {
+            install(&node);
+        }
     }
 }
 

@@ -48,7 +48,7 @@
     cursor: pointer;
   }
   button.plain { background: none; color: var(--accent); padding: .1rem .3rem; }
-  input {
+  input, select {
     font: inherit;
     color: inherit;
     background: none;
@@ -56,7 +56,8 @@
     border-radius: 4px;
     padding: .25rem .5rem;
   }
-  input:focus { outline: 2px solid var(--accent); }
+  select option { color: var(--fg); background: var(--bg); }
+  input:focus, select:focus { outline: 2px solid var(--accent); }
   table { border-collapse: collapse; width: 100%; margin-top: .5rem; }
   th, td { text-align: left; padding: .2rem .6rem .2rem 0; border-bottom: 1px solid var(--line); }
   th { font-weight: 600; font-size: .85rem; }
@@ -85,18 +86,35 @@
 <h2>Status</h2>
 <dl id="status"><dd class="muted">loading…</dd></dl>
 
-<h2>Relay members</h2>
+<h2>Node address</h2>
+<p class="muted">What members paste to add this node as a remote library. A locator, not a capability.</p>
+<p class="row"><span id="node-address" class="mono muted">loading…</span><button id="copy-address" class="plain" hidden>copy</button></p>
+
+<h2>Members</h2>
+<p class="muted">Presence grants relay access; the role grants remote query rights (read = GET only).</p>
 <ul id="members"></ul>
 <form id="add-form" class="row">
   <input id="add-id" size="66" placeholder="endpoint id (64 hex chars)" class="mono" required pattern="[0-9a-fA-F]{64}">
+  <select id="add-role">
+    <option value="none" selected>none</option>
+    <option value="read">read</option>
+    <option value="read-write">read-write</option>
+  </select>
   <button type="submit">Add</button>
 </form>
 
 <h2>Access log <button id="refresh" class="plain">refresh</button></h2>
 <p class="muted">To join: connect the device once, find its denied entry below, add its id above.</p>
 <table>
-  <thead><tr><th>#</th><th>endpoint id</th><th>allowed</th></tr></thead>
-  <tbody id="log"><tr><td colspan="3" class="muted">loading…</td></tr></tbody>
+  <thead><tr><th>#</th><th>endpoint id</th><th>via</th><th>allowed</th></tr></thead>
+  <tbody id="log"><tr><td colspan="4" class="muted">loading…</td></tr></tbody>
+</table>
+
+<h2>Transfers</h2>
+<p class="muted">PDF byte-lane outcomes, as this sender saw them.</p>
+<table>
+  <thead><tr><th>#</th><th>endpoint id</th><th>outcome</th><th>bytes</th></tr></thead>
+  <tbody id="transfers"><tr><td colspan="4" class="muted">loading…</td></tr></tbody>
 </table>
 
 <script>
@@ -150,6 +168,14 @@ async function loadStatus() {
   }
 }
 
+function setMember(id, role) {
+  return api("/api/admin/relay/members", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ endpoint_id: id, role }),
+  });
+}
+
 async function loadMembers() {
   const { members } = await api("/api/admin/relay/members");
   const ul = $("members");
@@ -161,20 +187,71 @@ async function loadMembers() {
     ul.append(li);
     return;
   }
-  for (const id of members) {
+  for (const m of members) {
     const li = document.createElement("li");
     li.className = "row";
     const span = document.createElement("span");
     span.className = "mono";
-    text(span, id);
+    text(span, m.id);
+    const sel = document.createElement("select");
+    for (const role of ["none", "read", "read-write"]) {
+      const opt = document.createElement("option");
+      opt.value = role;
+      text(opt, role);
+      opt.selected = role === m.role;
+      sel.append(opt);
+    }
+    sel.onchange = () =>
+      setMember(m.id, sel.value).catch(e => { msg(e.message); loadMembers(); });
     const btn = document.createElement("button");
     btn.className = "plain";
     text(btn, "remove");
     btn.onclick = () =>
-      api("/api/admin/relay/members/" + id, { method: "DELETE" })
+      api("/api/admin/relay/members/" + m.id, { method: "DELETE" })
         .then(loadMembers).catch(e => msg(e.message));
-    li.append(span, btn);
+    li.append(span, sel, btn);
     ul.append(li);
+  }
+}
+
+async function loadNodeAddress() {
+  const el = $("node-address");
+  try {
+    const { node_address } = await api("/api/admin/node-address");
+    text(el, node_address);
+    el.className = "mono";
+    $("copy-address").hidden = false;
+    $("copy-address").onclick = () =>
+      navigator.clipboard.writeText(node_address).catch(e => msg(e.message));
+  } catch (e) {
+    text(el, e.message);
+    el.className = "mono muted";
+    $("copy-address").hidden = true;
+  }
+}
+
+async function loadTransfers() {
+  const { entries } = await api("/api/admin/transfers");
+  const tb = $("transfers");
+  tb.replaceChildren();
+  if (!entries.length) {
+    const tr = tb.insertRow();
+    const td = tr.insertCell();
+    td.colSpan = 4;
+    td.className = "muted";
+    text(td, "no transfers yet");
+    return;
+  }
+  for (const e of entries.slice().reverse()) { // newest first
+    const tr = tb.insertRow();
+    text(tr.insertCell(), String(e.seq));
+    const idCell = tr.insertCell();
+    idCell.className = "mono";
+    text(idCell, e.endpoint_id || "—");
+    const out = tr.insertCell();
+    out.className = e.outcome === "delivered" ? "" : "err";
+    text(out, e.outcome);
+    text(tr.insertCell(), String(e.bytes));
   }
 }
 
@@ -185,7 +262,7 @@ async function loadLog() {
   if (!entries.length) {
     const tr = tb.insertRow();
     const td = tr.insertCell();
-    td.colSpan = 3;
+    td.colSpan = 4;
     td.className = "muted";
     text(td, "no entries yet");
     return;
@@ -196,6 +273,7 @@ async function loadLog() {
     const idCell = tr.insertCell();
     idCell.className = "mono";
     text(idCell, e.endpoint_id || "—");
+    text(tr.insertCell(), e.source || "relay");
     const ok = tr.insertCell();
     ok.className = e.allowed ? "" : "err";
     text(ok, e.allowed ? "allowed" : "denied");
@@ -204,7 +282,8 @@ async function loadLog() {
 
 function refreshAll() {
   msg("");
-  Promise.all([loadStatus(), loadMembers(), loadLog()]).catch(e => msg(e.message));
+  Promise.all([loadStatus(), loadNodeAddress(), loadMembers(), loadLog(), loadTransfers()])
+    .catch(e => msg(e.message));
 }
 
 $("token-form").onsubmit = e => {
@@ -217,19 +296,17 @@ $("token-form").onsubmit = e => {
 
 $("add-form").onsubmit = e => {
   e.preventDefault();
-  api("/api/admin/relay/members", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ endpoint_id: $("add-id").value.trim() }),
-  }).then(() => { $("add-id").value = ""; return loadMembers(); })
+  setMember($("add-id").value.trim(), $("add-role").value)
+    .then(() => { $("add-id").value = ""; return loadMembers(); })
     .catch(e => msg(e.message));
 };
 
-$("refresh").onclick = () => loadLog().catch(e => msg(e.message));
+$("refresh").onclick = () =>
+  Promise.all([loadLog(), loadTransfers()]).catch(e => msg(e.message));
 
 setInterval(() => {
   if (document.visibilityState === "visible") {
-    Promise.all([loadStatus(), loadLog()]).catch(e => msg(e.message));
+    Promise.all([loadStatus(), loadLog(), loadTransfers()]).catch(e => msg(e.message));
   }
 }, 30000);
 

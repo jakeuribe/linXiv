@@ -24,6 +24,9 @@ use axum::{
     Router,
 };
 
+use linxiv_app::remote_query::{
+    self, load_members, relay_allow, save_members, valid_endpoint_id, Member, Role, TransferLog,
+};
 use linxiv_app::route::share::ShareState;
 use linxiv_app::route::{feed, route, share, ApiRequest};
 use linxiv_app::state::AppState;
@@ -44,9 +47,11 @@ struct Ctx {
     token: Option<Arc<str>>,
     /// Process start, for `uptime_secs` in `GET /api/status`.
     started: Instant,
-    /// Relay access log + serialization of allowlist file writes.
+    /// Relay access log + serialization of member-list file writes.
     /// ponytail: one Mutex around list+log; split if relay checks ever contend.
     relay: Arc<Mutex<RelayLog>>,
+    /// Byte-lane transfer outcomes (Remote Query Mode PDF lane).
+    transfers: Arc<Mutex<TransferLog>>,
 }
 
 #[tokio::main]
@@ -87,10 +92,12 @@ async fn main() {
         token,
         started,
         relay: Arc::new(Mutex::new(RelayLog::default())),
+        transfers: Arc::new(Mutex::new(TransferLog::default())),
     };
     if node_bound && ctx.share.mark_sync_started() {
         spawn_interval_sync(&ctx);
     }
+    install_remote_query(&ctx).await;
     // Idles until `full_text_worker_enabled` is switched on, same as the app.
     full_text_worker::spawn_headless(ctx.state.clone());
     spawn_feed_poll(ctx.state.clone());
@@ -158,6 +165,32 @@ fn check_auth(ctx: &Ctx, req: &Request) -> Option<Response> {
     }
 }
 
+/// Remote Query Mode: serve `linxiv-api/1` on the share node's endpoint.
+/// Registered through `install_api` so a relay-reconnect rebind re-applies
+/// the handler; knocks land in the relay/access log with `source: "api"`.
+async fn install_remote_query(ctx: &Ctx) {
+    let relay_log = ctx.relay.clone();
+    let knock: linxiv_p2p::KnockLogFn = Arc::new(move |peer: &str| {
+        relay_log.lock().unwrap().push(Some(peer), false, "api");
+    });
+    let transfers = ctx.transfers.clone();
+    let transfer: linxiv_p2p::TransferLogFn = Arc::new(move |peer: &str, outcome| {
+        transfers.lock().unwrap().push(peer, outcome);
+    });
+    let proto = remote_query::build_api_proto(
+        ctx.state.clone(),
+        remote_query::file_member_check(),
+        knock,
+        transfer,
+        remote_query::pdf_rate_bps(),
+    );
+    ctx.share
+        .install_api(Arc::new(move |node| {
+            node.set_api_protocol(Box::new(proto.clone()));
+        }))
+        .await;
+}
+
 /// Same 5-minute loop the app spawns, minus the `AppHandle`.
 fn spawn_interval_sync(ctx: &Ctx) {
     let (state, share) = (ctx.state.clone(), ctx.share.clone());
@@ -200,18 +233,21 @@ fn spawn_feed_poll(state: Arc<AppState>) {
     });
 }
 
-// --- Relay access control -------------------------------------------------
+// --- Relay access control + Member List ------------------------------------
 // iroh-relay's `access.http` POSTs `/api/relay-access` with an
 // `X-Iroh-NodeId` header per connecting endpoint (that exact name — the 1.0.2
 // source's X_IROH_ENDPOINT_ID const is "X-Iroh-NodeId"; we also accept
 // `X-Iroh-Endpoint-Id`, the name the docs use, in case a later release renames
 // it). Only an exact 200 `true` (text/plain) allows. Decision source: the
-// endpoint-id allowlist at `<data_dir>/relay_allowlist.json` — missing/empty
-// file denies everyone.
+// Member List at `<data_dir>/relay_allowlist.json` (`remote_query::Member` —
+// `{id, role}`, legacy bare strings = role none) — missing/empty file denies
+// everyone. Relay admission is presence-based; the role only governs Remote
+// Query Mode rights.
 
 const RELAY_LOG_CAP: usize = 200;
 
-/// Recent relay access decisions.
+/// Recent relay access decisions plus refused api knocks (`source` tells
+/// them apart: "relay" vs "api").
 /// ponytail: in-memory only, resets on restart; persist if audit matters.
 #[derive(Default)]
 struct RelayLog {
@@ -220,7 +256,7 @@ struct RelayLog {
 }
 
 impl RelayLog {
-    fn push(&mut self, endpoint_id: Option<&str>, allowed: bool) {
+    fn push(&mut self, endpoint_id: Option<&str>, allowed: bool, source: &str) {
         self.seq += 1;
         if self.entries.len() >= RELAY_LOG_CAP {
             self.entries.pop_front();
@@ -229,46 +265,9 @@ impl RelayLog {
             "seq": self.seq,
             "endpoint_id": endpoint_id,
             "allowed": allowed,
+            "source": source,
         }));
     }
-}
-
-/// 64 hex chars — an iroh endpoint id (ed25519 public key).
-fn valid_endpoint_id(s: &str) -> bool {
-    s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
-}
-
-/// Deny unless the id is well-formed hex and on the allowlist. Empty list
-/// (missing file) denies everyone — fail closed.
-fn relay_allow(allowlist: &[String], endpoint_id: Option<&str>) -> bool {
-    match endpoint_id {
-        Some(id) if valid_endpoint_id(id) => allowlist.iter().any(|a| a.eq_ignore_ascii_case(id)),
-        _ => false,
-    }
-}
-
-fn allowlist_path() -> std::path::PathBuf {
-    linxiv_core::config::data_dir().join("relay_allowlist.json")
-}
-
-/// Missing file => empty list (deny everyone). A present-but-unparseable file
-/// is an error so access still denies (`unwrap_or_default`) but admin writes
-/// refuse to clobber it — e.g. a botched hand-edit must not be silently
-/// replaced with an empty list.
-fn load_allowlist() -> Result<Vec<String>, String> {
-    match std::fs::read_to_string(allowlist_path()) {
-        Err(_) => Ok(Vec::new()),
-        Ok(s) => serde_json::from_str(&s)
-            .map_err(|e| format!("relay_allowlist.json is unparseable ({e}); fix or delete it")),
-    }
-}
-
-/// Sibling tmp + rename, same atomic-write pattern as `sources/download.rs`.
-fn save_allowlist(list: &[String]) -> std::io::Result<()> {
-    let path = allowlist_path();
-    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
-    std::fs::write(&tmp, serde_json::to_vec_pretty(list).unwrap_or_default())?;
-    std::fs::rename(&tmp, &path)
 }
 
 /// `POST /api/relay-access` — iroh-relay's access check. text/plain
@@ -280,8 +279,8 @@ fn relay_access(ctx: &Ctx, req: &Request) -> Response {
         .or_else(|| req.headers().get("x-iroh-endpoint-id"))
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
-    let allowed = relay_allow(&load_allowlist().unwrap_or_default(), id.as_deref());
-    ctx.relay.lock().unwrap().push(id.as_deref(), allowed);
+    let allowed = relay_allow(&load_members().unwrap_or_default(), id.as_deref());
+    ctx.relay.lock().unwrap().push(id.as_deref(), allowed, "relay");
     (
         StatusCode::OK,
         [(axum::http::header::CONTENT_TYPE, "text/plain")],
@@ -290,18 +289,18 @@ fn relay_access(ctx: &Ctx, req: &Request) -> Response {
         .into_response()
 }
 
-/// `/api/admin/relay/*` — allowlist + access-log admin, JSON like the rest.
-/// `None` when the request is not a relay-admin route.
-fn relay_admin(ctx: &Ctx, req: &ApiRequest) -> Option<Response> {
+/// `/api/admin/*` — Member List, access/transfer logs and the Node Address,
+/// JSON like the rest. `None` when the request is not an admin route.
+async fn relay_admin(ctx: &Ctx, req: &ApiRequest) -> Option<Response> {
     const MEMBERS: &str = "/api/admin/relay/members";
     let path = req.path.split('?').next().unwrap_or("");
-    let list = |l: &[String]| serde_json::json!({ "members": l });
-    // Corrupt allowlist: surface it and refuse writes rather than clobbering.
-    let loaded = |r: Result<Vec<String>, String>| {
+    let list = |l: &[Member]| serde_json::json!({ "members": l });
+    // Corrupt member list: surface it and refuse writes rather than clobbering.
+    let loaded = |r: Result<Vec<Member>, String>| {
         r.map_err(|e| json(StatusCode::CONFLICT, &serde_json::json!({ "detail": e })))
     };
     match (req.method.as_str(), path) {
-        ("GET", MEMBERS) => Some(match loaded(load_allowlist()) {
+        ("GET", MEMBERS) => Some(match loaded(load_members()) {
             Ok(l) => json(StatusCode::OK, &list(&l)),
             Err(resp) => resp,
         }),
@@ -312,10 +311,19 @@ fn relay_admin(ctx: &Ctx, req: &ApiRequest) -> Option<Response> {
                 &serde_json::json!({ "entries": log.entries }),
             ))
         }
+        ("GET", "/api/admin/transfers") => {
+            let log = ctx.transfers.lock().unwrap();
+            Some(json(
+                StatusCode::OK,
+                &serde_json::json!({ "entries": log.entries() }),
+            ))
+        }
+        ("GET", "/api/admin/node-address") => Some(node_address(ctx).await),
+        // Upsert: add with a role (default none), or change an existing
+        // member's role by POSTing the same id again.
         ("POST", MEMBERS) => {
-            let id = req
-                .body
-                .as_ref()
+            let body = req.body.as_ref();
+            let id = body
                 .and_then(|b| b["endpoint_id"].as_str())
                 .unwrap_or("")
                 .to_ascii_lowercase();
@@ -325,38 +333,84 @@ fn relay_admin(ctx: &Ctx, req: &ApiRequest) -> Option<Response> {
                     &serde_json::json!({ "detail": "endpoint_id must be 64 hex chars" }),
                 ));
             }
+            let role = match body.map(|b| &b["role"]) {
+                None | Some(serde_json::Value::Null) => Role::None,
+                Some(v) => match serde_json::from_value(v.clone()) {
+                    Ok(r) => r,
+                    Err(_) => {
+                        return Some(json(
+                            StatusCode::BAD_REQUEST,
+                            &serde_json::json!({ "detail": "role must be none|read|read-write" }),
+                        ))
+                    }
+                },
+            };
             let _guard = ctx.relay.lock().unwrap(); // serialize read-modify-write
-            let mut members = match loaded(load_allowlist()) {
+            let mut members = match loaded(load_members()) {
                 Ok(l) => l,
                 Err(resp) => return Some(resp),
             };
-            if !members.iter().any(|a| a.eq_ignore_ascii_case(&id)) {
-                members.push(id);
+            match members.iter_mut().find(|m| m.id.eq_ignore_ascii_case(&id)) {
+                Some(m) => m.role = role,
+                None => members.push(Member { id, role }),
             }
             Some(persist(members, &list))
         }
         ("DELETE", p) if p.starts_with("/api/admin/relay/members/") => {
             let id = &p["/api/admin/relay/members/".len()..];
             let _guard = ctx.relay.lock().unwrap();
-            let mut members = match loaded(load_allowlist()) {
+            let mut members = match loaded(load_members()) {
                 Ok(l) => l,
                 Err(resp) => return Some(resp),
             };
-            members.retain(|a| !a.eq_ignore_ascii_case(id));
+            members.retain(|m| !m.id.eq_ignore_ascii_case(id));
             Some(persist(members, &list))
         }
         _ => None,
     }
 }
 
-fn persist(members: Vec<String>, list: &impl Fn(&[String]) -> serde_json::Value) -> Response {
-    match save_allowlist(&members) {
+fn persist(members: Vec<Member>, list: &impl Fn(&[Member]) -> serde_json::Value) -> Response {
+    match save_members(&members) {
         Ok(()) => json(StatusCode::OK, &list(&members)),
         Err(e) => json(
             StatusCode::INTERNAL_SERVER_ERROR,
-            &serde_json::json!({ "detail": format!("persist allowlist: {e}") }),
+            &serde_json::json!({ "detail": format!("persist member list: {e}") }),
         ),
     }
+}
+
+/// `GET /api/admin/node-address` — the copyable locator members dial
+/// (endpoint id + relay URL; a locator, not a capability). 409 until the
+/// node is bound to a configured custom relay — n0's default relay set has
+/// no single URL to encode.
+async fn node_address(ctx: &Ctx) -> Response {
+    let Some(id) = ctx.share.endpoint_id().await else {
+        return json(
+            StatusCode::CONFLICT,
+            &serde_json::json!({ "detail": "share node is not bound" }),
+        );
+    };
+    let p2p_config::RelaySetting::Custom(relay) = p2p_config::relay_setting() else {
+        return json(
+            StatusCode::CONFLICT,
+            &serde_json::json!({ "detail": "node-address needs a configured relay (p2p_relay_url)" }),
+        );
+    };
+    let id: linxiv_p2p::EndpointId = match id.parse() {
+        Ok(id) => id,
+        Err(e) => {
+            return json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &serde_json::json!({ "detail": format!("endpoint id: {e}") }),
+            )
+        }
+    };
+    let addr = linxiv_p2p::NodeAddress::new(id, relay.url().clone());
+    json(
+        StatusCode::OK,
+        &serde_json::json!({ "node_address": addr.to_string() }),
+    )
 }
 
 async fn dispatch(State(ctx): State<Ctx>, req: Request) -> Response {
@@ -395,7 +449,7 @@ async fn dispatch(State(ctx): State<Ctx>, req: Request) -> Response {
         serde_json::from_slice(&bytes).ok()
     };
     let api_req = ApiRequest { method, path, body };
-    if let Some(resp) = relay_admin(&ctx, &api_req) {
+    if let Some(resp) = relay_admin(&ctx, &api_req).await {
         return resp;
     }
 
@@ -471,23 +525,11 @@ async fn status(ctx: &Ctx) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::{latest_synced_at, relay_allow};
+    use super::latest_synced_at;
     use serde_json::json;
 
-    #[test]
-    fn relay_allow_is_fail_closed() {
-        let id = "ab".repeat(32); // 64 hex chars
-        let list = vec![id.clone()];
-        assert!(relay_allow(&list, Some(&id)));
-        assert!(relay_allow(&list, Some(&id.to_uppercase()))); // hex case-insensitive
-                                                               // Missing file => empty list => deny everyone.
-        assert!(!relay_allow(&[], Some(&id)));
-        // Absent or malformed id => deny.
-        assert!(!relay_allow(&list, None));
-        assert!(!relay_allow(&list, Some("")));
-        assert!(!relay_allow(&list, Some("not-hex-garbage")));
-        assert!(!relay_allow(&list, Some(&id[..40]))); // too short
-    }
+    // relay_allow / member-list parsing tests live with the code in
+    // `linxiv_app::remote_query`.
 
     /// The admin page is a blind consumer of these routes; renaming one must
     /// break this test, not the page at runtime. sessionStorage is the token
@@ -498,6 +540,8 @@ mod tests {
             "/api/status",
             "/api/admin/relay/members",
             "/api/admin/relay/log",
+            "/api/admin/transfers",
+            "/api/admin/node-address",
             "sessionStorage",
         ] {
             assert!(super::ADMIN_HTML.contains(needle), "missing {needle}");

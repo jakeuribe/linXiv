@@ -394,6 +394,13 @@ impl ShareNode {
         self.inner.endpoint_id().to_string()
     }
 
+    /// Remote Query Mode: installs the `linxiv-api/1` handler on this node's
+    /// endpoint. Never called by the desktop app — until (unless) installed,
+    /// every api-ALPN connection is refused at the transport.
+    pub fn set_api_protocol(&self, handler: Box<dyn linxiv_p2p::DynProtocolHandler>) {
+        self.inner.set_api_protocol(handler);
+    }
+
     pub async fn shutdown(&self) -> Result<()> {
         // Shared router under bind_stack.
         #[cfg(feature = "sync-beelay")]

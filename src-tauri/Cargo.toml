@@ -60,6 +60,9 @@ linxiv-core = { path = "crates/core" }
 # Phase-0 quarantined CRDT "shared projects" store, reached via the `share_api`
 # command. Reads canonical via linxiv-core; its own docs live under the share dir.
 linxiv-share = { path = "crates/share", features = ["auth-keyhive", "sync-beelay"] }
+# Remote Query Mode node half (src/remote_query.rs): the linxiv-api/1
+# protocol handler + NodeAddress, served on the share node's endpoint.
+linxiv-p2p = { path = "crates/p2p" }
 rusqlite = "0.40"
 anyhow = "1"
 # Date parse/format parity with core's NaiveDate fields in router arms.
@@ -106,6 +109,9 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 [dev-dependencies]
 # Share-dispatcher test injects a tempdir share dir (never the real data dir).
 wiremock = "0.6"
+# Remote-query integration test binds in-process endpoint pairs, like the
+# p2p crate's own tests/api.rs.
+iroh = "1.0.2"
 # Mints the empty placeholder doc an offline join leaves behind; same version
 # linxiv-share builds against.
 automerge = "0.10.0"
