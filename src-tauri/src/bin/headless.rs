@@ -32,6 +32,10 @@ use linxiv_app::{full_text_worker, p2p_config, share_sync};
 /// Base64 file uploads ride the JSON body, so allow a large request body.
 const MAX_BODY: usize = 200 * 1024 * 1024;
 
+/// Static admin page. Secretless, so served without auth at `GET /admin`;
+/// every API call it makes carries the bearer token.
+const ADMIN_HTML: &str = include_str!("headless_admin.html");
+
 #[derive(Clone)]
 struct Ctx {
     state: Arc<AppState>,
@@ -335,6 +339,15 @@ fn persist(members: Vec<String>, list: &impl Fn(&[String]) -> serde_json::Value)
 }
 
 async fn dispatch(State(ctx): State<Ctx>, req: Request) -> Response {
+    // Static, secretless — the only route outside bearer auth.
+    if req.method() == axum::http::Method::GET && req.uri().path() == "/admin" {
+        return (
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            ADMIN_HTML,
+        )
+            .into_response();
+    }
     if let Some(rejection) = check_auth(&ctx, &req) {
         return rejection;
     }
@@ -453,6 +466,22 @@ mod tests {
         assert!(!relay_allow(&list, Some("")));
         assert!(!relay_allow(&list, Some("not-hex-garbage")));
         assert!(!relay_allow(&list, Some(&id[..40]))); // too short
+    }
+
+    /// The admin page is a blind consumer of these routes; renaming one must
+    /// break this test, not the page at runtime. sessionStorage is the token
+    /// storage contract (never localStorage/URL).
+    #[test]
+    fn admin_html_matches_api_surface() {
+        for needle in [
+            "/api/status",
+            "/api/admin/relay/members",
+            "/api/admin/relay/log",
+            "sessionStorage",
+        ] {
+            assert!(super::ADMIN_HTML.contains(needle), "missing {needle}");
+        }
+        assert!(!super::ADMIN_HTML.contains("localStorage"));
     }
 
     #[test]
