@@ -12,7 +12,8 @@
 //! app (`p2p_relay_url` / `p2p_relay_auth_token` / `p2p_relay_only`): set
 //! them via `PATCH /api/settings`, then `POST /api/share/relay/reconnect`.
 
-use std::sync::Arc;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::{
@@ -39,6 +40,9 @@ struct Ctx {
     token: Option<Arc<str>>,
     /// Process start, for `uptime_secs` in `GET /api/status`.
     started: Instant,
+    /// Relay access log + serialization of allowlist file writes.
+    /// ponytail: one Mutex around list+log; split if relay checks ever contend.
+    relay: Arc<Mutex<RelayLog>>,
 }
 
 #[tokio::main]
@@ -78,6 +82,7 @@ async fn main() {
         share: Arc::new(share_state),
         token,
         started,
+        relay: Arc::new(Mutex::new(RelayLog::default())),
     };
     if node_bound && ctx.share.mark_sync_started() {
         spawn_interval_sync(&ctx);
@@ -191,6 +196,144 @@ fn spawn_feed_poll(state: Arc<AppState>) {
     });
 }
 
+// --- Relay access control -------------------------------------------------
+// iroh-relay's `access.http` POSTs `/api/relay-access` with an
+// `X-Iroh-Endpoint-Id` header per connecting endpoint; only an exact 200
+// `true` (text/plain) allows. Decision source: the endpoint-id allowlist at
+// `<data_dir>/relay_allowlist.json` — missing/empty file denies everyone.
+
+const RELAY_LOG_CAP: usize = 200;
+
+/// Recent relay access decisions.
+/// ponytail: in-memory only, resets on restart; persist if audit matters.
+#[derive(Default)]
+struct RelayLog {
+    seq: u64,
+    entries: VecDeque<serde_json::Value>,
+}
+
+impl RelayLog {
+    fn push(&mut self, endpoint_id: Option<&str>, allowed: bool) {
+        self.seq += 1;
+        if self.entries.len() >= RELAY_LOG_CAP {
+            self.entries.pop_front();
+        }
+        self.entries.push_back(serde_json::json!({
+            "seq": self.seq,
+            "endpoint_id": endpoint_id,
+            "allowed": allowed,
+        }));
+    }
+}
+
+/// 64 hex chars — an iroh endpoint id (ed25519 public key).
+fn valid_endpoint_id(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Deny unless the id is well-formed hex and on the allowlist. Empty list
+/// (missing file) denies everyone — fail closed.
+fn relay_allow(allowlist: &[String], endpoint_id: Option<&str>) -> bool {
+    match endpoint_id {
+        Some(id) if valid_endpoint_id(id) => allowlist.iter().any(|a| a.eq_ignore_ascii_case(id)),
+        _ => false,
+    }
+}
+
+fn allowlist_path() -> std::path::PathBuf {
+    linxiv_core::config::data_dir().join("relay_allowlist.json")
+}
+
+/// Missing or unparseable file => empty list (deny everyone).
+fn load_allowlist() -> Vec<String> {
+    std::fs::read_to_string(allowlist_path())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+/// Sibling tmp + rename, same atomic-write pattern as `sources/download.rs`.
+fn save_allowlist(list: &[String]) -> std::io::Result<()> {
+    let path = allowlist_path();
+    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
+    std::fs::write(&tmp, serde_json::to_vec_pretty(list).unwrap_or_default())?;
+    std::fs::rename(&tmp, &path)
+}
+
+/// `POST /api/relay-access` — iroh-relay's access check. text/plain
+/// `true`/`false`, never the JSON envelope: the relay string-matches the body.
+fn relay_access(ctx: &Ctx, req: &Request) -> Response {
+    let id = req
+        .headers()
+        .get("x-iroh-endpoint-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let allowed = relay_allow(&load_allowlist(), id.as_deref());
+    ctx.relay.lock().unwrap().push(id.as_deref(), allowed);
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "text/plain")],
+        if allowed { "true" } else { "false" },
+    )
+        .into_response()
+}
+
+/// `/api/admin/relay/*` — allowlist + access-log admin, JSON like the rest.
+/// `None` when the request is not a relay-admin route.
+fn relay_admin(ctx: &Ctx, req: &ApiRequest) -> Option<Response> {
+    const MEMBERS: &str = "/api/admin/relay/members";
+    let path = req.path.split('?').next().unwrap_or("");
+    let list = |l: &[String]| serde_json::json!({ "members": l });
+    match (req.method.as_str(), path) {
+        ("GET", MEMBERS) => Some(json(StatusCode::OK, &list(&load_allowlist()))),
+        ("GET", "/api/admin/relay/log") => {
+            let log = ctx.relay.lock().unwrap();
+            Some(json(
+                StatusCode::OK,
+                &serde_json::json!({ "entries": log.entries }),
+            ))
+        }
+        ("POST", MEMBERS) => {
+            let id = req
+                .body
+                .as_ref()
+                .and_then(|b| b["endpoint_id"].as_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if !valid_endpoint_id(&id) {
+                return Some(json(
+                    StatusCode::BAD_REQUEST,
+                    &serde_json::json!({ "detail": "endpoint_id must be 64 hex chars" }),
+                ));
+            }
+            let _guard = ctx.relay.lock().unwrap(); // serialize read-modify-write
+            let mut members = load_allowlist();
+            if !members.iter().any(|a| a.eq_ignore_ascii_case(&id)) {
+                members.push(id);
+            }
+            Some(persist(members, &list))
+        }
+        ("DELETE", p) if p.starts_with("/api/admin/relay/members/") => {
+            let id = &p["/api/admin/relay/members/".len()..];
+            let _guard = ctx.relay.lock().unwrap();
+            let mut members = load_allowlist();
+            members.retain(|a| !a.eq_ignore_ascii_case(id));
+            Some(persist(members, &list))
+        }
+        _ => None,
+    }
+}
+
+fn persist(members: Vec<String>, list: &impl Fn(&[String]) -> serde_json::Value) -> Response {
+    match save_allowlist(&members) {
+        Ok(()) => json(StatusCode::OK, &list(&members)),
+        Err(e) => json(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &serde_json::json!({ "detail": format!("persist allowlist: {e}") }),
+        ),
+    }
+}
+
 async fn dispatch(State(ctx): State<Ctx>, req: Request) -> Response {
     if let Some(rejection) = check_auth(&ctx, &req) {
         return rejection;
@@ -198,6 +341,10 @@ async fn dispatch(State(ctx): State<Ctx>, req: Request) -> Response {
     // Headless-only aggregate, answered here rather than in the shared router.
     if req.method() == axum::http::Method::GET && req.uri().path() == "/api/status" {
         return status(&ctx).await;
+    }
+    // iroh-relay access check: text/plain true/false, not the JSON envelope.
+    if req.method() == axum::http::Method::POST && req.uri().path() == "/api/relay-access" {
+        return relay_access(&ctx, &req);
     }
     let method = req.method().as_str().to_string();
     let path = req
@@ -214,6 +361,9 @@ async fn dispatch(State(ctx): State<Ctx>, req: Request) -> Response {
         serde_json::from_slice(&bytes).ok()
     };
     let api_req = ApiRequest { method, path, body };
+    if let Some(resp) = relay_admin(&ctx, &api_req) {
+        return resp;
+    }
 
     let result = if api_req
         .path
@@ -287,8 +437,23 @@ async fn status(ctx: &Ctx) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::latest_synced_at;
+    use super::{latest_synced_at, relay_allow};
     use serde_json::json;
+
+    #[test]
+    fn relay_allow_is_fail_closed() {
+        let id = "ab".repeat(32); // 64 hex chars
+        let list = vec![id.clone()];
+        assert!(relay_allow(&list, Some(&id)));
+        assert!(relay_allow(&list, Some(&id.to_uppercase()))); // hex case-insensitive
+                                                               // Missing file => empty list => deny everyone.
+        assert!(!relay_allow(&[], Some(&id)));
+        // Absent or malformed id => deny.
+        assert!(!relay_allow(&list, None));
+        assert!(!relay_allow(&list, Some("")));
+        assert!(!relay_allow(&list, Some("not-hex-garbage")));
+        assert!(!relay_allow(&list, Some(&id[..40]))); // too short
+    }
 
     #[test]
     fn latest_synced_at_picks_max_and_skips_nulls() {
