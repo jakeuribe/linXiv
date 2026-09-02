@@ -24,7 +24,7 @@ use axum::{
 };
 
 use linxiv_app::route::share::ShareState;
-use linxiv_app::route::{route, share, ApiRequest};
+use linxiv_app::route::{feed, route, share, ApiRequest};
 use linxiv_app::state::AppState;
 use linxiv_app::{full_text_worker, p2p_config, share_sync};
 
@@ -80,6 +80,7 @@ async fn main() {
     }
     // Idles until `full_text_worker_enabled` is switched on, same as the app.
     full_text_worker::spawn_headless(ctx.state.clone());
+    spawn_feed_poll(ctx.state.clone());
 
     let share = ctx.share.clone();
     let auth = if ctx.token.is_some() {
@@ -151,6 +152,37 @@ fn spawn_interval_sync(ctx: &Ctx) {
         loop {
             share_sync::sync_all(&state, &share).await;
             tokio::time::sleep(Duration::from_secs(300)).await;
+        }
+    });
+}
+
+/// The desktop app refreshes the home feed when the user opens the screen; an
+/// always-on node polls instead. No-op while `home_feed_url` is unset — the
+/// settings read each tick is a small JSON file.
+/// `ponytail: fixed 30-minute cadence; make it a setting if tuning is wanted.`
+const FEED_POLL: Duration = Duration::from_secs(30 * 60);
+
+fn spawn_feed_poll(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        loop {
+            match linxiv_core::config::UserSettings::load() {
+                Ok(s) => {
+                    let url = s
+                        .get("home_feed_url")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|u| !u.is_empty())
+                        .map(String::from);
+                    if let Some(url) = url {
+                        let days = s.rss_cache_retention_days();
+                        if let Err(e) = feed::refresh(&state, &url, days).await {
+                            eprintln!("feed poll {url}: {} {}", e.status, e.detail);
+                        }
+                    }
+                }
+                Err(e) => eprintln!("feed poll: settings unreadable: {e}"),
+            }
+            tokio::time::sleep(FEED_POLL).await;
         }
     });
 }

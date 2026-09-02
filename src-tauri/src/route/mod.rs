@@ -31,7 +31,7 @@ use crate::state::AppState;
 mod annotations;
 mod authors;
 mod editor;
-mod feed;
+pub mod feed; // refresh reused by the headless bin's feed poll loop
 mod graph;
 mod notes;
 mod orcid;
