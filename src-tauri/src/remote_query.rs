@@ -58,9 +58,9 @@ pub enum Role {
 }
 
 impl Role {
-    /// Provider Access (CONTEXT.md): may this role spend the node's external
-    /// provider quota (the `sources` route group)? read-write by default,
-    /// read not.
+    /// Provider Access (CONTEXT.md): may this role make the node fetch from
+    /// external providers (the `route/sources.rs` groups and the feed fetch)?
+    /// read-write by default, read not.
     fn provider_access(self) -> bool {
         matches!(self, Role::ReadWrite)
     }
@@ -160,9 +160,12 @@ pub fn file_member_check() -> MemberCheckFn<Member> {
 
 /// The remote-surface gate, checked BEFORE `route()` ever runs. `None` =
 /// allowed through to the router.
-/// - `settings` / `storage` are operator-only: 403 for every role.
+/// - `settings` / `storage` / `env` are operator-only: 403 for every role
+///   (`PATCH /api/env` writes secrets to UserSettings and the process env).
 /// - `read` is GET-only.
-/// - `sources` (external Provider fetches on the node's quota) needs
+/// - External Provider fetches on the node's quota — the `route/sources.rs`
+///   groups (`arxiv`/`openalex`/`crossref`/`doi`) and `GET /api/feed`, whose
+///   `url=` makes the node fetch an arbitrary caller-supplied URL — need
 ///   Provider Access, which `read` lacks.
 ///
 /// Share dispatch and `/api/admin/*` need no arm here: the handler only ever
@@ -171,11 +174,15 @@ pub fn deny_reason(role: Role, method: &str, path: &str) -> Option<&'static str>
     let raw_path = path.split('?').next().unwrap_or(path);
     let segs = route::split_segments(raw_path);
     let group = segs.get(1).map(String::as_str);
-    if matches!(group, Some("settings") | Some("storage")) {
+    if matches!(group, Some("settings") | Some("storage") | Some("env")) {
         return Some("operator-only route group");
     }
-    if group == Some("sources") && !role.provider_access() {
-        return Some("sources requires Provider Access");
+    let node_side_fetch = matches!(
+        group,
+        Some("arxiv") | Some("openalex") | Some("crossref") | Some("doi")
+    ) || (group == Some("feed") && segs.len() == 2);
+    if node_side_fetch && !role.provider_access() {
+        return Some("route requires Provider Access");
     }
     match role {
         // Unreachable in production (the member check refuses `none` at the
@@ -420,17 +427,26 @@ mod tests {
         for role in [Role::None, Role::Read, Role::ReadWrite] {
             denied(role, "GET", "/api/settings");
             denied(role, "PATCH", "/api/settings");
+            denied(role, "PATCH", "/api/env");
             denied(role, "GET", "/api/storage/info");
         }
-        // read: GET only, no Provider Access.
+        // read: GET only, no Provider Access (provider groups + the feed
+        // fetch, whose url= is a node-side fetch of an arbitrary URL).
         ok(Role::Read, "GET", "/api/papers");
         ok(Role::Read, "GET", "/api/papers/2204.12985/pdf?version=2");
+        ok(Role::Read, "GET", "/api/feed/rules");
         denied(Role::Read, "POST", "/api/projects");
         denied(Role::Read, "DELETE", "/api/papers/x");
-        denied(Role::Read, "GET", "/api/sources/arxiv/2204.12985");
-        // read-write: data-plane writes + sources, still no operator groups.
+        denied(Role::Read, "GET", "/api/feed?url=http%3A%2F%2F10.0.0.5%2F");
+        for group in ["arxiv", "openalex", "crossref", "doi"] {
+            let path = format!("/api/{group}/anything");
+            assert!(deny_reason(Role::Read, "GET", &path).is_some(), "{path}");
+        }
+        // read-write: data-plane writes + provider fetches, still no
+        // operator groups.
         ok(Role::ReadWrite, "POST", "/api/projects");
-        ok(Role::ReadWrite, "GET", "/api/sources/arxiv/2204.12985");
+        ok(Role::ReadWrite, "POST", "/api/arxiv/search");
+        ok(Role::ReadWrite, "GET", "/api/feed?url=http%3A%2F%2Fx%2F");
         // none: nothing (belt — the transport refuses it first).
         denied(Role::None, "GET", "/api/papers");
     }
@@ -537,12 +553,15 @@ mod proto_tests {
             .unwrap();
         assert_eq!(env["status"], 200, "got {env}");
         assert!(env["body"]["papers"].is_array() || env["body"].is_object());
-        // Writes, operator groups and sources: 403 before route() runs.
+        // Writes, operator groups and provider fetches: 403 before route()
+        // runs (no network touched).
         for (method, path) in [
             ("POST", "/api/projects"),
             ("GET", "/api/settings"),
+            ("PATCH", "/api/env"),
             ("GET", "/api/storage/info"),
-            ("GET", "/api/sources/arxiv/2204.12985"),
+            ("GET", "/api/arxiv/search"),
+            ("GET", "/api/feed?url=http%3A%2F%2F10.0.0.5%2F"),
         ] {
             let env = api::request(&conn, &req(method, path, json!({ "name": "P" })))
                 .await
@@ -570,17 +589,19 @@ mod proto_tests {
             .await
             .unwrap();
         assert_eq!(env["status"], 200, "got {env}");
-        // Past the Provider Access gate: an unrouted sources path is a plain
+        // Past the Provider Access gate: an unrouted provider path is a plain
         // 404 from route(), not the gate's 403 (no network touched).
-        let env = api::request(&conn, &req("GET", "/api/sources/nope", Value::Null))
+        let env = api::request(&conn, &req("GET", "/api/arxiv/nope", Value::Null))
             .await
             .unwrap();
         assert_eq!(env["status"], 404, "got {env}");
         // Operator groups stay closed even for read-write.
-        let env = api::request(&conn, &req("PATCH", "/api/settings", json!({})))
-            .await
-            .unwrap();
-        assert_eq!(env["status"], 403, "got {env}");
+        for (method, path) in [("PATCH", "/api/settings"), ("PATCH", "/api/env")] {
+            let env = api::request(&conn, &req(method, path, json!({})))
+                .await
+                .unwrap();
+            assert_eq!(env["status"], 403, "{method} {path}: {env}");
+        }
         node.router.shutdown().await.unwrap();
     }
 
