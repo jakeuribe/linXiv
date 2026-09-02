@@ -13,6 +13,7 @@ import { SidebarSection } from "../components/settings/SidebarSection";
 import { ExportSection } from "../components/settings/ExportSection";
 import { IntegrationsSection } from "../components/settings/IntegrationsSection";
 import { SharingSection } from "../components/settings/SharingSection";
+import { RemoteBackendsSection } from "../components/settings/RemoteBackendsSection";
 import { TrashSection } from "../components/settings/TrashSection";
 import { AboutSection } from "../components/settings/AboutSection";
 import { ABOUT_GROUP_ID } from "../lib/updateSchedule";
@@ -91,6 +92,12 @@ const GROUPS: SettingsGroup[] = [
     label: "Sharing",
     icon: "⇄",
     render: () => <SharingSection />,
+  },
+  {
+    id: "backends",
+    label: "Remote backends",
+    icon: "⇅",
+    render: () => <RemoteBackendsSection />,
   },
   {
     id: "shortcuts",

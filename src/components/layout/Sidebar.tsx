@@ -17,9 +17,12 @@ import {
   PanelLeftOpen,
   Upload,
   AlertCircle,
+  Globe,
 } from "lucide-react";
 import { useUiStore, type SidebarPageKey } from "../../stores/ui";
 import { useImportJobsStore } from "../../stores/importJobs";
+import { useBackendStore } from "../../stores/backend";
+import { remoteIndicatorLabel } from "../../lib/remoteBackend";
 import { Spinner } from "../ui/spinner";
 
 interface NavItem {
@@ -52,6 +55,32 @@ const NAV_ITEMS: NavItem[] = [
 
 const EXPANDED_W = 160;
 const COLLAPSED_W = 48;
+
+// Unmistakable "you're viewing a remote library" pill (remote mode is
+// online-only, opposite of local-first shares — surface which backend you're
+// on). Renders nothing on the local backend; clicking opens its settings.
+function RemoteModeBadge({ collapsed }: { collapsed: boolean }) {
+  const label = remoteIndicatorLabel(useBackendStore((s) => s.defaultBackend));
+  if (label === null) return null;
+  return (
+    <NavLink
+      to="/settings#backends"
+      title={`Viewing remote library “${label}” — click to manage backends`}
+      className="mx-2 mb-2 rounded-md px-2 py-1.5 text-xs flex items-center justify-center gap-1.5"
+      style={{
+        backgroundColor:
+          "color-mix(in srgb, var(--color-accent) 14%, transparent)",
+        border: "1px solid var(--color-accent)",
+        color: "var(--color-accent)",
+        textDecoration: "none",
+        fontWeight: 600,
+      }}
+    >
+      <Globe size={12} className="shrink-0" />
+      {!collapsed && <span className="truncate">Remote: {label}</span>}
+    </NavLink>
+  );
+}
 
 function ImportProgress({ collapsed }: { collapsed: boolean }) {
   const jobs = useImportJobsStore((s) => s.jobs);
@@ -174,6 +203,8 @@ export function Sidebar() {
             : <PanelLeftClose size={16} />}
         </button>
       </div>
+
+      <RemoteModeBadge collapsed={sidebarCollapsed} />
 
       {/* Navigation */}
       <nav className="flex-1 px-3 flex flex-col gap-1">

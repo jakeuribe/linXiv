@@ -24,8 +24,12 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; frame-src 'self' texbrain://localhost http://texbrain.localhost linxiv://localhost http://linxiv.localhost; connect-src 'self' ipc: http://ipc.localhost linxiv://localhost http://linxiv.localhost https://api.github.com https://github.com https://objects.githubusercontent.com https://release-assets.githubusercontent.com; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com",
-      "devCsp": "default-src 'self'; frame-src 'self' texbrain://localhost http://texbrain.localhost http://localhost:* linxiv://localhost http://linxiv.localhost; connect-src 'self' ipc: http://ipc.localhost http://localhost:* linxiv://localhost http://linxiv.localhost https://api.github.com; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com"
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["$APPDATA/remote_pdf_cache/**"]
+      },
+      "csp": "default-src 'self'; frame-src 'self' texbrain://localhost http://texbrain.localhost linxiv://localhost http://linxiv.localhost; connect-src 'self' ipc: http://ipc.localhost linxiv://localhost http://linxiv.localhost asset://localhost http://asset.localhost https://api.github.com https://github.com https://objects.githubusercontent.com https://release-assets.githubusercontent.com; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com",
+      "devCsp": "default-src 'self'; frame-src 'self' texbrain://localhost http://texbrain.localhost http://localhost:* linxiv://localhost http://linxiv.localhost; connect-src 'self' ipc: http://ipc.localhost http://localhost:* linxiv://localhost http://linxiv.localhost asset://localhost http://asset.localhost https://api.github.com; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: blob:; font-src 'self' data: https://fonts.gstatic.com"
     }
   },
   "bundle": {
