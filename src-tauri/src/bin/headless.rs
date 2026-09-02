@@ -255,6 +255,13 @@ struct RelayLog {
     entries: VecDeque<serde_json::Value>,
 }
 
+/// Knock ids are attacker-controlled bytes (a real endpoint id is 64 hex
+/// chars): strip control characters and clamp the length before a log entry
+/// stores — and an admin page or terminal later renders — them.
+fn clean_log_id(s: &str) -> String {
+    s.chars().filter(|c| !c.is_control()).take(128).collect()
+}
+
 impl RelayLog {
     fn push(&mut self, endpoint_id: Option<&str>, allowed: bool, source: &str) {
         self.seq += 1;
@@ -263,7 +270,7 @@ impl RelayLog {
         }
         self.entries.push_back(serde_json::json!({
             "seq": self.seq,
-            "endpoint_id": endpoint_id,
+            "endpoint_id": endpoint_id.map(clean_log_id),
             "allowed": allowed,
             "source": source,
         }));
@@ -334,9 +341,9 @@ async fn relay_admin(ctx: &Ctx, req: &ApiRequest) -> Option<Response> {
                 ));
             }
             let role = match body.map(|b| &b["role"]) {
-                None | Some(serde_json::Value::Null) => Role::None,
+                None | Some(serde_json::Value::Null) => None,
                 Some(v) => match serde_json::from_value(v.clone()) {
-                    Ok(r) => r,
+                    Ok(r) => Some(r),
                     Err(_) => {
                         return Some(json(
                             StatusCode::BAD_REQUEST,
@@ -350,10 +357,7 @@ async fn relay_admin(ctx: &Ctx, req: &ApiRequest) -> Option<Response> {
                 Ok(l) => l,
                 Err(resp) => return Some(resp),
             };
-            match members.iter_mut().find(|m| m.id.eq_ignore_ascii_case(&id)) {
-                Some(m) => m.role = role,
-                None => members.push(Member { id, role }),
-            }
+            upsert_member(&mut members, id, role);
             Some(persist(members, &list))
         }
         ("DELETE", p) if p.starts_with("/api/admin/relay/members/") => {
@@ -367,6 +371,23 @@ async fn relay_admin(ctx: &Ctx, req: &ApiRequest) -> Option<Response> {
             Some(persist(members, &list))
         }
         _ => None,
+    }
+}
+
+/// Member-list upsert. An absent `role` preserves an existing member's role
+/// — old idempotent add scripts must not silently strip query rights — and
+/// defaults a new member to `none`.
+fn upsert_member(members: &mut Vec<Member>, id: String, role: Option<Role>) {
+    match members.iter_mut().find(|m| m.id.eq_ignore_ascii_case(&id)) {
+        Some(m) => {
+            if let Some(role) = role {
+                m.role = role;
+            }
+        }
+        None => members.push(Member {
+            id,
+            role: role.unwrap_or_default(),
+        }),
     }
 }
 
@@ -547,6 +568,29 @@ mod tests {
             assert!(super::ADMIN_HTML.contains(needle), "missing {needle}");
         }
         assert!(!super::ADMIN_HTML.contains("localStorage"));
+    }
+
+    #[test]
+    fn upsert_absent_role_preserves_existing_and_defaults_new_to_none() {
+        use super::{upsert_member, Member, Role};
+        let id = "ab".repeat(32);
+        let mut members = Vec::new();
+        // New member, no role: defaults to none.
+        upsert_member(&mut members, id.clone(), None);
+        assert_eq!(members, vec![Member { id: id.clone(), role: Role::None }]);
+        // Role grant sticks (case-insensitive id match, no duplicate).
+        upsert_member(&mut members, id.to_uppercase(), Some(Role::Read));
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].role, Role::Read);
+        // Idempotent re-add without a role: rights are preserved, not reset.
+        upsert_member(&mut members, id, None);
+        assert_eq!(members[0].role, Role::Read);
+    }
+
+    #[test]
+    fn clean_log_id_strips_control_chars_and_clamps() {
+        assert_eq!(super::clean_log_id("ab\x1b[31m\ncd\r\0"), "ab[31mcd");
+        assert_eq!(super::clean_log_id(&"x".repeat(500)).len(), 128);
     }
 
     #[test]

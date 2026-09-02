@@ -25,11 +25,13 @@ use linxiv_p2p::{
 use crate::route::{self, ApiRequest};
 use crate::state::AppState;
 
-/// Uniform request cap (design: ~1 MiB); the transport answers 413 past it.
-/// ponytail: also caps read-write `file_b64` uploads far below the HTTP
-/// surface's 200 MiB — make `max_request` role-aware in the p2p crate when
-/// remote uploads matter.
+/// Request cap for role `read` (design: ~1 MiB); the transport answers 413
+/// past it.
 pub const MAX_API_REQUEST: usize = 1024 * 1024;
+
+/// Request cap for role `read-write`: `file_b64` PDF imports run up to
+/// 100 MB, ~140 MB as base64 plus envelope headroom.
+pub const MAX_API_REQUEST_RW: usize = 150 * 1024 * 1024;
 
 /// `LINXIV_PDF_RATE_BPS` default: ~5 MB/s per member.
 pub const DEFAULT_PDF_RATE_BPS: u64 = 5_000_000;
@@ -177,6 +179,12 @@ pub fn deny_reason(role: Role, method: &str, path: &str) -> Option<&'static str>
     if matches!(group, Some("settings") | Some("storage") | Some("env")) {
         return Some("operator-only route group");
     }
+    // `pdf-path` answers the node's absolute filesystem path — operator
+    // layout never crosses the remote surface, any role. Remote clients use
+    // the PDF byte lane; a missing PDF is the lane's 404.
+    if group == Some("papers") && segs.len() == 4 && segs[3] == "pdf-path" {
+        return Some("pdf-path is local-only; use the pdf byte lane");
+    }
     let node_side_fetch = matches!(
         group,
         Some("arxiv") | Some("openalex") | Some("crossref") | Some("doi")
@@ -249,11 +257,15 @@ pub fn build_api_proto(
     let active: Arc<Mutex<HashMap<String, u64>>> = Default::default();
     let active_dec = active.clone();
     let transfer_log: TransferLogFn = Arc::new(move |peer: &str, outcome| {
+        // Endpoint ids compare case-insensitively; the increment keys by the
+        // Member List's stored casing, this decrement by the transport's —
+        // lowercase both so the bookkeeping always matches.
+        let key = peer.to_ascii_lowercase();
         let mut a = active_dec.lock().unwrap();
-        if let Some(n) = a.get_mut(peer) {
+        if let Some(n) = a.get_mut(&key) {
             *n -= 1;
             if *n == 0 {
-                a.remove(peer);
+                a.remove(&key);
             }
         }
         drop(a);
@@ -269,7 +281,10 @@ pub fn build_api_proto(
         knock_log,
         transfer_log,
         handler,
-        MAX_API_REQUEST,
+        Arc::new(|m: &Member| match m.role {
+            Role::ReadWrite => MAX_API_REQUEST_RW,
+            _ => MAX_API_REQUEST,
+        }),
     )
 }
 
@@ -341,7 +356,8 @@ async fn pdf_lane(
     // for every Bytes response the transport takes from here.
     let rate = {
         let mut a = active.lock().unwrap();
-        let n = a.entry(peer.to_string()).or_insert(0);
+        // Lowercased to match the transfer_log decrement's key.
+        let n = a.entry(peer.to_ascii_lowercase()).or_insert(0);
         *n += 1;
         (rate_bps / *n).max(1)
     };
@@ -423,12 +439,15 @@ mod tests {
     fn enforcement_matrix() {
         let ok = |role, method, path| assert_eq!(deny_reason(role, method, path), None);
         let denied = |role, method, path| assert!(deny_reason(role, method, path).is_some());
-        // Excluded groups: operator-only for EVERY role.
+        // Excluded groups: operator-only for EVERY role. pdf-path leaks the
+        // node's filesystem layout — remote clients use the byte lane.
         for role in [Role::None, Role::Read, Role::ReadWrite] {
             denied(role, "GET", "/api/settings");
             denied(role, "PATCH", "/api/settings");
             denied(role, "PATCH", "/api/env");
             denied(role, "GET", "/api/storage/info");
+            denied(role, "GET", "/api/papers/2204.12985/pdf-path");
+            denied(role, "GET", "/api/papers/2204.12985/pdf-path?version=2");
         }
         // read: GET only, no Provider Access (provider groups + the feed
         // fetch, whose url= is a node-side fetch of an arbitrary URL).
@@ -562,6 +581,7 @@ mod proto_tests {
             ("GET", "/api/storage/info"),
             ("GET", "/api/arxiv/search"),
             ("GET", "/api/feed?url=http%3A%2F%2F10.0.0.5%2F"),
+            ("GET", "/api/papers/2204.12985/pdf-path"),
         ] {
             let env = api::request(&conn, &req(method, path, json!({ "name": "P" })))
                 .await
@@ -602,6 +622,46 @@ mod proto_tests {
                 .unwrap();
             assert_eq!(env["status"], 403, "{method} {path}: {env}");
         }
+        node.router.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn request_cap_is_role_aware() {
+        let dir = tempfile::tempdir().unwrap();
+        // ~2 MiB body: past the read cap, well under the read-write cap.
+        let big = json!({ "pad": "x".repeat(2 * 1024 * 1024) });
+        // read: the transport answers 413 before any routing.
+        let ep = client().await;
+        let node = serve(
+            state(dir.path()),
+            vec![Member {
+                id: ep.id().to_string(),
+                role: Role::Read,
+            }],
+        )
+        .await;
+        let conn = api::connect(&ep, node.addr.clone()).await.unwrap();
+        let env = api::request(&conn, &req("GET", "/api/papers", big.clone()))
+            .await
+            .unwrap();
+        assert_eq!(env["status"], 413, "got {env}");
+        node.router.shutdown().await.unwrap();
+        // read-write: the same body clears the cap — an unrouted path is
+        // route()'s 404, proving the request was read and dispatched.
+        let ep = client().await;
+        let node = serve(
+            state(dir.path()),
+            vec![Member {
+                id: ep.id().to_string(),
+                role: Role::ReadWrite,
+            }],
+        )
+        .await;
+        let conn = api::connect(&ep, node.addr.clone()).await.unwrap();
+        let env = api::request(&conn, &req("POST", "/api/nope", big))
+            .await
+            .unwrap();
+        assert_eq!(env["status"], 404, "got {env}");
         node.router.shutdown().await.unwrap();
     }
 
@@ -647,6 +707,14 @@ mod proto_tests {
         assert!(header["eta_seconds"].as_f64().unwrap() > 2.0);
         assert_eq!(lane.size(), bytes.len() as u64);
         assert_eq!(lane.read_to_vec().await.unwrap(), bytes);
+        // The sender logs Delivered after its own finish(), which races our
+        // read completing; poll briefly like the p2p crate's lane test.
+        for _ in 0..50 {
+            if !node.transfers.lock().unwrap().entries().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
         {
             let transfers = node.transfers.lock().unwrap();
             let entry = transfers.entries().back().expect("a logged transfer");
@@ -663,6 +731,61 @@ mod proto_tests {
         assert_eq!(header["status"], 404, "got {header}");
         assert_eq!(lane.size(), 0);
         assert_eq!(node.transfers.lock().unwrap().entries().len(), 1);
+        node.router.shutdown().await.unwrap();
+    }
+
+    /// The stream accounting increments by the Member List's stored casing
+    /// and decrements by the transport's: with an UPPERCASE list entry the
+    /// count must still return to zero, so a second transfer gets the full
+    /// rate instead of a forever-shrunk share.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn pdf_lane_bookkeeping_survives_member_id_casing() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = state(dir.path());
+        let meta: PaperMetadata = serde_json::from_value(json!({
+            "source_id": "arxiv:2204.12985",
+            "version": 1,
+            "title": "T",
+            "authors": ["A"],
+            "published": "2024-01-01",
+            "summary": "S",
+        }))
+        .unwrap();
+        st.with_conn(|conn| svc_paper::save_paper_metadata(conn, &meta, None))
+            .unwrap();
+        let name = svc_paper::pdf_on_disk_name("arxiv:2204.12985", 1);
+        std::fs::write(dir.path().join(name), b"%PDF-tiny").unwrap();
+
+        let ep = client().await;
+        let node = serve(
+            st,
+            vec![Member {
+                id: ep.id().to_string().to_ascii_uppercase(),
+                role: Role::Read,
+            }],
+        )
+        .await;
+        let conn = api::connect(&ep, node.addr.clone()).await.unwrap();
+        for done in 0..2u64 {
+            // Wait for the previous transfer's decrement (the wrapped
+            // transfer_log decrements before it logs) so admissions never
+            // legitimately overlap.
+            for _ in 0..50 {
+                if node.transfers.lock().unwrap().entries().len() as u64 == done {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            let (header, lane) = api::request_bytes(
+                &conn,
+                &req("GET", "/api/papers/arxiv%3A2204.12985/pdf", Value::Null),
+            )
+            .await
+            .unwrap();
+            assert_eq!(header["status"], 200, "got {header}");
+            assert_eq!(header["rate"], RATE, "transfer {done}: count leaked");
+            lane.read_to_vec().await.unwrap();
+        }
         node.router.shutdown().await.unwrap();
     }
 }
