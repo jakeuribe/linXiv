@@ -3,7 +3,7 @@
 use linxiv_app::p2p_config;
 use linxiv_app::route::share::ShareState;
 use linxiv_app::state::AppState;
-use linxiv_app::{integrations, protocol, route};
+use linxiv_app::{integrations, protocol, remote_backend, route};
 
 use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
@@ -78,6 +78,9 @@ fn main() {
                 tauri::async_runtime::block_on(route::share::startup_share_state(dek))
                     .map_err(|e| e.to_string())?;
             app.manage(share_state);
+            // Remote Query Mode client half: cached outbound connections,
+            // one per registered backend (dials reuse the share endpoint).
+            app.manage(remote_backend::RemoteState::default());
             // `mark_sync_started` also guards the relay-reconnect command's spawn, so a
             // node that only comes up later (e.g. relay was fixed via "Save & Reconnect")
             // still gets exactly one interval-sync loop.
@@ -116,6 +119,12 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             route::api,
             route::share::share_api,
+            remote_backend::remote_backends_list,
+            remote_backend::remote_backend_add,
+            remote_backend::remote_backend_remove,
+            remote_backend::api_remote,
+            remote_backend::remote_pdf,
+            remote_backend::remote_member_code,
             open_pdf_in_system,
             integrations::is_cli_installed,
             integrations::install_cli,

@@ -51,7 +51,8 @@ mod versions;
 
 /// One webview→backend call. `body` is the parsed JSON request body (None for
 /// GET/DELETE without a body), including base64 file uploads (`uploads.rs`).
-#[derive(Deserialize)]
+/// `Serialize` so `remote_backend` can forward the same shape over the wire.
+#[derive(Serialize, Deserialize)]
 pub struct ApiRequest {
     pub method: String,
     pub path: String,

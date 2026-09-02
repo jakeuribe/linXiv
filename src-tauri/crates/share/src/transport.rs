@@ -394,6 +394,12 @@ impl ShareNode {
         self.inner.endpoint_id().to_string()
     }
 
+    /// The underlying iroh endpoint — Remote Query Mode's client half dials
+    /// remote nodes from it (one endpoint, never a second bind).
+    pub fn endpoint(&self) -> &linxiv_p2p::Endpoint {
+        self.inner.endpoint()
+    }
+
     /// Remote Query Mode: installs the `linxiv-api/1` handler on this node's
     /// endpoint. Never called by the desktop app — until (unless) installed,
     /// every api-ALPN connection is refused at the transport.
