@@ -10,6 +10,7 @@ import {
 } from "../../api/share";
 import { ApiError } from "../../api/client";
 import { invalidatePaperMutationQueries } from "../../lib/paperMutations";
+import { SHARE_SYNC_MUTATION_KEY } from "../../lib/syncPill";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
 
@@ -100,6 +101,8 @@ export function ShareCard({
   const hosted = role === "Hoster";
   const queryClient = useQueryClient();
   const sync = useMutation({
+    // Registers under the shared key so the header SyncStatusPill sees it.
+    mutationKey: SHARE_SYNC_MUTATION_KEY,
     mutationFn: () => syncShare(share.share_id),
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["share", "published"] });
