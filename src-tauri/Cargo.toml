@@ -26,6 +26,13 @@ path = "src/main.rs"
 name = "linxiv-dev-server"
 path = "src/bin/dev_server.rs"
 
+# Headless node (TODO.md containerization): full /api/* over HTTP incl. share
+# routes + the iroh share node + background sync, no window. Ships in the
+# container image, not the desktop bundle.
+[[bin]]
+name = "linxiv-headless"
+path = "src/bin/headless.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

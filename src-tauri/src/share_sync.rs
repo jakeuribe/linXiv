@@ -439,6 +439,23 @@ pub fn doc_ids(dir: &Path) -> Vec<String> {
         .collect()
 }
 
+/// One best-effort sync pass over every share, sequential, log-and-continue.
+/// Loop body of [`spawn_interval_sync`]; the headless bin runs its own loop
+/// over this (no `AppHandle` there).
+pub async fn sync_all(state: &AppState, share: &ShareState) {
+    let dir = share.share_dir().to_path_buf();
+    // Dedupe ids; sync_share errors on a same-id doc in both dirs.
+    let mut ids: std::collections::BTreeSet<String> = doc_ids(&dir).into_iter().collect();
+    ids.extend(doc_ids(&received_dir(&dir)));
+    ids.extend(doc_ids(&e2ee_dir(&dir)));
+    ids.extend(doc_ids(&e2ee_received_dir(&dir)));
+    for id in ids {
+        if let Err(e) = sync_share(state, share, &id).await {
+            eprintln!("share interval sync {id}: {} {}", e.status, e.detail);
+        }
+    }
+}
+
 /// 5-minute best-effort sync loop over every share, sequential, log-and-continue.
 /// The task dies with the process.
 pub fn spawn_interval_sync(app: tauri::AppHandle) {
@@ -446,17 +463,7 @@ pub fn spawn_interval_sync(app: tauri::AppHandle) {
         loop {
             let state = app.state::<AppState>();
             let share = app.state::<ShareState>();
-            let dir = share.share_dir().to_path_buf();
-            // Dedupe ids; sync_share errors on a same-id doc in both dirs.
-            let mut ids: std::collections::BTreeSet<String> = doc_ids(&dir).into_iter().collect();
-            ids.extend(doc_ids(&received_dir(&dir)));
-            ids.extend(doc_ids(&e2ee_dir(&dir)));
-            ids.extend(doc_ids(&e2ee_received_dir(&dir)));
-            for id in ids {
-                if let Err(e) = sync_share(&state, &share, &id).await {
-                    eprintln!("share interval sync {id}: {} {}", e.status, e.detail);
-                }
-            }
+            sync_all(&state, &share).await;
             tokio::time::sleep(Duration::from_secs(300)).await;
         }
     });
