@@ -1,6 +1,11 @@
 import { useIsMutating, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useEffect } from "react";
 import { syncShare, type SharedSummary } from "../../api/share";
-import { latestSyncedAt, SHARE_SYNC_MUTATION_KEY } from "../../lib/syncPill";
+import {
+  isSyncFailure,
+  latestSyncedAt,
+  SHARE_SYNC_MUTATION_KEY,
+} from "../../lib/syncPill";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
@@ -20,9 +25,11 @@ export function SyncStatusPill({ shares }: { shares: SharedSummary[] }) {
       let failed = 0;
       for (const s of shares) {
         try {
-          await syncShare(s.share_id);
+          // syncShare resolves with {synced:false, reason} for most failures;
+          // the card-level sync surfaces per-share detail.
+          if (isSyncFailure(await syncShare(s.share_id))) failed++;
         } catch {
-          failed++; // the card-level sync surfaces per-share detail
+          failed++;
         }
       }
       return { failed };
@@ -32,6 +39,13 @@ export function SyncStatusPill({ shares }: { shares: SharedSummary[] }) {
       queryClient.invalidateQueries({ queryKey: ["share", "received"] });
     },
   });
+  // The "N shares failed" text describes the last sync-all pass; once any
+  // other share sync starts (a card-level "Sync") it goes stale, so drop it.
+  // syncAll's own re-run resets its data on mutate.
+  const { reset, isPending } = syncAll;
+  useEffect(() => {
+    if (syncing && !isPending) reset();
+  }, [syncing, isPending, reset]);
   const latest = latestSyncedAt(shares);
   return (
     <div className="flex items-center gap-2">
