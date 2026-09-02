@@ -85,6 +85,11 @@ impl ShareState {
         self.node.lock().await.clone()
     }
 
+    /// This node's iroh endpoint id (`None` while unbound). Status reporting.
+    pub async fn endpoint_id(&self) -> Option<String> {
+        self.node().await.map(|n| n.endpoint_id())
+    }
+
     /// Acquire the write lock for a specific share. Returns a guard on the per-share-id lock.
     pub(crate) async fn lock_writes(&self, share_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
         let mut locks = self.write_locks.lock().await;
@@ -320,7 +325,8 @@ fn summary_json(s: &linxiv_share::SharedSummary, doc: &Path, share_dir: &Path) -
 }
 
 /// `GET /api/share/projects` — summaries of every published shared project.
-fn list_shared(state: &AppState, share: &ShareState) -> Result<Value, ApiError> {
+/// `pub` so the headless bin's status aggregate reuses it.
+pub fn list_shared(state: &AppState, share: &ShareState) -> Result<Value, ApiError> {
     let dir = share.store.share_dir();
     let mut out = Vec::new();
     for s in share.store.list_shared()? {
@@ -342,7 +348,8 @@ fn list_shared(state: &AppState, share: &ShareState) -> Result<Value, ApiError> 
 
 /// `GET /api/share/received` — summaries of every mirror materialized by `join`,
 /// each carrying the `project_fk` of the linked local project (null pre-import).
-fn list_received(state: &AppState, share: &ShareState) -> Result<Value, ApiError> {
+/// `pub` so the headless bin's status aggregate reuses it (no role queries).
+pub fn list_received(state: &AppState, share: &ShareState) -> Result<Value, ApiError> {
     let dir = share.store.share_dir();
     let rec = received_dir(dir);
     let mut out = Vec::new();

@@ -389,6 +389,11 @@ impl ShareNode {
         crate::list_shared(&received_dir(dest_share_dir))
     }
 
+    /// This node's iroh endpoint id (the device's share identity), as hex.
+    pub fn endpoint_id(&self) -> String {
+        self.inner.endpoint_id().to_string()
+    }
+
     pub async fn shutdown(&self) -> Result<()> {
         // Shared router under bind_stack.
         #[cfg(feature = "sync-beelay")]
