@@ -207,8 +207,11 @@ async fn conn_for(
             }
         }
     }
-    let c = api::connect(ep, addr)
+    // Bound the dial: iroh keeps trying paths indefinitely, so a dead or
+    // unadmitted node would otherwise spin the UI forever.
+    let c = tokio::time::timeout(std::time::Duration::from_secs(15), api::connect(ep, addr))
         .await
+        .map_err(|_| RemoteError::unreachable())?
         .map_err(|_| RemoteError::unreachable())?;
     remote
         .conns
