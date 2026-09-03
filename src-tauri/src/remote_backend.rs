@@ -330,6 +330,19 @@ fn pct_encode(s: &str) -> String {
     out
 }
 
+/// Byte-lane read deadline from the header's own `eta_seconds` (a paced
+/// transfer legitimately takes that long), doubled plus slack so a slow link
+/// never trips it — but a hostile/hung node can't pin the UI forever. A
+/// missing or absurd eta gets one generous flat ceiling instead.
+fn read_deadline(header: &Value) -> std::time::Duration {
+    match header.get("eta_seconds").and_then(Value::as_f64) {
+        Some(eta) if eta.is_finite() && (0.0..86_400.0).contains(&eta) => {
+            std::time::Duration::from_secs_f64(eta * 2.0 + 30.0)
+        }
+        _ => std::time::Duration::from_secs(600),
+    }
+}
+
 /// Byte-lane PDF fetch cached under `cache_root/{backend_id}/{name}`, where
 /// `name` reuses core's `pdf_on_disk_name` sanitizer (path-traversal safety)
 /// and `backend_id` is our own slug. Serves from cache when the file exists.
@@ -361,15 +374,19 @@ pub async fn fetch_remote_pdf(
         "body": Value::Null,
     });
     let (header, lane) = request_bytes_remote(ep, remote, backend_id, addr, &req).await?;
+    let deadline = read_deadline(&header);
     // An answered error ships a bare envelope and an empty lane.
     unwrap_envelope(header)?;
-    let bytes = lane
-        .read_to_vec()
+    let bytes = tokio::time::timeout(deadline, lane.read_to_vec())
         .await
+        .map_err(|_| RemoteError::transport("timed out reading pdf from the node"))?
         .map_err(|e| RemoteError::transport(e.to_string()))?;
     std::fs::create_dir_all(&dir).map_err(|e| RemoteError::transport(e.to_string()))?;
-    // Sibling tmp + rename, unique per process (same pattern as save_members).
-    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
+    // Sibling tmp + rename (same pattern as save_members); pid + counter keeps
+    // concurrent fetches of the same paper from clobbering each other's tmp.
+    static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_extension(format!("tmp-{}-{seq}", std::process::id()));
     std::fs::write(&tmp, &bytes)
         .and_then(|()| std::fs::rename(&tmp, &path))
         .map_err(|e| RemoteError::transport(format!("caching pdf: {e}")))?;
@@ -475,6 +492,26 @@ mod tests {
         }
         // A malformed envelope is an error, never a silent Ok(null).
         assert!(unwrap_envelope(json!({"detail": "x"})).is_err());
+    }
+
+    /// Deadline logic only — a live hang test would sleep >=30s (the floor
+    /// baked into eta*2+30), so timeout firing is left to tokio's own tests.
+    #[test]
+    fn read_deadline_scales_with_eta_and_caps_garbage() {
+        let d = |v: Value| read_deadline(&v).as_secs_f64();
+        assert_eq!(d(json!({"eta_seconds": 10.0})), 50.0);
+        assert_eq!(d(json!({"eta_seconds": 0.0})), 30.0);
+        // Missing, non-numeric, negative, absurd, or non-finite eta falls
+        // back to the flat ceiling instead of an unbounded (or zero) wait.
+        for h in [
+            json!({}),
+            json!({"eta_seconds": "soon"}),
+            json!({"eta_seconds": -5.0}),
+            json!({"eta_seconds": 1e12}),
+            json!({"eta_seconds": f64::NAN}),
+        ] {
+            assert_eq!(d(h), 600.0);
+        }
     }
 
     #[test]

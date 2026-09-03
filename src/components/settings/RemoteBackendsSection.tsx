@@ -103,7 +103,7 @@ export function RemoteBackendsSection() {
       <SettingGroup>
         <SettingRow
           label="Active library"
-          description="Which library this app reads. Remote mode is online-only and read-through — the indicator in the sidebar shows when you're not on your local library."
+          description="Which library this app uses. Remote mode is online-only — reads and writes go to the remote node's library (per your role there). The indicator in the sidebar shows when you're not on your local library."
         >
           <OptionSelect
             aria-label="Active library backend"
@@ -120,6 +120,17 @@ export function RemoteBackendsSection() {
             }
           />
         </SettingRow>
+
+        {backendsQ.isError && (
+          <SettingRow
+            label="Registered backends"
+            description={
+              <span className="text-danger">
+                {errText(backendsQ.error, "Failed to load the backend registry")}
+              </span>
+            }
+          />
+        )}
 
         {backends.map((b) => (
           <SettingRow
