@@ -28,9 +28,10 @@ export class ApiError extends Error {
 // ── Library Backend addressing (CONTEXT.md: Library Backend / Remote Query
 // Mode). Every request is addressed to a backend: `null` = the local
 // in-process backend, otherwise a registered remote node reached through the
-// `api_remote` command. The backend is a PARAMETER of the request — the only
-// defaulting is `resolveBackend`, fed by the UI layer via `setDefaultBackend`
-// (stores/backend.ts pushes it in; transport code never reads UI state).
+// `api_remote` command. The backend is a PARAMETER of the request — this
+// module holds no default and reads no UI state. The PoC "default backend"
+// lives in stores/backend.ts, whose `libraryFetch` passes it explicitly for
+// library queries; every other call is local.
 
 /** One registered remote Library Backend (mirrors Rust `Backend`). */
 export interface RemoteBackend {
@@ -47,20 +48,6 @@ export type BackendRef = RemoteBackend | null;
 export const UNREACHABLE_MESSAGE =
   "Can't reach this node — it may be offline, or this device isn't admitted yet. " +
   "Check Settings → Remote backends and send your member code to the node operator.";
-
-let defaultBackend: RemoteBackend | null = null;
-
-/** UI layer pushes the PoC default backend in; local (`null`) at startup. */
-export function setDefaultBackend(backend: RemoteBackend | null): void {
-  defaultBackend = backend;
-}
-
-/** Explicit backend wins; `undefined` falls back to the UI-set default. */
-export function resolveBackend(
-  backend: BackendRef | undefined
-): RemoteBackend | null {
-  return backend === undefined ? defaultBackend : backend;
-}
 
 /** Shared mapping of an `api_remote`/`remote_*` invoke rejection (Rust
  *  `RemoteError`, tagged by `kind`) to the app-wide `ApiError`. */
@@ -117,16 +104,15 @@ async function invokeApi<T>(
 export async function apiFetch<T>(
   path: string,
   init?: RequestInit,
-  backend?: BackendRef
+  backend: BackendRef = null
 ): Promise<T> {
-  const target = resolveBackend(backend);
-  if (target) {
+  if (backend) {
     // Remote backends only exist in the desktop app (iroh lives in-process).
     if (!isTauri)
       throw new ApiError(500, "Remote backends require the desktop app");
     if (init?.body instanceof FormData)
       throw new ApiError(400, "Uploads aren't supported on a remote backend");
-    return invokeApi<T>(path, init, target);
+    return invokeApi<T>(path, init, backend);
   }
   if (isTauri && !(init?.body instanceof FormData)) {
     return invokeApi<T>(path, init, null);

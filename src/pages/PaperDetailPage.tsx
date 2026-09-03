@@ -41,7 +41,7 @@ import { formatDate } from "../lib/date";
 import { TagBadge } from "../components/tags/TagBadge";
 import { openPdfInSystem } from "../api/pdfs";
 import { remotePdfPath } from "../api/remote";
-import { useBackendStore } from "../stores/backend";
+import { libraryFetch, useBackendStore } from "../stores/backend";
 import { errText } from "../lib/errText";
 
 const LATEST_VERSION_KEY = "latest" as const;
@@ -229,11 +229,11 @@ export default function PaperDetailPage() {
       const bytes = await pdfPreviewDocRef.current.getData();
       const path = `/api/papers/${encodeURIComponent(sourceId)}/pdf`;
       if (isTauri) {
-        await apiFetch(path, { method: "PUT", body: JSON.stringify({ file_b64: bytesToBase64(bytes) }) });
+        await libraryFetch(path, { method: "PUT", body: JSON.stringify({ file_b64: bytesToBase64(bytes) }) });
       } else {
         const form = new FormData();
         form.append("file", new Blob([bytes.slice()], { type: "application/pdf" }), `${sourceId}.pdf`);
-        await apiFetch(path, { method: "PUT", body: form });
+        await libraryFetch(path, { method: "PUT", body: form });
       }
     },
     onSuccess: () => {
@@ -246,11 +246,11 @@ export default function PaperDetailPage() {
       const path = `/api/papers/${encodeURIComponent(sourceId)}/pdf`;
       if (isTauri) {
         const file_b64 = bytesToBase64(new Uint8Array(await file.arrayBuffer()));
-        await apiFetch(path, { method: "PUT", body: JSON.stringify({ file_b64 }) });
+        await libraryFetch(path, { method: "PUT", body: JSON.stringify({ file_b64 }) });
       } else {
         const form = new FormData();
         form.append("file", file, file.name);
-        await apiFetch(path, { method: "PUT", body: form });
+        await libraryFetch(path, { method: "PUT", body: form });
       }
     },
     onSuccess: () => {

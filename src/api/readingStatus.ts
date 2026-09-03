@@ -1,4 +1,5 @@
-import { apiFetch, ApiError } from "./client.ts";
+import { ApiError } from "./client.ts";
+import { libraryFetch } from "../stores/backend.ts";
 import {
   parsePersistedReadingStatuses,
   pushLegacyStatuses,
@@ -14,7 +15,7 @@ export const READING_STATUS_QUERY_KEY = ["reading-status"];
 export async function getReadingStatuses(): Promise<{
   statuses: Record<string, ReadingStatus>;
 }> {
-  return apiFetch("/api/reading-status");
+  return libraryFetch("/api/reading-status");
 }
 
 /** `applied` is how many reading lists were written; 0 means the paper is on
@@ -23,7 +24,7 @@ export async function putReadingStatus(
   sourceId: string,
   status: ReadingStatus | "unread"
 ): Promise<{ ok: boolean; applied: number }> {
-  return apiFetch(`/api/reading-status/${encodeURIComponent(sourceId)}`, {
+  return libraryFetch(`/api/reading-status/${encodeURIComponent(sourceId)}`, {
     method: "PUT",
     body: JSON.stringify({ status }),
   });

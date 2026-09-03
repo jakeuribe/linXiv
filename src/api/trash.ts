@@ -1,4 +1,4 @@
-import { apiFetch } from "./client";
+import { libraryFetch } from "../stores/backend.ts";
 import type {
   DeletedPaperDetails as TrashedPaper,
   TrashedProjectRow as TrashedProject,
@@ -9,21 +9,21 @@ import type {
 export type { TrashedPaper, TrashedProject, RestorePaperResult };
 
 export async function listTrash(): Promise<{ papers: TrashedPaper[]; projects: TrashedProject[] }> {
-  return apiFetch<{ papers: TrashedPaper[]; projects: TrashedProject[] }>("/api/trash");
+  return libraryFetch<{ papers: TrashedPaper[]; projects: TrashedProject[] }>("/api/trash");
 }
 
 export async function restorePaper(sourceId: string): Promise<RestorePaperResult> {
-  return apiFetch<RestorePaperResult>(`/api/trash/${encodeURIComponent(sourceId)}/restore`, { method: "POST" });
+  return libraryFetch<RestorePaperResult>(`/api/trash/${encodeURIComponent(sourceId)}/restore`, { method: "POST" });
 }
 
 export async function hardDeletePaper(sourceId: string): Promise<{ ok: boolean }> {
-  return apiFetch(`/api/trash/${encodeURIComponent(sourceId)}`, { method: "DELETE" });
+  return libraryFetch(`/api/trash/${encodeURIComponent(sourceId)}`, { method: "DELETE" });
 }
 
 export async function restoreProject(projectId: number): Promise<{ ok: boolean }> {
-  return apiFetch(`/api/trash/projects/${projectId}/restore`, { method: "POST" });
+  return libraryFetch(`/api/trash/projects/${projectId}/restore`, { method: "POST" });
 }
 
 export async function hardDeleteProject(projectId: number): Promise<{ ok: boolean }> {
-  return apiFetch(`/api/trash/projects/${projectId}`, { method: "DELETE" });
+  return libraryFetch(`/api/trash/projects/${projectId}`, { method: "DELETE" });
 }

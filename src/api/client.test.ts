@@ -1,12 +1,10 @@
 // Run: node --experimental-transform-types --test src/api/client.test.ts
-import { test, afterEach } from "node:test";
+import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   ApiError,
   buildInvoke,
   mapRemoteError,
-  resolveBackend,
-  setDefaultBackend,
   UNREACHABLE_MESSAGE,
   type RemoteBackend,
 } from "./client.ts";
@@ -17,10 +15,10 @@ const lab: RemoteBackend = {
   node_address: "linxivnodeabc",
 };
 
-afterEach(() => setDefaultBackend(null));
+// Transport holds no default: apiFetch's backend param defaults to `null`
+// (local); the UI-layer default is stores/backend.ts `libraryFetch`'s job.
 
-test("local default: no backend set, requests address the local `api` command", () => {
-  assert.equal(resolveBackend(undefined), null);
+test("local backend addresses the local `api` command", () => {
   const { cmd, args } = buildInvoke("/api/papers", undefined, null);
   assert.equal(cmd, "api");
   assert.deepEqual(args, {
@@ -43,16 +41,6 @@ test("remote backend routes to api_remote with the same ApiRequest shape", () =>
       body: { loser_source_fk: 2 },
     },
   });
-});
-
-test("the UI-set default applies only when the caller passes no backend", () => {
-  setDefaultBackend(lab);
-  assert.equal(resolveBackend(undefined), lab); // default flows in
-  assert.equal(resolveBackend(null), null); // explicit local wins
-  const other = { ...lab, id: "b2" };
-  assert.equal(resolveBackend(other), other); // explicit remote wins
-  setDefaultBackend(null);
-  assert.equal(resolveBackend(undefined), null);
 });
 
 test("mapRemoteError: unreachable is the one honest offline-or-not-admitted state", () => {

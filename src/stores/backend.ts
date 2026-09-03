@@ -1,10 +1,11 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { setDefaultBackend, type RemoteBackend } from "../api/client";
+import { apiFetch, type RemoteBackend } from "../api/client.ts";
 
 // The PoC "default backend" control is UI-layer state (CONTEXT.md: Remote
-// Query Mode): this store owns it and PUSHES it into the client layer via
-// setDefaultBackend — transport code never reads a store.
+// Query Mode): this store owns it, and `libraryFetch` below is the ONE place
+// it becomes a request parameter. Transport (api/client.ts) holds no default
+// and never reads this store.
 
 interface BackendState {
   /** `null` = the local backend. The whole backend (not just an id) so the
@@ -19,14 +20,16 @@ export const useBackendStore = create<BackendState>()(
       defaultBackend: null,
       setDefault(backend) {
         set({ defaultBackend: backend });
-        setDefaultBackend(backend);
       },
     }),
-    {
-      name: "linxiv-backend",
-      // Requests made after startup must route to the persisted default.
-      onRehydrateStorage: () => (state) =>
-        setDefaultBackend(state?.defaultBackend ?? null),
-    }
+    { name: "linxiv-backend" }
   )
 );
+
+/** `apiFetch` addressed to the user's chosen default backend. Call this for
+ *  LIBRARY queries only (papers, notes, feed, search, …) — local-concern
+ *  calls (settings, storage, env: the node 403s them as operator-only) use
+ *  `apiFetch` directly, which is always local unless passed a backend. */
+export function libraryFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  return apiFetch<T>(path, init, useBackendStore.getState().defaultBackend);
+}

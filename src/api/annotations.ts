@@ -1,4 +1,4 @@
-import { apiFetch } from "./client";
+import { libraryFetch } from "../stores/backend.ts";
 import type { Annotation } from "../types/api";
 
 export async function getAnnotations(
@@ -14,7 +14,7 @@ export async function getAnnotations(
   } else if (projectId !== undefined && projectId !== null) {
     params.set("project_id", String(projectId));
   }
-  return apiFetch<{ annotations: Annotation[] }>(
+  return libraryFetch<{ annotations: Annotation[] }>(
     `/api/annotations?${params.toString()}`
   );
 }
@@ -29,7 +29,7 @@ export interface AnnotationCreateBody {
 export async function createAnnotation(
   body: AnnotationCreateBody
 ): Promise<{ id: number }> {
-  return apiFetch("/api/annotations", {
+  return libraryFetch("/api/annotations", {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -39,12 +39,12 @@ export async function updateAnnotation(
   id: number,
   comment: string
 ): Promise<{ ok: boolean }> {
-  return apiFetch(`/api/annotations/${id}`, {
+  return libraryFetch(`/api/annotations/${id}`, {
     method: "PATCH",
     body: JSON.stringify({ comment }),
   });
 }
 
 export async function deleteAnnotation(id: number): Promise<{ ok: boolean }> {
-  return apiFetch(`/api/annotations/${id}`, { method: "DELETE" });
+  return libraryFetch(`/api/annotations/${id}`, { method: "DELETE" });
 }

@@ -1,4 +1,4 @@
-import { apiFetch } from "./client";
+import { libraryFetch } from "../stores/backend.ts";
 import type { Clause, SearchResult } from "../types/api";
 
 // Diverged from core's `service::search_state::SavedSearch`: core stores
@@ -16,12 +16,12 @@ export interface SearchState {
 
 export async function getSearchHistory(prefix: string, limit = 10): Promise<string[]> {
   const params = new URLSearchParams({ prefix, limit: String(limit) });
-  const data = await apiFetch<{ suggestions: string[] }>(`/api/search/history?${params}`);
+  const data = await libraryFetch<{ suggestions: string[] }>(`/api/search/history?${params}`);
   return data.suggestions;
 }
 
 export async function getSearchState(): Promise<SearchState | null> {
-  const data = await apiFetch<{ state: SearchState | null }>("/api/search/state");
+  const data = await libraryFetch<{ state: SearchState | null }>("/api/search/state");
   return data.state;
 }
 
@@ -47,7 +47,7 @@ export async function saveSearchState(
   savedIds: string[],
   sortPrefs: Record<string, string> | null = null,
 ): Promise<void> {
-  await apiFetch("/api/search/state", {
+  await libraryFetch("/api/search/state", {
     method: "POST",
     body: JSON.stringify({
       clauses,
