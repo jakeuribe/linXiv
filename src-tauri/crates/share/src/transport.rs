@@ -110,6 +110,19 @@ fn decode_hex(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
+/// Lowercase hex of a member id — the form member ids take on the wire and in
+/// the members sidecar.
+#[cfg(feature = "sync-beelay")]
+pub fn member_id_hex(m: &MemberId) -> String {
+    m.0.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Inverse of [`member_id_hex`]; `None` unless `s` is exactly 32 hex bytes.
+#[cfg(feature = "sync-beelay")]
+pub fn member_id_from_hex(s: &str) -> Option<MemberId> {
+    Some(MemberId(decode_hex(s)?.try_into().ok()?))
+}
+
 /// Owns the p2p node for the share ALPN. One node both serves its own published
 /// docs (via [`ShareNode::ticket`]) and fetches others' (via [`ShareNode::fetch`]).
 pub struct ShareNode {
@@ -307,6 +320,18 @@ impl ShareNode {
         Ok(())
     }
 
+    /// Register `share_id` from the just-reconciled doc `save()` returned,
+    /// skipping [`Self::refresh`]'s re-read and re-parse of the file that was
+    /// written moments ago. Callers must have `save()`d the doc first, or the
+    /// access check will refuse to serve it.
+    pub fn register_doc(&self, share_id: &str, mut doc: automerge::AutoCommit) -> Result<()> {
+        if !valid_share_id(share_id) {
+            return Err(ShareError::NotFound(share_id.to_string()));
+        }
+        self.inner.register(share_id, doc.document().clone());
+        Ok(())
+    }
+
     /// Build a pasteable ticket for a published share. Refreshes the registered
     /// doc from disk first; an unpublished id errors.
     pub async fn ticket(&self, share_id: &str) -> Result<ShareTicket> {
@@ -483,7 +508,7 @@ impl ShareNode {
             Ok(invite) => Ok((member, invite)),
             Err(e) => {
                 if let Err(re) = beelay.auth().revoke_member(share_id, member).await {
-                    let hex: String = member.0.iter().map(|b| format!("{b:02x}")).collect();
+                    let hex = member_id_hex(&member);
                     tracing::warn!(
                         "compensating revoke after failed invite also failed for member {hex}: {re}"
                     );
@@ -605,18 +630,16 @@ impl ShareNode {
             // merge in the in-memory doc, and this write must never persist
             // it. A fresh adopt is an empty doc — nothing to validate.
             if !doc.get_heads().is_empty() {
-                let sp: SharedProject = autosurgeon::hydrate(&doc).map_err(super::crdt)?;
-                if sp.share_id != share_id {
+                let doc_id = doc_share_id(&doc)?;
+                if doc_id != share_id {
                     return Err(net(format!(
-                        "remote share_id {:?} does not match invite id {share_id:?}",
-                        sp.share_id
+                        "remote share_id {doc_id:?} does not match invite id {share_id:?}"
                     )));
                 }
             }
             let dir = e2ee_received_dir(&self.share_dir);
             let id = share_id.clone();
-            let bytes = doc.save();
-            tokio::task::spawn_blocking(move || write_doc_bytes(&dir, &id, bytes))
+            tokio::task::spawn_blocking(move || write_doc_bytes(&dir, &id, doc.save()))
                 .await
                 .map_err(net)??;
         }
@@ -669,12 +692,11 @@ impl ShareNode {
         if doc.get_heads().is_empty() {
             return Ok(outcome);
         }
-        let sp: SharedProject = autosurgeon::hydrate(&doc).map_err(super::crdt)?;
         // The doc-internal share_id is host-controlled; same check as fetch().
-        if sp.share_id != share_id {
+        let doc_id = doc_share_id(&doc)?;
+        if doc_id != share_id {
             return Err(net(format!(
-                "remote share_id {:?} does not match invite id {share_id:?}",
-                sp.share_id
+                "remote share_id {doc_id:?} does not match invite id {share_id:?}"
             )));
         }
         let dir = e2ee_received_dir(&self.share_dir);
@@ -689,7 +711,6 @@ impl ShareNode {
     /// Invites do this on their own; this repairs shares invited before that,
     /// whose members fetch every commit and can decrypt none.
     /// TODO: Revisit if this should be exposed via the GUI
-    #[cfg(feature = "sync-beelay")]
     pub async fn rekey_e2ee(&self, share_id: &str) -> Result<()> {
         if !valid_share_id(share_id) {
             return Err(ShareError::NotFound(share_id.to_string()));
@@ -704,7 +725,6 @@ impl ShareNode {
     /// invite, so a later re-accept of the same invite adopts from scratch
     /// instead of reusing a doc whose commits never decrypted. Returns whether
     /// beelay had it registered. The caller deletes the on-disk mirror.
-    #[cfg(feature = "sync-beelay")]
     pub async fn forget_e2ee(&self, share_id: &str) -> Result<bool> {
         if !valid_share_id(share_id) {
             return Err(ShareError::NotFound(share_id.to_string()));
@@ -734,6 +754,18 @@ impl ShareNode {
         }
         load(&e2ee_received_dir(share_dir), share_id)
     }
+}
+
+/// The doc-internal `share_id`, hydrated alone — the host-controlled-id guard's
+/// one input, so the check never materializes the full SharedProject subgraphs.
+#[cfg(feature = "sync-beelay")]
+fn doc_share_id(doc: &Automerge) -> Result<String> {
+    #[derive(autosurgeon::Hydrate)]
+    struct Meta {
+        share_id: String,
+    }
+    let meta: Meta = autosurgeon::hydrate(doc).map_err(super::crdt)?;
+    Ok(meta.share_id)
 }
 
 #[cfg(test)]
@@ -812,6 +844,30 @@ mod tests {
         let listed = ShareNode::list_received(b_dir.path()).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].share_id, "7");
+
+        a.shutdown().await.unwrap();
+        b.shutdown().await.unwrap();
+    }
+
+    // The sync tick's save + register_doc path (no refresh re-read) must serve
+    // the updated doc: B's second fetch with the original ticket sees the edit.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn register_doc_serves_the_updated_doc() {
+        let a_dir = tempfile::tempdir().unwrap();
+        let b_dir = tempfile::tempdir().unwrap();
+        let a = node(a_dir.path()).await;
+        let b = node(b_dir.path()).await;
+
+        save(a_dir.path(), &sample("7", "Before")).unwrap();
+        let ticket = with_timeout(a.ticket("7")).await.unwrap();
+        with_timeout(b.fetch(&ticket, b_dir.path())).await.unwrap();
+
+        let after = sample("7", "After");
+        let doc = save(a_dir.path(), &after).unwrap();
+        a.register_doc("7", doc).unwrap();
+
+        let got = with_timeout(b.fetch(&ticket, b_dir.path())).await.unwrap();
+        assert_eq!(got, after);
 
         a.shutdown().await.unwrap();
         b.shutdown().await.unwrap();

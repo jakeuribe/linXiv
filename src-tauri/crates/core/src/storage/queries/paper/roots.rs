@@ -13,15 +13,11 @@ use super::fts::refresh_fts;
 /// `_ensure_paper_root_row` — INSERT OR IGNORE the root, then reactivate it if it
 /// was soft-deleted. Returns SOURCE_FK. Runs in the caller's tx.
 pub(super) fn ensure_paper_root_row(tx: &Transaction, source_id: &str) -> Result<i64> {
-    tx.execute(
-        "INSERT OR IGNORE INTO PAPER_ROOTS (SOURCE_ID) VALUES (?)",
-        [source_id],
-    )?;
-    let (fk, status): (i64, String) = tx.query_row(
-        "SELECT SOURCE_FK, STATUS FROM PAPER_ROOTS WHERE SOURCE_ID = ?",
-        [source_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
+    tx.prepare_cached("INSERT OR IGNORE INTO PAPER_ROOTS (SOURCE_ID) VALUES (?)")?
+        .execute([source_id])?;
+    let (fk, status): (i64, String) = tx
+        .prepare_cached("SELECT SOURCE_FK, STATUS FROM PAPER_ROOTS WHERE SOURCE_ID = ?")?
+        .query_row([source_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
     if status == "deleted" {
         tx.execute(
             "UPDATE PAPER_ROOTS SET STATUS = 'active', DELETED_AT = NULL, \
@@ -55,13 +51,14 @@ pub fn get_source_id(conn: &Connection, source_fk: i64) -> Result<Option<String>
         .optional()?)
 }
 
-/// `service/paper.py::sfks_to_source_ids` — resolve SOURCE_FKs to SOURCE_IDs,
-/// dropping any that do not exist. Input order is preserved.
-///
-/// Batched: project listings resolve every paper of every project through
-/// here, so this must not be a query per fk. Chunked to stay under SQLite's
+/// SOURCE_FK → SOURCE_ID map for a set of fks; nonexistent fks are simply
+/// absent. The batched sibling of `get_source_id` for callers that resolve
+/// many rows (e.g. share snapshots) — chunked to stay under SQLite's
 /// bound-variable limit.
-pub fn sfks_to_source_ids(conn: &Connection, source_fks: &[i64]) -> Result<Vec<String>> {
+pub fn source_ids_by_fk(
+    conn: &Connection,
+    source_fks: &[i64],
+) -> Result<std::collections::HashMap<i64, String>> {
     let mut by_fk = std::collections::HashMap::with_capacity(source_fks.len());
     for chunk in source_fks.chunks(900) {
         let placeholders = vec!["?"; chunk.len()].join(",");
@@ -77,10 +74,33 @@ pub fn sfks_to_source_ids(conn: &Connection, source_fks: &[i64]) -> Result<Vec<S
             by_fk.insert(fk, sid);
         }
     }
-    Ok(source_fks
-        .iter()
-        .filter_map(|fk| by_fk.get(fk).cloned())
-        .collect())
+    Ok(by_fk)
+}
+
+/// SOURCE_ID → SOURCE_FK map for a set of ids; unknown ids are simply absent.
+/// The inverse of [`source_ids_by_fk`], for callers resolving many ids at once
+/// (e.g. bulk project membership ops) — chunked the same way. No status filter,
+/// matching `get_paper_root`: trashed papers resolve.
+pub fn source_fks_by_id(
+    conn: &Connection,
+    source_ids: &[&str],
+) -> Result<std::collections::HashMap<String, i64>> {
+    let mut by_id = std::collections::HashMap::with_capacity(source_ids.len());
+    for chunk in source_ids.chunks(900) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let sql = format!(
+            "SELECT SOURCE_ID, SOURCE_FK FROM PAPER_ROOTS WHERE SOURCE_ID IN ({placeholders})"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (sid, fk) = row?;
+            by_id.insert(sid, fk);
+        }
+    }
+    Ok(by_id)
 }
 
 /// PAPER_ROOTS row. No model exists (PAPER_ROOTS is storage-internal) and
@@ -149,10 +169,13 @@ mod tests {
             Some("arxiv:v")
         );
         assert_eq!(get_source_id(&conn, 999_999).unwrap(), None);
-        assert_eq!(
-            sfks_to_source_ids(&conn, &[fk, 999_999]).unwrap(),
-            vec!["arxiv:v".to_string()]
-        );
+        let by_fk = source_ids_by_fk(&conn, &[fk, 999_999]).unwrap();
+        assert_eq!(by_fk.get(&fk).map(String::as_str), Some("arxiv:v"));
+        assert!(!by_fk.contains_key(&999_999));
+        let by_id = source_fks_by_id(&conn, &["arxiv:v", "ghost"]).unwrap();
+        assert_eq!(by_id.get("arxiv:v"), Some(&fk));
+        assert!(!by_id.contains_key("ghost"));
+        assert!(source_fks_by_id(&conn, &[]).unwrap().is_empty());
 
         let versions = get_all_versions(&conn, "arxiv:v").unwrap();
         assert_eq!(
@@ -163,6 +186,11 @@ mod tests {
         // ensure_paper_root reactivates a soft-deleted root.
         soft_delete_paper(&mut conn, "arxiv:v").unwrap();
         assert!(is_paper_deleted(&conn, "arxiv:v").unwrap());
+        // No status filter: trashed papers still resolve, like get_paper_root.
+        assert_eq!(
+            source_fks_by_id(&conn, &["arxiv:v"]).unwrap()["arxiv:v"],
+            fk
+        );
         ensure_paper_root(&mut conn, "arxiv:v").unwrap();
         assert!(!is_paper_deleted(&conn, "arxiv:v").unwrap());
     }

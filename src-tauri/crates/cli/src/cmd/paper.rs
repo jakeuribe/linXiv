@@ -7,8 +7,7 @@ use crate::ctx::Ctx;
 use crate::output::{as_source_id, fail, output};
 
 use linxiv_core::config;
-use linxiv_core::models::PaperMetadata;
-use linxiv_core::service::{paper as svc_paper, project as svc_project};
+use linxiv_core::service::{paper as svc_paper, paper_merge as svc_merge, project as svc_project};
 
 #[derive(Subcommand)]
 pub enum PaperCmd {
@@ -53,6 +52,13 @@ pub enum PaperCmd {
     RemoveFromAllProjects { source_id: String },
     /// List other paper roots sharing this paper's DOI
     DoiCandidates { source_id: String },
+    /// Merge a duplicate paper into this one (the duplicate is deleted)
+    Merge {
+        /// The paper that survives; its metadata stays canonical
+        winner_source_id: String,
+        /// The duplicate to merge away
+        loser_source_id: String,
+    },
     /// Fetch a paper's arXiv TeX source and index it for full-text search
     FetchSource {
         source_id: String,
@@ -138,27 +144,19 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             let version = svc_paper::get(&ctx.conn, &paper(&source_id))?
                 .map(|e| e.version)
                 .unwrap_or(1);
-            let meta = PaperMetadata {
-                source_id: source_id.clone(),
-                version,
+            let fields = svc_paper::RepairFields {
                 title,
                 authors,
-                published: match svc_paper::parse_published(&published) {
-                    Ok(d) => d,
-                    Err(e) => fail(e.to_string()),
-                },
-                updated: None,
+                published,
                 summary,
                 category,
-                categories: None,
                 doi,
-                journal_ref: None,
-                comment: None,
                 url,
                 tags,
-                source: None,
-                author_orcids: None,
             };
+            let meta = fields
+                .into_metadata(source_id.clone(), version, None)
+                .unwrap_or_else(|e| fail(e.to_string()));
             // repair_paper normalizes and validates (blank title, no authors, empty DOI).
             match svc_paper::repair_paper(&mut ctx.conn, source_fk, &meta) {
                 Ok(()) => {}
@@ -211,6 +209,31 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                 None => fail(linxiv_core::error::CoreError::PaperNotFound(
                     source_id.clone(),
                 )),
+            }
+        }
+
+        // POST /api/papers/sfk/{fk}/merge: winner's metadata is canonical; the
+        // duplicate's notes/annotations/memberships/tags/versions/PDFs move over.
+        // Guard failures (self-merge, trashed, share-linked) exit like the route's
+        // 409; unknown papers like its 404.
+        PaperCmd::Merge {
+            winner_source_id,
+            loser_source_id,
+        } => {
+            let winner = as_source_id(&ctx.conn, &winner_source_id);
+            let loser = as_source_id(&ctx.conn, &loser_source_id);
+            match svc_merge::merge_papers(
+                &mut ctx.conn,
+                &ctx.pdf_dir,
+                &paper(&winner),
+                &paper(&loser),
+            ) {
+                Ok(receipt) => output(&receipt),
+                Err(
+                    e @ (linxiv_core::error::CoreError::Conflict(_)
+                    | linxiv_core::error::CoreError::PaperNotFound(_)),
+                ) => fail(e),
+                Err(e) => return Err(e.into()),
             }
         }
 
@@ -315,6 +338,7 @@ async fn index_sources_result(ctx: &mut Ctx, limit: usize) -> serde_json::Value 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use linxiv_core::models::PaperMetadata;
     use linxiv_core::storage;
     use std::env;
 
@@ -361,10 +385,18 @@ mod tests {
         assert_eq!(v["indexed"], false);
         // The reason is single-sourced from core (route wording: force=true).
         assert!(v["reason"].as_str().unwrap().contains("force"));
-        let unchanged = svc_paper::get(&ctx.conn, &paper("arxiv:skip1"))
-            .unwrap()
+        // Stored body untouched — read the column directly, since PaperDetails
+        // reads blank FULL_TEXT.
+        let unchanged: String = ctx
+            .conn
+            .query_row(
+                "SELECT FULL_TEXT FROM PAPER_META JOIN PAPER USING (PAPER_ID) \
+                 WHERE SOURCE_ID = 'arxiv:skip1' AND VERSION = 1",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(unchanged.full_text.as_deref(), Some("already have this"));
+        assert_eq!(unchanged, "already have this");
 
         // (b) an arXiv paper with no /pdf/ URL has no tarball URL to derive.
         svc_paper::save_paper_metadata(

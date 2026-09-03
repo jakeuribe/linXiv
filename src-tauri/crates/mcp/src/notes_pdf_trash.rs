@@ -14,7 +14,7 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_router, ErrorData};
 use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::json;
 
 use linxiv_core::config;
 use linxiv_core::error::CoreError;
@@ -145,7 +145,8 @@ impl Server {
                     }
                     other => core_err(other),
                 })?;
-            let note_id = svc_note::create(
+            // Canonical create envelope: the full NoteDetails serialization.
+            let note = svc_note::create(
                 conn,
                 &NoteIn {
                     source_fk,
@@ -157,8 +158,7 @@ impl Server {
                 },
             )
             .map_err(core_err)?;
-            // Canonical create envelope: the full NoteDetails serialization.
-            json_ok(&svc_note::get_required(conn, note_id).map_err(core_err)?)
+            json_ok(&note)
         })
     }
 
@@ -194,7 +194,9 @@ impl Server {
         Parameters(p): Parameters<UpdateNoteParams>,
     ) -> Result<String, ErrorData> {
         self.with_conn(|conn| {
-            svc_note::update(
+            // No row matched -> the shared not-found; else the canonical update
+            // envelope is the full NoteDetails serialization.
+            let note = svc_note::update(
                 conn,
                 &NoteUpdateIn {
                     note_id: p.note_id,
@@ -202,10 +204,9 @@ impl Server {
                     content: p.content.clone(),
                 },
             )
-            .map_err(guard_err)?;
-            // No row matched -> get_required raises the shared not-found; else
-            // the canonical update envelope is the full NoteDetails serialization.
-            json_ok(&svc_note::get_required(conn, p.note_id).map_err(guard_err)?)
+            .map_err(guard_err)?
+            .ok_or_else(|| guard_err(svc_note::not_found(p.note_id)))?;
+            json_ok(&note)
         })
     }
 
@@ -262,21 +263,15 @@ impl Server {
     ) -> Result<String, ErrorData> {
         let pdf_dir = self.pdf_dir.clone();
         self.with_conn(|conn| {
-            let paper = svc_paper::get(
-                conn,
-                &svc_paper::PaperRef::Source {
-                    source_id: p.paper_id.clone(),
-                    version: p.version,
-                },
-            )
-            .map_err(core_err)?
-            .ok_or_else(|| crate::util::guard_err(CoreError::PaperNotFound(p.paper_id.clone())))?;
-            let ver = paper.version;
-            let path =
-                svc_files::pdf_path(&pdf_dir, &paper.source_id, ver, paper.pdf_path.as_deref());
+            let (sid, ver, custom) = svc_paper::pdf_ref(conn, &p.paper_id, p.version)
+                .map_err(core_err)?
+                .ok_or_else(|| {
+                    crate::util::guard_err(CoreError::PaperNotFound(p.paper_id.clone()))
+                })?;
+            let path = svc_files::pdf_path(&pdf_dir, &sid, ver, custom.as_deref());
             // Canonical location envelope, shared with `pdf path` and the route.
             json_ok(&svc_files::PdfLocation {
-                source_id: paper.source_id,
+                source_id: sid,
                 version: ver,
                 path,
             })
@@ -292,16 +287,10 @@ impl Server {
         // Resolve the paper (and its concrete version) under the lock, then drop
         // it before the network download — the mutex must not span the await.
         let (source_id, ver) = self.with_conn(|conn| {
-            svc_paper::get(
-                conn,
-                &svc_paper::PaperRef::Source {
-                    source_id: p.paper_id.clone(),
-                    version: p.version,
-                },
-            )
-            .map_err(core_err)?
-            .ok_or_else(|| crate::util::guard_err(CoreError::PaperNotFound(p.paper_id.clone())))
-            .map(|paper| (paper.source_id, paper.version))
+            svc_paper::pdf_ref(conn, &p.paper_id, p.version)
+                .map_err(core_err)?
+                .ok_or_else(|| crate::util::guard_err(CoreError::PaperNotFound(p.paper_id.clone())))
+                .map(|(sid, ver, _)| (sid, ver))
         })?;
         let max_pdf_bytes = config::UserSettings::load()
             .map_err(core_err)?
@@ -328,35 +317,9 @@ impl Server {
         let pdf_dir = self.pdf_dir.clone();
         // Pull the rows under the lock; the files are stat'd after it is released.
         let papers = self
-            .with_conn(|conn| svc_paper::list_papers(conn, true, None, 0, None))
+            .with_conn(|conn| svc_paper::list_pdf_papers(conn))
             .map_err(core_err)?;
-        let mut pdfs: Vec<Value> = Vec::new();
-        for paper in papers.into_iter().filter(|p| p.has_pdf) {
-            let Some(path) = svc_files::pdf_path(
-                &pdf_dir,
-                &paper.source_id,
-                paper.version,
-                paper.pdf_path.as_deref(),
-            ) else {
-                continue;
-            };
-            let Ok(meta) = std::fs::metadata(&path) else {
-                continue;
-            };
-            pdfs.push(json!({
-                "source_id": paper.source_id,
-                "source_fk": paper.source_fk,
-                "title": paper.title,
-                "version": paper.version,
-                "size_bytes": meta.len(),
-            }));
-        }
-        pdfs.sort_by(|a, b| {
-            b["size_bytes"]
-                .as_u64()
-                .cmp(&a["size_bytes"].as_u64())
-                .then_with(|| a["source_id"].as_str().cmp(&b["source_id"].as_str()))
-        });
+        let mut pdfs = svc_files::saved_pdf_sizes(&pdf_dir, papers);
         pdfs.truncate(SAVED_PDF_LIST_CAP);
         json_ok(&json!({ "pdfs": pdfs }))
     }
@@ -371,29 +334,11 @@ impl Server {
     ) -> Result<String, ErrorData> {
         let pdf_dir = self.pdf_dir.clone();
         self.with_conn(|conn| {
-            let all = svc_paper::get_all(conn, &svc_paper::PaperRef::source(p.paper_id.clone()))
-                .map_err(core_err)?
-                .ok_or_else(|| {
-                    crate::util::guard_err(CoreError::PaperNotFound(p.paper_id.clone()))
-                })?;
-            for ver in &all.versions {
-                let path = svc_files::pdf_path(
-                    &pdf_dir,
-                    &p.paper_id,
-                    ver.version,
-                    ver.pdf_path.as_deref(),
-                );
-                if let Some(path) = &path {
-                    if !svc_files::delete_pdf(&pdf_dir, &path.to_string_lossy()) {
-                        return Err(invalid("PDF is outside managed storage"));
-                    }
-                }
-                // Clear the flag/path before a later version may refuse.
-                svc_paper::set_has_pdf(conn, &p.paper_id, ver.version, false).map_err(core_err)?;
-                if path.is_some() {
-                    svc_paper::set_pdf_path(conn, &p.paper_id, "", Some(ver.version))
-                        .map_err(core_err)?;
-                }
+            // guard_err: PaperNotFound → invalid-params, Internal (DB/FS) stays internal.
+            if !svc_paper::delete_saved_pdfs(conn, &pdf_dir, &p.paper_id)
+                .map_err(crate::util::guard_err)?
+            {
+                return Err(invalid("PDF is outside managed storage"));
             }
             json_ok(&json!({ "deleted": true, "paper_id": p.paper_id }))
         })
@@ -536,6 +481,7 @@ mod tests {
 
     use linxiv_core::models::PaperMetadata;
     use linxiv_core::storage;
+    use serde_json::Value;
 
     use super::*;
 

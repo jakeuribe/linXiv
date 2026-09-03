@@ -38,8 +38,8 @@ fn list(state: &AppState) -> Result<Value, ApiError> {
 }
 
 /// `GET /api/tags/{label}` — `api_tag_detail`. Canonical label via `tag::get`
-/// (raw label if the tag is unknown); papers via `get_papers_by_tag`; projects by
-/// a case-insensitive scan of all projects (no `list_projects_by_tag` in core).
+/// (raw label if the tag is unknown); papers via `get_papers_by_tag`; projects
+/// via a NOCASE PROJECT_TO_TAG lookup narrowing `get_many` to the tagged fks.
 fn detail(state: &AppState, label: &str) -> Result<Value, ApiError> {
     state.with_conn(|conn| -> Result<Value, ApiError> {
         let canonical = svc_tag::get(
@@ -57,17 +57,23 @@ fn detail(state: &AppState, label: &str) -> Result<Value, ApiError> {
 
         // Status::Active filter matches Python's `_LIST_PROJECTS_BY_TAG_SQL`
         // (`AND pr.STATUS = 'active'`): PROJECT_TO_TAG rows survive soft-delete, so
-        // an unfiltered scan would leak archived/deleted projects the API excludes.
-        let active = Projects {
-            project_fks: None,
-            status: Some(Status::Active),
+        // an unfiltered lookup would leak archived/deleted projects the API excludes.
+        // Empty fks must short-circuit: get_many treats an empty project_fks
+        // filter as "no filter" and would return every active project.
+        let fks = svc_tag::project_fks_by_label(conn, label)?;
+        let tagged = if fks.is_empty() {
+            Vec::new()
+        } else {
+            let active = Projects {
+                project_fks: Some(fks),
+                status: Some(Status::Active),
+            };
+            svc_project::get_many(conn, &active)?
         };
-        let mut projects = Vec::new();
-        for p in svc_project::get_many(conn, &active)? {
-            if p.project_tags.iter().any(|t| t.eq_ignore_ascii_case(label)) {
-                projects.push(super::projects::project_out(conn, p)?);
-            }
-        }
+        let projects = svc_project::to_out_many(conn, tagged)?
+            .into_iter()
+            .map(|p| serde_json::to_value(p).map_err(|e| ApiError::new(500, e.to_string())))
+            .collect::<Result<Vec<_>, _>>()?;
 
         Ok(json!({ "label": canonical, "papers": papers, "projects": projects }))
     })
@@ -365,6 +371,54 @@ mod tests {
             .unwrap_err();
             assert_eq!(err.status, 422, "method={method}");
         }
+    }
+
+    #[tokio::test]
+    async fn detail_lists_only_active_projects_with_the_label_nocase() {
+        use linxiv_core::models::ProjectIn;
+        use linxiv_core::service::project::Project;
+
+        let st = state();
+        fn mk(conn: &mut rusqlite::Connection, name: &str, tags: Vec<String>) -> i64 {
+            svc_project::create(
+                conn,
+                &ProjectIn {
+                    name: name.into(),
+                    description: String::new(),
+                    color: None,
+                    tags,
+                    source_fks: vec![],
+                },
+            )
+            .unwrap()
+        }
+        let (tagged, trashed) = st.with_conn(|conn| {
+            let tagged = mk(conn, "kept", vec!["Neural".into()]);
+            let trashed = mk(conn, "trashed", vec!["Neural".into()]);
+            mk(conn, "untagged", vec![]);
+            svc_project::delete(
+                conn,
+                &Project {
+                    project_fk: Some(trashed),
+                },
+            )
+            .unwrap();
+            (tagged, trashed)
+        });
+
+        let v = get(&st, "/api/tags/nEuRaL").await.unwrap();
+        assert_eq!(v["label"], json!("Neural"), "canonical stored casing");
+        let ids: Vec<i64> = v["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["id"].as_i64().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![tagged],
+            "trashed ({trashed}) and untagged excluded"
+        );
     }
 
     #[tokio::test]

@@ -36,15 +36,14 @@ pub fn get(conn: &Connection, tag: &Tag) -> Result<Option<TagDetails>> {
         return q::get_tag(conn, id);
     }
     if let Some(label) = &tag.label {
-        for existing in list_all_tags(conn)? {
-            // NOCASE is ASCII in sqlite default collation — match it with ASCII fold.
-            if existing.eq_ignore_ascii_case(label) {
-                return Ok(Some(TagDetails {
-                    tag_id: -1,
-                    label: Some(existing),
-                }));
-            }
-        }
+        // NOCASE is ASCII in sqlite default collation — the same fold the old
+        // in-Rust eq_ignore_ascii_case scan over list_all_tags used.
+        return Ok(
+            q::canonical_tag_label(conn, label)?.map(|existing| TagDetails {
+                tag_id: -1,
+                label: Some(existing),
+            }),
+        );
     }
     Ok(None)
 }
@@ -114,6 +113,11 @@ pub fn list_all_tags(conn: &Connection) -> Result<Vec<String>> {
         .into_iter()
         .filter_map(|t| t.label)
         .collect())
+}
+
+/// PROJECT_FKs of every project carrying `label` (COLLATE NOCASE), any status.
+pub fn project_fks_by_label(conn: &Connection, label: &str) -> Result<Vec<i64>> {
+    q::project_fks_by_tag(conn, label)
 }
 
 /// Every named tag with its active-paper count, for the Tags index table.

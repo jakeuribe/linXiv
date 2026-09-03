@@ -24,19 +24,33 @@ pub fn search_full_text(conn: &Connection, query: &str, limit: i64) -> Result<Ve
     let Some(expr) = match_expr(query) else {
         return Ok(Vec::new());
     };
+    // Each branch keeps only its own top-`limit` (bm25 ascending = best first),
+    // so a whole-library match ("the" over a TeX corpus) never crosses the FFI.
+    // Sound for the min-merge below: a paper outside both branch top-`limit`s is
+    // beaten by `limit` papers whose merged score is at least as good. The notes
+    // branch is one row per NOTE, so it groups to per-paper best before limiting
+    // — a row-limit could crowd a distinct paper out behind one many-note paper.
+    // MATERIALIZED is load-bearing: flattened, bm25() lands inside the aggregate
+    // where FTS5 refuses it ("unable to use function bm25 in this context").
     let mut best: HashMap<String, f64> = HashMap::new();
     for (sid, score) in fts_matches(
         conn,
-        "SELECT fts.paper_id, bm25(papers_fts) FROM papers_fts fts WHERE papers_fts MATCH ?1",
+        "SELECT fts.paper_id, bm25(papers_fts) FROM papers_fts fts \
+         WHERE papers_fts MATCH ?1 ORDER BY 2 LIMIT ?2",
         &expr,
+        limit,
     )
     .into_iter()
     .chain(fts_matches(
         conn,
-        "SELECT r.SOURCE_ID, bm25(notes_fts) FROM notes_fts \
-         JOIN PAPER_ROOTS r ON r.SOURCE_FK = notes_fts.source_fk \
-         WHERE notes_fts MATCH ?1 AND r.STATUS = 'active'",
+        "WITH n AS MATERIALIZED (SELECT source_fk, bm25(notes_fts) AS score \
+             FROM notes_fts WHERE notes_fts MATCH ?1) \
+         SELECT r.SOURCE_ID, min(n.score) FROM n \
+         JOIN PAPER_ROOTS r ON r.SOURCE_FK = n.source_fk \
+         WHERE r.STATUS = 'active' \
+         GROUP BY r.SOURCE_ID ORDER BY 2 LIMIT ?2",
         &expr,
+        limit,
     )) {
         best.entry(sid)
             .and_modify(|s| {
@@ -168,7 +182,7 @@ fn push_term(out: &mut Vec<String>, term: &str, prefix: bool) {
 /// Run one FTS MATCH query, returning (source_id, bm25 score) pairs. A prepare
 /// or execute error (a missing or corrupt index) yields an empty result instead
 /// of propagating, so one unusable index doesn't zero out the other's hits.
-fn fts_matches(conn: &Connection, sql: &str, query: &str) -> Vec<(String, f64)> {
+fn fts_matches(conn: &Connection, sql: &str, query: &str, limit: i64) -> Vec<(String, f64)> {
     let mut out = Vec::new();
     let mut stmt = match conn.prepare(sql) {
         Ok(stmt) => stmt,
@@ -177,7 +191,7 @@ fn fts_matches(conn: &Connection, sql: &str, query: &str) -> Vec<(String, f64)> 
             return out;
         }
     };
-    let mut rows = match stmt.query((query,)) {
+    let mut rows = match stmt.query((query, limit)) {
         Ok(rows) => rows,
         Err(e) => {
             tracing::warn!("fts_matches query failed for {sql:?}: {e}");
@@ -505,6 +519,61 @@ mod tests {
         assert_eq!(match_expr(""), None);
         assert_eq!(match_expr("  -%- "), None);
         assert_eq!(match_expr("foo\0bar").unwrap(), "\"foobar\"");
+    }
+
+    /// The per-branch LIMIT pushdown must still return the best-scored papers:
+    /// the cap counts distinct papers, and bm25 order decides who survives it.
+    #[test]
+    fn limit_keeps_the_best_scored_papers() {
+        let conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        seed(&conn, "arxiv:1", "walrus walrus walrus");
+        seed(
+            &conn,
+            "arxiv:2",
+            "a walrus appears once in a longer digression",
+        );
+        seed(
+            &conn,
+            "arxiv:3",
+            "another walrus in another longer digression",
+        );
+
+        let hits = search_full_text(&conn, "walrus", 2).unwrap();
+        assert_eq!(hits.len(), 2);
+        // Highest term frequency in the shortest text = best bm25, ranked first.
+        assert_eq!(hits[0].source_id, "arxiv:1");
+
+        assert!(search_full_text(&conn, "walrus", 0).unwrap().is_empty());
+    }
+
+    /// The notes branch limits distinct PAPERS, not note rows: one paper with
+    /// many matching notes must not crowd another matching paper out of the cap.
+    #[test]
+    fn many_note_paper_does_not_crowd_out_another_within_limit() {
+        let conn = db::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        seed(&conn, "arxiv:1", "some tex source");
+        seed(&conn, "arxiv:2", "other tex source");
+        for (sid, n) in [("arxiv:1", 3), ("arxiv:2", 1)] {
+            for i in 0..n {
+                conn.execute(
+                    "INSERT INTO NOTE (SOURCE_FK, TITLE, NOTE) \
+                     SELECT SOURCE_FK, 'n', 'zebra note ' || ?2 \
+                     FROM PAPER_ROOTS WHERE SOURCE_ID = ?1",
+                    rusqlite::params![sid, i],
+                )
+                .unwrap();
+            }
+        }
+
+        let mut sids: Vec<String> = search_full_text(&conn, "zebra", 2)
+            .unwrap()
+            .into_iter()
+            .map(|p| p.source_id)
+            .collect();
+        sids.sort();
+        assert_eq!(sids, ["arxiv:1", "arxiv:2"]);
     }
 
     #[test]

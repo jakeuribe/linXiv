@@ -5,6 +5,8 @@
 //! Python, which relies on `with _connect()` autocommit). The get-or-create is a
 //! SELECT-then-conditional-INSERT — no partial-inconsistent state to roll back.
 
+use std::collections::HashSet;
+
 use rusqlite::types::Value;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
 
@@ -58,6 +60,19 @@ pub fn get_many(conn: &Connection, name: Option<&str>) -> Result<Vec<BasicAuthor
         .map_err(Into::into)
 }
 
+/// One author by exact ORCID (binary match, like the Rust `==` scan it replaced).
+/// Ties broken by full name to mirror the old find-first-in-`get_many` order.
+pub fn get_author_by_orcid(conn: &Connection, orcid: &str) -> Result<Option<BasicAuthorDetails>> {
+    Ok(conn
+        .query_row(
+            "SELECT AUTHOR_FK, AUTHOR_ORCID, AUTHOR_FULL_NAME, AUTHOR_FIRST, AUTHOR_LAST \
+             FROM AUTHOR WHERE AUTHOR_ORCID = ? ORDER BY AUTHOR_FULL_NAME LIMIT 1",
+            params![orcid],
+            row_to_basic,
+        )
+        .optional()?)
+}
+
 /// `authors.py::list_authors(paper_id=...)` via `_LIST_AUTHORS_FROM_PAPER_SQL` —
 /// authors of one paper, ordered by their stored AUTHOR_INDEX.
 pub fn get_paper_authors(conn: &Connection, paper_id: i64) -> Result<Vec<BasicAuthorDetails>> {
@@ -70,6 +85,38 @@ pub fn get_paper_authors(conn: &Connection, paper_id: i64) -> Result<Vec<BasicAu
     let rows = stmt.query_map(params![paper_id], row_to_basic)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
+}
+
+/// Each paper's author ORCIDs (AUTHOR_INDEX order, so index-aligned with the
+/// paper's authors list), keyed by PAPER_ID. The batched sibling of
+/// `get_paper_authors` for snapshot builders that would otherwise query once
+/// per paper. Papers with no author links are absent from the map. Chunked to
+/// stay under SQLite's bound-variable limit.
+pub fn paper_author_orcids(
+    conn: &Connection,
+    paper_ids: &[i64],
+) -> Result<std::collections::HashMap<i64, Vec<Option<String>>>> {
+    let mut by_paper: std::collections::HashMap<i64, Vec<Option<String>>> =
+        std::collections::HashMap::new();
+    for chunk in paper_ids.chunks(900) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let sql = format!(
+            "SELECT pta.PAPER_ID, a.AUTHOR_ORCID \
+             FROM AUTHOR a \
+             JOIN PAPER_TO_AUTHOR pta ON pta.AUTHOR_FK = a.AUTHOR_FK \
+             WHERE pta.PAPER_ID IN ({placeholders}) \
+             ORDER BY pta.PAPER_ID, pta.AUTHOR_INDEX"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(chunk.iter()), |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))
+        })?;
+        for row in rows {
+            let (pid, orcid) = row?;
+            by_paper.entry(pid).or_default().push(orcid);
+        }
+    }
+    Ok(by_paper)
 }
 
 /// `authors.py::list_authors_with_paper_count` — authors with their distinct
@@ -288,14 +335,27 @@ pub fn link_author_to_paper(
     Ok(())
 }
 
-/// `authors.py::unlink_author_from_paper` — delete the link row for one
-/// (author, paper) pair.
-pub fn unlink_author_from_paper(conn: &Connection, author_fk: i64, paper_id: i64) -> Result<()> {
+/// `authors.py::unlink_author_from_paper` — delete the author's link rows for
+/// every stored version of the paper's root (link rows are per-version, the
+/// caller addresses any one version's id). Returns `false` when `paper_id`
+/// doesn't resolve to an active paper, so the route can 404.
+pub fn unlink_author_from_paper(conn: &Connection, author_fk: i64, paper_id: i64) -> Result<bool> {
+    let source_id: Option<String> = conn
+        .query_row(
+            "SELECT source_id FROM papers WHERE paper_id = ?",
+            params![paper_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(source_id) = source_id else {
+        return Ok(false);
+    };
     conn.execute(
-        "DELETE FROM PAPER_TO_AUTHOR WHERE AUTHOR_FK = ? AND PAPER_ID = ?",
-        params![author_fk, paper_id],
+        "DELETE FROM PAPER_TO_AUTHOR WHERE AUTHOR_FK = ?1 AND PAPER_ID IN \
+         (SELECT paper_id FROM papers WHERE source_id = ?2)",
+        params![author_fk, source_id],
     )?;
-    Ok(())
+    Ok(true)
 }
 
 /// Merge `dup_ids` into `canonical_id`: resync PAPER_META.AUTHORS on every paper
@@ -350,13 +410,13 @@ pub fn merge_authors(
             let rows = stmt.query_map(params_from_iter(dups.iter().copied()), |r| r.get(0))?;
             rows.collect::<rusqlite::Result<Vec<_>>>()?
         };
+        let dup_names_lower: HashSet<String> = dup_names.iter().map(|d| d.to_lowercase()).collect();
+        let canonical_lower = canonical_name.as_deref().map(str::to_lowercase);
+        let mut select_meta = tx.prepare("SELECT AUTHORS FROM PAPER_META WHERE PAPER_ID = ?")?;
+        let mut update_meta = tx.prepare("UPDATE PAPER_META SET AUTHORS = ? WHERE PAPER_ID = ?")?;
         for pid in &affected_papers {
-            let authors_json: Option<String> = tx
-                .query_row(
-                    "SELECT AUTHORS FROM PAPER_META WHERE PAPER_ID = ?",
-                    params![pid],
-                    |r| r.get(0),
-                )
+            let authors_json: Option<String> = select_meta
+                .query_row(params![pid], |r| r.get(0))
                 .optional()?
                 .flatten();
             let Some(authors_json) = authors_json else {
@@ -365,29 +425,22 @@ pub fn merge_authors(
             // Replace duplicate names with the canonical name, or drop them if the
             // canonical author has no name; then de-dupe case-insensitively.
             let mut merged: Vec<String> = Vec::new();
+            let mut merged_lower: HashSet<String> = HashSet::new();
             for name in db::list_from_sql(&authors_json)? {
-                let is_dup = dup_names
-                    .iter()
-                    .any(|d| d.to_lowercase() == name.to_lowercase());
-                let resolved = if is_dup {
-                    canonical_name.clone()
+                let name_lower = name.to_lowercase();
+                let (resolved, resolved_lower) = if dup_names_lower.contains(&name_lower) {
+                    let (Some(cn), Some(cl)) = (&canonical_name, &canonical_lower) else {
+                        continue;
+                    };
+                    (cn.clone(), cl.clone())
                 } else {
-                    Some(name)
+                    (name, name_lower)
                 };
-                let Some(resolved) = resolved else {
-                    continue;
-                };
-                if !merged
-                    .iter()
-                    .any(|m: &String| m.to_lowercase() == resolved.to_lowercase())
-                {
+                if merged_lower.insert(resolved_lower) {
                     merged.push(resolved);
                 }
             }
-            tx.execute(
-                "UPDATE PAPER_META SET AUTHORS = ? WHERE PAPER_ID = ?",
-                params![db::list_to_sql(&merged), pid],
-            )?;
+            update_meta.execute(params![db::list_to_sql(&merged), pid])?;
         }
         tx.execute(
             &format!(
@@ -508,6 +561,13 @@ mod tests {
         assert_eq!(pa[0].full_name.as_deref(), Some("Bob Stone"));
         assert_eq!(pa[1].full_name.as_deref(), Some("Alice Cole"));
 
+        // paper_author_orcids: same AUTHOR_INDEX order, keyed by paper; a paper
+        // with no author links is absent, an unknown id is ignored.
+        let orcids = paper_author_orcids(&conn, &[pid, 9_999]).unwrap();
+        assert_eq!(orcids.len(), 1);
+        assert_eq!(orcids[&pid], vec![None, Some("0000-1".to_string())]);
+        assert!(paper_author_orcids(&conn, &[]).unwrap().is_empty());
+
         // previews: each author sees the one active latest paper.
         let prev = get_paper_previews(&conn, a1).unwrap();
         assert_eq!(prev.len(), 1);
@@ -536,7 +596,23 @@ mod tests {
         init_db(&conn).unwrap();
         let (pid, a1, _a2) = seed(&conn);
 
-        unlink_author_from_paper(&conn, a1, pid).unwrap();
+        // A second version of the same root: one unlink call must cover both.
+        conn.execute(
+            "INSERT INTO PAPER (SOURCE_ID, VERSION, TITLE, SOURCE_FK)
+             SELECT SOURCE_ID, 2, 'T1v2', SOURCE_FK FROM PAPER WHERE PAPER_ID = ?",
+            params![pid],
+        )
+        .unwrap();
+        let pid_v2 = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO PAPER_META (PAPER_ID, PUBLISHED) VALUES (?, '2024-02-01')",
+            params![pid_v2],
+        )
+        .unwrap();
+        link_author_to_paper(&conn, a1, pid_v2, Some(0)).unwrap();
+
+        assert!(!unlink_author_from_paper(&conn, a1, 99_999).unwrap()); // unknown paper → false
+        assert!(unlink_author_from_paper(&conn, a1, pid_v2).unwrap()); // any version's id works
         assert_eq!(count_paper_links(&conn, a1).unwrap(), 0);
         assert_eq!(get_paper_authors(&conn, pid).unwrap().len(), 1); // only Alice left
 

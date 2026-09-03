@@ -1,4 +1,9 @@
-use super::import::import_pdfs;
+use super::dto::{
+    AnnotationEntry, ArchivePdf, ArchivePdfName, Manifest, NoteEntry, PaperEntry, ProjectEntry,
+    Summary,
+};
+use super::export::build_manifest;
+use super::import::{commit_from_manifest, import_pdfs, preview_from_manifest};
 use super::*;
 use crate::error::CoreError;
 use crate::models::{AnnotationIn, NoteIn, PaperMetadata, ProjectIn, Status};
@@ -359,6 +364,57 @@ fn commit_creates_project_links_papers_notes_and_writes_pdf() {
 }
 
 #[test]
+fn commit_skips_notes_and_annotations_naming_unlisted_papers() {
+    let mut conn = db();
+    let tmp = tempfile::tempdir().unwrap();
+
+    // One real paper; the note and annotation both name a paper the manifest
+    // doesn't carry — they must be silently dropped, not fail the import.
+    let mut manifest = base_manifest(
+        "Imported",
+        vec![paper_entry("arxiv:1", 1, "P", &[])],
+        vec![NoteEntry {
+            paper_source_id: Some("arxiv:ghost".into()),
+            paper_version: None,
+            title: "orphan".into(),
+            content: "c".into(),
+            uuid: None,
+        }],
+    );
+    manifest.annotations = vec![AnnotationEntry {
+        paper_source_id: "arxiv:ghost".into(),
+        anchor: ANCHOR.into(),
+        comment: "orphan".into(),
+        uuid: None,
+    }];
+
+    let pid =
+        commit_from_manifest(&mut conn, &manifest, &[], OnConflict::Merge, tmp.path()).unwrap();
+
+    let notes = note::get_many(
+        &conn,
+        &note::Notes {
+            project_fk: Some(pid),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(notes.is_empty(), "note on unlisted paper must be skipped");
+    let anns = annotation::get_many(
+        &conn,
+        &annotation::Annotations {
+            project_fk: Some(pid),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(
+        anns.is_empty(),
+        "annotation on unlisted paper must be skipped"
+    );
+}
+
+#[test]
 fn commit_merge_keeps_existing_metadata_overwrite_replaces_it() {
     let tmp = tempfile::tempdir().unwrap();
     let manifest = base_manifest(
@@ -414,12 +470,12 @@ fn commit_restores_soft_deleted_paper_on_merge() {
     let tmp = tempfile::tempdir().unwrap();
     paper::save_paper_metadata(&mut conn, &meta("arxiv:1", 1, "T", &[]), None).unwrap();
     paper::delete(&mut conn, &paper::PaperRef::source("arxiv:1".into())).unwrap();
-    assert!(paper::is_paper_deleted(&conn, "arxiv:1").unwrap());
+    assert!(crate::storage::queries::paper::is_paper_deleted(&conn, "arxiv:1").unwrap());
 
     let manifest = base_manifest("P", vec![paper_entry("arxiv:1", 1, "T", &[])], vec![]);
     commit_from_manifest(&mut conn, &manifest, &[], OnConflict::Merge, tmp.path()).unwrap();
     assert!(
-        !paper::is_paper_deleted(&conn, "arxiv:1").unwrap(),
+        !crate::storage::queries::paper::is_paper_deleted(&conn, "arxiv:1").unwrap(),
         "import restored the trashed paper"
     );
 }

@@ -173,6 +173,60 @@ export type BibtexImportReceipt = {
   source_ids: Array<string>,
 };
 
+export type MergeReceipt = {
+  winner_source_fk: number,
+  winner_source_id: string,
+  /**
+   * The id that no longer exists after the merge.
+   */
+  merged_source_id: string,
+  notes_moved: number,
+  annotations_moved: number,
+  memberships_moved: number,
+  /**
+   * Loser memberships dropped because the winner was already in the project.
+   */
+  memberships_collapsed: number,
+  reading_statuses_moved: number,
+  /**
+   * Loser versions the winner lacked, re-keyed under the winner (same
+   * version numbers).
+   */
+  versions_transplanted: number,
+  /**
+   * Loser versions collapsed into the winner's same-numbered versions.
+   */
+  versions_collapsed: number,
+  /**
+   * Tags the loser carried that the winner didn't (now unioned in).
+   */
+  tags_added: Array<string>,
+  /**
+   * Loser PDFs renamed to winner on-disk names in the managed dir.
+   */
+  pdfs_renamed: number,
+  /**
+   * Loser PDFs that filled a PDF-less winner version — renamed in, or
+   * pointed at in place when stored outside the managed dir.
+   */
+  pdfs_adopted: number,
+  /**
+   * Duplicate loser PDFs unlinked after commit.
+   */
+  pdfs_deleted: number,
+  /**
+   * Duplicate loser PDFs left on disk because they live outside the
+   * managed PDF dir (never deleted there).
+   */
+  pdfs_kept_external: number,
+  /**
+   * Loser versions whose stored PDF path had no file behind it
+   * (transplants/adoptions found gone pre-rename, duplicates found gone
+   * post-commit).
+   */
+  pdfs_missing: number,
+};
+
 export type FilterField = "TITLE" | "SUMMARY" | "AUTHOR";
 
 export type FilterAction = "DENY" | "ALLOW";
@@ -273,7 +327,7 @@ export type GraphTag = {
   /**
    * `TAG.TAG`, the spelling the Tags index and TagPage show, falling back to
    * the paper's own casing for a tag the TAG table cannot answer for (the
-   * reserved reading-list marker, which `list_tags_with_count` filters out).
+   * reserved reading-list marker, which `list_all_tags` filters out).
    * Resolving it here is what stops one tag being drawn "ML" on the canvas
    * and offered as "ml" in the dropdown two panels away.
    */

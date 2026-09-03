@@ -12,6 +12,8 @@
 
 use std::path::{Path, PathBuf};
 
+use serde_json::{json, Value};
+
 use crate::error::{CoreError, Result};
 
 /// Standard managed PDF location for a (paper_id, version): `<pdf_dir>/<safe_id>v<n>.pdf`.
@@ -66,6 +68,38 @@ pub fn pdf_storage_bytes(pdf_dir: &Path) -> u64 {
 /// `pdf_storage_bytes` in MB. Port of `files.pdf_storage_mb`.
 pub fn pdf_storage_mb(pdf_dir: &Path) -> f64 {
     pdf_storage_bytes(pdf_dir) as f64 / (1024.0 * 1024.0)
+}
+
+/// Saved-PDF listing rows from `paper::list_pdf_papers` output: stat each paper's
+/// on-disk PDF (dropping rows whose file is missing), sorted size desc then
+/// source_id asc — matches app.py (`_LIST_PDFS_SQL` orders by source_id, then a
+/// stable sort by size_bytes desc keeps that as the tiebreak). Uncapped; the
+/// route and MCP cap at 200 for the UI, the CLI lists everything. Backs
+/// `GET /api/pdfs`, CLI `pdf list`, and MCP `list_pdfs`.
+pub fn saved_pdf_sizes(pdf_dir: &Path, papers: Vec<crate::models::PaperDetails>) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::new();
+    for p in papers {
+        let Some(path) = pdf_path(pdf_dir, &p.source_id, p.version, p.pdf_path.as_deref()) else {
+            continue;
+        };
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
+        out.push(json!({
+            "source_id": p.source_id,
+            "source_fk": p.source_fk,
+            "title": p.title,
+            "version": p.version,
+            "size_bytes": meta.len(),
+        }));
+    }
+    out.sort_by(|a, b| {
+        b["size_bytes"]
+            .as_u64()
+            .cmp(&a["size_bytes"].as_u64())
+            .then_with(|| a["source_id"].as_str().cmp(&b["source_id"].as_str()))
+    });
+    out
 }
 
 /// Delete a PDF only if it resolves to a location inside the managed `pdf_dir`. Returns

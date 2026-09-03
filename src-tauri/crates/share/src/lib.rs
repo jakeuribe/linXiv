@@ -28,7 +28,9 @@ mod transport;
 
 use std::path::{Path, PathBuf};
 
-use automerge::AutoCommit;
+// `save` hands back a doc, so callers need to be able to name `AutoCommit`.
+pub use automerge::AutoCommit;
+use automerge::ReadDoc;
 use rusqlite::Connection;
 
 use linxiv_core::error::CoreError;
@@ -44,8 +46,10 @@ use linxiv_core::service::{
 pub use linxiv_p2p::CustomRelay;
 pub use model::{SharedAnnotation, SharedNote, SharedPaper, SharedProject, SharedSummary};
 #[cfg(feature = "sync-beelay")]
-pub use transport::{e2ee_dir, e2ee_received_dir, E2eeSyncOutcome, MemberId, ProjectInvite, Role};
+pub use transport::{e2ee_dir, e2ee_received_dir, member_id_from_hex, member_id_hex};
 pub use transport::{received_dir, valid_share_id, ShareNode, ShareTicket, ALPN};
+#[cfg(feature = "sync-beelay")]
+pub use transport::{E2eeSyncOutcome, MemberId, ProjectInvite, Role};
 
 const SHARE_EXT: &str = "automerge";
 const MAX_SHARED_TEXT: usize = 256 * 1024;
@@ -119,53 +123,59 @@ pub fn build_shared_project(conn: &Connection, project_id: i64) -> Result<Shared
     .ok_or_else(|| ShareError::NotFound(project_id.to_string()))?;
     let share_id = project_svc::ensure_share_id(conn, project_id)?;
 
-    // Empty source_fks must short-circuit: paper::get_many treats an empty filter
-    // list as "no filter" and would return every paper in the library.
-    let papers = if project.source_fks.is_empty() {
-        Vec::new()
-    } else {
-        let mut out = Vec::new();
-        for p in paper_svc::get_many(
-            conn,
-            &paper_svc::Papers {
-                source_fks: Some(project.source_fks.clone()),
-                ..Default::default()
-            },
-        )? {
-            let author_orcids = author_svc::get_paper_authors(conn, p.paper_id)?
-                .into_iter()
-                .map(|a| a.orcid)
-                .collect();
-            out.push(SharedPaper {
-                source_id: p.source_id,
-                version: p.version,
-                published: p.published.map(|d| d.to_string()),
-                title: p.title,
-                summary: p.summary.unwrap_or_default(),
-                authors: p.authors,
-                author_orcids,
-                tags: p.tags,
-                pdf_blob: None,
-            });
-        }
-        out
-    };
+    // Batched: this runs once per shared project on every background sync tick,
+    // so the per-paper/per-note/per-annotation lookups it replaces were the
+    // hottest N+1 in the app.
+    let details = paper_svc::get_by_source_fks(conn, &project.source_fks)?;
+    let paper_ids: Vec<i64> = details.iter().map(|p| p.paper_id).collect();
+    let mut orcids = author_svc::paper_author_orcids(conn, &paper_ids)?;
+    let mut papers = Vec::with_capacity(details.len());
+    for p in details {
+        papers.push(SharedPaper {
+            source_id: p.source_id,
+            version: p.version,
+            published: p.published.map(|d| d.to_string()),
+            title: p.title,
+            summary: p.summary.unwrap_or_default(),
+            authors: p.authors,
+            author_orcids: orcids.remove(&p.paper_id).unwrap_or_default(),
+            tags: p.tags,
+            pdf_blob: None,
+        });
+    }
 
-    let mut notes = Vec::new();
-    for n in note_svc::get_many(
+    let project_notes = note_svc::get_many(
         conn,
         &note_svc::Notes {
             project_fk: Some(project_id),
             ..Default::default()
         },
-    )? {
+    )?;
+    let project_anns = annotation_svc::get_many(
+        conn,
+        &annotation_svc::Annotations {
+            project_fk: Some(project_id),
+            ..Default::default()
+        },
+    )?;
+    let fks: Vec<i64> = project_notes
+        .iter()
+        .map(|n| n.source_fk)
+        .chain(project_anns.iter().map(|a| a.source_fk))
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let source_ids = paper_svc::source_ids_by_fk(conn, &fks)?;
+
+    let mut notes = Vec::new();
+    for n in project_notes {
         // Skip notes whose source_id no longer resolves (mirrors the annotation loop).
-        let Some(paper_source_id) = paper_svc::get_source_id(conn, n.source_fk)? else {
+        let Some(paper_source_id) = source_ids.get(&n.source_fk) else {
             continue;
         };
         notes.push(SharedNote {
             uuid: n.uuid,
-            paper_source_id: Some(paper_source_id),
+            paper_source_id: Some(paper_source_id.clone()),
             title: n.title,
             body: n.content,
             created_at: n.created_at.map(|t| t.to_string()),
@@ -174,20 +184,14 @@ pub fn build_shared_project(conn: &Connection, project_id: i64) -> Result<Shared
     }
 
     let mut annotations = Vec::new();
-    for a in annotation_svc::get_many(
-        conn,
-        &annotation_svc::Annotations {
-            project_fk: Some(project_id),
-            ..Default::default()
-        },
-    )? {
+    for a in project_anns {
         // Skip annotations whose source_id no longer resolves (mirrors build_manifest).
-        let Some(paper_source_id) = paper_svc::get_source_id(conn, a.source_fk)? else {
+        let Some(paper_source_id) = source_ids.get(&a.source_fk) else {
             continue;
         };
         annotations.push(SharedAnnotation {
             uuid: a.uuid,
-            paper_source_id,
+            paper_source_id: paper_source_id.clone(),
             anchor: a.anchor,
             comment: a.comment,
             created_at: a.created_at.map(|t| t.to_string()),
@@ -326,6 +330,21 @@ pub fn import_shared_project(conn: &mut Connection, sp: &SharedProject) -> Resul
 
     let mut linked: Vec<String> = Vec::new();
     const MAX_SOURCE_ID: usize = 512;
+    // Deleted/known status is resolved in two bulk queries up front instead of
+    // two queries per paper; nothing in the loop trashes papers, and `known`
+    // is kept current across duplicate source_ids by inserting after a save.
+    let candidate_ids: Vec<String> = sp
+        .papers
+        .iter()
+        .take(MAX_SHARED_ITEMS)
+        .filter(|p| !p.source_id.is_empty() && p.source_id.len() <= MAX_SOURCE_ID)
+        .map(|p| p.source_id.clone())
+        .collect();
+    let trashed = paper_svc::deleted_source_ids(conn, &candidate_ids)?;
+    let mut known: std::collections::HashSet<String> =
+        paper_svc::existing_source_ids(conn, &candidate_ids)?
+            .into_iter()
+            .collect();
     for p in sp.papers.iter().take(MAX_SHARED_ITEMS) {
         // Identity field: skipped, never truncated.
         if p.source_id.is_empty() || p.source_id.len() > MAX_SOURCE_ID {
@@ -336,24 +355,24 @@ pub fn import_shared_project(conn: &mut Connection, sp: &SharedProject) -> Resul
             continue;
         }
         // A locally-trashed paper stays trashed.
-        if paper_svc::is_paper_deleted(conn, &p.source_id)? {
+        if trashed.contains(&p.source_id) {
             continue;
         }
-        let known =
-            paper_svc::get(conn, &paper_svc::PaperRef::source(p.source_id.clone()))?.is_some();
-        if !known {
+        if !known.contains(&p.source_id) {
             // Metadata writes apply only to papers not already in the DB.
+            // This also creates the paper root, so linking below resolves.
             paper_svc::save_paper_metadata(conn, &paper_meta(p), None)?;
+            known.insert(p.source_id.clone());
         } else if !p.tags.is_empty() {
             let truncated_tags: Vec<_> = p.tags.iter().map(|t| truncate_text(t)).collect();
             paper_svc::add_paper_tags(conn, &p.source_id, &truncated_tags)?;
         }
-        paper_svc::ensure_paper_root(conn, &p.source_id)?;
         linked.push(p.source_id.clone());
     }
     if !linked.is_empty() {
         project_svc::link_imported(conn, project_fk, &linked)?;
     }
+    let linked: std::collections::HashSet<&str> = linked.iter().map(String::as_str).collect();
 
     let existing_notes = note_svc::get_many(
         conn,
@@ -362,8 +381,12 @@ pub fn import_shared_project(conn: &mut Connection, sp: &SharedProject) -> Resul
             ..Default::default()
         },
     )?;
+    let notes_by_uuid: std::collections::HashMap<&str, _> = existing_notes
+        .iter()
+        .map(|e| (e.uuid.as_str(), e))
+        .collect();
     for n in sp.notes.iter().take(MAX_SHARED_ITEMS) {
-        if let Some(e) = existing_notes.iter().find(|e| e.uuid == n.uuid) {
+        if let Some(e) = notes_by_uuid.get(n.uuid.as_str()) {
             // Skip when the local row was edited more recently than the remote entry.
             let local_newer = match (e.updated_at.map(|t| t.to_string()), &n.updated_at) {
                 (Some(local), Some(remote)) => &local > remote,
@@ -403,7 +426,7 @@ pub fn import_shared_project(conn: &mut Connection, sp: &SharedProject) -> Resul
             let Some(sid) = n.paper_source_id.as_deref() else {
                 continue;
             };
-            if !linked.iter().any(|s| s == sid) {
+            if !linked.contains(sid) {
                 continue;
             }
             let source_fk = paper_svc::ensure_paper_root(conn, sid)?;
@@ -428,8 +451,10 @@ pub fn import_shared_project(conn: &mut Connection, sp: &SharedProject) -> Resul
             ..Default::default()
         },
     )?;
+    let anns_by_uuid: std::collections::HashMap<&str, _> =
+        existing_anns.iter().map(|e| (e.uuid.as_str(), e)).collect();
     for a in sp.annotations.iter().take(MAX_SHARED_ITEMS) {
-        if let Some(e) = existing_anns.iter().find(|e| e.uuid == a.uuid) {
+        if let Some(e) = anns_by_uuid.get(a.uuid.as_str()) {
             // Skip when the local row was edited more recently than the remote entry.
             let local_newer = match (e.updated_at.map(|t| t.to_string()), &a.updated_at) {
                 (Some(local), Some(remote)) => &local > remote,
@@ -465,9 +490,7 @@ pub fn import_shared_project(conn: &mut Connection, sp: &SharedProject) -> Resul
                 continue;
             }
             // Skip-not-fail on a bad anchor or an unlinked paper (export_import parity).
-            if validate_anchor(&a.anchor).is_err()
-                || !linked.iter().any(|s| s == &a.paper_source_id)
-            {
+            if validate_anchor(&a.anchor).is_err() || !linked.contains(a.paper_source_id.as_str()) {
                 continue;
             }
             let source_fk = paper_svc::ensure_paper_root(conn, &a.paper_source_id)?;
@@ -500,7 +523,9 @@ fn crdt<E: std::fmt::Display>(e: E) -> ShareError {
 /// Reconcile `sp` into `<share_id>.automerge`, EVOLVING the existing doc when one
 /// is on disk (so republish extends CRDT history instead of rebuilding it); a
 /// missing or unloadable doc falls back to a fresh one (corrupt-skip spirit).
-pub fn save(share_dir: &Path, sp: &SharedProject) -> Result<()> {
+/// Returns the reconciled doc so callers can register it in the p2p registry
+/// without re-reading and re-parsing the file just written.
+pub fn save(share_dir: &Path, sp: &SharedProject) -> Result<AutoCommit> {
     std::fs::create_dir_all(share_dir)?;
     let final_path = doc_path(share_dir, &sp.share_id);
     let mut doc = std::fs::read(&final_path)
@@ -511,13 +536,13 @@ pub fn save(share_dir: &Path, sp: &SharedProject) -> Result<()> {
     autosurgeon::reconcile(&mut doc, sp).map_err(crdt)?;
     // No-op reconcile (heads unchanged) with the file already on disk: skip the write.
     if doc.get_heads() == before && final_path.is_file() {
-        return Ok(());
+        return Ok(doc);
     }
     // Write to a sibling temp file then rename.
     let tmp_path = share_dir.join(format!("{}.{SHARE_EXT}.tmp", sp.share_id));
     std::fs::write(&tmp_path, doc.save())?;
     std::fs::rename(&tmp_path, &final_path)?;
-    Ok(())
+    Ok(doc)
 }
 
 /// Load `<share_id>.automerge` and hydrate it back into a `SharedProject`.
@@ -567,8 +592,8 @@ pub fn list_shared(share_dir: &Path) -> Result<Vec<SharedSummary>> {
         };
         // Skip a corrupt or partially-written doc rather than failing the whole
         // listing on one bad file.
-        let sp = match load(share_dir, share_id) {
-            Ok(sp) => sp,
+        let summary = match summarize(&path, share_id) {
+            Ok(s) => s,
             Err(e) => {
                 tracing::warn!("share list: skipping unreadable doc {share_id}: {e}");
                 continue;
@@ -576,20 +601,48 @@ pub fn list_shared(share_dir: &Path) -> Result<Vec<SharedSummary>> {
         };
         // Skip a doc whose hydrated id doesn't match its filename stem (e.g. a
         // fresh pre-first-sync e2ee mirror hydrates to an empty share_id).
-        if sp.share_id != share_id {
+        if summary.share_id != share_id {
             tracing::warn!("share list: skipping mismatched doc {share_id}");
             continue;
         }
-        out.push(SharedSummary {
-            share_id: sp.share_id,
-            name: sp.name,
-            paper_count: sp.papers.len(),
-            note_count: sp.notes.len(),
-            annotation_count: sp.annotations.len(),
-            tag_count: sp.tags.len(),
-        });
+        out.push(summary);
     }
     Ok(out)
+}
+
+/// A doc's listing summary read straight off the automerge document: only
+/// `share_id`/`name` are hydrated and the subgraphs are counted by list length,
+/// so listing never materializes paper summaries, note bodies, or annotation
+/// anchors the way a full `load` does.
+fn summarize(path: &Path, share_id: &str) -> Result<SharedSummary> {
+    let mut doc = AutoCommit::load(&std::fs::read(path)?).map_err(crdt)?;
+    // Empty pre-first-sync e2ee placeholder: nothing here yet (mirrors `load`).
+    if doc.get_heads().is_empty() {
+        return Err(ShareError::NotFound(share_id.to_string()));
+    }
+    #[derive(autosurgeon::Hydrate)]
+    struct Meta {
+        share_id: String,
+        name: String,
+    }
+    let meta: Meta = autosurgeon::hydrate(&doc).map_err(crdt)?;
+    Ok(SharedSummary {
+        share_id: meta.share_id,
+        name: meta.name,
+        paper_count: list_len(&doc, "papers")?,
+        note_count: list_len(&doc, "notes")?,
+        annotation_count: list_len(&doc, "annotations")?,
+        tag_count: list_len(&doc, "tags")?,
+    })
+}
+
+/// Length of a top-level list in the doc; a missing or non-list key is a
+/// malformed doc (the listing skips it), matching hydrate's failure on it.
+fn list_len(doc: &AutoCommit, key: &str) -> Result<usize> {
+    match doc.get(automerge::ROOT, key).map_err(crdt)? {
+        Some((automerge::Value::Object(automerge::ObjType::List), id)) => Ok(doc.length(&id)),
+        _ => Err(ShareError::Crdt(format!("doc has no {key} list"))),
+    }
 }
 
 /// Hydrate one shared project by id (alias of `load` for the public read API).
@@ -912,6 +965,9 @@ mod tests {
         let share_id = publish(&conn, dir.path(), project_id).unwrap();
         // A garbage doc beside the valid one must not break the whole listing.
         std::fs::write(doc_path(dir.path(), "999"), b"not a valid automerge doc").unwrap();
+        // Nor an empty pre-first-sync e2ee placeholder doc.
+        let placeholder = "11111111-2222-4333-8444-555555555555";
+        std::fs::write(doc_path(dir.path(), placeholder), AutoCommit::new().save()).unwrap();
         let listed = list_shared(dir.path()).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].share_id, share_id);
@@ -982,5 +1038,104 @@ mod tests {
         assert_eq!(stored.as_deref(), Some(share_id.as_str()));
         assert_eq!(name, "My Project");
         assert_eq!(description, "a project");
+    }
+
+    // Pins the paper-loop semantics of import_shared_project: a locally-trashed
+    // paper stays trashed and unlinked (its notes/annotations skipped), a known
+    // paper keeps its local metadata but gains the remote tags, and an unknown
+    // paper is created from the remote metadata.
+    #[test]
+    fn import_skips_trashed_tags_known_and_creates_unknown_papers() {
+        let (conn, pid) = seed();
+        let mut sp = build_shared_project(&conn, pid).unwrap();
+        sp.papers.push(SharedPaper {
+            source_id: "arxiv:3".into(),
+            version: 1,
+            published: Some("2024-02-02".into()),
+            title: "Third".into(),
+            summary: "s3".into(),
+            authors: vec!["Dan".into()],
+            tags: vec!["new".into()],
+            pdf_blob: None,
+            author_orcids: Vec::new(),
+        });
+
+        // Target DB: arxiv:1 exists but is locally trashed, arxiv:2 exists
+        // active with different local metadata, arxiv:3 is unknown.
+        let mut conn2 = open_in_memory().unwrap();
+        storage::init_db(&conn2).unwrap();
+        let pin = |sid: &str, title: &str| PaperIn {
+            title: title.into(),
+            published: NaiveDate::from_ymd_opt(2023, 6, 1).unwrap(),
+            source_id: Some(sid.into()),
+            version: None,
+            authors: Some(vec!["Local".into()]),
+            summary: Some("local summary".into()),
+            category: Some("cs.LG".into()),
+            doi: None,
+            url: None,
+            tags: None,
+            source: Some("arxiv".into()),
+        };
+        paper_svc::upsert(&mut conn2, &pin("arxiv:1", "Local First"), None).unwrap();
+        paper_svc::upsert(&mut conn2, &pin("arxiv:2", "Local Second"), None).unwrap();
+        paper_svc::delete(
+            &mut conn2,
+            &paper_svc::PaperRef::source("arxiv:1".to_string()),
+        )
+        .unwrap();
+
+        let pfk = import_shared_project(&mut conn2, &sp).unwrap();
+
+        // Trashed stays trashed and is not linked to the imported project.
+        assert!(storage::queries::paper::is_paper_deleted(&conn2, "arxiv:1").unwrap());
+        let mut linked: Vec<String> = conn2
+            .prepare(
+                "SELECT r.SOURCE_ID FROM PROJECT_TO_PAPER pp \
+                 JOIN PAPER_ROOTS r ON r.SOURCE_FK = pp.SOURCE_FK \
+                 WHERE pp.PROJECT_FK = ?",
+            )
+            .unwrap()
+            .query_map([pfk], |r| r.get(0))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        linked.sort();
+        assert_eq!(linked, vec!["arxiv:2".to_string(), "arxiv:3".to_string()]);
+
+        // Known paper: local metadata kept, remote tags merged in.
+        let p2 = paper_svc::get(&conn2, &paper_svc::PaperRef::source("arxiv:2".to_string()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(p2.title, "Local Second");
+        assert!(p2.tags.contains(&"vision".to_string()));
+
+        // Unknown paper: created from the remote metadata.
+        let p3 = paper_svc::get(&conn2, &paper_svc::PaperRef::source("arxiv:3".to_string()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(p3.title, "Third");
+
+        // Only the note/annotation hanging off a linked paper come across:
+        // note B (arxiv:2) lands, note A and the annotation (arxiv:1) do not.
+        let notes = note_svc::get_many(
+            &conn2,
+            &note_svc::Notes {
+                project_fk: Some(pfk),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].content, "body B");
+        let anns = annotation_svc::get_many(
+            &conn2,
+            &annotation_svc::Annotations {
+                project_fk: Some(pfk),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(anns.is_empty());
     }
 }

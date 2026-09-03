@@ -146,7 +146,7 @@ jobs:
           cp "src-tauri/target/release/linxiv-cli$exe" "raw-binaries/raw-linxiv-cli-$triple$exe"
 
       - name: Hand the raw binaries to the upload job
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: raw-binaries-${{ matrix.platform }}
           path: raw-binaries/
@@ -192,7 +192,7 @@ jobs:
             npm run build:arch
           '
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: linxiv-arch-package
           path: packaging/arch/*.pkg.tar.zst
@@ -216,7 +216,7 @@ jobs:
     steps:
       - name: Collect the native Arch package
         if: ${{ needs.build-arch.result == 'success' }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: linxiv-arch-package
           path: arch-package
@@ -229,7 +229,7 @@ jobs:
         run: gh release upload "$GITHUB_REF_NAME" arch-package/*.pkg.tar.zst --clobber
 
       - name: Collect every platform's binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: raw-binaries-*
           merge-multiple: true

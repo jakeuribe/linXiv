@@ -122,8 +122,9 @@ pub fn list_filtered(
     )
 }
 
-/// Insert a new note. Returns NOTE_SK.
-pub fn create(conn: &Connection, note: &NoteIn) -> Result<i64> {
+/// Insert a new note. Returns the created row (the canonical create envelope),
+/// straight from the INSERT's RETURNING — no re-SELECT.
+pub fn create(conn: &Connection, note: &NoteIn) -> Result<NoteDetails> {
     let uuid: Option<String> = match &note.uuid {
         Some(u) => crate::models::resolve_uuid(u, |n| q::uuid_taken(conn, n))?,
         None => None,
@@ -153,9 +154,10 @@ pub fn delete(conn: &Connection, note: &Note) -> Result<bool> {
 }
 
 /// Partial update via COALESCE (a `None` field leaves its column unchanged).
-/// `false` if no row matched. Enforces "at least one of title/content provided"
-/// (Python `NoteUpdateIn.__post_init__`).
-pub fn update(conn: &Connection, note: &NoteUpdateIn) -> Result<bool> {
+/// Returns the updated row from the UPDATE's RETURNING; `None` if no row
+/// matched. Enforces "at least one of title/content provided" (Python
+/// `NoteUpdateIn.__post_init__`).
+pub fn update(conn: &Connection, note: &NoteUpdateIn) -> Result<Option<NoteDetails>> {
     if note.title.is_none() && note.content.is_none() {
         return Err(CoreError::Validation(
             "at least one of title or content must be provided".into(),
@@ -192,7 +194,7 @@ mod tests {
     #[test]
     fn create_get_update_delete_roundtrip() {
         let conn = setup();
-        let id = create(
+        let created = create(
             &conn,
             &NoteIn {
                 source_fk: 1,
@@ -204,21 +206,27 @@ mod tests {
             },
         )
         .unwrap();
+        let id = created.note_id;
+        assert_eq!(created.title, "t1");
 
         let got = get(&conn, &Note { note_id: Some(id) }).unwrap().unwrap();
         assert_eq!(got.title, "t1");
         assert_eq!(got.project_id, Some(10));
 
-        // partial update: None leaves title; Some replaces content.
-        assert!(update(
+        // partial update: None leaves title; Some replaces content; the
+        // returned row is the post-update state.
+        let updated = update(
             &conn,
             &NoteUpdateIn {
                 note_id: id,
                 title: None,
-                content: Some("body2".into())
+                content: Some("body2".into()),
             },
         )
-        .unwrap());
+        .unwrap()
+        .unwrap();
+        assert_eq!(updated.title, "t1");
+        assert_eq!(updated.content, "body2");
         let got = get(&conn, &Note { note_id: Some(id) }).unwrap().unwrap();
         assert_eq!(got.title, "t1");
         assert_eq!(got.content, "body2");
@@ -230,7 +238,7 @@ mod tests {
     #[test]
     fn get_required_returns_note_or_typed_not_found() {
         let conn = setup();
-        let id = create(
+        let created = create(
             &conn,
             &NoteIn {
                 source_fk: 1,
@@ -242,7 +250,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(get_required(&conn, id).unwrap().title, "t");
+        assert_eq!(get_required(&conn, created.note_id).unwrap().title, "t");
         let err = get_required(&conn, 999).unwrap_err();
         assert_eq!(err.http_status(), 404);
         assert_eq!(err.to_string(), "Note 999 not found");
@@ -480,7 +488,8 @@ mod tests {
                 uuid: Some(fixed_uuid.into()),
             },
         )
-        .unwrap();
+        .unwrap()
+        .note_id;
 
         let got1 = get(&conn, &Note { note_id: Some(id1) }).unwrap().unwrap();
         assert_eq!(got1.uuid, fixed_uuid);
@@ -496,7 +505,8 @@ mod tests {
                 uuid: Some(fixed_uuid.into()),
             },
         )
-        .unwrap();
+        .unwrap()
+        .note_id;
 
         let got2 = get(&conn, &Note { note_id: Some(id2) }).unwrap().unwrap();
         assert_ne!(got2.uuid, fixed_uuid);
@@ -515,7 +525,8 @@ mod tests {
                 uuid: Some(fixed_uuid.to_uppercase()),
             },
         )
-        .unwrap();
+        .unwrap()
+        .note_id;
 
         let got3 = get(&conn, &Note { note_id: Some(id3) }).unwrap().unwrap();
         assert_ne!(got3.uuid.to_lowercase(), fixed_uuid);

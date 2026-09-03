@@ -10,6 +10,7 @@ import {
   getPdfProxyUrl,
   getDoiVersionCandidates,
   fetchFullText,
+  mergePapers,
 } from "../api/papers";
 import { getNotes, deleteNote } from "../api/notes";
 import { getAnnotations, deleteAnnotation, updateAnnotation } from "../api/annotations";
@@ -182,9 +183,8 @@ export default function PaperDetailPage() {
   const versions = versionsData?.versions ?? [];
 
   // Other paper roots sharing this one's DOI — same work, different source
-  // (e.g. arXiv vs OpenAlex/Crossref). Read-only surfacing, no auto-merge:
-  // paper roots have too many dependent FKs (projects/tags/notes/annotations)
-  // to safely re-point in one pass.
+  // (e.g. arXiv vs OpenAlex/Crossref). Each candidate carries a confirm-guarded
+  // "Merge into this paper" action (POST sfk/{fk}/merge).
   const { data: doiCandidates } = useQuery({
     queryKey: ["paper", "doi-candidates", sfk],
     queryFn: () => getDoiVersionCandidates(Number(sfk)),
@@ -281,6 +281,27 @@ export default function PaperDetailPage() {
       invalidateAnnotationQueries(queryClient);
     },
     onSettled: () => setPendingDeleteId(null),
+  });
+
+  // Merge a same-DOI duplicate INTO this paper (this paper's metadata stays
+  // canonical; the duplicate's notes/memberships/tags/PDFs move over, then it
+  // is deleted). Fans out like a hard delete: the duplicate vanishes from every
+  // library/project/graph listing.
+  // Two-click confirm (window.confirm is suppressed on Linux WebKitGTK — see
+  // EditorPage's in-app dialog note): first click arms the row, second fires.
+  const [armedMergeSfk, setArmedMergeSfk] = useState<number | null>(null);
+  const mergeMutation = useMutation({
+    mutationFn: (loserSfk: number) => mergePapers(Number(sfk), loserSfk),
+    onSuccess: () => {
+      // Reading statuses move with the merge inside the backend transaction
+      // (winner wins); invalidatePaperQueries covers the "reading-status" key.
+      invalidatePaperQueries(queryClient);
+      // Covers "saved-pdfs" — a merge renames/deletes/adopts PDF files.
+      invalidatePaperMutationQueries(queryClient);
+      invalidateNoteQueries(queryClient);
+      invalidateAnnotationQueries(queryClient);
+    },
+    onSettled: () => setArmedMergeSfk(null),
   });
 
   useEffect(() => {
@@ -635,7 +656,7 @@ export default function PaperDetailPage() {
                 </div>
               )}
 
-              {/* Same DOI, different source — read-only suggestion, no auto-merge */}
+              {/* Same DOI, different source — likely duplicates, mergeable into this paper */}
               {doiCandidates && doiCandidates.length > 0 && (
                 <div
                   className="rounded-md border px-3 py-2 text-sm space-y-1.5"
@@ -645,19 +666,54 @@ export default function PaperDetailPage() {
                     Same DOI found in {doiCandidates.length} other record
                     {doiCandidates.length > 1 ? "s" : ""}. These are likely to be the same paper.
                   </p>
-                  <div className="flex flex-wrap gap-x-3 gap-y-1">
+                  <div className="space-y-1">
                     {doiCandidates.map((c) => (
-                      <button
-                        key={c.source_fk}
-                        type="button"
-                        className="text-xs underline underline-offset-2 hover:opacity-80"
-                        style={{ color: "var(--color-accent)" }}
-                        onClick={() => navigate(`/library/${c.source_fk}`)}
-                      >
-                        {c.source ?? c.source_id}: <MathText forceInline>{c.title}</MathText>
-                      </button>
+                      <div key={c.source_fk} className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          className="text-xs underline underline-offset-2 hover:opacity-80 text-left"
+                          style={{ color: "var(--color-accent)" }}
+                          onClick={() => navigate(`/library/${c.source_fk}`)}
+                        >
+                          {c.source ?? c.source_id}: <MathText forceInline>{c.title}</MathText>
+                        </button>
+                        {/* Two-click confirm: arm, then fire. The merge deletes the duplicate record. */}
+                        <button
+                          type="button"
+                          className="text-xs rounded border px-1.5 py-0.5 hover:opacity-80 shrink-0"
+                          style={{
+                            borderColor:
+                              armedMergeSfk === c.source_fk
+                                ? "var(--color-danger)"
+                                : "var(--color-border)",
+                            color:
+                              armedMergeSfk === c.source_fk
+                                ? "var(--color-danger)"
+                                : "var(--color-text-muted)",
+                          }}
+                          disabled={mergeMutation.isPending}
+                          onClick={() => {
+                            if (armedMergeSfk === c.source_fk) {
+                              mergeMutation.mutate(c.source_fk);
+                            } else {
+                              setArmedMergeSfk(c.source_fk);
+                            }
+                          }}
+                        >
+                          {mergeMutation.isPending && mergeMutation.variables === c.source_fk
+                            ? "Merging…"
+                            : armedMergeSfk === c.source_fk
+                              ? "Confirm — deletes the duplicate"
+                              : "Merge into this paper"}
+                        </button>
+                      </div>
                     ))}
                   </div>
+                  {mergeMutation.isError && (
+                    <p className="text-xs" style={{ color: "var(--color-danger)" }}>
+                      {(mergeMutation.error as Error).message}
+                    </p>
+                  )}
                 </div>
               )}
             </div>

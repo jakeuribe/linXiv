@@ -133,16 +133,10 @@ pub(crate) async fn populate_pdf_blobs(
                 continue;
             }
         }
-        let custom = match state.with_conn(|c| {
-            paper_svc::get(
-                c,
-                &paper_svc::PaperRef::Source {
-                    source_id: p.source_id.clone(),
-                    version: Some(p.version),
-                },
-            )
-        }) {
-            Ok(row) => row.and_then(|row| row.pdf_path),
+        let custom = match state
+            .with_conn(|c| paper_svc::pdf_custom_path(c, &p.source_id, Some(p.version)))
+        {
+            Ok(path) => path,
             Err(e) => {
                 eprintln!(
                     "share {}: paper lookup for {}: {e}",
@@ -151,11 +145,11 @@ pub(crate) async fn populate_pdf_blobs(
                 None
             }
         };
-        let Some(path) = crate::route::pdfs::resolve_local_pdf(
+        let Some(path) = linxiv_core::service::files::pdf_path(
             &state.pdf_dir,
-            custom.as_deref(),
             &p.source_id,
             p.version,
+            custom.as_deref(),
         ) else {
             // Rekey with no local PDF: re-encrypt from the prior blob under the
             // new epoch; on failure keep the old ticket.
@@ -195,11 +189,15 @@ pub(crate) async fn populate_pdf_blobs(
         let bytes = match tokio::task::spawn_blocking(move || std::fs::read(&read_path)).await {
             Ok(Ok(b)) => b,
             Ok(Err(e)) => {
-                eprintln!("share {}: PDF read {path}: {e}", sp.share_id);
+                eprintln!("share {}: PDF read {}: {e}", sp.share_id, path.display());
                 continue;
             }
             Err(e) => {
-                eprintln!("share {}: PDF read task {path}: {e}", sp.share_id);
+                eprintln!(
+                    "share {}: PDF read task {}: {e}",
+                    sp.share_id,
+                    path.display()
+                );
                 continue;
             }
         };
@@ -249,7 +247,7 @@ pub async fn sync_share(
     }
 
     if hoster_doc.is_file() {
-        // Hoster leg = local_to_shared: rebuild + save + refresh the registry.
+        // Hoster leg = local_to_shared: rebuild + save + re-register the doc.
         // Its shared_to_local leg is a no-op until W4 editors give readers edits.
         if settings.direction == SyncDirection::SharedToLocal {
             return Ok(json!({ "synced": false, "reason": "direction", "role": "hoster" }));
@@ -259,9 +257,9 @@ pub async fn sync_share(
             return Ok(json!({ "synced": false, "reason": "project gone" }));
         };
         let sp = state.with_conn(|c| build_shared_project(c, fk))?;
-        save(&dir, &sp)?;
+        let doc = save(&dir, &sp)?;
         if let Some(node) = share.node().await {
-            node.refresh(share_id).await?;
+            node.register_doc(share_id, doc)?;
         }
         touch(&hoster_doc);
         return Ok(json!({ "synced": true, "role": "hoster" }));

@@ -255,60 +255,69 @@ fn finalize(mut e: FeedEntry) -> FeedEntry {
     e
 }
 
-/// `Event::Start`/`Event::Empty` handling: opens a new entry on `<item>`/`<entry>`,
-/// otherwise updates the in-progress entry's link/guid/author state, or clears
-/// `text` ahead of the top-level `<title>` when no entry is open.
-fn handle_start_event(
-    e: &BytesStart<'_>,
-    cur: &mut Option<FeedEntry>,
-    in_author: &mut bool,
-    author_name_found: &mut bool,
-    text: &mut String,
-    guid_is_permalink: &mut bool,
-    explicit_link: &mut Option<String>,
-    guid_permalink: &mut Option<String>,
-) {
-    let name = e.name();
-    let l = local(name.as_ref());
-    if l == b"item" || l == b"entry" {
-        *cur = Some(FeedEntry::default());
-        *guid_is_permalink = true;
-        *explicit_link = None;
-        *guid_permalink = None;
-    } else if cur.is_some() {
-        match l {
-            // Atom link carries its target in @href (prefer the
-            // alternate/plain link over enclosure/self rels).
-            b"link" => {
-                if let Some(href) = attr(e, b"href") {
-                    if matches!(attr(e, b"rel").as_deref(), None | Some("alternate")) {
-                        *explicit_link = Some(href);
+/// Mutable state threaded through the feed parse loop — one entry in progress,
+/// the accumulated text of the current leaf element, and per-entry link/guid/
+/// author bookkeeping.
+#[derive(Default)]
+struct ParseState {
+    feed_title: String,
+    entries: Vec<FeedEntry>,
+    cur: Option<FeedEntry>,
+    in_author: bool,
+    author_name_found: bool,
+    text: String,
+    guid_is_permalink: bool,
+    explicit_link: Option<String>,
+    guid_permalink: Option<String>,
+}
+
+impl ParseState {
+    /// `Event::Start`/`Event::Empty` handling: opens a new entry on `<item>`/`<entry>`,
+    /// otherwise updates the in-progress entry's link/guid/author state, or clears
+    /// `text` ahead of the top-level `<title>` when no entry is open.
+    fn handle_start_event(&mut self, e: &BytesStart<'_>) {
+        let name = e.name();
+        let l = local(name.as_ref());
+        if l == b"item" || l == b"entry" {
+            self.cur = Some(FeedEntry::default());
+            self.guid_is_permalink = true;
+            self.explicit_link = None;
+            self.guid_permalink = None;
+        } else if self.cur.is_some() {
+            match l {
+                // Atom link carries its target in @href (prefer the
+                // alternate/plain link over enclosure/self rels).
+                b"link" => {
+                    if let Some(href) = attr(e, b"href") {
+                        if matches!(attr(e, b"rel").as_deref(), None | Some("alternate")) {
+                            self.explicit_link = Some(href);
+                        }
                     }
+                    self.text.clear();
                 }
-                text.clear();
+                b"guid" => {
+                    self.guid_is_permalink = attr(e, b"isPermaLink")
+                        .map(|v| v != "false")
+                        .unwrap_or(true);
+                    self.text.clear();
+                }
+                b"author" => {
+                    self.in_author = true;
+                    self.author_name_found = false;
+                    self.text.clear();
+                }
+                // Only clear text buffer for leaf elements we actually parse on End.
+                b"title" | b"description" | b"summary" | b"content" | b"name" | b"creator"
+                | b"pubDate" | b"published" | b"updated" => {
+                    self.text.clear();
+                }
+                _ => {}
             }
-            b"guid" => {
-                *guid_is_permalink = attr(e, b"isPermaLink")
-                    .map(|v| v != "false")
-                    .unwrap_or(true);
-                text.clear();
-            }
-            b"author" => {
-                *in_author = true;
-                *author_name_found = false;
-                text.clear();
-            }
-            // Only clear text buffer for leaf elements we actually parse on End.
-            b"title" | b"description" | b"summary" | b"content" | b"name" | b"creator"
-            | b"pubDate" | b"published" | b"updated" => {
-                text.clear();
-            }
-            _ => {}
+        } else if l == b"title" {
+            // Top-level title: clear any accumulated text from preceding sibling elements
+            // (e.g., <id> before <title> in real-world Atom feeds).
+            self.text.clear();
         }
-    } else if l == b"title" {
-        // Top-level title: clear any accumulated text from preceding sibling elements
-        // (e.g., <id> before <title> in real-world Atom feeds).
-        text.clear();
     }
 }
 
@@ -348,72 +357,66 @@ fn handle_general_ref_event(e: &BytesRef<'_>, text: &mut String) {
     }
 }
 
-/// `Event::End` handling: closes and finalizes the in-progress entry on
-/// `</item>`/`</entry>`, otherwise assigns the just-closed leaf element's
-/// trimmed text into the entry (or the top-level feed title when none is open).
-fn handle_end_event(
-    e: &BytesEnd<'_>,
-    cur: &mut Option<FeedEntry>,
-    entries: &mut Vec<FeedEntry>,
-    feed_title: &mut String,
-    text: &str,
-    in_author: &mut bool,
-    author_name_found: &mut bool,
-    guid_is_permalink: bool,
-    explicit_link: &mut Option<String>,
-    guid_permalink: &mut Option<String>,
-) {
-    let name = e.name();
-    let l = local(name.as_ref());
-    if l == b"item" || l == b"entry" {
-        if let Some(mut b) = cur.take() {
-            // Explicit <link>/Atom @href wins; <guid isPermaLink> is the fallback.
-            b.link = explicit_link
-                .take()
-                .filter(|l| !l.is_empty())
-                .or_else(|| guid_permalink.take().filter(|l| !l.is_empty()))
-                .unwrap_or_default();
-            entries.push(finalize(b));
-        }
-    } else if let Some(b) = cur.as_mut() {
-        let t = text.trim();
-        match l {
-            b"title" => b.title = t.to_string(),
-            // RSS `<link>` is element text; Atom's @href was taken above.
-            b"link" if !t.is_empty() => *explicit_link = Some(t.to_string()),
-            // RSS `<guid isPermaLink>` fallback when <link> is absent.
-            b"guid" if guid_is_permalink && !t.is_empty() => *guid_permalink = Some(t.to_string()),
-            // RSS description / Atom summary; Atom content as fallback.
-            b"description" | b"summary" => b.summary = t.to_string(),
-            b"content" if b.summary.is_empty() => b.summary = t.to_string(),
-            // Atom `<author><name>`.
-            b"name" if *in_author => {
-                b.authors.push(t.to_string());
-                *author_name_found = true;
+impl ParseState {
+    /// `Event::End` handling: closes and finalizes the in-progress entry on
+    /// `</item>`/`</entry>`, otherwise assigns the just-closed leaf element's
+    /// trimmed text into the entry (or the top-level feed title when none is open).
+    fn handle_end_event(&mut self, e: &BytesEnd<'_>) {
+        let name = e.name();
+        let l = local(name.as_ref());
+        if l == b"item" || l == b"entry" {
+            if let Some(mut b) = self.cur.take() {
+                // Explicit <link>/Atom @href wins; <guid isPermaLink> is the fallback.
+                b.link = self
+                    .explicit_link
+                    .take()
+                    .filter(|l| !l.is_empty())
+                    .or_else(|| self.guid_permalink.take().filter(|l| !l.is_empty()))
+                    .unwrap_or_default();
+                self.entries.push(finalize(b));
             }
-            b"author" => {
-                // Capture RSS 2.0 plain-text `<author>` if no `<name>` child was found.
-                if !*author_name_found && !t.is_empty() {
-                    b.authors.push(t.to_string());
+        } else if let Some(b) = self.cur.as_mut() {
+            let t = self.text.trim();
+            match l {
+                b"title" => b.title = t.to_string(),
+                // RSS `<link>` is element text; Atom's @href was taken above.
+                b"link" if !t.is_empty() => self.explicit_link = Some(t.to_string()),
+                // RSS `<guid isPermaLink>` fallback when <link> is absent.
+                b"guid" if self.guid_is_permalink && !t.is_empty() => {
+                    self.guid_permalink = Some(t.to_string())
                 }
-                *in_author = false;
+                // RSS description / Atom summary; Atom content as fallback.
+                b"description" | b"summary" => b.summary = t.to_string(),
+                b"content" if b.summary.is_empty() => b.summary = t.to_string(),
+                // Atom `<author><name>`.
+                b"name" if self.in_author => {
+                    b.authors.push(t.to_string());
+                    self.author_name_found = true;
+                }
+                b"author" => {
+                    // Capture RSS 2.0 plain-text `<author>` if no `<name>` child was found.
+                    if !self.author_name_found && !t.is_empty() {
+                        b.authors.push(t.to_string());
+                    }
+                    self.in_author = false;
+                }
+                // RSS `<dc:creator>` holds a comma-separated author list.
+                b"creator" => {
+                    b.authors.extend(
+                        t.split(',')
+                            .map(|s| s.trim())
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string),
+                    );
+                }
+                b"pubDate" | b"published" => b.published = t.to_string(),
+                b"updated" if b.published.is_empty() => b.published = t.to_string(),
+                _ => {}
             }
-            // RSS `<dc:creator>` holds a comma-separated author list.
-            b"creator" => {
-                b.authors.extend(
-                    t.split(',')
-                        .map(|s| s.trim())
-                        .filter(|s| !s.is_empty())
-                        .map(str::to_string),
-                );
-            }
-            b"pubDate" | b"published" => b.published = t.to_string(),
-            b"updated" if b.published.is_empty() => b.published = t.to_string(),
-            _ => {}
+        } else if l == b"title" && self.feed_title.is_empty() {
+            // First title outside any item/entry: the channel/feed title.
+            self.feed_title = self.text.trim().to_string();
         }
-    } else if l == b"title" && feed_title.is_empty() {
-        // First title outside any item/entry: the channel/feed title.
-        *feed_title = text.trim().to_string();
     }
 }
 
@@ -421,15 +424,10 @@ fn handle_end_event(
 pub fn parse_feed(xml: &[u8]) -> Result<Feed> {
     let mut reader = Reader::from_reader(xml);
     let mut buf = Vec::new();
-    let mut feed_title = String::new();
-    let mut entries: Vec<FeedEntry> = Vec::new();
-    let mut cur: Option<FeedEntry> = None;
-    let mut in_author = false;
-    let mut author_name_found = false;
-    let mut text = String::new();
-    let mut guid_is_permalink = true;
-    let mut explicit_link: Option<String> = None;
-    let mut guid_permalink: Option<String> = None;
+    let mut st = ParseState {
+        guid_is_permalink: true,
+        ..Default::default()
+    };
     let mut last_err_pos: Option<u64> = None;
 
     loop {
@@ -443,62 +441,38 @@ pub fn parse_feed(xml: &[u8]) -> Result<Feed> {
                     break;
                 }
                 last_err_pos = Some(pos);
-                cur = None;
-                in_author = false;
-                text.clear();
+                st.cur = None;
+                st.in_author = false;
+                st.text.clear();
                 buf.clear();
                 continue;
             }
         };
         match ev {
-            Event::Start(e) | Event::Empty(e) => {
-                handle_start_event(
-                    &e,
-                    &mut cur,
-                    &mut in_author,
-                    &mut author_name_found,
-                    &mut text,
-                    &mut guid_is_permalink,
-                    &mut explicit_link,
-                    &mut guid_permalink,
-                );
-            }
+            Event::Start(e) | Event::Empty(e) => st.handle_start_event(&e),
             Event::Text(e) => {
                 if let Ok(t) = e.decode() {
-                    text.push_str(&t);
+                    st.text.push_str(&t);
                 }
                 // Decode errors on individual text elements are skipped; only hard
                 // read_event_into errors abort the entire parse.
             }
             Event::CData(e) => {
-                text.push_str(&String::from_utf8_lossy(e.as_ref()));
+                st.text.push_str(&String::from_utf8_lossy(e.as_ref()));
             }
             // quick-xml emits entities (`&amp;`, `&#38;`) as their own events.
             Event::GeneralRef(e) => {
-                handle_general_ref_event(&e, &mut text);
+                handle_general_ref_event(&e, &mut st.text);
             }
-            Event::End(e) => {
-                handle_end_event(
-                    &e,
-                    &mut cur,
-                    &mut entries,
-                    &mut feed_title,
-                    &text,
-                    &mut in_author,
-                    &mut author_name_found,
-                    guid_is_permalink,
-                    &mut explicit_link,
-                    &mut guid_permalink,
-                );
-            }
+            Event::End(e) => st.handle_end_event(&e),
             Event::Eof => break,
             _ => {}
         }
         buf.clear();
     }
     Ok(Feed {
-        title: feed_title,
-        entries,
+        title: st.feed_title,
+        entries: st.entries,
     })
 }
 

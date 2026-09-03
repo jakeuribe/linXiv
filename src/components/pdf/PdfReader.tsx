@@ -17,6 +17,11 @@ import { HighlightLayer, type PageHighlight } from "./HighlightLayer";
 import { PagePill } from "./PagePill";
 import { submitOnCtrlEnter } from "../../lib/submitShortcut";
 import { invalidateAnnotationQueries } from "../../lib/paperMutations";
+import {
+  readPdfPosition,
+  writePdfPosition,
+  type PdfPosition,
+} from "../../lib/pdfPosition";
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   "pdfjs-dist/build/pdf.worker.min.mjs",
@@ -43,6 +48,10 @@ const PAGE_WINDOW = 4;
 // How long resize (ResizeObserver) activity must be quiet before the live
 // scaleX preview is committed as a real react-pdf re-render.
 const RESIZE_SETTLE_MS = 120;
+
+// localStorage is synchronous, so cap writes during kinetic scrolling while
+// still committing the final position when the reader closes.
+const POSITION_SAVE_INTERVAL_MS = 200;
 
 // Horizontal padding around each rendered page, subtracted from the scroller's
 // measured width to get the actual page width react-pdf renders at.
@@ -83,11 +92,62 @@ export function PdfReader({ file, sourceId, version, projectId, errorUrl }: PdfR
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const pagesWrapRef = useRef<HTMLDivElement | null>(null);
   const rafRef = useRef<number | null>(null);
+  const restoreRafRef = useRef<number | null>(null);
   const obsRef = useRef<ResizeObserver | null>(null);
   // Last width actually committed to react-pdf (vs. the live, uncommitted
   // ResizeObserver reading) so mid-drag ticks can be scaled instead of reflowed.
   const committedWidthRef = useRef(0);
   const resizeTimerRef = useRef<number | null>(null);
+  const positionTimerRef = useRef<number | null>(null);
+  const pendingPositionRef = useRef<PdfPosition | null>(null);
+  const positionReadyRef = useRef(false);
+
+  const capturePosition = useCallback(
+    (scroller: HTMLDivElement): PdfPosition | null => {
+      const pages = scroller.querySelectorAll<HTMLElement>(".pdf-page-slot");
+      if (pages.length === 0) return null;
+
+      // Use the page intersecting the viewport's top edge, then store a
+      // dimensionless offset so restoration survives pane/window resizing.
+      let current = pages[0];
+      let currentIndex = 0;
+      pages.forEach((candidate, index) => {
+        if (candidate.offsetTop <= scroller.scrollTop + 1) {
+          current = candidate;
+          currentIndex = index;
+        }
+      });
+      const height = Math.max(1, current.offsetHeight);
+      return {
+        page: currentIndex + 1,
+        offset: Math.min(
+          1,
+          Math.max(0, (scroller.scrollTop - current.offsetTop) / height),
+        ),
+      };
+    },
+    [],
+  );
+
+  const savePosition = useCallback(
+    (scroller: HTMLDivElement | null) => {
+      if (!scroller || !positionReadyRef.current) return;
+      const position = capturePosition(scroller);
+      if (position) writePdfPosition(sourceId, version, position);
+    },
+    [capturePosition, sourceId, version],
+  );
+
+  const schedulePositionSave = useCallback(
+    (scroller: HTMLDivElement) => {
+      if (!positionReadyRef.current || positionTimerRef.current !== null) return;
+      positionTimerRef.current = window.setTimeout(() => {
+        positionTimerRef.current = null;
+        savePosition(scroller);
+      }, POSITION_SAVE_INTERVAL_MS);
+    },
+    [savePosition],
+  );
 
   // Key must match PaperDetailPage's annotations query so the overlay and the
   // Annotations tab share one cache entry rather than each fetching separately.
@@ -155,15 +215,39 @@ export function PdfReader({ file, sourceId, version, projectId, errorUrl }: PdfR
   useEffect(
     () => () => {
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+      if (restoreRafRef.current !== null) cancelAnimationFrame(restoreRafRef.current);
       if (resizeTimerRef.current !== null) {
         clearTimeout(resizeTimerRef.current);
         pagesWrapRef.current?.style.removeProperty("transform");
         pagesWrapRef.current?.style.removeProperty("will-change");
       }
+      if (positionTimerRef.current !== null) clearTimeout(positionTimerRef.current);
       obsRef.current?.disconnect();
     },
     [],
   );
+
+  useEffect(() => {
+    const saved = readPdfPosition(sourceId, version);
+    pendingPositionRef.current = saved;
+    positionReadyRef.current = !saved;
+    setPage(saved?.page ?? 1);
+    setNumPages(0);
+
+    const flushPosition = () => savePosition(scrollerRef.current);
+    window.addEventListener("pagehide", flushPosition);
+
+    return () => {
+      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+      if (restoreRafRef.current !== null) cancelAnimationFrame(restoreRafRef.current);
+      if (positionTimerRef.current !== null) {
+        clearTimeout(positionTimerRef.current);
+        positionTimerRef.current = null;
+      }
+      flushPosition();
+      window.removeEventListener("pagehide", flushPosition);
+    };
+  }, [file, savePosition, sourceId, version]);
 
   // Dismiss the toolbar/popup on a mousedown outside the reader scroller.
   useEffect(() => {
@@ -236,6 +320,7 @@ export function PdfReader({ file, sourceId, version, projectId, errorUrl }: PdfR
 
   function onScroll(e: React.UIEvent<HTMLDivElement>) {
     const scroller = e.currentTarget;
+    schedulePositionSave(scroller);
     if (rafRef.current !== null) return;
     rafRef.current = requestAnimationFrame(() => {
       rafRef.current = null;
@@ -255,6 +340,34 @@ export function PdfReader({ file, sourceId, version, projectId, errorUrl }: PdfR
     });
     if (selBar) setSelBar(null);
     if (popup) setPopup(null);
+  }
+
+  function onDocumentLoad(loadedPages: number) {
+    setNumPages(loadedPages);
+    const pending = pendingPositionRef.current;
+    if (!pending) {
+      positionReadyRef.current = true;
+      return;
+    }
+    const targetPage = Math.min(Math.max(pending.page, 1), loadedPages);
+    pendingPositionRef.current = { ...pending, page: targetPage };
+    setPage(targetPage);
+  }
+
+  function restorePosition(renderedPage: number) {
+    const pending = pendingPositionRef.current;
+    if (!pending || pending.page !== renderedPage || width <= 0) return;
+    if (restoreRafRef.current !== null) cancelAnimationFrame(restoreRafRef.current);
+    restoreRafRef.current = requestAnimationFrame(() => {
+      restoreRafRef.current = null;
+      const scroller = scrollerRef.current;
+      const pageEl =
+        scroller?.querySelectorAll<HTMLElement>(".pdf-page-slot")[renderedPage - 1];
+      if (!scroller || !pageEl) return;
+      scroller.scrollTop = pageEl.offsetTop + pending.offset * pageEl.offsetHeight;
+      pendingPositionRef.current = null;
+      positionReadyRef.current = true;
+    });
   }
 
   // On mouse up, if there's a real text selection inside a page, surface the
@@ -357,7 +470,7 @@ export function PdfReader({ file, sourceId, version, projectId, errorUrl }: PdfR
       >
         <Document
           file={file}
-          onLoadSuccess={(pdf) => setNumPages(pdf.numPages)}
+          onLoadSuccess={(pdf) => onDocumentLoad(pdf.numPages)}
           loading={
             <div className="flex items-center justify-center gap-2 py-16 text-white/60 text-sm">
               <Spinner size={16} /> Loading PDF…
@@ -405,6 +518,7 @@ export function PdfReader({ file, sourceId, version, projectId, errorUrl }: PdfR
                   <Page
                     pageNumber={pn}
                     width={pageWidth}
+                    onRenderSuccess={() => restorePosition(pn)}
                     className="shadow-md"
                     renderTextLayer
                     renderAnnotationLayer
@@ -520,4 +634,3 @@ function clampToViewport(left: number, top: number, w: number, h: number) {
     top: Math.max(8, Math.min(top, window.innerHeight - h)),
   };
 }
-

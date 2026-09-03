@@ -1,5 +1,5 @@
 //! source — the Provider front door for consumers (ADR-0010). Route/CLI/MCP name
-//! a Provider; this picks the `PaperSource` adapter and hands it its own
+//! a Provider; this dispatches to the Provider's module and hands it its own
 //! configuration, so no consumer passes `data_dir` or `mailto` (or reaches into
 //! `sources::` at all).
 //!
@@ -12,9 +12,8 @@
 
 use crate::config;
 use crate::error::{CoreError, Result};
-use crate::models::PaperMetadata;
-use crate::sources::provider::{Arxiv, CrossRef, OpenAlex, PaperSource};
-use crate::sources::{crossref, doi_resolve, openalex};
+use crate::models::{strip_provider_prefix, PaperMetadata, DOI_ID_PREFIX};
+use crate::sources::{arxiv, crossref, doi_resolve, openalex};
 
 /// `_resolve_source`'s unknown-source `ValueError`. Plain string → single-quoted,
 /// matching Python's `{source!r}`.
@@ -24,26 +23,28 @@ fn unknown_source(source: &str) -> CoreError {
     ))
 }
 
-/// Fetch full metadata for one paper by id from `source`.
+/// Fetch full metadata for one paper by id from `source`. Ids may be namespaced
+/// (`arxiv:…`, `openalex:…`, `doi:…`) or bare; a miss is an `Err`, never `None`.
 pub async fn fetch_by_id(source: &str, paper_id: &str) -> Result<PaperMetadata> {
     match source {
-        "arxiv" => Arxiv::new(config::data_dir()).fetch_by_id(paper_id).await,
-        "openalex" => {
-            OpenAlex::new(config::openalex_mailto())
-                .fetch_by_id(paper_id)
-                .await
-        }
+        "arxiv" => arxiv::fetch_by_id(paper_id, &config::data_dir()).await,
+        "openalex" => openalex::fetch_by_id(paper_id, &config::openalex_mailto()).await,
+        // CrossRef ids are DOIs under the `doi:` namespace. The underlying lookup
+        // separates "no such work" from a transport failure; both become `Err`.
         "crossref" => {
-            CrossRef::new(config::crossref_mailto())
-                .fetch_by_id(paper_id)
-                .await
+            let doi = strip_provider_prefix(paper_id, DOI_ID_PREFIX);
+            crossref::fetch_by_doi_checked(doi, &config::crossref_mailto())
+                .await?
+                .ok_or_else(|| {
+                    CoreError::Validation(format!("CrossRef: no record found for DOI '{paper_id}'"))
+                })
         }
         other => Err(unknown_source(other)),
     }
 }
 
-/// Search `source` by keyword. `sort` is validated by the adapter, which refuses
-/// a key it cannot honour.
+/// Search `source` by keyword. `sort` is validated by the Provider module, which
+/// refuses a key it cannot honour (no silent drops).
 pub async fn search(
     source: &str,
     query: &str,
@@ -51,27 +52,19 @@ pub async fn search(
     sort: &str,
 ) -> Result<Vec<PaperMetadata>> {
     match source {
-        "arxiv" => {
-            Arxiv::new(config::data_dir())
-                .search(query, max_results, sort)
-                .await
-        }
-        "openalex" => {
-            OpenAlex::new(config::openalex_mailto())
-                .search(query, max_results, sort)
-                .await
-        }
+        "arxiv" => arxiv::search(query, max_results, sort, &config::data_dir()).await,
+        "openalex" => openalex::search(query, max_results, sort, &config::openalex_mailto()).await,
         "crossref" => {
-            CrossRef::new(config::crossref_mailto())
-                .search(query, max_results, sort)
+            crossref::search_by_title_checked(query, max_results, sort, &config::crossref_mailto())
                 .await
         }
         other => Err(unknown_source(other)),
     }
 }
 
-/// DOI → metadata via the three-strategy ladder. Outside `PaperSource` on
-/// purpose: one operation spanning several Providers, not a Provider of its own.
+/// DOI → metadata via the three-strategy ladder. Outside the per-Provider
+/// dispatch on purpose: one operation spanning several Providers, not a
+/// Provider of its own.
 pub async fn resolve_doi(doi: &str) -> Result<PaperMetadata> {
     doi_resolve::resolve_doi(doi, &config::data_dir(), &config::crossref_mailto()).await
 }

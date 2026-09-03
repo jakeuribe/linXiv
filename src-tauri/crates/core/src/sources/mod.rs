@@ -9,4 +9,3 @@ pub mod feed;
 pub mod http;
 pub mod openalex;
 pub mod pdf_metadata;
-pub mod provider;

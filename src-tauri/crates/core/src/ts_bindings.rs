@@ -119,6 +119,7 @@ pub(crate) fn render() -> String {
     out.push_str(&decl::<crate::service::paper::FullTextReceipt>());
     out.push_str(&decl::<crate::service::project::PaperMembershipReceipt>());
     out.push_str(&decl::<crate::service::paper_import::BibtexImportReceipt>());
+    out.push_str(&decl::<crate::service::paper_merge::MergeReceipt>());
     out.push_str(&decl::<crate::storage::queries::rss::FilterField>());
     out.push_str(&decl::<crate::storage::queries::rss::FilterAction>());
     out.push_str(&decl::<crate::storage::queries::rss::FilterRule>());
