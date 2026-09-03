@@ -37,7 +37,9 @@ path = "src/bin/headless.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["unstable"] }
+# protocol-asset: tauri.conf.json enables assetProtocol (remote_pdf_cache
+# scope); without the matching feature the tauri build script hard-fails.
+tauri = { version = "2", features = ["unstable", "protocol-asset"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-opener = "2"
