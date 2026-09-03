@@ -135,8 +135,10 @@ pub fn remote_backend_add(label: String, address: String) -> Result<Backend, Rem
     Ok(backend)
 }
 
-/// Remove a backend and drop its cached connection.
-// ponytail: leaves remote_pdf_cache/{id} on disk; add cleanup if space matters.
+/// Remove a backend, its cached connection, and its PDF cache directory.
+/// The cache MUST go: `new_id` refills freed `b<N>` slugs, so a leftover
+/// `remote_pdf_cache/{id}` would be served as a later backend's PDFs
+/// (cross-backend cache poisoning). Purge failure aborts the removal.
 #[tauri::command]
 pub async fn remote_backend_remove(
     remote: tauri::State<'_, RemoteState>,
@@ -148,9 +150,34 @@ pub async fn remote_backend_remove(
     if list.len() == before {
         return Err(RemoteError::invalid(format!("unknown backend {id:?}")));
     }
+    purge_pdf_cache(&config::data_dir().join("remote_pdf_cache"), &id)
+        .map_err(|e| RemoteError::transport(format!("clearing pdf cache: {e}")))?;
     save_backends(&list)?;
     remote.conns.lock().await.remove(&id);
     Ok(())
+}
+
+/// Delete `root/{id}`; an absent dir is success. Non-slug ids (possible only
+/// via a hand-edited registry) are a no-op — [`fetch_remote_pdf`] refuses
+/// them, so nothing was ever cached under one, and they must not become a
+/// path segment here either.
+fn purge_pdf_cache(root: &Path, id: &str) -> std::io::Result<()> {
+    if !is_slug(id) {
+        return Ok(());
+    }
+    match std::fs::remove_dir_all(root.join(id)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
+}
+
+/// App-generated ids are `b<N>`, but the registry file is hand-editable —
+/// anything used as a path segment must pass this.
+fn is_slug(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 // ── connection cache + request core ─────────────────────────────────────────
@@ -315,13 +342,8 @@ pub async fn fetch_remote_pdf(
     version: Option<u32>,
     cache_root: &Path,
 ) -> Result<PathBuf, RemoteError> {
-    // Belt: ids are app-generated, but the registry file is hand-editable —
-    // refuse anything that isn't a plain slug before it becomes a path segment.
-    if backend_id.is_empty()
-        || !backend_id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-    {
+    // Belt: refuse a non-slug id before it becomes a path segment.
+    if !is_slug(backend_id) {
         return Err(RemoteError::invalid("backend id is not a slug"));
     }
     // ponytail: "latest" (no version) caches as v0 and never revalidates;
@@ -421,6 +443,24 @@ mod tests {
         // Slugs fill the smallest hole and stay filesystem-safe.
         assert_eq!(new_id(&list), "b3");
         assert_eq!(new_id(&list[1..]), "b1");
+    }
+
+    /// Removal must delete the cache dir: `new_id` reuses freed slugs, so a
+    /// leftover dir would poison the next backend that gets the same id.
+    #[test]
+    fn purge_pdf_cache_deletes_dir_tolerates_absence_refuses_non_slugs() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("b1");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("arxiv_2204.12985v1.pdf"), b"pdf").unwrap();
+        purge_pdf_cache(root.path(), "b1").unwrap();
+        assert!(!dir.exists());
+        // Absent dir (nothing was ever cached) is success, not an error.
+        purge_pdf_cache(root.path(), "b1").unwrap();
+        // Non-slug id never becomes a path segment.
+        std::fs::create_dir_all(root.path().join("evil")).unwrap();
+        purge_pdf_cache(root.path(), "../evil").unwrap();
+        assert!(root.path().join("evil").exists());
     }
 
     #[test]
