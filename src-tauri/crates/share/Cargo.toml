@@ -14,7 +14,9 @@ sync-beelay = ["linxiv-p2p/sync-beelay"]
 [dependencies]
 linxiv-core = { path = "../core" }
 # Vendored p2p transport: iroh endpoint + automerge lockstep sync + tickets.
-linxiv-p2p = { path = "../p2p" }
+# version pins the submodule's crate version: a submodule bump that changes
+# the p2p version without updating this spec fails resolution loudly.
+linxiv-p2p = { path = "../p2p", version = "0.1.1" }
 # Pinned to core's version so the `Connection` type unifies to one crate instance.
 rusqlite = "0.40"
 # CRDT engine: autosurgeon 0.12 derives Reconcile/Hydrate and requires automerge ^0.10.

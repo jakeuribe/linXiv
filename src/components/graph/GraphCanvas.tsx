@@ -657,7 +657,14 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(function Gra
 
   return (
     <>
-      <div ref={containerRef} className="absolute inset-0" onMouseLeave={hideTooltip} />
+      {/* Inline, not `absolute inset-0`: cytoscape injects an unlayered
+          `position: relative` on its container class, which outranks
+          Tailwind 4's layered utilities and collapses the div to 0 height. */}
+      <div
+        ref={containerRef}
+        style={{ position: "absolute", inset: 0 }}
+        onMouseLeave={hideTooltip}
+      />
       {tooltip && (
         <div
           ref={tooltipRef}
