@@ -2,6 +2,9 @@ name: CI
 
 on:
   push:
+    # main pushes establish the code-coverage baseline PRs are compared against.
+    branches:
+      - main
     tags:
       - "v*"
   pull_request:
@@ -16,13 +19,17 @@ jobs:
   rust:
     name: Rust (cargo test + fmt)
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      code-quality: write # actions/upload-code-coverage
     steps:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt
+          # llvm-tools-preview: source-based coverage for cargo-llvm-cov.
+          components: rustfmt,llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
@@ -38,9 +45,21 @@ jobs:
       # compile time, so they must exist before cargo test builds the app.
       - name: Stage Rust CLI/MCP sidecar binaries
         run: bash scripts/stage_rust_bins.sh
-      - name: cargo test
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      # llvm-cov runs the same `cargo test --workspace` under coverage
+      # instrumentation — one run doubles as the test gate and the report.
+      - name: cargo test (with coverage)
         working-directory: src-tauri
-        run: cargo test --workspace
+        run: cargo llvm-cov --workspace --cobertura --output-path coverage.xml
+      - name: Upload coverage (GitHub Code Quality)
+        uses: actions/upload-code-coverage@v1
+        with:
+          file: src-tauri/coverage.xml
+          language: Rust
+          label: code-coverage/cargo-llvm-cov
+        # Coverage upload needs Code Quality enabled on the repo; don't let a
+        # preview-feature hiccup fail the test job.
+        continue-on-error: true
       - name: cargo fmt
         working-directory: src-tauri
         run: cargo fmt --all --check
