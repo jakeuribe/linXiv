@@ -7,7 +7,6 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tauri::Manager;
 
 use linxiv_core::service::paper as paper_svc;
 use linxiv_core::service::project as project_svc;
@@ -456,18 +455,9 @@ pub async fn sync_all(state: &AppState, share: &ShareState) {
     }
 }
 
-/// 5-minute best-effort sync loop over every share, sequential, log-and-continue.
-/// The task dies with the process.
-pub fn spawn_interval_sync(app: tauri::AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        loop {
-            let state = app.state::<AppState>();
-            let share = app.state::<ShareState>();
-            sync_all(&state, &share).await;
-            tokio::time::sleep(Duration::from_secs(300)).await;
-        }
-    });
-}
+/// Interval between best-effort passes of the background sync loop; each
+/// front door (Tauri app, headless bin) spawns its own loop over [`sync_all`].
+pub const INTERVAL_SYNC_PERIOD: Duration = Duration::from_secs(300);
 
 #[cfg(test)]
 mod tests {

@@ -125,12 +125,6 @@ pub(crate) fn path_i64(seg: &str) -> Result<i64, ApiError> {
         .map_err(|_| ApiError::new(422, format!("Invalid path parameter: {seg:?}")))
 }
 
-/// The Tauri command the webview invokes. Thin wrapper over `route`.
-#[tauri::command]
-pub async fn api(state: tauri::State<'_, AppState>, req: ApiRequest) -> Result<Value, ApiError> {
-    route(state.inner(), req).await
-}
-
 /// Match a request to a `linxiv-core` call. Thin wrapper over `route_inner` that
 /// logs 5xx errors to stderr — otherwise a handler failure only exists as a UI
 /// toast and is undiagnosable after the fact.
@@ -226,7 +220,7 @@ fn categories(state: &AppState) -> Result<Value, ApiError> {
 
 /// Split a raw request path into percent-decoded, non-empty segments. Shared with
 /// the `share_api` command so both front doors parse paths identically.
-pub(crate) fn split_segments(raw_path: &str) -> Vec<String> {
+pub fn split_segments(raw_path: &str) -> Vec<String> {
     raw_path
         .trim_matches('/')
         .split('/')
@@ -267,7 +261,7 @@ pub(crate) fn parse_query(raw: &str) -> HashMap<String, String> {
 /// Decode `%XX` escapes (and nothing else — `encodeURIComponent` never emits `+`
 /// for space).
 /// Shared with the `linxiv://` protocol handler.
-pub(crate) fn pct_decode(s: &str) -> String {
+pub fn pct_decode(s: &str) -> String {
     if !s.contains('%') {
         return s.to_owned();
     }

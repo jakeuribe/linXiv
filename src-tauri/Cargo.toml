@@ -2,7 +2,7 @@
 # resolves sidecar binaries relative to current_exe(), so the cargo target/
 # directory must stay at src-tauri/target (ADR 0016 / drift report 2026-06-05).
 [workspace]
-members = [".", "crates/core", "crates/cli", "crates/mcp", "crates/migrate", "crates/share", "crates/p2p"]
+members = [".", "crates/core", "crates/cli", "crates/mcp", "crates/migrate", "crates/share", "crates/p2p", "crates/server"]
 
 [package]
 name = "linxiv-app"
@@ -10,28 +10,17 @@ version = "0.4.2"
 description = "linXiv desktop app"
 authors = ["jakeuribe"]
 edition = "2021"
-# `tauri dev` runs a bare `cargo run`; pick the app over the dev-server bin.
-default-run = "linxiv-app"
 
 [lib]
 name = "linxiv_app"
 path = "src/lib.rs"
 
+# Keep src/bin/ empty in THIS package: the Tauri CLI treats every file stem
+# under src/bin as a bundle binary (no .rs filter) and ships it in the
+# installers. The headless/dev-server bins live in crates/server instead.
 [[bin]]
 name = "linxiv-app"
 path = "src/main.rs"
-
-# Dev-only HTTP shim (D32): serves /api/* over HTTP for the browser dev loop.
-[[bin]]
-name = "linxiv-dev-server"
-path = "src/bin/dev_server.rs"
-
-# Headless node (TODO.md containerization): full /api/* over HTTP incl. share
-# routes + the iroh share node + background sync, no window. Ships in the
-# container image, not the desktop bundle.
-[[bin]]
-name = "linxiv-headless"
-path = "src/bin/headless.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -53,38 +42,17 @@ serde = { version = "1", features = ["derive"] }
 # client config files and must not re-sort their keys.
 serde_json = { version = "1", features = ["preserve_order"] }
 tokio = { version = "1", features = ["full"] }
-# Dev-only HTTP shim server (used by the linxiv-dev-server bin; not in the app).
-axum = "0.8"
+# The shared backend (router, state, share sync, remote-query node half) — the
+# Tauri-free half of what used to live in this crate.
+linxiv-server = { path = "crates/server" }
 # In-process backend: the app calls linxiv-core directly via the `api` dispatch
-# command (replacing the HTTP hop to the Python sidecar). rusqlite is pinned to
-# core's version so the Connection type unifies to one crate instance.
+# command (replacing the HTTP hop to the Python sidecar).
 linxiv-core = { path = "crates/core" }
-# Phase-0 quarantined CRDT "shared projects" store, reached via the `share_api`
-# command. Reads canonical via linxiv-core; its own docs live under the share dir.
+# remote_backend.rs holds a ShareNode Arc per cached outbound connection.
 linxiv-share = { path = "crates/share", features = ["auth-keyhive", "sync-beelay"] }
-# Remote Query Mode node half (src/remote_query.rs): the linxiv-api/1
-# protocol handler + NodeAddress, served on the share node's endpoint.
+# Remote Query Mode client half (src/remote_backend.rs): dials linxiv-api/1
+# over the share endpoint.
 linxiv-p2p = { path = "crates/p2p" }
-rusqlite = "0.40"
-anyhow = "1"
-# Date parse/format parity with core's NaiveDate fields in router arms.
-chrono = "0.4"
-# File-upload routes carry bytes as base64 in the JSON `api` body (the webview
-# can't put a multipart body through `invoke`).
-base64 = "0.22"
-# p2p key-store DEK (write-enforcement spec §8): OS keychain storage. The
-# secret-service backend is the pure-Rust zbus one so no C dbus lib is needed.
-keyring = { version = "3", features = [
-    "apple-native",
-    "windows-native",
-    "async-secret-service",
-    "crypto-rust",
-    "tokio",
-] }
-# Headless DEK derivation from LINXIV_P2P_PASSPHRASE (Argon2id).
-argon2 = "0.5"
-# Random DEK bytes on first run (same major as the lockfile's transitive copy).
-getrandom = "0.3"
 # Native-package self-update (apply_linux_package_update): downloads the release asset
 # directly, since the Tauri updater plugin only ever swaps AppImage/app.tar.gz/
 # NSIS-MSI in place. 0.12.x already pulled transitively (linxiv-core/tex-brain);
@@ -109,14 +77,9 @@ url = "2"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 [dev-dependencies]
-# Share-dispatcher test injects a tempdir share dir (never the real data dir).
-wiremock = "0.6"
-# Remote-query integration test binds in-process endpoint pairs, like the
-# p2p crate's own tests/api.rs.
+# remote_backend tests bind in-process endpoint pairs, like the p2p crate's
+# own tests/api.rs.
 iroh = "1.0.2"
-# Mints the empty placeholder doc an offline join leaves behind; same version
-# linxiv-share builds against.
-automerge = "0.10.0"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"

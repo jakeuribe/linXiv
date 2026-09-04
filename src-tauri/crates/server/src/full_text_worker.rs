@@ -19,7 +19,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
-use tauri::Manager;
 
 use linxiv_core::config::UserSettings;
 use linxiv_core::models::PaperDetails;
@@ -65,21 +64,8 @@ impl Park {
     };
 }
 
-/// Spawn the worker for the life of the app, restarting it if it panics —
-/// otherwise the feature would end silently with the toggle still reading "on".
-///
-/// Bounded, because the likeliest panic is `with_conn` on a poisoned DB mutex,
-/// which stays poisoned for the process: restarting into it forever would just
-/// print a panic a minute.
-pub fn spawn(app: tauri::AppHandle) {
-    tauri::async_runtime::spawn(supervise(move || {
-        let app = app.clone();
-        async move { run(&app.state::<AppState>()).await }
-    }));
-}
-
-/// Same worker minus the `AppHandle` — the headless bin passes its state Arc.
-/// Same restart-on-panic semantics as [`spawn`].
+/// The worker minus any spawner — the headless bin passes its state Arc; the
+/// app wraps [`supervise`]+[`run`] itself to resolve state from its `AppHandle`.
 pub fn spawn_headless(state: Arc<AppState>) {
     tokio::spawn(supervise(move || {
         let state = state.clone();
@@ -90,7 +76,7 @@ pub fn spawn_headless(state: Arc<AppState>) {
 /// Bounded restart-on-panic driver shared by both spawn paths: each restart
 /// spawns a fresh task so a panic surfaces as a `JoinError` instead of taking
 /// the supervisor down with it.
-async fn supervise<F, Fut>(mut task: F)
+pub async fn supervise<F, Fut>(mut task: F)
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = ()> + Send + 'static,
@@ -124,7 +110,7 @@ async fn nap(total: Duration) {
 /// The loop itself. Reads the setting at the top of each pass and during long
 /// waits, so switching it off takes effect within `OFF_POLL` and switching it on
 /// within `OFF_POLL` of the current wait ending.
-async fn run(state: &AppState) {
+pub async fn run(state: &AppState) {
     // A failed fetch leaves DOWNLOADED_SOURCE unset, so without parking the loop
     // would retry the head of the list forever and never reach the rest.
     let mut parked: HashMap<String, Park> = HashMap::new();

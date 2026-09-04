@@ -24,13 +24,13 @@ use axum::{
     Router,
 };
 
-use linxiv_app::remote_query::{
+use linxiv_server::remote_query::{
     self, load_members, relay_allow, save_members, valid_endpoint_id, Member, Role, TransferLog,
 };
-use linxiv_app::route::share::ShareState;
-use linxiv_app::route::{feed, route, share, ApiRequest};
-use linxiv_app::state::AppState;
-use linxiv_app::{full_text_worker, p2p_config, share_sync};
+use linxiv_server::route::share::ShareState;
+use linxiv_server::route::{feed, route, share, ApiRequest};
+use linxiv_server::state::AppState;
+use linxiv_server::{full_text_worker, p2p_config, share_sync};
 
 /// Base64 file uploads ride the JSON body, so allow a large request body.
 const MAX_BODY: usize = 200 * 1024 * 1024;
@@ -197,7 +197,7 @@ fn spawn_interval_sync(ctx: &Ctx) {
     tokio::spawn(async move {
         loop {
             share_sync::sync_all(&state, &share).await;
-            tokio::time::sleep(Duration::from_secs(300)).await;
+            tokio::time::sleep(share_sync::INTERVAL_SYNC_PERIOD).await;
         }
     });
 }
@@ -553,7 +553,7 @@ mod tests {
     use serde_json::json;
 
     // relay_allow / member-list parsing tests live with the code in
-    // `linxiv_app::remote_query`.
+    // `linxiv_server::remote_query`.
 
     /// The admin page is a blind consumer of these routes; renaming one must
     /// break this test, not the page at runtime. sessionStorage is the token
