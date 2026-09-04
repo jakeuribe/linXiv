@@ -37,7 +37,7 @@ const MAX_BODY: usize = 200 * 1024 * 1024;
 
 /// Static admin page. Secretless, so served without auth at `GET /admin`;
 /// every API call it makes carries the bearer token.
-const ADMIN_HTML: &str = include_str!("headless_admin.html");
+const ADMIN_HTML: &str = include_str!("../headless_admin.html");
 
 #[derive(Clone)]
 struct Ctx {
