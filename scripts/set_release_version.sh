@@ -20,9 +20,12 @@ node -e '
 npm version "$ver" --no-git-tag-version --allow-same-version
 
 # linxiv-p2p is a separate vendored submodule; its version is independent.
+# Only the FIRST `version = ` line (always [package]'s): a dotted dependency
+# table also puts `version = ` at column 0, and stamping that rewrites a dep
+# requirement to the release version (broke release #25 on futures-util).
 for file in src-tauri/Cargo.toml src-tauri/crates/*/Cargo.toml; do
   [[ "$file" == "src-tauri/crates/p2p/Cargo.toml" ]] && continue
-  sed -i.bak "s/^version = \".*\"/version = \"$ver\"/" "$file"
+  sed -i.bak "0,/^version = \".*\"/s//version = \"$ver\"/" "$file"
   rm -f "$file.bak"
 done
 
