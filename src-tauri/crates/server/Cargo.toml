@@ -59,6 +59,10 @@ keyring = { version = "3", features = [
 argon2 = "0.5"
 # Random DEK bytes on first run (same major as the lockfile's transitive copy).
 getrandom = "0.3"
+# join_all over per-member role checks in route/share.rs. Already pulled
+# transitively by tokio/axum. Inline table on purpose: a bare `version = `
+# line outside [package] gets clobbered by scripts/set_release_version.sh.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 # Feed-refresh tests mock the arXiv endpoint.
@@ -71,9 +75,3 @@ iroh = "1.0.2"
 automerge = "0.10.0"
 tempfile = "3"
 
-[dependencies.futures-util]
-# join_all over per-member role checks in route/share.rs. Already pulled
-# transitively by tokio/axum.
-version = "0.3"
-default-features = false
-features = ["std"]
