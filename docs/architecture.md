@@ -11,8 +11,7 @@ linXiv/
 │   ├── lib/graph/              # Knowledge Graph: filter/layout/fit/tooltip logic, pure and unit-tested (ADR 0026)
 │   ├── pages/ components/ …    # UI (components/graph/ draws the canvas with Cytoscape + d3-force)
 ├── src-tauri/                  # Tauri shell + Cargo workspace root
-│   ├── src/                    # Tauri app: window, api-command router, integrations (install CLI/MCP)
-│   │   └── bin/dev_server.rs   # linxiv-dev-server: dev-only HTTP shim over the Rust core (see Run in development)
+│   ├── src/                    # Tauri shell: window, invoke commands, linxiv:// protocol, integrations (install CLI/MCP)
 │   ├── crates/
 │   │   ├── core/               # linxiv-core: all library logic (sources, storage, formats, graph, service)
 │   │   │   └── src/sources/    #   arXiv, OpenAlex, CrossRef, DOI resolution, PDF metadata, downloads
@@ -20,7 +19,9 @@ linXiv/
 │   │   ├── mcp/                # linxiv-mcp → the `linxiv-mcp` binary (MCP stdio server)
 │   │   ├── migrate/            # one-off schema migration binary
 │   │   ├── p2p/                # linxiv-p2p: vendored iroh transport, keyhive membership/roles, beelay E2EE sync
-│   │   └── share/              # shared-project store — service layer over linxiv-p2p (publish/join/sync, encrypted key store)
+│   │   ├── share/              # shared-project store — service layer over linxiv-p2p (publish/join/sync, encrypted key store)
+│   │   └── server/             # linxiv-server: Tauri-free backend (router, state, share sync) + the
+│   │       │                   #   linxiv-headless and linxiv-dev-server bins (see Run in development)
 │   ├── binaries/               # staged CLI + MCP sidecars (target-triple suffixed) for `tauri build`
 │   ├── tauri.conf.json         # app config; bundles the linxiv + linxiv-mcp sidecars as externalBin
 │   └── Cargo.toml              # workspace manifest

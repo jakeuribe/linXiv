@@ -90,7 +90,8 @@ impl ShareState {
     }
 
     /// Clone the live node out from under the lock (`None` while store-only).
-    pub(crate) async fn node(&self) -> Option<Arc<ShareNode>> {
+    /// `pub`: the app's remote_backend dials linxiv-api/1 over this node.
+    pub async fn node(&self) -> Option<Arc<ShareNode>> {
         self.node.lock().await.clone()
     }
 
@@ -213,21 +214,8 @@ impl From<ShareError> for ApiError {
     }
 }
 
-/// The Tauri command the webview invokes for `/api/share/*`. Mirrors `api`'s
-/// `{method, path, body}` shape but resolves `ShareState` alongside `AppState`.
-#[tauri::command]
-pub async fn share_api(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-    share: tauri::State<'_, ShareState>,
-    req: ApiRequest,
-) -> Result<Value, ApiError> {
-    let spawn_sync = move || share_sync::spawn_interval_sync(app.clone());
-    dispatch(state.inner(), share.inner(), &spawn_sync, req).await
-}
-
-/// Tauri-free `/api/share/*` dispatcher: `share_api` above and the headless
-/// bin both route through here. `spawn_sync` starts the background
+/// Tauri-free `/api/share/*` dispatcher: the app's `share_api` command and the
+/// headless bin both route through here. `spawn_sync` starts the background
 /// interval-sync loop when the relay-reconnect arm brings the first node up —
 /// each caller owns how that task is spawned.
 pub async fn dispatch(

@@ -7,7 +7,7 @@
     "submodules": "git submodule update --init --recursive || true",
     "dev": "vite",
     "predev:api": "npm run submodules",
-    "dev:api": "cd src-tauri && cargo run --bin linxiv-dev-server",
+    "dev:api": "cd src-tauri && cargo run -p linxiv-server --bin linxiv-dev-server",
     "build": "tsc && vite build",
     "pretest": "node -e \"if(!require('node:fs').globSync('src/**/*.test.ts').length)throw Error('no test files matched src/**/*.test.ts')\"",
     "test": "node --experimental-transform-types --test \"src/**/*.test.ts\"",

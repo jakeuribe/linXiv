@@ -1,0 +1,79 @@
+# Tauri-free backend: the HTTP-shaped router over linxiv-core plus app state,
+# share sync, and the remote-query node half. Split out of linxiv-app so the
+# headless/dev-server binaries build (and containerize) without the Tauri/
+# webkit stack, and so `tauri build` stops linking + bundling them.
+[package]
+name = "linxiv-server"
+version = "0.4.2"
+edition = "2021"
+
+[lib]
+name = "linxiv_server"
+path = "src/lib.rs"
+
+# Dev-only HTTP shim (D32): serves /api/* over HTTP for the browser dev loop.
+[[bin]]
+name = "linxiv-dev-server"
+path = "src/bin/dev_server.rs"
+
+# Headless node (TODO.md containerization): full /api/* over HTTP incl. share
+# routes + the iroh share node + background sync, no window. Ships in the
+# container image, not the desktop bundle.
+[[bin]]
+name = "linxiv-headless"
+path = "src/bin/headless.rs"
+
+[dependencies]
+linxiv-core = { path = "../core" }
+# Phase-0 quarantined CRDT "shared projects" store, reached via the share
+# dispatcher. Reads canonical via linxiv-core; its docs live under the share dir.
+linxiv-share = { path = "../share", features = ["auth-keyhive", "sync-beelay"] }
+# Remote Query Mode node half (remote_query.rs): the linxiv-api/1 protocol
+# handler + NodeAddress, served on the share node's endpoint.
+linxiv-p2p = { path = "../p2p" }
+serde = { version = "1", features = ["derive"] }
+# preserve_order: route arms must match api/app.py's response envelopes exactly,
+# key order included (see route/mod.rs).
+serde_json = { version = "1", features = ["preserve_order"] }
+tokio = { version = "1", features = ["full"] }
+# HTTP front doors: the dev-server shim and the headless bin.
+axum = "0.8"
+# Pinned to core's version so the Connection type unifies to one crate instance.
+rusqlite = "0.40"
+anyhow = "1"
+# Date parse/format parity with core's NaiveDate fields in router arms.
+chrono = "0.4"
+# File-upload routes carry bytes as base64 in the JSON `api` body (the webview
+# can't put a multipart body through `invoke`).
+base64 = "0.22"
+# p2p key-store DEK (write-enforcement spec §8): OS keychain storage. The
+# secret-service backend is the pure-Rust zbus one so no C dbus lib is needed.
+keyring = { version = "3", features = [
+    "apple-native",
+    "windows-native",
+    "async-secret-service",
+    "crypto-rust",
+    "tokio",
+] }
+# Headless DEK derivation from LINXIV_P2P_PASSPHRASE (Argon2id).
+argon2 = "0.5"
+# Random DEK bytes on first run (same major as the lockfile's transitive copy).
+getrandom = "0.3"
+
+[dev-dependencies]
+# Feed-refresh tests mock the arXiv endpoint.
+wiremock = "0.6"
+# Remote-query tests bind in-process endpoint pairs, like the p2p crate's own
+# tests/api.rs.
+iroh = "1.0.2"
+# Mints the empty placeholder doc an offline join leaves behind; same version
+# linxiv-share builds against.
+automerge = "0.10.0"
+tempfile = "3"
+
+[dependencies.futures-util]
+# join_all over per-member role checks in route/share.rs. Already pulled
+# transitively by tokio/axum.
+version = "0.3"
+default-features = false
+features = ["std"]

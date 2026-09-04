@@ -3,7 +3,7 @@
 use linxiv_app::p2p_config;
 use linxiv_app::route::share::ShareState;
 use linxiv_app::state::AppState;
-use linxiv_app::{integrations, protocol, remote_backend, route};
+use linxiv_app::{commands, integrations, protocol, remote_backend, route};
 
 use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
@@ -66,7 +66,7 @@ fn main() {
             app.manage(AppState::new().map_err(|e| e.to_string())?);
             // Background TeX full-text indexing, one paper at a time. Idles
             // unless `full_text_worker_enabled` is on (Settings → Library).
-            linxiv_app::full_text_worker::spawn(app.handle().clone());
+            commands::spawn_full_text_worker(app.handle().clone());
             // Quarantined CRDT "shared projects" store, managed beside AppState
             // (never a field of it). Reached only via the `share_api` command.
             // The iroh node binds async (the Endpoint bind is async); block on it
@@ -86,7 +86,7 @@ fn main() {
             // still gets exactly one interval-sync loop.
             if node_bound && app.state::<ShareState>().mark_sync_started() {
                 // Background share sync: one pass now, then every 5 min.
-                linxiv_app::share_sync::spawn_interval_sync(app.handle().clone());
+                commands::spawn_interval_sync(app.handle().clone());
             }
             // Point the pdfium loader at the libpdfium bundled under the app
             // resources (tauri.conf.json `bundle.resources` maps it into pdfium/).
@@ -117,8 +117,8 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            route::api,
-            route::share::share_api,
+            commands::api,
+            commands::share_api,
             remote_backend::remote_backends_list,
             remote_backend::remote_backend_add,
             remote_backend::remote_backend_remove,

@@ -37,8 +37,8 @@ impl AppState {
 
     /// Build from already-resolved parts. The DI seam for tests: pass an
     /// `open_in_memory()` connection and tempdirs instead of touching the real
-    /// data dir (mirrors how the core/cli/mcp tests isolate).
-    #[cfg(test)]
+    /// data dir (mirrors how the core/cli/mcp tests isolate). Not `cfg(test)`
+    /// because downstream crates' tests (linxiv-app) build through it too.
     pub fn from_parts(conn: Connection, pdf_dir: PathBuf, vault_root: PathBuf) -> Self {
         Self {
             conn: Mutex::new(conn),

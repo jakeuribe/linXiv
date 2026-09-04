@@ -13,8 +13,8 @@ use axum::{
     Router,
 };
 
-use linxiv_app::route::{route, ApiRequest};
-use linxiv_app::state::AppState;
+use linxiv_server::route::{route, ApiRequest};
+use linxiv_server::state::AppState;
 
 /// Base64 file uploads ride the JSON body, so allow a large request body.
 const MAX_BODY: usize = 200 * 1024 * 1024;
