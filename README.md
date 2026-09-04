@@ -156,16 +156,23 @@ npm run dev
 
 The `linxiv` (CLI) and `linxiv-mcp` (MCP server) binaries ship inside the app as Tauri sidecars.
 
-```bash
-npm run build:sidecar   # fetch libpdfium + build/stage the CLI & MCP sidecars into src-tauri/binaries/
-npm run tauri build     # build the app and bundle it
-```
-
-Or run both in one step:
+Fresh checkout, "just give me an installer":
 
 ```bash
-npm run build:all
+npm run build:all       # = build:sidecar + tauri build
 ```
+
+`build:all` is only a convenience wrapper. The steps under it are
+independently re-runnable, and most of them are one-time setup — a repeat
+build usually only needs `npm run tauri build`:
+
+| Command | What it does | When you need it |
+|---|---|---|
+| `bash scripts/fetch_pdfium.sh` | downloads the pinned native libpdfium into `src-tauri/vendor/pdfium/` | once per machine/OS; again only when the pin in the script changes |
+| `bash scripts/stage_rust_bins.sh` | builds `linxiv-cli` + `linxiv-mcp` and stages them into `src-tauri/binaries/` | after changing the CLI/MCP crates — otherwise the previously staged sidecars ship as-is |
+| `npm run build:sidecar` | both of the above | fresh checkout / new host |
+| `npm run tauri build` | builds and bundles the app | always — this is the actual build |
+| `npm run build:arch` | builds an Arch Linux pacman package | only when packaging for Arch |
 
 The installer/bundle is written to `src-tauri/target/release/bundle/`.
 
