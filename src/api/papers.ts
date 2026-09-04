@@ -1,4 +1,5 @@
-import { apiFetch, BASE_URL, isTauri } from "./client";
+import { BASE_URL, isTauri } from "./client.ts";
+import { libraryFetch } from "../stores/backend.ts";
 import type {
   Paper,
   PaperVersionsResponse,
@@ -35,26 +36,26 @@ export async function listPapers(
   sort?: PaperSort
 ): Promise<{ papers: Paper[] }> {
   const order = sort ? `&sort=${sort.split("_")[0]}&dir=${sort.split("_")[1]}` : "";
-  return apiFetch<{ papers: Paper[] }>(
+  return libraryFetch<{ papers: Paper[] }>(
     `/api/papers?limit=${limit}&offset=${offset}${order}`
   );
 }
 
 export async function getPaper(sourceId: string): Promise<Paper> {
-  return apiFetch<Paper>(`/api/papers/${encodeURIComponent(sourceId)}`);
+  return libraryFetch<Paper>(`/api/papers/${encodeURIComponent(sourceId)}`);
 }
 
 export async function getPaperBySfk(sfk: number, version?: number): Promise<Paper> {
   const query = version !== undefined ? `?version=${version}` : "";
-  return apiFetch<Paper>(`/api/papers/sfk/${sfk}${query}`);
+  return libraryFetch<Paper>(`/api/papers/sfk/${sfk}${query}`);
 }
 
 export async function getPaperVersions(sfk: number): Promise<PaperVersionsResponse> {
-  return apiFetch<PaperVersionsResponse>(`/api/papers/sfk/${sfk}/versions`);
+  return libraryFetch<PaperVersionsResponse>(`/api/papers/sfk/${sfk}/versions`);
 }
 
 export async function getDoiVersionCandidates(sfk: number): Promise<DoiVersionCandidate[]> {
-  const data = await apiFetch<{ candidates: DoiVersionCandidate[] }>(
+  const data = await libraryFetch<{ candidates: DoiVersionCandidate[] }>(
     `/api/papers/sfk/${sfk}/doi-candidates`
   );
   return data.candidates;
@@ -68,14 +69,14 @@ export async function mergePapers(
   winnerSfk: number,
   loserSfk: number
 ): Promise<MergeReceipt> {
-  return apiFetch<MergeReceipt>(`/api/papers/sfk/${winnerSfk}/merge`, {
+  return libraryFetch<MergeReceipt>(`/api/papers/sfk/${winnerSfk}/merge`, {
     method: "POST",
     body: JSON.stringify({ loser_source_fk: loserSfk }),
   });
 }
 
 export async function deletePaper(sourceId: string): Promise<{ deleted: string }> {
-  return apiFetch<{ deleted: string }>(
+  return libraryFetch<{ deleted: string }>(
     `/api/papers/${encodeURIComponent(sourceId)}`,
     { method: "DELETE" }
   );
@@ -93,11 +94,11 @@ export interface PaperRepairBody {
 }
 
 export async function removeFromAllProjects(sfk: number): Promise<{ ok: boolean; removed_from_projects: number[] }> {
-  return apiFetch(`/api/papers/sfk/${sfk}/projects`, { method: "DELETE" });
+  return libraryFetch(`/api/papers/sfk/${sfk}/projects`, { method: "DELETE" });
 }
 
 export async function repairPaper(sfk: number, body: PaperRepairBody): Promise<Paper> {
-  return apiFetch<Paper>(`/api/papers/sfk/${sfk}`, {
+  return libraryFetch<Paper>(`/api/papers/sfk/${sfk}`, {
     method: "PUT",
     body: JSON.stringify(body),
   });
@@ -107,7 +108,7 @@ export async function searchLibrary(
   q: string,
   limit = 50
 ): Promise<{ papers: Paper[] }> {
-  return apiFetch<{ papers: Paper[] }>(
+  return libraryFetch<{ papers: Paper[] }>(
     `/api/papers/search?q=${encodeURIComponent(q)}&limit=${limit}`
   );
 }
@@ -124,7 +125,7 @@ export async function fetchFullText(
   sourceId: string,
   force = false
 ): Promise<FullTextReceipt> {
-  return apiFetch<FullTextReceipt>(
+  return libraryFetch<FullTextReceipt>(
     `/api/papers/${encodeURIComponent(sourceId)}/full-text${force ? "?force=true" : ""}`,
     { method: "POST" }
   );
@@ -135,7 +136,7 @@ export async function fetchFullText(
  * the background full-text worker is working through.
  */
 export async function fullTextPending(): Promise<{ pending: number }> {
-  return apiFetch<{ pending: number }>("/api/papers/full-text-pending");
+  return libraryFetch<{ pending: number }>("/api/papers/full-text-pending");
 }
 
 /**

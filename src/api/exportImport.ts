@@ -1,6 +1,7 @@
 import { save, open } from "@tauri-apps/plugin-dialog";
 import { join as pathJoin } from "@tauri-apps/api/path";
-import { apiFetch, BASE_URL, bytesToBase64, isTauri } from "./client";
+import { BASE_URL, bytesToBase64, isTauri } from "./client";
+import { libraryFetch } from "../stores/backend.ts";
 import type { BibtexImportReceipt, ImportPreview } from "../types/api";
 
 export type { ImportPreview };
@@ -52,7 +53,7 @@ export async function exportProject(
       filters: [{ name: "linXiv Project", extensions: ["lxproj"] }],
     });
     if (!destPath) throw pickerCancelled();
-    await apiFetch(`/api/projects/${projectId}/export`, {
+    await libraryFetch(`/api/projects/${projectId}/export`, {
       method: "POST",
       body: JSON.stringify({ project_id: projectId, include_pdfs: includePdfs, dest_path: destPath }),
     });
@@ -68,14 +69,14 @@ export async function exportProject(
 
 export async function previewImport(file: File): Promise<ImportPreview> {
   if (isTauri) {
-    return apiFetch<ImportPreview>("/api/projects/import/preview", {
+    return libraryFetch<ImportPreview>("/api/projects/import/preview", {
       method: "POST",
       body: JSON.stringify({ file_b64: await fileToBase64(file) }),
     });
   }
   const fd = new FormData();
   fd.append("file", file);
-  return apiFetch<ImportPreview>("/api/projects/import/preview", { method: "POST", body: fd });
+  return libraryFetch<ImportPreview>("/api/projects/import/preview", { method: "POST", body: fd });
 }
 
 export async function commitImport(
@@ -83,14 +84,14 @@ export async function commitImport(
   onConflict: "merge" | "overwrite" = "merge"
 ): Promise<{ project_id: number }> {
   if (isTauri) {
-    return apiFetch<{ project_id: number }>("/api/projects/import/commit", {
+    return libraryFetch<{ project_id: number }>("/api/projects/import/commit", {
       method: "POST",
       body: JSON.stringify({ file_b64: await fileToBase64(file), on_conflict: onConflict }),
     });
   }
   const fd = new FormData();
   fd.append("file", file);
-  return apiFetch<{ project_id: number }>(
+  return libraryFetch<{ project_id: number }>(
     `/api/projects/import/commit?on_conflict=${onConflict}`,
     { method: "POST", body: fd }
   );
@@ -104,7 +105,7 @@ export async function exportBibtex(projectId: number, projectName?: string): Pro
       filters: [{ name: "BibTeX", extensions: ["bib"] }],
     });
     if (!destPath) throw pickerCancelled();
-    await apiFetch(`/api/projects/${projectId}/export/bibtex?dest_path=${encodeURIComponent(destPath)}`);
+    await libraryFetch(`/api/projects/${projectId}/export/bibtex?dest_path=${encodeURIComponent(destPath)}`);
     return;
   }
   const { blob } = await fetchBlob(`${BASE_URL}/api/projects/${projectId}/export/bibtex`);
@@ -118,7 +119,7 @@ export async function exportObsidian(projectId: number, projectName?: string): P
     const destDir = Array.isArray(picked) ? picked[0] : picked;
     if (!destDir) throw pickerCancelled();
     const destPath = await pathJoin(destDir, slug);
-    await apiFetch(`/api/projects/${projectId}/export/obsidian?dest_path=${encodeURIComponent(destPath)}`);
+    await libraryFetch(`/api/projects/${projectId}/export/obsidian?dest_path=${encodeURIComponent(destPath)}`);
     return;
   }
   const { blob } = await fetchBlob(`${BASE_URL}/api/projects/${projectId}/export/obsidian`);
@@ -131,7 +132,7 @@ export async function importBibtex(
 ): Promise<BibtexImportReceipt> {
   if (isTauri) {
     const file_b64 = await fileToBase64(file);
-    return apiFetch<BibtexImportReceipt>(
+    return libraryFetch<BibtexImportReceipt>(
       "/api/papers/import/bibtex",
       {
         method: "POST",
@@ -144,7 +145,7 @@ export async function importBibtex(
   const path = projectId
     ? `/api/papers/import/bibtex?project_id=${projectId}`
     : "/api/papers/import/bibtex";
-  return apiFetch<BibtexImportReceipt>(path, { method: "POST", body: fd });
+  return libraryFetch<BibtexImportReceipt>(path, { method: "POST", body: fd });
 }
 
 export async function importPdf(
@@ -155,12 +156,12 @@ export async function importPdf(
     ? `/api/papers/import/pdf?project_id=${projectId}`
     : "/api/papers/import/pdf";
   if (isTauri) {
-    return apiFetch<{ source_id: string; title: string }>(path, {
+    return libraryFetch<{ source_id: string; title: string }>(path, {
       method: "POST",
       body: JSON.stringify({ file_b64: await fileToBase64(file), filename: file.name }),
     });
   }
   const fd = new FormData();
   fd.append("file", file);
-  return apiFetch<{ source_id: string; title: string }>(path, { method: "POST", body: fd });
+  return libraryFetch<{ source_id: string; title: string }>(path, { method: "POST", body: fd });
 }

@@ -1,4 +1,4 @@
-import { apiFetch } from "./client";
+import { libraryFetch } from "../stores/backend.ts";
 import type { Note } from "../types/api";
 
 export async function getNotes(
@@ -15,11 +15,11 @@ export async function getNotes(
   } else if (projectId !== undefined && projectId !== null) {
     params.set("project_id", String(projectId));
   }
-  return apiFetch<{ notes: Note[] }>(`/api/notes?${params.toString()}`);
+  return libraryFetch<{ notes: Note[] }>(`/api/notes?${params.toString()}`);
 }
 
 export async function getNote(id: number): Promise<{ note: Note }> {
-  return apiFetch<{ note: Note }>(`/api/notes/${id}`);
+  return libraryFetch<{ note: Note }>(`/api/notes/${id}`);
 }
 
 export interface NoteCreateBody {
@@ -30,7 +30,7 @@ export interface NoteCreateBody {
 }
 
 export async function createNote(body: NoteCreateBody): Promise<Note> {
-  return apiFetch("/api/notes", {
+  return libraryFetch("/api/notes", {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -45,7 +45,7 @@ export async function updateNote(
   id: number,
   body: NoteUpdateBody
 ): Promise<Note> {
-  return apiFetch(`/api/notes/${id}`, {
+  return libraryFetch(`/api/notes/${id}`, {
     method: "PATCH",
     body: JSON.stringify(body),
   });
@@ -54,5 +54,5 @@ export async function updateNote(
 export async function deleteNote(
   id: number
 ): Promise<{ deleted_note_id: number }> {
-  return apiFetch(`/api/notes/${id}`, { method: "DELETE" });
+  return libraryFetch(`/api/notes/${id}`, { method: "DELETE" });
 }

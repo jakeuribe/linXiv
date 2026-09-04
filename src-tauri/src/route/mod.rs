@@ -31,12 +31,12 @@ use crate::state::AppState;
 mod annotations;
 mod authors;
 mod editor;
-mod feed;
+pub mod feed; // refresh reused by the headless bin's feed poll loop
 mod graph;
 mod notes;
 mod orcid;
 pub(crate) mod papers; // ingest_full_text reused by the background full-text worker
-mod pdfs;
+pub(crate) mod pdfs; // resolve_pdf reused by remote_query's byte lane
 mod projects;
 mod reading_status;
 mod search;
@@ -51,7 +51,8 @@ mod versions;
 
 /// One webview→backend call. `body` is the parsed JSON request body (None for
 /// GET/DELETE without a body), including base64 file uploads (`uploads.rs`).
-#[derive(Deserialize)]
+/// `Serialize` so `remote_backend` can forward the same shape over the wire.
+#[derive(Serialize, Deserialize)]
 pub struct ApiRequest {
     pub method: String,
     pub path: String,

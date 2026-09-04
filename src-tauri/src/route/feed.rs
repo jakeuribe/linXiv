@@ -57,26 +57,12 @@ async fn get_feed(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError>
 
     let mut fetch_err = None;
     if due {
-        // Cleanup before fetching, non-fatal (shouldn't fail the request).
-        if let Err(e) = state.with_conn(|conn| svc_feed::prune_dismissed(conn, retention_days)) {
-            eprintln!("[linxiv] feed: prune_dismissed failed: {e}");
-        }
-        // data_dir carries the shared .arxiv_ratelimit file (same one arxiv_get uses).
-        match svc_feed::fetch(url, &linxiv_core::config::data_dir()).await {
-            Ok(fetched) => {
-                title = fetched.title.clone();
-                state.with_conn(|conn| {
-                    svc_feed::apply_fetch(conn, url, &fetched.entries, retention_days)
-                })?;
-                LAST_FETCH
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(url.to_string(), (Instant::now(), title.clone()));
-            }
+        match refresh(state, url, retention_days).await {
+            Ok(t) => title = t,
+            // No throttle entry on failure, so the next request retries instead
+            // of waiting out the TTL. Fall through to serve the DB window.
             Err(e) => {
-                // No throttle entry on failure, so the next request retries instead
-                // of waiting out the TTL. Fall through to serve the DB window.
-                eprintln!("[linxiv] feed: fetch failed for {url}: {e}");
+                eprintln!("[linxiv] feed: fetch failed for {url}: {}", e.detail);
                 fetch_err = Some(e);
             }
         }
@@ -85,7 +71,7 @@ async fn get_feed(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError>
     let page = state.with_conn(|conn| svc_feed::read_page(conn, url, retention_days))?;
     if page.window_was_empty {
         if let Some(e) = fetch_err {
-            return Err(e.into());
+            return Err(e);
         }
     }
     Ok(json!({
@@ -93,6 +79,24 @@ async fn get_feed(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError>
         "entries": page.entries,
         "saved_arxiv_ids": page.saved_arxiv_ids,
     }))
+}
+
+/// One fetch-and-persist pass for `url`: prune, fetch, merge into the DB
+/// window, record the throttle entry. Shared by `get_feed` and the headless
+/// bin's poll loop. Returns the channel title.
+pub async fn refresh(state: &AppState, url: &str, retention_days: i64) -> Result<String, ApiError> {
+    // Cleanup before fetching, non-fatal (shouldn't fail the pass).
+    if let Err(e) = state.with_conn(|conn| svc_feed::prune_dismissed(conn, retention_days)) {
+        eprintln!("[linxiv] feed: prune_dismissed failed: {e}");
+    }
+    // data_dir carries the shared .arxiv_ratelimit file (same one arxiv_get uses).
+    let fetched = svc_feed::fetch(url, &linxiv_core::config::data_dir()).await?;
+    state.with_conn(|conn| svc_feed::apply_fetch(conn, url, &fetched.entries, retention_days))?;
+    LAST_FETCH
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(url.to_string(), (Instant::now(), fetched.title.clone()));
+    Ok(fetched.title)
 }
 
 /// `POST /api/feed/dismiss` — hide an entry. `permanent: true` blocks the
@@ -468,6 +472,49 @@ mod tests {
             .collect();
         assert!(titles.contains(&"Day One Paper"), "got: {titles:?}");
         assert!(titles.contains(&"Day Two Paper"), "got: {titles:?}");
+
+        mock_server.verify().await;
+    }
+
+    /// The headless poll path: `refresh` alone fetches and persists entries
+    /// into the DB window (no `get_feed` involved).
+    #[tokio::test]
+    async fn refresh_persists_entries_for_the_poll_loop() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let mock_server = MockServer::start().await;
+        let feed_url = format!("{}/poll-feed.xml", mock_server.uri());
+
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"<?xml version="1.0"?>
+<rss version="2.0">
+  <channel>
+    <title>Poll Feed</title>
+    <item>
+      <title>Polled Paper</title>
+      <link>https://arxiv.org/abs/3333.00003v1</link>
+    </item>
+  </channel>
+</rss>"#,
+            ))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let st = state();
+        let title = super::refresh(&st, &feed_url, 30).await.unwrap();
+        assert_eq!(title, "Poll Feed");
+        let page = st
+            .with_conn(|conn| linxiv_core::service::feed::read_page(conn, &feed_url, 30))
+            .unwrap();
+        let titles: Vec<&str> = page
+            .entries
+            .iter()
+            .filter_map(|e| e.get("title").and_then(|t| t.as_str()))
+            .collect();
+        assert!(titles.contains(&"Polled Paper"), "got: {titles:?}");
 
         mock_server.verify().await;
     }

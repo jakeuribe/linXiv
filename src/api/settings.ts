@@ -1,4 +1,7 @@
+// Settings and env are LOCAL concerns (the node 403s them as operator-only),
+// so they use plain `apiFetch` — always local. Stats is a library query.
 import { apiFetch } from "./client";
+import { libraryFetch } from "../stores/backend.ts";
 import { queryClient } from "../lib/queryClient";
 import type { Settings, Stats } from "../types/api";
 
@@ -34,5 +37,5 @@ export async function updateEnv(
 }
 
 export async function getStats(): Promise<Stats> {
-  return apiFetch<Stats>("/api/stats");
+  return libraryFetch<Stats>("/api/stats");
 }

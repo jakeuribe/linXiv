@@ -5,6 +5,7 @@ import { getSettings, getStats } from "../api/settings";
 import { dismissFeedEntry, getFeed } from "../api/feed";
 import { fetchArxiv } from "../api/search";
 import { getPaperPdfUrl } from "../api/papers";
+import { useBackendStore } from "../stores/backend";
 import { Spinner } from "../components/ui/spinner";
 import { Button } from "../components/ui/button";
 import { Dialog } from "../components/ui/dialog";
@@ -89,11 +90,16 @@ function FeedRow({
   // Same in-house preview machinery the search page uses (/pdf-preview): a
   // saved paper reads through our own PDF proxy, an unsaved one hits arXiv
   // directly (with a CORS-proxy fallback baked into PdfPreviewPage itself).
+  // Remote default backend: `alreadySaved` then reflects the REMOTE library,
+  // but linxiv:// serves only the LOCAL one — preview straight from arXiv
+  // (feed entries are always arXiv), like an unsaved paper.
   function handlePreview() {
     if (entry.arxiv_id === null || entry.version === null) return;
-    const paperUrl = alreadySaved
-      ? getPaperPdfUrl(entry.arxiv_id, entry.version)
-      : `https://arxiv.org/pdf/${entry.arxiv_id}v${entry.version}`;
+    const remote = useBackendStore.getState().defaultBackend !== null;
+    const paperUrl =
+      alreadySaved && !remote
+        ? getPaperPdfUrl(entry.arxiv_id, entry.version)
+        : `https://arxiv.org/pdf/${entry.arxiv_id}v${entry.version}`;
     const result: SearchResult = {
       source_id: entry.arxiv_id,
       version: entry.version,

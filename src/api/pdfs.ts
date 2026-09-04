@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+// Settings -> Storage manages the LOCAL disk (saved-PDF files and their
+// linxiv:// links), so these never follow a remote default backend.
 import { apiFetch } from "./client";
 
 export interface SavedPdf {

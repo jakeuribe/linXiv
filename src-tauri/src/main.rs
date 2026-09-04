@@ -1,12 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use linxiv_app::p2p_config::{self, RelaySetting};
+use linxiv_app::p2p_config;
 use linxiv_app::route::share::ShareState;
 use linxiv_app::state::AppState;
-use linxiv_app::{integrations, protocol, route};
-
-use linxiv_core::config;
-use linxiv_share::ShareNode;
+use linxiv_app::{integrations, protocol, remote_backend, route};
 
 use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
@@ -74,46 +71,16 @@ fn main() {
             // (never a field of it). Reached only via the `share_api` command.
             // The iroh node binds async (the Endpoint bind is async); block on it
             // during setup so the network arms have a live node from first request.
-            let share_dir = config::data_dir().join("share");
-            std::fs::create_dir_all(&share_dir).map_err(|e| e.to_string())?;
-            // Persisted device key lives beside (not inside) the served share dir.
-            let p2p_dir = config::data_dir().join("p2p");
-            let mut node_bound = false;
             // At-rest key-store encryption: resolve the DEK before the bind
             // (keychain access is sync; never call it from async context).
             let dek = p2p_config::p2p_dek();
-            let share_state = match p2p_config::relay_setting() {
-                RelaySetting::RequireCustomButMissing => {
-                    eprintln!(
-                        "warning: \"only use this relay\" is on but no valid custom relay is configured; refusing to fall back to the public n0 relay, sharing disabled"
-                    );
-                    ShareState::new(share_dir)
-                }
-                setting => {
-                    let relay = match setting {
-                        RelaySetting::Custom(relay) => Some(relay),
-                        _ => None,
-                    };
-                    match tauri::async_runtime::block_on(ShareNode::bind_with_dek(
-                        share_dir.clone(),
-                        &p2p_dir,
-                        dek,
-                        relay,
-                    )) {
-                        Ok(node) => {
-                            node_bound = true;
-                            ShareState::with_node(share_dir, node)
-                        }
-                        Err(e) => {
-                            eprintln!(
-                                "warning: share node bind failed, sharing (plain and e2ee) and background sync disabled: {e}"
-                            );
-                            ShareState::new(share_dir)
-                        }
-                    }
-                }
-            };
+            let (share_state, node_bound) =
+                tauri::async_runtime::block_on(route::share::startup_share_state(dek))
+                    .map_err(|e| e.to_string())?;
             app.manage(share_state);
+            // Remote Query Mode client half: cached outbound connections,
+            // one per registered backend (dials reuse the share endpoint).
+            app.manage(remote_backend::RemoteState::default());
             // `mark_sync_started` also guards the relay-reconnect command's spawn, so a
             // node that only comes up later (e.g. relay was fixed via "Save & Reconnect")
             // still gets exactly one interval-sync loop.
@@ -152,6 +119,12 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             route::api,
             route::share::share_api,
+            remote_backend::remote_backends_list,
+            remote_backend::remote_backend_add,
+            remote_backend::remote_backend_remove,
+            remote_backend::api_remote,
+            remote_backend::remote_pdf,
+            remote_backend::remote_member_code,
             open_pdf_in_system,
             integrations::is_cli_installed,
             integrations::install_cli,

@@ -389,6 +389,24 @@ impl ShareNode {
         crate::list_shared(&received_dir(dest_share_dir))
     }
 
+    /// This node's iroh endpoint id (the device's share identity), as hex.
+    pub fn endpoint_id(&self) -> String {
+        self.inner.endpoint_id().to_string()
+    }
+
+    /// The underlying iroh endpoint — Remote Query Mode's client half dials
+    /// remote nodes from it (one endpoint, never a second bind).
+    pub fn endpoint(&self) -> &linxiv_p2p::Endpoint {
+        self.inner.endpoint()
+    }
+
+    /// Remote Query Mode: installs the `linxiv-api/1` handler on this node's
+    /// endpoint. Never called by the desktop app — until (unless) installed,
+    /// every api-ALPN connection is refused at the transport.
+    pub fn set_api_protocol(&self, handler: Box<dyn linxiv_p2p::DynProtocolHandler>) {
+        self.inner.set_api_protocol(handler);
+    }
+
     pub async fn shutdown(&self) -> Result<()> {
         // Shared router under bind_stack.
         #[cfg(feature = "sync-beelay")]

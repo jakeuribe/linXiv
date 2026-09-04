@@ -50,18 +50,31 @@ fn delete_saved(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
 fn pdf_path(state: &AppState, source_id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     // Query(default=None, ge=1): absent → latest; present must be a positive int.
     let version = crate::route::q_version(ctx)?;
+    let (sid, ver, path) = resolve_pdf(state, source_id, version)?;
+    // Canonical location envelope (path is always Some here — missing is 404).
+    crate::route::to_value(&files::PdfLocation {
+        source_id: sid,
+        version: ver,
+        path: Some(path),
+    })
+}
+
+/// Resolve a paper's on-disk PDF (stored custom path first, then the managed
+/// location): `(canonical source_id, version, path)`. Shared by the
+/// `pdf-path` arm above and `remote_query`'s byte lane, so both surfaces
+/// resolve — and 404 — identically.
+pub(crate) fn resolve_pdf(
+    state: &AppState,
+    source_id: &str,
+    version: Option<i64>,
+) -> Result<(String, i64, std::path::PathBuf), ApiError> {
     let pdf_dir = state.pdf_dir.clone();
     state.with_conn(|conn| {
         let (sid, ver, custom) = svc_paper::pdf_ref(conn, source_id, version)?
             .ok_or_else(|| CoreError::PaperNotFound(source_id.to_string()))?;
         let path = files::pdf_path(&pdf_dir, &sid, ver, custom.as_deref())
             .ok_or_else(|| ApiError::new(404, "PDF file not found on disk"))?;
-        // Canonical location envelope (path is always Some here — missing is 404).
-        crate::route::to_value(&files::PdfLocation {
-            source_id: sid,
-            version: ver,
-            path: Some(path),
-        })
+        Ok((sid, ver, path))
     })
 }
 

@@ -7,6 +7,8 @@ pub mod full_text_worker;
 pub mod integrations;
 pub mod p2p_config;
 pub mod protocol;
+pub mod remote_backend;
+pub mod remote_query;
 pub mod route;
 pub mod share_sync;
 pub mod state;

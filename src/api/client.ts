@@ -25,17 +25,77 @@ export class ApiError extends Error {
   }
 }
 
-// Packaged app: every request runs in-process through the `api` command. (Tauri
-// never sends FormData here — file uploads send base64 JSON; the FormData branch
-// below is the browser-dev path only.)
-async function invokeApi<T>(path: string, init?: RequestInit): Promise<T> {
-  const { invoke } = await import("@tauri-apps/api/core");
+// ── Library Backend addressing (CONTEXT.md: Library Backend / Remote Query
+// Mode). Every request is addressed to a backend: `null` = the local
+// in-process backend, otherwise a registered remote node reached through the
+// `api_remote` command. The backend is a PARAMETER of the request — this
+// module holds no default and reads no UI state. The PoC "default backend"
+// lives in stores/backend.ts, whose `libraryFetch` passes it explicitly for
+// library queries; every other call is local.
+
+/** One registered remote Library Backend (mirrors Rust `Backend`). */
+export interface RemoteBackend {
+  id: string;
+  label: string;
+  node_address: string;
+}
+
+/** `null` addresses the local backend explicitly. */
+export type BackendRef = RemoteBackend | null;
+
+/** The ONE honest refused-or-offline state: a non-admitted device is refused
+ *  indistinguishably from an offline node, by design. */
+export const UNREACHABLE_MESSAGE =
+  "Can't reach this node — it may be offline, or this device isn't admitted yet. " +
+  "Check Settings → Remote backends and send your member code to the node operator.";
+
+/** Shared mapping of an `api_remote`/`remote_*` invoke rejection (Rust
+ *  `RemoteError`, tagged by `kind`) to the app-wide `ApiError`. */
+export function mapRemoteError(e: unknown): ApiError {
+  const err = e as { kind?: string; status?: number; detail?: string } | null;
+  switch (err?.kind) {
+    case "unreachable":
+      return new ApiError(503, UNREACHABLE_MESSAGE);
+    case "remote": // the node's own error envelope — same shape as local errors
+      return new ApiError(err.status ?? 500, err.detail ?? "Remote error");
+    case "invalid":
+      return new ApiError(400, err.detail ?? "Invalid request");
+    default:
+      return new ApiError(500, err?.detail ?? "Remote request failed");
+  }
+}
+
+/** The invoke() command + args for a request — pure, so addressing is testable:
+ *  local hits the existing `api` command unchanged, remote `api_remote`. */
+export function buildInvoke(
+  path: string,
+  init: RequestInit | undefined,
+  backend: RemoteBackend | null
+): { cmd: string; args: Record<string, unknown> } {
   const method = (init?.method ?? "GET").toUpperCase();
   const body =
     typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : null;
+  const req = { method, path, body };
+  return backend
+    ? { cmd: "api_remote", args: { backendId: backend.id, req } }
+    : { cmd: "api", args: { req } };
+}
+
+// Packaged app: every request runs in-process through the `api` command, or —
+// addressed to a remote backend — through `api_remote`. (Tauri never sends
+// FormData here — file uploads send base64 JSON; the FormData branch below is
+// the browser-dev path only.)
+async function invokeApi<T>(
+  path: string,
+  init: RequestInit | undefined,
+  backend: RemoteBackend | null
+): Promise<T> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  const { cmd, args } = buildInvoke(path, init, backend);
   try {
-    return await invoke<T>("api", { req: { method, path, body } });
+    return await invoke<T>(cmd, args);
   } catch (e) {
+    if (backend) throw mapRemoteError(e);
     const err = e as { status?: number; detail?: string };
     throw new ApiError(err.status ?? 500, err.detail ?? "Request failed");
   }
@@ -43,10 +103,19 @@ async function invokeApi<T>(path: string, init?: RequestInit): Promise<T> {
 
 export async function apiFetch<T>(
   path: string,
-  init?: RequestInit
+  init?: RequestInit,
+  backend: BackendRef = null
 ): Promise<T> {
+  if (backend) {
+    // Remote backends only exist in the desktop app (iroh lives in-process).
+    if (!isTauri)
+      throw new ApiError(500, "Remote backends require the desktop app");
+    if (init?.body instanceof FormData)
+      throw new ApiError(400, "Uploads aren't supported on a remote backend");
+    return invokeApi<T>(path, init, backend);
+  }
   if (isTauri && !(init?.body instanceof FormData)) {
-    return invokeApi<T>(path, init);
+    return invokeApi<T>(path, init, null);
   }
   const url = `${BASE_URL}${path}`;
   const isFormData = init?.body instanceof FormData;

@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>linXiv headless admin</title>
+<style>
+  :root {
+    --accent: #2f7bd9;
+    --fg: #1c1c1c;
+    --bg: #ffffff;
+    --muted: #6b6b6b;
+    --line: #d9d9d9;
+    --bad: #b3392f;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --accent: #6aa5e8;
+      --fg: #e6e6e6;
+      --bg: #171717;
+      --muted: #9a9a9a;
+      --line: #3a3a3a;
+      --bad: #e07068;
+    }
+  }
+  body {
+    font-family: system-ui, sans-serif;
+    color: var(--fg);
+    background: var(--bg);
+    max-width: 52rem;
+    margin: 2rem auto;
+    padding: 0 1rem;
+    line-height: 1.45;
+  }
+  h1 { font-size: 1.3rem; }
+  h2 { font-size: 1.05rem; border-bottom: 1px solid var(--line); padding-bottom: .25rem; margin-top: 2rem; }
+  code, .mono { font-family: ui-monospace, monospace; font-size: .85em; }
+  .muted { color: var(--muted); font-size: .85rem; }
+  .err { color: var(--bad); }
+  button {
+    font: inherit;
+    color: var(--bg);
+    background: var(--accent);
+    border: none;
+    border-radius: 4px;
+    padding: .25rem .7rem;
+    cursor: pointer;
+  }
+  button.plain { background: none; color: var(--accent); padding: .1rem .3rem; }
+  input, select {
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: .25rem .5rem;
+  }
+  select option { color: var(--fg); background: var(--bg); }
+  input:focus, select:focus { outline: 2px solid var(--accent); }
+  table { border-collapse: collapse; width: 100%; margin-top: .5rem; }
+  th, td { text-align: left; padding: .2rem .6rem .2rem 0; border-bottom: 1px solid var(--line); }
+  th { font-weight: 600; font-size: .85rem; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: .15rem 1rem; margin: .5rem 0; }
+  dt { color: var(--muted); }
+  dd { margin: 0; overflow-wrap: anywhere; }
+  ul { list-style: none; padding: 0; }
+  li { padding: .2rem 0; border-bottom: 1px solid var(--line); }
+  #token-box { border: 1px solid var(--line); border-radius: 6px; padding: 1rem; margin: 1rem 0; }
+  .row { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<h1>linXiv headless admin</h1>
+
+<div id="token-box" hidden>
+  <form id="token-form" class="row">
+    <label for="token">API token</label>
+    <input id="token" type="password" size="30" autocomplete="off">
+    <button type="submit">Save</button>
+  </form>
+  <p class="muted">Kept in sessionStorage for this tab only.</p>
+</div>
+<p id="msg" class="err" hidden></p>
+
+<h2>Status</h2>
+<dl id="status"><dd class="muted">loading…</dd></dl>
+
+<h2>Node address</h2>
+<p class="muted">What members paste to add this node as a remote library. A locator, not a capability.</p>
+<p class="row"><span id="node-address" class="mono muted">loading…</span><button id="copy-address" class="plain" hidden>copy</button></p>
+
+<h2>Members</h2>
+<p class="muted">Presence grants relay access; the role grants remote query rights (read = GET only).</p>
+<ul id="members"></ul>
+<form id="add-form" class="row">
+  <input id="add-id" size="66" placeholder="endpoint id (64 hex chars)" class="mono" required pattern="[0-9a-fA-F]{64}">
+  <select id="add-role">
+    <option value="none" selected>none</option>
+    <option value="read">read</option>
+    <option value="read-write">read-write</option>
+  </select>
+  <button type="submit">Add</button>
+</form>
+
+<h2>Access log <button id="refresh" class="plain">refresh</button></h2>
+<p class="muted">To join: connect the device once, find its denied entry below, add its id above.</p>
+<table>
+  <thead><tr><th>#</th><th>endpoint id</th><th>via</th><th>allowed</th></tr></thead>
+  <tbody id="log"><tr><td colspan="4" class="muted">loading…</td></tr></tbody>
+</table>
+
+<h2>Transfers</h2>
+<p class="muted">PDF byte-lane outcomes, as this sender saw them.</p>
+<table>
+  <thead><tr><th>#</th><th>endpoint id</th><th>outcome</th><th>bytes</th></tr></thead>
+  <tbody id="transfers"><tr><td colspan="4" class="muted">loading…</td></tr></tbody>
+</table>
+
+<script>
+const $ = id => document.getElementById(id);
+const token = () => sessionStorage.getItem("linxiv_token") || "";
+
+function needToken(show) {
+  $("token-box").hidden = !show;
+  if (show) $("token").focus();
+}
+
+function msg(text) {
+  $("msg").textContent = text || "";
+  $("msg").hidden = !text;
+}
+
+async function api(path, opts = {}) {
+  opts.headers = Object.assign(
+    token() ? { Authorization: "Bearer " + token() } : {},
+    opts.headers || {}
+  );
+  let res;
+  try {
+    res = await fetch(path, opts);
+  } catch (e) {
+    throw new Error("network error: " + e.message);
+  }
+  if (res.status === 401) {
+    sessionStorage.removeItem("linxiv_token");
+    needToken(true);
+    throw new Error("unauthorized — enter the API token");
+  }
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.detail || res.status + " " + res.statusText);
+  return body;
+}
+
+function text(el, s) { el.textContent = s; }
+
+async function loadStatus() {
+  const s = await api("/api/status");
+  const dl = $("status");
+  dl.replaceChildren();
+  for (const [k, v] of Object.entries(s)) {
+    const dt = document.createElement("dt");
+    text(dt, k);
+    const dd = document.createElement("dd");
+    dd.className = "mono";
+    text(dd, v === null ? "—" : String(v));
+    dl.append(dt, dd);
+  }
+}
+
+function setMember(id, role) {
+  return api("/api/admin/relay/members", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ endpoint_id: id, role }),
+  });
+}
+
+async function loadMembers() {
+  const { members } = await api("/api/admin/relay/members");
+  const ul = $("members");
+  ul.replaceChildren();
+  if (!members.length) {
+    const li = document.createElement("li");
+    li.className = "muted";
+    text(li, "none — everyone is denied");
+    ul.append(li);
+    return;
+  }
+  for (const m of members) {
+    const li = document.createElement("li");
+    li.className = "row";
+    const span = document.createElement("span");
+    span.className = "mono";
+    text(span, m.id);
+    const sel = document.createElement("select");
+    for (const role of ["none", "read", "read-write"]) {
+      const opt = document.createElement("option");
+      opt.value = role;
+      text(opt, role);
+      opt.selected = role === m.role;
+      sel.append(opt);
+    }
+    sel.onchange = () =>
+      setMember(m.id, sel.value).catch(e => { msg(e.message); loadMembers(); });
+    const btn = document.createElement("button");
+    btn.className = "plain";
+    text(btn, "remove");
+    btn.onclick = () =>
+      api("/api/admin/relay/members/" + m.id, { method: "DELETE" })
+        .then(loadMembers).catch(e => msg(e.message));
+    li.append(span, sel, btn);
+    ul.append(li);
+  }
+}
+
+async function loadNodeAddress() {
+  const el = $("node-address");
+  try {
+    const { node_address } = await api("/api/admin/node-address");
+    text(el, node_address);
+    el.className = "mono";
+    $("copy-address").hidden = false;
+    $("copy-address").onclick = () =>
+      navigator.clipboard.writeText(node_address).catch(e => msg(e.message));
+  } catch (e) {
+    text(el, e.message);
+    el.className = "mono muted";
+    $("copy-address").hidden = true;
+  }
+}
+
+async function loadTransfers() {
+  const { entries } = await api("/api/admin/transfers");
+  const tb = $("transfers");
+  tb.replaceChildren();
+  if (!entries.length) {
+    const tr = tb.insertRow();
+    const td = tr.insertCell();
+    td.colSpan = 4;
+    td.className = "muted";
+    text(td, "no transfers yet");
+    return;
+  }
+  for (const e of entries.slice().reverse()) { // newest first
+    const tr = tb.insertRow();
+    text(tr.insertCell(), String(e.seq));
+    const idCell = tr.insertCell();
+    idCell.className = "mono";
+    text(idCell, e.endpoint_id || "—");
+    const out = tr.insertCell();
+    out.className = e.outcome === "delivered" ? "" : "err";
+    text(out, e.outcome);
+    text(tr.insertCell(), String(e.bytes));
+  }
+}
+
+async function loadLog() {
+  const { entries } = await api("/api/admin/relay/log");
+  const tb = $("log");
+  tb.replaceChildren();
+  if (!entries.length) {
+    const tr = tb.insertRow();
+    const td = tr.insertCell();
+    td.colSpan = 4;
+    td.className = "muted";
+    text(td, "no entries yet");
+    return;
+  }
+  for (const e of entries.slice().reverse()) { // newest first
+    const tr = tb.insertRow();
+    text(tr.insertCell(), String(e.seq));
+    const idCell = tr.insertCell();
+    idCell.className = "mono";
+    text(idCell, e.endpoint_id || "—");
+    text(tr.insertCell(), e.source || "relay");
+    const ok = tr.insertCell();
+    ok.className = e.allowed ? "" : "err";
+    text(ok, e.allowed ? "allowed" : "denied");
+  }
+}
+
+function refreshAll() {
+  msg("");
+  Promise.all([loadStatus(), loadNodeAddress(), loadMembers(), loadLog(), loadTransfers()])
+    .catch(e => msg(e.message));
+}
+
+$("token-form").onsubmit = e => {
+  e.preventDefault();
+  sessionStorage.setItem("linxiv_token", $("token").value.trim());
+  $("token").value = "";
+  needToken(false);
+  refreshAll();
+};
+
+$("add-form").onsubmit = e => {
+  e.preventDefault();
+  setMember($("add-id").value.trim(), $("add-role").value)
+    .then(() => { $("add-id").value = ""; return loadMembers(); })
+    .catch(e => msg(e.message));
+};
+
+$("refresh").onclick = () =>
+  Promise.all([loadLog(), loadTransfers()]).catch(e => msg(e.message));
+
+setInterval(() => {
+  if (document.visibilityState === "visible") {
+    Promise.all([loadStatus(), loadLog(), loadTransfers()]).catch(e => msg(e.message));
+  }
+}, 30000);
+
+refreshAll();
+</script>
+</body>
+</html>

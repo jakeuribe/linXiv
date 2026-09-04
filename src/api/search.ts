@@ -1,4 +1,4 @@
-import { apiFetch } from "./client";
+import { libraryFetch } from "../stores/backend.ts";
 import type { SearchResult } from "../types/api";
 
 export interface ArxivSearchResponse {
@@ -14,7 +14,7 @@ export async function searchArxiv(
   save = false,
   sort: ArxivSort = "relevance",
 ): Promise<ArxivSearchResponse> {
-  return apiFetch<ArxivSearchResponse>("/api/arxiv/search", {
+  return libraryFetch<ArxivSearchResponse>("/api/arxiv/search", {
     method: "POST",
     body: JSON.stringify({ query, max_results: maxResults, save, sort }),
   });
@@ -30,7 +30,7 @@ export async function fetchArxiv(
   sourceId: string,
   save = true
 ): Promise<ArxivFetchResponse> {
-  return apiFetch<ArxivFetchResponse>("/api/arxiv/fetch", {
+  return libraryFetch<ArxivFetchResponse>("/api/arxiv/fetch", {
     method: "POST",
     body: JSON.stringify({ source_id: sourceId, save }),
   });
@@ -43,7 +43,7 @@ export interface DoiMetadata {
 export async function resolveDoi(
   doi: string
 ): Promise<{ metadata: DoiMetadata }> {
-  return apiFetch("/api/doi/resolve", {
+  return libraryFetch("/api/doi/resolve", {
     method: "POST",
     body: JSON.stringify({ doi }),
   });
@@ -52,7 +52,7 @@ export async function resolveDoi(
 export async function saveDoi(
   doi: string
 ): Promise<{ metadata: DoiMetadata; saved: boolean }> {
-  return apiFetch("/api/doi/save", {
+  return libraryFetch("/api/doi/save", {
     method: "POST",
     body: JSON.stringify({ doi }),
   });
@@ -70,7 +70,7 @@ export async function searchOpenAlex(
   maxResults = 25,
   sort: OpenAlexSort = "relevance",
 ): Promise<OpenAlexSearchResponse> {
-  return apiFetch<OpenAlexSearchResponse>("/api/openalex/search", {
+  return libraryFetch<OpenAlexSearchResponse>("/api/openalex/search", {
     method: "POST",
     body: JSON.stringify({ query, max_results: maxResults, sort }),
   });
@@ -79,7 +79,7 @@ export async function searchOpenAlex(
 export async function saveOpenAlex(
   sourceId: string,
 ): Promise<{ saved: boolean; source_id: string }> {
-  return apiFetch("/api/openalex/save", {
+  return libraryFetch("/api/openalex/save", {
     method: "POST",
     body: JSON.stringify({ source_id: sourceId }),
   });

@@ -52,7 +52,14 @@ pub struct ShareState {
     // bound node — guards against spawning the background interval-sync loop
     // twice (or never, if startup found no node but a reconnect later does).
     sync_started: AtomicBool,
+    // Remote Query Mode (headless only): re-applied to every fresh node, so
+    // a relay reconnect's rebind doesn't silently drop the api handler.
+    api_installer: std::sync::Mutex<Option<ApiInstallFn>>,
 }
+
+/// Installs the `linxiv-api/1` handler on a freshly bound node (headless bin;
+/// the desktop app never sets one).
+pub type ApiInstallFn = Arc<dyn Fn(&ShareNode) + Send + Sync>;
 
 impl ShareState {
     /// Store-only state (no network node). Used by the Phase-0 sync unit tests.
@@ -62,6 +69,7 @@ impl ShareState {
             node: Mutex::new(None),
             write_locks: Mutex::new(HashMap::new()),
             sync_started: AtomicBool::new(false),
+            api_installer: std::sync::Mutex::new(None),
         }
     }
 
@@ -72,6 +80,7 @@ impl ShareState {
             node: Mutex::new(Some(Arc::new(node))),
             write_locks: Mutex::new(HashMap::new()),
             sync_started: AtomicBool::new(false),
+            api_installer: std::sync::Mutex::new(None),
         }
     }
 
@@ -83,6 +92,11 @@ impl ShareState {
     /// Clone the live node out from under the lock (`None` while store-only).
     pub(crate) async fn node(&self) -> Option<Arc<ShareNode>> {
         self.node.lock().await.clone()
+    }
+
+    /// This node's iroh endpoint id (`None` while unbound). Status reporting.
+    pub async fn endpoint_id(&self) -> Option<String> {
+        self.node().await.map(|n| n.endpoint_id())
     }
 
     /// Acquire the write lock for a specific share. Returns a guard on the per-share-id lock.
@@ -132,9 +146,57 @@ impl ShareState {
             old.shutdown().await?;
         }
         let fresh = ShareNode::bind_with_dek(self.store.share_dir(), p2p_dir, dek, relay).await?;
+        if let Some(install) = self.api_installer.lock().unwrap().clone() {
+            install(&fresh);
+        }
         *guard = Some(Arc::new(fresh));
         Ok(())
     }
+
+    /// Registers the Remote Query Mode installer and applies it to the
+    /// current node (if bound). `rebind` re-applies it to every fresh node.
+    pub async fn install_api(&self, install: ApiInstallFn) {
+        *self.api_installer.lock().unwrap() = Some(install.clone());
+        if let Some(node) = self.node().await {
+            install(&node);
+        }
+    }
+}
+
+/// Resolve relay settings + bind the startup share node — shared by the
+/// packaged app's setup and the headless bin. A bind failure or a
+/// required-but-missing relay degrades to a store-only state (sharing
+/// disabled) with a warning instead of failing startup. `dek` is resolved by
+/// the caller: keychain access is sync and must not run inside an async
+/// context. Returns `(state, node_bound)`.
+pub async fn startup_share_state(dek: Option<[u8; 32]>) -> std::io::Result<(ShareState, bool)> {
+    let share_dir = config::data_dir().join("share");
+    std::fs::create_dir_all(&share_dir)?;
+    // Persisted device key lives beside (not inside) the served share dir.
+    let p2p_dir = config::data_dir().join("p2p");
+    Ok(match p2p_config::relay_setting() {
+        RelaySetting::RequireCustomButMissing => {
+            eprintln!(
+                "warning: \"only use this relay\" is on but no valid custom relay is configured; refusing to fall back to the public n0 relay, sharing disabled"
+            );
+            (ShareState::new(share_dir), false)
+        }
+        setting => {
+            let relay = match setting {
+                RelaySetting::Custom(relay) => Some(relay),
+                _ => None,
+            };
+            match ShareNode::bind_with_dek(share_dir.clone(), &p2p_dir, dek, relay).await {
+                Ok(node) => (ShareState::with_node(share_dir, node), true),
+                Err(e) => {
+                    eprintln!(
+                        "warning: share node bind failed, sharing (plain and e2ee) and background sync disabled: {e}"
+                    );
+                    (ShareState::new(share_dir), false)
+                }
+            }
+        }
+    })
 }
 
 impl From<ShareError> for ApiError {
@@ -160,6 +222,20 @@ pub async fn share_api(
     share: tauri::State<'_, ShareState>,
     req: ApiRequest,
 ) -> Result<Value, ApiError> {
+    let spawn_sync = move || share_sync::spawn_interval_sync(app.clone());
+    dispatch(state.inner(), share.inner(), &spawn_sync, req).await
+}
+
+/// Tauri-free `/api/share/*` dispatcher: `share_api` above and the headless
+/// bin both route through here. `spawn_sync` starts the background
+/// interval-sync loop when the relay-reconnect arm brings the first node up —
+/// each caller owns how that task is spawned.
+pub async fn dispatch(
+    state: &AppState,
+    share: &ShareState,
+    spawn_sync: &(dyn Fn() + Sync),
+    req: ApiRequest,
+) -> Result<Value, ApiError> {
     let (raw_path, raw_query) = req.path.split_once('?').unwrap_or((req.path.as_str(), ""));
     let segs = split_segments(raw_path);
     let query = parse_query(raw_query);
@@ -175,64 +251,60 @@ pub async fn share_api(
     // than the sync `handle` dispatcher the Phase-0 store arms share.
     match (ctx.method, ctx.segs) {
         ("POST", ["api", "share", "project", id, "ticket"]) => {
-            return ticket(state.inner(), share.inner(), id).await
+            return ticket(state, share, id).await
         }
-        ("POST", ["api", "share", "join"]) => return join(share.inner(), ctx.body).await,
+        ("POST", ["api", "share", "join"]) => return join(share, ctx.body).await,
         ("POST", ["api", "share", "project", id, "publish"]) => {
-            return publish(state.inner(), share.inner(), id).await
+            return publish(state, share, id).await
         }
-        ("POST", ["api", "share", id, "unpublish"]) => return unpublish(share.inner(), id).await,
+        ("POST", ["api", "share", id, "unpublish"]) => return unpublish(share, id).await,
         ("POST", ["api", "share", "received", id, "import"]) => {
             if !valid_share_id(id) {
                 return Err(ApiError::new(404, format!("share {id:?} not found")));
             }
             let _lock = share.lock_writes(id).await;
-            return share_sync::import_received(state.inner(), share.inner().share_dir(), id)
+            return share_sync::import_received(state, share.share_dir(), id)
                 .map(|fk| json!({ "project_fk": fk }));
         }
-        ("POST", ["api", "share", "received", id, "leave"]) => {
-            return leave(share.inner(), id).await
-        }
+        ("POST", ["api", "share", "received", id, "leave"]) => return leave(share, id).await,
         ("POST", ["api", "share", id, "sync"]) => {
-            return share_sync::sync_share(state.inner(), share.inner(), id).await
+            return share_sync::sync_share(state, share, id).await
         }
         ("PUT" | "POST", ["api", "share", id, "settings"]) => {
-            return put_settings(share.inner(), id, ctx.body).await
+            return put_settings(share, id, ctx.body).await
         }
-        ("GET", ["api", "share", "member_code"]) => return member_code(share.inner()).await,
+        ("GET", ["api", "share", "member_code"]) => return member_code(share).await,
         ("POST", ["api", "share", "relay", "reconnect"]) => {
-            return reconnect_relay(&app, share.inner()).await
+            return reconnect_relay(spawn_sync, share).await
         }
         // Shadows the sync arm in `handle` so the live app gets role-stamped
         // summaries; the store-only tests keep dispatching through `handle`.
         ("GET", ["api", "share", "received"]) => {
-            return list_received_with_role(state.inner(), share.inner()).await
+            return list_received_with_role(state, share).await
         }
         ("POST", ["api", "share", "project", id, "publish_secure"]) => {
-            return publish_secure(state.inner(), share.inner(), id).await
+            return publish_secure(state, share, id).await
         }
         ("POST", ["api", "share", id, "invite"]) => {
-            return invite(state.inner(), share.inner(), id, ctx.body).await
+            return invite(state, share, id, ctx.body).await
         }
-        ("GET", ["api", "share", id, "members"]) => return members(share.inner(), id).await,
+        ("GET", ["api", "share", id, "members"]) => return members(share, id).await,
         ("POST", ["api", "share", id, "member", mid, "role"]) => {
-            return set_member_role(state.inner(), share.inner(), id, mid, ctx.body).await
+            return set_member_role(state, share, id, mid, ctx.body).await
         }
         ("POST", ["api", "share", id, "revoke"]) => {
-            return revoke_member(share.inner(), id, ctx.body).await
+            return revoke_member(share, id, ctx.body).await
         }
         ("POST", ["api", "share", id, "member", mid, "remove"]) => {
-            return remove_member(share.inner(), id, mid).await
+            return remove_member(share, id, mid).await
         }
-        ("POST", ["api", "share", id, "rekey"]) => {
-            return rekey(state.inner(), share.inner(), id).await
-        }
+        ("POST", ["api", "share", id, "rekey"]) => return rekey(state, share, id).await,
         ("POST", ["api", "share", id, "pdf"]) => {
-            return shared_pdf(state.inner(), share.inner(), id, ctx.body).await
+            return shared_pdf(state, share, id, ctx.body).await
         }
         _ => {}
     }
-    handle(state.inner(), share.inner(), &ctx).unwrap_or_else(|| Err(ApiError::not_routed()))
+    handle(state, share, &ctx).unwrap_or_else(|| Err(ApiError::not_routed()))
 }
 
 /// Match a synchronous (no-await) `/api/share/*` request. Returns `None` (no
@@ -274,7 +346,8 @@ fn summary_json(s: &linxiv_share::SharedSummary, doc: &Path, share_dir: &Path) -
 }
 
 /// `GET /api/share/projects` — summaries of every published shared project.
-fn list_shared(state: &AppState, share: &ShareState) -> Result<Value, ApiError> {
+/// `pub` so the headless bin's status aggregate reuses it.
+pub fn list_shared(state: &AppState, share: &ShareState) -> Result<Value, ApiError> {
     let dir = share.store.share_dir();
     let mut out = Vec::new();
     for s in share.store.list_shared()? {
@@ -296,7 +369,8 @@ fn list_shared(state: &AppState, share: &ShareState) -> Result<Value, ApiError> 
 
 /// `GET /api/share/received` — summaries of every mirror materialized by `join`,
 /// each carrying the `project_fk` of the linked local project (null pre-import).
-fn list_received(state: &AppState, share: &ShareState) -> Result<Value, ApiError> {
+/// `pub` so the headless bin's status aggregate reuses it (no role queries).
+pub fn list_received(state: &AppState, share: &ShareState) -> Result<Value, ApiError> {
     let dir = share.store.share_dir();
     let rec = received_dir(dir);
     let mut out = Vec::new();
@@ -868,7 +942,10 @@ async fn member_code(share: &ShareState) -> Result<Value, ApiError> {
 /// `POST /api/share/relay/reconnect` — rebind the p2p node against whatever
 /// is currently saved under Settings → Sharing, without an app restart. Save
 /// the relay settings first (`PATCH /api/settings`), then call this.
-async fn reconnect_relay(app: &tauri::AppHandle, share: &ShareState) -> Result<Value, ApiError> {
+async fn reconnect_relay(
+    spawn_sync: &(dyn Fn() + Sync),
+    share: &ShareState,
+) -> Result<Value, ApiError> {
     let p2p_dir = config::data_dir().join("p2p");
     match p2p_config::relay_setting() {
         RelaySetting::RequireCustomButMissing => {
@@ -883,11 +960,18 @@ async fn reconnect_relay(app: &tauri::AppHandle, share: &ShareState) -> Result<V
                 RelaySetting::Custom(relay) => Some(relay),
                 _ => None,
             };
-            share.rebind(&p2p_dir, p2p_config::p2p_dek(), relay).await?;
+            // Keychain access is sync (the Linux backend block_ons its own
+            // runtime and panics on a tokio worker thread) — resolve the DEK
+            // off the async worker. Join failure degrades to no DEK, same as
+            // an unavailable keychain.
+            let dek = tokio::task::spawn_blocking(p2p_config::p2p_dek)
+                .await
+                .unwrap_or(None);
+            share.rebind(&p2p_dir, dek, relay).await?;
         }
     }
     if share.mark_sync_started() {
-        share_sync::spawn_interval_sync(app.clone());
+        spawn_sync();
     }
     Ok(json!({ "ok": true }))
 }

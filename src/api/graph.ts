@@ -1,4 +1,4 @@
-import { apiFetch } from "./client";
+import { libraryFetch } from "../stores/backend.ts";
 import type { GraphView } from "../types/generated";
 
 export type { GraphView };
@@ -13,7 +13,7 @@ export type { GraphView };
  * graph request had succeeded at, and a `?api=` parameter naming which backend
  * to talk to — because `tauri dev` and browser dev both serve the guest from
  * http://localhost:5180 and only the host could tell them apart. Going through
- * `apiFetch` makes all three questions somebody else's, already-answered ones.
+ * `libraryFetch` makes all three questions somebody else's, already-answered ones.
  *
  * @param excludeSingleAuthors drop authors linked to only one paper. Applied by
  * the backend, so those authors leave the payload entirely — the page's Author
@@ -21,5 +21,5 @@ export type { GraphView };
  */
 export async function getGraphView(excludeSingleAuthors: boolean): Promise<GraphView> {
   const q = excludeSingleAuthors ? "?exclude_single_authors=true" : "";
-  return apiFetch<GraphView>(`/api/graph${q}`);
+  return libraryFetch<GraphView>(`/api/graph${q}`);
 }

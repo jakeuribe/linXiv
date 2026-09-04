@@ -1,14 +1,14 @@
-import { apiFetch } from "./client.ts";
+import { libraryFetch } from "../stores/backend.ts";
 import type { PaperMembershipReceipt, Project } from "../types/api";
 
 export async function listProjects(
   status = "active"
 ): Promise<{ projects: Project[] }> {
-  return apiFetch<{ projects: Project[] }>(`/api/projects?status=${status}`);
+  return libraryFetch<{ projects: Project[] }>(`/api/projects?status=${status}`);
 }
 
 export async function getProject(id: number): Promise<Project> {
-  return apiFetch<Project>(`/api/projects/${id}`);
+  return libraryFetch<Project>(`/api/projects/${id}`);
 }
 
 export interface ProjectCreateBody {
@@ -21,7 +21,7 @@ export interface ProjectCreateBody {
 export async function createProject(
   body: ProjectCreateBody
 ): Promise<{ project: { id: number; name: string } }> {
-  return apiFetch("/api/projects", {
+  return libraryFetch("/api/projects", {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -39,14 +39,14 @@ export async function updateProject(
   id: number,
   body: ProjectUpdateBody
 ): Promise<{ ok: boolean }> {
-  return apiFetch(`/api/projects/${id}`, {
+  return libraryFetch(`/api/projects/${id}`, {
     method: "PATCH",
     body: JSON.stringify(body),
   });
 }
 
 export async function deleteProject(id: number): Promise<{ ok: boolean }> {
-  return apiFetch(`/api/projects/${id}`, { method: "DELETE" });
+  return libraryFetch(`/api/projects/${id}`, { method: "DELETE" });
 }
 
 export async function archiveProject(id: number): Promise<{ ok: boolean }> {
@@ -64,7 +64,7 @@ export async function addPaperToProject(
   projectId: number,
   sourceId: string
 ): Promise<PaperMembershipReceipt> {
-  return apiFetch(`/api/projects/${projectId}/papers`, {
+  return libraryFetch(`/api/projects/${projectId}/papers`, {
     method: "POST",
     body: JSON.stringify({ source_id: sourceId }),
   });
@@ -83,7 +83,7 @@ export async function addPapersToProject(
   const ids = [...new Set(sourceIds)];
   const failed: string[] = [];
   for (let i = 0; i < ids.length; i += BULK_ADD_CHUNK) {
-    const res = await apiFetch<{ ok: boolean; failed: string[] }>(
+    const res = await libraryFetch<{ ok: boolean; failed: string[] }>(
       `/api/projects/${projectId}/papers/bulk`,
       {
         method: "POST",
@@ -99,7 +99,7 @@ export async function removePaperFromProject(
   projectId: number,
   sourceId: string
 ): Promise<PaperMembershipReceipt> {
-  return apiFetch(
+  return libraryFetch(
     `/api/projects/${projectId}/papers/${encodeURIComponent(sourceId)}`,
     { method: "DELETE" }
   );

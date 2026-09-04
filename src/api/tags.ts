@@ -1,4 +1,4 @@
-import { apiFetch } from "./client";
+import { libraryFetch } from "../stores/backend.ts";
 import type { Paper, Project, TagWithCount as TagSummary } from "../types/api";
 
 // Envelope assembled inline by route/tags.rs — no core struct to generate.
@@ -12,9 +12,9 @@ export interface TagDetail {
 export type { TagSummary };
 
 export async function getAllTags(): Promise<TagSummary[]> {
-  return apiFetch<{ tags: TagSummary[] }>("/api/tags").then((r) => r.tags);
+  return libraryFetch<{ tags: TagSummary[] }>("/api/tags").then((r) => r.tags);
 }
 
 export async function getTagDetail(label: string): Promise<TagDetail> {
-  return apiFetch<TagDetail>(`/api/tags/${encodeURIComponent(label)}`);
+  return libraryFetch<TagDetail>(`/api/tags/${encodeURIComponent(label)}`);
 }
