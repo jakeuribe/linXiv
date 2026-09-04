@@ -139,9 +139,7 @@ pub fn save_members(list: &[Member]) -> std::io::Result<()> {
 /// list (missing file) denies everyone — fail closed.
 pub fn relay_allow(members: &[Member], endpoint_id: Option<&str>) -> bool {
     match endpoint_id {
-        Some(id) if valid_endpoint_id(id) => {
-            members.iter().any(|m| m.id.eq_ignore_ascii_case(id))
-        }
+        Some(id) if valid_endpoint_id(id) => members.iter().any(|m| m.id.eq_ignore_ascii_case(id)),
         _ => false,
     }
 }
@@ -312,8 +310,11 @@ async fn handle(
     let (raw_path, raw_query) = req.path.split_once('?').unwrap_or((req.path.as_str(), ""));
     let segs = route::split_segments(raw_path);
     if req.method == "GET" {
-        if let ["api", "papers", sid, "pdf"] =
-            segs.iter().map(String::as_str).collect::<Vec<_>>().as_slice()
+        if let ["api", "papers", sid, "pdf"] = segs
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .as_slice()
         {
             return pdf_lane(state, sid, raw_query, &member.id, rate_bps, active).await;
         }
@@ -386,10 +387,7 @@ mod tests {
         let id_b = "bb".repeat(32);
         // Legacy bare strings => role none.
         let legacy: Vec<Member> = serde_json::from_str(&format!(r#"["{id_a}","{id_b}"]"#)).unwrap();
-        assert_eq!(
-            legacy,
-            vec![m(&id_a, Role::None), m(&id_b, Role::None)]
-        );
+        assert_eq!(legacy, vec![m(&id_a, Role::None), m(&id_b, Role::None)]);
         // New objects, role optional (defaults to none), mixed with legacy.
         let mixed: Vec<Member> = serde_json::from_str(&format!(
             r#"[{{"id":"{id_a}","role":"read-write"}},{{"id":"{id_b}"}},"cc"]"#
@@ -405,7 +403,10 @@ mod tests {
         );
         // Round trip is always the object form.
         let json = serde_json::to_value(&mixed).unwrap();
-        assert_eq!(json[0], serde_json::json!({"id": id_a, "role": "read-write"}));
+        assert_eq!(
+            json[0],
+            serde_json::json!({"id": id_a, "role": "read-write"})
+        );
         assert_eq!(json[2], serde_json::json!({"id": "cc", "role": "none"}));
     }
 

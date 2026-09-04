@@ -490,7 +490,10 @@ mod tests {
             json!({"ok": 1})
         );
         match unwrap_envelope(json!({"status": 403, "detail": "nope"})) {
-            Err(RemoteError::Remote { status: 403, detail }) => assert_eq!(detail, "nope"),
+            Err(RemoteError::Remote {
+                status: 403,
+                detail,
+            }) => assert_eq!(detail, "nope"),
             other => panic!("got {other:?}"),
         }
         // A malformed envelope is an error, never a silent Ok(null).
@@ -592,7 +595,9 @@ mod proto_tests {
             .unwrap();
         assert_eq!(body["paper_count"], 0);
         // Second request rides the cached connection.
-        let body = request_remote(&ep, &remote, "b1", addr, &req).await.unwrap();
+        let body = request_remote(&ep, &remote, "b1", addr, &req)
+            .await
+            .unwrap();
         assert_eq!(body["paper_count"], 0);
         assert_eq!(remote.conns.lock().await.len(), 1);
         // A remote error envelope surfaces typed, not as a body.
@@ -661,7 +666,10 @@ mod proto_tests {
         let err = fetch_remote_pdf(&ep, &remote, "b1", addr, "nope", None, cache.path())
             .await
             .unwrap_err();
-        assert!(matches!(err, RemoteError::Remote { status: 404, .. }), "{err:?}");
+        assert!(
+            matches!(err, RemoteError::Remote { status: 404, .. }),
+            "{err:?}"
+        );
         router.shutdown().await.unwrap();
     }
 

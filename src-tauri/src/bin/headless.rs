@@ -287,7 +287,10 @@ fn relay_access(ctx: &Ctx, req: &Request) -> Response {
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
     let allowed = relay_allow(&load_members().unwrap_or_default(), id.as_deref());
-    ctx.relay.lock().unwrap().push(id.as_deref(), allowed, "relay");
+    ctx.relay
+        .lock()
+        .unwrap()
+        .push(id.as_deref(), allowed, "relay");
     (
         StatusCode::OK,
         [(axum::http::header::CONTENT_TYPE, "text/plain")],
@@ -577,7 +580,13 @@ mod tests {
         let mut members = Vec::new();
         // New member, no role: defaults to none.
         upsert_member(&mut members, id.clone(), None);
-        assert_eq!(members, vec![Member { id: id.clone(), role: Role::None }]);
+        assert_eq!(
+            members,
+            vec![Member {
+                id: id.clone(),
+                role: Role::None
+            }]
+        );
         // Role grant sticks (case-insensitive id match, no duplicate).
         upsert_member(&mut members, id.to_uppercase(), Some(Role::Read));
         assert_eq!(members.len(), 1);
