@@ -1,6 +1,8 @@
 import { libraryFetch } from "../stores/backend.ts";
 import type { SearchResult } from "../types/api";
 
+// The response envelopes here are assembled inline by route/sources.rs — no
+// core structs to generate (the `results` rows are core's SearchResultOut).
 export interface ArxivSearchResponse {
   results: SearchResult[];
   saved_source_ids: string[];

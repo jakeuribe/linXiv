@@ -33,7 +33,9 @@ export class ApiError extends Error {
 // lives in stores/backend.ts, whose `libraryFetch` passes it explicitly for
 // library queries; every other call is local.
 
-/** One registered remote Library Backend (mirrors Rust `Backend`). */
+/** One registered remote Library Backend. Twin of `Backend` in
+ *  src-tauri/src/remote_backend.rs — the app crate, which the linxiv-core
+ *  ts_bindings generator can't reach; hand-kept in sync. */
 export interface RemoteBackend {
   id: string;
   label: string;
