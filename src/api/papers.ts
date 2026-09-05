@@ -33,12 +33,25 @@ export type PaperSort =
 export async function listPapers(
   limit = 200,
   offset = 0,
-  sort?: PaperSort
+  sort?: PaperSort,
+  project?: number
 ): Promise<{ papers: Paper[] }> {
   const order = sort ? `&sort=${sort.split("_")[0]}&dir=${sort.split("_")[1]}` : "";
+  const proj = project !== undefined ? `&project=${project}` : "";
   return libraryFetch<{ papers: Paper[] }>(
-    `/api/papers?limit=${limit}&offset=${offset}${order}`
+    `/api/papers?limit=${limit}&offset=${offset}${order}${proj}`
   );
+}
+
+// Server-side cap on GET /api/papers?limit=; project-scoped fetches use it so
+// membership, not a 200-paper window, decides what a page shows.
+// ponytail: a single project >5000 papers is still windowed; page with offset=
+// if that ever becomes real.
+export const PAPER_LIMIT_MAX = 5000;
+
+/** All papers linked to a project, filtered server-side (no client window). */
+export function listProjectPapers(projectId: number): Promise<{ papers: Paper[] }> {
+  return listPapers(PAPER_LIMIT_MAX, 0, undefined, projectId);
 }
 
 export async function getPaper(sourceId: string): Promise<Paper> {

@@ -178,6 +178,7 @@ fn list_papers_sql(
     limit: Option<i64>,
     offset: i64,
     category: Option<&str>,
+    project: Option<i64>,
     sort: PaperSort,
     desc: bool,
 ) -> (String, Vec<Value>) {
@@ -188,9 +189,18 @@ fn list_papers_sql(
     };
     let mut sql = format!("SELECT {PAPER_COLUMNS_NO_TEXT} FROM {view}");
     let mut params: Vec<Value> = Vec::new();
+    let mut wheres: Vec<&str> = Vec::new();
     if let Some(cat) = category {
-        sql.push_str(" WHERE category = ?");
+        wheres.push("category = ?");
         params.push(Value::Text(cat.to_string()));
+    }
+    if let Some(pid) = project {
+        wheres.push("source_fk IN (SELECT SOURCE_FK FROM PROJECT_TO_PAPER WHERE PROJECT_FK = ?)");
+        params.push(Value::Integer(pid));
+    }
+    if !wheres.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&wheres.join(" AND "));
     }
     sql.push_str(&sort.order_by(desc));
     match limit {
@@ -224,22 +234,26 @@ pub fn list_papers(
         limit,
         offset,
         category,
+        None,
         PaperSort::default(),
         true,
     )
 }
 
-/// `list_papers` under a caller-chosen ordering.
+/// `list_papers` under a caller-chosen ordering. `project` narrows to papers
+/// linked to that project (PROJECT_TO_PAPER), filtered in SQL so a >200-paper
+/// library never needs a client-side window.
 pub fn list_papers_sorted(
     conn: &Connection,
     latest_only: bool,
     limit: Option<i64>,
     offset: i64,
     category: Option<&str>,
+    project: Option<i64>,
     sort: PaperSort,
     desc: bool,
 ) -> Result<Vec<PaperDetails>> {
-    let (sql, params) = list_papers_sql(latest_only, limit, offset, category, sort, desc);
+    let (sql, params) = list_papers_sql(latest_only, limit, offset, category, project, sort, desc);
     let mut stmt = conn.prepare(&sql)?;
     let mut rows = stmt.query(params_from_iter(&params))?;
     let mut out = Vec::new();
@@ -534,6 +548,93 @@ mod tests {
         );
     }
 
+    /// The `project` filter narrows to PROJECT_TO_PAPER members in SQL —
+    /// membership, not a client-side window over the first N rows.
+    #[test]
+    fn list_papers_project_filter_returns_only_members() {
+        let conn = open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        seed(&conn); // arxiv:2204.12985
+        conn.execute(
+            "INSERT INTO PAPER_ROOTS (SOURCE_ID) VALUES ('arxiv:outside')",
+            [],
+        )
+        .unwrap();
+        let outside_fk = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO PAPER (SOURCE_ID, VERSION, TITLE, SOURCE_FK) \
+             VALUES ('arxiv:outside', 1, 'Outside', ?1)",
+            [outside_fk],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO PAPER_META (PAPER_ID) VALUES (?1)",
+            [conn.last_insert_rowid()],
+        )
+        .unwrap();
+
+        conn.execute("INSERT INTO PROJECT (NAME) VALUES ('RL')", [])
+            .unwrap();
+        let project_fk = conn.last_insert_rowid();
+        let member_fk: i64 = conn
+            .query_row(
+                "SELECT SOURCE_FK FROM PAPER_ROOTS WHERE SOURCE_ID = 'arxiv:2204.12985'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO PROJECT_TO_PAPER (PROJECT_FK, SOURCE_FK) VALUES (?1, ?2)",
+            params![project_fk, member_fk],
+        )
+        .unwrap();
+
+        let member = list_papers_sorted(
+            &conn,
+            true,
+            None,
+            0,
+            None,
+            Some(project_fk),
+            PaperSort::Published,
+            true,
+        )
+        .unwrap();
+        assert_eq!(member.len(), 1);
+        assert_eq!(member[0].source_id, "arxiv:2204.12985");
+        assert_eq!(member[0].version, 2); // latest_only still applies
+
+        // Unknown project matches nothing; no filter returns both papers.
+        assert!(list_papers_sorted(
+            &conn,
+            true,
+            None,
+            0,
+            None,
+            Some(9999),
+            PaperSort::Published,
+            true
+        )
+        .unwrap()
+        .is_empty());
+        assert_eq!(list_papers(&conn, true, None, 0, None).unwrap().len(), 2);
+
+        // Composes with the category filter (WHERE ... AND ...): the member
+        // paper is cs.LG, so a mismatched category empties the result.
+        assert!(list_papers_sorted(
+            &conn,
+            true,
+            None,
+            0,
+            Some("nope"),
+            Some(project_fk),
+            PaperSort::Published,
+            true
+        )
+        .unwrap()
+        .is_empty());
+    }
+
     /// Pins `list_pdf_papers` ≡ `list_papers(latest_only)` filtered on has_pdf —
     /// the SQL-side filter must not change what the old scan-then-filter saw.
     #[test]
@@ -651,7 +752,7 @@ mod tests {
         .unwrap();
 
         let titles = |sort, desc| {
-            list_papers_sorted(&conn, true, None, 0, None, sort, desc)
+            list_papers_sorted(&conn, true, None, 0, None, None, sort, desc)
                 .unwrap()
                 .into_iter()
                 .map(|p| p.title)
@@ -703,7 +804,7 @@ mod tests {
         init_db(&conn).unwrap();
 
         let plan = |sort, desc| -> Vec<String> {
-            let (sql, _) = list_papers_sql(true, None, 0, None, sort, desc);
+            let (sql, _) = list_papers_sql(true, None, 0, None, None, sort, desc);
             conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
                 .unwrap()
                 .query_map([], |r| r.get::<_, String>(3))

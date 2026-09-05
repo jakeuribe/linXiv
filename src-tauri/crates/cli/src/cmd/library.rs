@@ -135,6 +135,7 @@ pub async fn list(args: ListArgs, ctx: &mut Ctx) -> anyhow::Result<()> {
         args.limit,
         args.offset,
         args.category.as_deref(),
+        None,
         sort,
         desc,
     )?;
@@ -171,9 +172,17 @@ mod tests {
         svc_paper::save_paper_metadata(&mut conn, &meta, None).unwrap();
         svc_paper::set_full_text(&mut conn, "arxiv:1234.5678", 1, "tex body").unwrap();
 
-        let papers =
-            svc_paper::list_papers_sorted(&conn, true, None, 0, None, PaperSort::Published, true)
-                .unwrap();
+        let papers = svc_paper::list_papers_sorted(
+            &conn,
+            true,
+            None,
+            0,
+            None,
+            None,
+            PaperSort::Published,
+            true,
+        )
+        .unwrap();
         let row = serde_json::to_value(&papers[0]).unwrap();
         let keys: Vec<&str> = row
             .as_object()

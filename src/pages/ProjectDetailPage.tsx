@@ -13,7 +13,7 @@ import {
 } from "../api/projects";
 import { listReceived, sharingAvailable } from "../api/share";
 import { receivedShareRole } from "../lib/shareRole";
-import { listPapers } from "../api/papers";
+import { listProjectPapers } from "../api/papers";
 import { ImportDialog } from "../components/import/ImportDialog";
 import type { Paper } from "../types/api";
 import { useSelectionStore } from "../stores/selection";
@@ -114,12 +114,14 @@ export default function ProjectDetailPage() {
     enabled: !isNaN(projectId),
   });
 
+  // Server-filtered by membership, so projects past the old 200-paper default
+  // window render completely.
   const {
     data: papersData,
     isLoading: papersLoading,
   } = useQuery({
-    queryKey: ["papers"],
-    queryFn: () => listPapers(),
+    queryKey: ["papers", { project: projectId }],
+    queryFn: () => listProjectPapers(projectId),
     enabled: Boolean(project),
   });
 
@@ -175,11 +177,7 @@ export default function ProjectDetailPage() {
     }
   }
 
-  const projectPapers: Paper[] = project && papersData
-    ? papersData.papers.filter((p) =>
-        project.source_ids.includes(p.source_id)
-      )
-    : [];
+  const projectPapers: Paper[] = (project && papersData?.papers) || [];
 
   async function handleRemoveSelected() {
     if (selectedIds.size === 0) return;

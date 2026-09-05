@@ -231,6 +231,7 @@ impl Server {
                     limit,
                     offset,
                     category.as_deref(),
+                    None,
                     sort,
                     desc,
                 )
