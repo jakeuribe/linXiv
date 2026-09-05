@@ -6,9 +6,11 @@ import { ColorSwatch } from "./ColorSwatch";
 interface ProjectCardProps {
   project: Project;
   onClick: () => void;
+  /** Native context menu (Tauri); browser dev falls through to the default. */
+  onContextMenu?: React.MouseEventHandler;
 }
 
-export function ProjectCard({ project, onClick }: ProjectCardProps) {
+export function ProjectCard({ project, onClick, onContextMenu }: ProjectCardProps) {
   const visibleTags = project.project_tags.slice(0, 3);
 
   return (
@@ -16,6 +18,7 @@ export function ProjectCard({ project, onClick }: ProjectCardProps) {
       role="button"
       tabIndex={0}
       onClick={onClick}
+      onContextMenu={onContextMenu}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
