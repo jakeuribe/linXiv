@@ -136,8 +136,8 @@ async fn main() {
 /// non-systemd hosts) this degrades to one stderr line.
 #[cfg(target_os = "linux")]
 async fn inhibit_sleep() -> Option<zbus::zvariant::OwnedFd> {
-    if std::env::var_os("LINXIV_ALLOW_SLEEP").is_some() {
-        eprintln!("linxiv headless: LINXIV_ALLOW_SLEEP set; system sleep settings apply");
+    if std::env::var("LINXIV_ALLOW_SLEEP").as_deref() == Ok("1") {
+        eprintln!("linxiv headless: LINXIV_ALLOW_SLEEP=1 set; system sleep settings apply");
         return None;
     }
     let take = async {
@@ -158,15 +158,20 @@ async fn inhibit_sleep() -> Option<zbus::zvariant::OwnedFd> {
             .await?;
         reply.body().deserialize::<zbus::zvariant::OwnedFd>()
     };
-    match take.await {
-        Ok(fd) => {
+    // A wedged (present but unresponsive) system bus must not block startup.
+    match tokio::time::timeout(Duration::from_secs(10), take).await {
+        Ok(Ok(fd)) => {
             eprintln!("linxiv headless: sleep/idle inhibited while running (LINXIV_ALLOW_SLEEP=1 to opt out)");
             Some(fd)
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             eprintln!(
                 "linxiv headless: sleep inhibit unavailable ({e}); system sleep settings apply"
             );
+            None
+        }
+        Err(_) => {
+            eprintln!("linxiv headless: sleep inhibit timed out; system sleep settings apply");
             None
         }
     }
@@ -259,11 +264,12 @@ fn spawn_interval_sync(ctx: &Ctx) {
 const FEED_POLL_DEFAULT: Duration = Duration::from_secs(30 * 60);
 
 /// `headless_feed_poll_minutes` → sleep duration. Missing / non-positive /
-/// non-integer falls back to the default rather than a hot loop.
+/// non-integer / overflowing falls back to the default rather than a hot loop.
 fn feed_poll_period(minutes: Option<i64>) -> Duration {
     minutes
         .filter(|&m| m > 0)
-        .map(|m| Duration::from_secs(m as u64 * 60))
+        .and_then(|m| (m as u64).checked_mul(60))
+        .map(Duration::from_secs)
         .unwrap_or(FEED_POLL_DEFAULT)
 }
 
@@ -338,22 +344,36 @@ impl RelayLog {
     fn open(path: std::path::PathBuf) -> Self {
         let mut seq = 0;
         let mut entries = VecDeque::new();
-        if let Ok(s) = std::fs::read_to_string(&path) {
-            for v in s.lines().filter_map(|l| serde_json::from_str(l).ok()) {
-                let v: serde_json::Value = v;
-                seq = seq.max(v["seq"].as_u64().unwrap_or(0));
-                if entries.len() >= RELAY_LOG_CAP {
-                    entries.pop_front();
-                }
-                entries.push_back(v);
+        // Rotated generation first, so a restart right after rotation still
+        // shows the recent tail, not just the few post-rotation entries.
+        let rotated = std::fs::read_to_string(path.with_extension("jsonl.1")).unwrap_or_default();
+        let current = std::fs::read_to_string(&path).unwrap_or_default();
+        for v in rotated
+            .lines()
+            .chain(current.lines())
+            .filter_map(|l| serde_json::from_str(l).ok())
+        {
+            let v: serde_json::Value = v;
+            seq = seq.max(v["seq"].as_u64().unwrap_or(0));
+            if entries.len() >= RELAY_LOG_CAP {
+                entries.pop_front();
             }
+            entries.push_back(v);
         }
-        let file = std::fs::OpenOptions::new()
+        let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&path)
             .map_err(|e| eprintln!("warning: access log {} unwritable: {e}", path.display()))
             .ok();
+        // A crash mid-write leaves a torn final line; terminate it so the
+        // next entry doesn't merge into it and take both down at parse time.
+        if !current.is_empty() && !current.ends_with('\n') {
+            if let Some(f) = &mut file {
+                use std::io::Write;
+                let _ = f.write_all(b"\n");
+            }
+        }
         Self {
             seq,
             entries,
@@ -377,16 +397,32 @@ impl RelayLog {
             .and_then(|f| f.metadata().ok())
             .is_some_and(|m| m.len() > RELAY_LOG_FILE_CAP)
         {
-            let _ = std::fs::rename(&self.path, self.path.with_extension("jsonl.1"));
-            self.file = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&self.path)
+            // A failed rename would regrow the same file forever; dropping
+            // the handle keeps disk bounded and the warning one-time.
+            self.file = std::fs::rename(&self.path, self.path.with_extension("jsonl.1"))
+                .and_then(|()| {
+                    std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&self.path)
+                })
+                .map_err(|e| {
+                    eprintln!(
+                        "warning: access log {} rotation failed; disk logging off: {e}",
+                        self.path.display()
+                    )
+                })
                 .ok();
         }
         if let Some(f) = &mut self.file {
             use std::io::Write;
-            let _ = writeln!(f, "{entry}");
+            if let Err(e) = writeln!(f, "{entry}") {
+                eprintln!(
+                    "warning: access log {} write failed; disk logging off: {e}",
+                    self.path.display()
+                );
+                self.file = None;
+            }
         }
         if self.entries.len() >= RELAY_LOG_CAP {
             self.entries.pop_front();
@@ -731,6 +767,38 @@ mod tests {
         assert_eq!(reopened.entries.back().unwrap()["seq"], 3);
     }
 
+    /// A restart right after rotation still seeds the tail (and seq) from the
+    /// rotated generation.
+    #[test]
+    fn relay_log_reads_rotated_generation_on_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay_access_log.jsonl");
+        let mut log = super::RelayLog::open(path.clone());
+        log.push(Some("aa"), false, "relay");
+        log.push(None, true, "api");
+        drop(log);
+        std::fs::rename(&path, path.with_extension("jsonl.1")).unwrap();
+        let reopened = super::RelayLog::open(path);
+        assert_eq!(reopened.entries.len(), 2);
+        assert_eq!(reopened.seq, 2);
+    }
+
+    /// A torn final line (crash mid-write) is newline-terminated on open so
+    /// the next entry doesn't merge into it.
+    #[test]
+    fn relay_log_heals_torn_final_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay_access_log.jsonl");
+        std::fs::write(&path, "{\"seq\":1,\"allowed\":true}\n{\"seq\":2,\"allo").unwrap();
+        let mut log = super::RelayLog::open(path.clone());
+        assert_eq!(log.seq, 1);
+        log.push(None, true, "api");
+        drop(log);
+        let reopened = super::RelayLog::open(path);
+        assert_eq!(reopened.entries.len(), 2);
+        assert_eq!(reopened.seq, 2);
+    }
+
     #[test]
     fn feed_poll_period_defaults_and_rejects_nonpositive() {
         use super::{feed_poll_period, FEED_POLL_DEFAULT};
@@ -738,6 +806,7 @@ mod tests {
         assert_eq!(feed_poll_period(None), FEED_POLL_DEFAULT);
         assert_eq!(feed_poll_period(Some(0)), FEED_POLL_DEFAULT);
         assert_eq!(feed_poll_period(Some(-5)), FEED_POLL_DEFAULT);
+        assert_eq!(feed_poll_period(Some(i64::MAX)), FEED_POLL_DEFAULT);
         assert_eq!(feed_poll_period(Some(5)), Duration::from_secs(300));
     }
 
