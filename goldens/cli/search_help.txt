@@ -1,4 +1,5 @@
 usage: linxiv search [-h] [--source {arxiv,openalex,crossref}] [--max MAX]
+                     [--local]
                      query
 
 positional arguments:
@@ -8,3 +9,5 @@ options:
   -h, --help            show this help message and exit
   --source {arxiv,openalex,crossref}
   --max MAX             Max results
+  --local               Search the local library full-text index instead of a
+                        remote source
