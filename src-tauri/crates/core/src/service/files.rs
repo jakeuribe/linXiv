@@ -64,7 +64,7 @@ static PDF_STORAGE: std::sync::LazyLock<
 /// The full scan behind the cache: name → size of all `*.pdf` files directly in
 /// `pdf_dir`, empty if the dir is absent. Files that vanish mid-scan are skipped
 /// (Python ignores `FileNotFoundError`).
-fn walk_pdf_files(pdf_dir: &Path) -> HashMap<std::ffi::OsString, u64> {
+pub(crate) fn walk_pdf_files(pdf_dir: &Path) -> HashMap<std::ffi::OsString, u64> {
     std::fs::read_dir(pdf_dir).map_or_else(
         |_| HashMap::new(),
         |entries| {
@@ -142,6 +142,45 @@ pub fn remove_pdf_counted(path: &Path) {
             forget_pdf(dir, name);
         }
     }
+}
+
+/// Rename a managed PDF, moving its cache entry with it: the old name is
+/// forgotten and the new one recorded, under ONE lock acquisition so a
+/// concurrent `pdf_storage_bytes` (quota check) never observes the
+/// forgotten-but-not-yet-recorded gap. Size is re-stat'd post-rename, falling
+/// back to the old cached size (a rename preserves length) if the stat fails.
+/// Cache keys use the caller's `pdf_dir` spelling — not the raw parents of
+/// `from`/`to`, which may spell the same dir differently (DB-stored paths,
+/// symlinks) and would strand a phantom entry (same convention as
+/// `delete_pdf`). Both files must live in `pdf_dir`; callers gate on that.
+/// For seams that re-home a managed file (paper merge and its undo).
+pub fn rename_pdf_counted(pdf_dir: &Path, from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::rename(from, to)?;
+    let stat_size = std::fs::metadata(to).ok().map(|m| m.len());
+    let mut cache = PDF_STORAGE.lock().unwrap_or_else(|p| p.into_inner());
+    let mut old_size = None;
+    if let (Some(files), Some(name)) = (cache.get_mut(pdf_dir), from.file_name()) {
+        old_size = files.remove(name);
+    }
+    if let Some(name) = to.file_name() {
+        if name.to_string_lossy().ends_with(".pdf") && cache.contains_key(pdf_dir) {
+            match stat_size.or(old_size) {
+                Some(size) => {
+                    cache
+                        .get_mut(pdf_dir)
+                        .expect("checked contains_key above")
+                        .insert(name.to_os_string(), size);
+                }
+                // Size unknowable (stat failed, old name never cached): drop
+                // the dir's cache so the next quota check re-walks instead of
+                // silently missing this file until restart.
+                None => {
+                    cache.remove(pdf_dir);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `pdf_storage_bytes` in MB. Port of `files.pdf_storage_mb`.
