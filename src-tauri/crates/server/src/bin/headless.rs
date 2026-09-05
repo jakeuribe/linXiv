@@ -103,6 +103,10 @@ async fn main() {
     // Idles until `full_text_worker_enabled` is switched on, same as the app.
     full_text_worker::spawn_headless(ctx.state.clone());
     spawn_feed_poll(ctx.state.clone());
+    // An always-on node on a laptop/desktop must not suspend out from under
+    // its peers; the fd releases itself on process exit, crash included.
+    #[cfg(target_os = "linux")]
+    let _sleep_inhibitor = inhibit_sleep().await;
 
     let share = ctx.share.clone();
     let auth = if ctx.token.is_some() {
@@ -122,6 +126,49 @@ async fn main() {
     // Close the iroh endpoint + router explicitly — Drop is not enough.
     if let Err(e) = share.shutdown().await {
         eprintln!("warning: share node shutdown: {e}");
+    }
+}
+
+/// Take a systemd-logind sleep+idle inhibitor for the process lifetime, so
+/// the machine running the node stays reachable by default. Opt out with
+/// `LINXIV_ALLOW_SLEEP=1`. The lock is a pipe fd — logind releases it when
+/// this process exits, however it exits. Where login1 is absent (containers,
+/// non-systemd hosts) this degrades to one stderr line.
+#[cfg(target_os = "linux")]
+async fn inhibit_sleep() -> Option<zbus::zvariant::OwnedFd> {
+    if std::env::var_os("LINXIV_ALLOW_SLEEP").is_some() {
+        eprintln!("linxiv headless: LINXIV_ALLOW_SLEEP set; system sleep settings apply");
+        return None;
+    }
+    let take = async {
+        let conn = zbus::Connection::system().await?;
+        let reply = conn
+            .call_method(
+                Some("org.freedesktop.login1"),
+                "/org/freedesktop/login1",
+                Some("org.freedesktop.login1.Manager"),
+                "Inhibit",
+                &(
+                    "sleep:idle",
+                    "linxiv-headless",
+                    "serving the linXiv API and p2p node",
+                    "block",
+                ),
+            )
+            .await?;
+        reply.body().deserialize::<zbus::zvariant::OwnedFd>()
+    };
+    match take.await {
+        Ok(fd) => {
+            eprintln!("linxiv headless: sleep/idle inhibited while running (LINXIV_ALLOW_SLEEP=1 to opt out)");
+            Some(fd)
+        }
+        Err(e) => {
+            eprintln!(
+                "linxiv headless: sleep inhibit unavailable ({e}); system sleep settings apply"
+            );
+            None
+        }
     }
 }
 
