@@ -528,16 +528,27 @@ pub fn list_papers(
 }
 
 /// `list_papers` under a caller-chosen ordering (the Library page's sort).
+/// `project` narrows to that project's papers, filtered in SQL.
 pub fn list_papers_sorted(
     conn: &Connection,
     latest_only: bool,
     limit: Option<i64>,
     offset: i64,
     category: Option<&str>,
+    project: Option<i64>,
     sort: PaperSort,
     desc: bool,
 ) -> Result<Vec<PaperDetails>> {
-    store::list_papers_sorted(conn, latest_only, limit, offset, category, sort, desc)
+    store::list_papers_sorted(
+        conn,
+        latest_only,
+        limit,
+        offset,
+        category,
+        project,
+        sort,
+        desc,
+    )
 }
 
 /// Latest papers with a local PDF flag set, filtered in SQL (`GET /api/pdfs`).

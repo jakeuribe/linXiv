@@ -41,9 +41,11 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
     }
 }
 
-/// `GET /api/papers?limit=&offset=&sort=&dir=` — `api_list_papers`.
+/// `GET /api/papers?limit=&offset=&sort=&dir=&project=` — `api_list_papers`.
 /// `sort` is one of `published` (default) / `added` / `title`; `dir` is
-/// `asc`/`desc`, defaulting per metric (newest first, titles A–Z).
+/// `asc`/`desc`, defaulting per metric (newest first, titles A–Z). `project`
+/// narrows to papers linked to that project (filtered in SQL, so a >200-paper
+/// library never needs a client-side window); an unknown id yields [].
 fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let limit = ctx.q_i64("limit").unwrap_or(200).clamp(1, 5000);
     let offset = ctx.q_i64("offset").unwrap_or(0).max(0);
@@ -53,8 +55,17 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
         Some("desc") => true,
         _ => sort.default_desc(),
     };
+    // A present-but-non-integer project must not silently widen to the whole
+    // library — that's the wrong data, not a default.
+    let project = ctx
+        .q("project")
+        .map(|v| {
+            v.parse::<i64>()
+                .map_err(|_| ApiError::new(422, "project must be an integer"))
+        })
+        .transpose()?;
     let papers = state.with_conn(|conn| {
-        svc_paper::list_papers_sorted(conn, true, Some(limit), offset, None, sort, desc)
+        svc_paper::list_papers_sorted(conn, true, Some(limit), offset, None, project, sort, desc)
     })?;
     Ok(json!({ "papers": papers }))
 }
@@ -295,6 +306,15 @@ mod tests {
             req(&state(), "GET", "/api/papers", None).await.unwrap(),
             json!({ "papers": [] })
         );
+    }
+
+    #[tokio::test]
+    async fn list_non_integer_project_is_422() {
+        let err = req(&state(), "GET", "/api/papers?project=abc", None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, 422);
+        assert_eq!(err.detail, "project must be an integer");
     }
 
     #[tokio::test]

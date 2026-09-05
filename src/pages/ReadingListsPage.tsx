@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { BookMarked } from "lucide-react";
 import { listProjects, createProject } from "../api/projects";
-import { listPapers } from "../api/papers";
+import { listProjectPapers } from "../api/papers";
 import { ProjectCard } from "../components/projects/ProjectCard";
 import { PaperCard } from "../components/papers/PaperCard";
 import { Button } from "../components/ui/button";
@@ -121,19 +121,31 @@ export default function ReadingListsPage() {
     queryFn: () => listProjects("active"),
   });
 
-  const { data: papersData, isLoading: papersLoading, isError: papersError, error: papersErrorMsg } = useQuery({
-    queryKey: ["papers"],
-    queryFn: () => listPapers(),
-  });
-
   const readingLists = useMemo(() => {
     return (projectsData?.projects ?? []).filter(isReadingListProject);
   }, [projectsData]);
 
+  // One server-filtered fetch per reading list — membership is decided in SQL,
+  // so a >200-paper library no longer truncates the queue. Keys match the
+  // ["papers", ...] prefix that project-membership mutations invalidate.
+  const { papers: listPapersFlat, isLoading: papersLoading, isError: papersError, error: papersErrorMsg } = useQueries({
+    queries: readingLists.map((p) => ({
+      queryKey: ["papers", { project: p.id }],
+      queryFn: () => listProjectPapers(p.id),
+    })),
+    combine: (results) => ({
+      papers: results.flatMap((r) => r.data?.papers ?? []),
+      isLoading: results.some((r) => r.isLoading),
+      isError: results.some((r) => r.isError),
+      error: results.find((r) => r.error)?.error ?? null,
+    }),
+  });
+
   const queue = useMemo(() => {
-    const ids = new Set(readingLists.flatMap((p) => p.source_ids));
-    return queueOf(papersData?.papers ?? [], ids, statuses);
-  }, [readingLists, papersData, statuses]);
+    // Dedupe: a paper on several reading lists arrives once per list.
+    const bySid = new Map(listPapersFlat.map((p) => [p.source_id, p]));
+    return queueOf([...bySid.values()], new Set(bySid.keys()), statuses);
+  }, [listPapersFlat, statuses]);
 
   const loading = projectsLoading || papersLoading;
   const isError = projectsError || papersError;
