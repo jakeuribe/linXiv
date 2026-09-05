@@ -10,6 +10,7 @@
 //! `download_pdf` (the SSRF-safe HTTP downloader) resolves the managed dest under the DI'd
 //! `pdf_dir` and delegates the network/SSRF work to `sources::download`. See below.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
@@ -50,11 +51,17 @@ pub fn pdf_path(
     std.is_file().then_some(std)
 }
 
-/// Total size of all managed `*.pdf` files in `pdf_dir`, in bytes. `0` if the dir is
-/// absent. Files that vanish mid-scan are skipped (Python ignores `FileNotFoundError`).
-/// Also the basis of the `pdf_save_limit_mb` total-storage cap (see
-/// `paper_import::check_pdf_storage_quota` and `download_pdf` below).
-pub fn pdf_storage_bytes(pdf_dir: &Path) -> u64 {
+/// Running total of managed PDF bytes per `pdf_dir`, keyed by the path exactly as the
+/// caller passes it (DI resolves one spelling per process). Lazily seeded by a full
+/// walk on first read, then kept current by [`note_pdf_bytes_delta`] on every write/
+/// delete seam that core (and the server's two direct-write routes) own.
+static PDF_STORAGE_TOTALS: std::sync::LazyLock<std::sync::Mutex<HashMap<PathBuf, u64>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// The full scan behind the cache: total size of all `*.pdf` files directly in
+/// `pdf_dir`, `0` if the dir is absent. Files that vanish mid-scan are skipped
+/// (Python ignores `FileNotFoundError`).
+fn walk_pdf_storage_bytes(pdf_dir: &Path) -> u64 {
     std::fs::read_dir(pdf_dir).map_or(0, |entries| {
         entries
             .flatten()
@@ -63,6 +70,52 @@ pub fn pdf_storage_bytes(pdf_dir: &Path) -> u64 {
             .map(|m| m.len())
             .sum()
     })
+}
+
+/// Total size of all managed `*.pdf` files in `pdf_dir`, in bytes — the basis of the
+/// `pdf_save_limit_mb` total-storage cap (see `paper_import::check_pdf_storage_quota`
+/// and `download_pdf` below). Walks the dir ONCE per process (lazy init), then serves
+/// the running total maintained by the write/delete seams.
+///
+/// ponytail: files changed outside those seams (manual deletes in the folder, crash
+/// orphans, an init walk racing a concurrent write) drift the total until process
+/// restart, when the next walk re-seeds it; add explicit invalidation only if a real
+/// out-of-band mutator appears.
+pub fn pdf_storage_bytes(pdf_dir: &Path) -> u64 {
+    let mut totals = PDF_STORAGE_TOTALS.lock().unwrap_or_else(|p| p.into_inner());
+    match totals.get(pdf_dir) {
+        Some(t) => *t,
+        None => {
+            let t = walk_pdf_storage_bytes(pdf_dir);
+            totals.insert(pdf_dir.to_path_buf(), t);
+            t
+        }
+    }
+}
+
+/// Adjust `pdf_dir`'s cached total after a managed PDF write (+) or delete (−).
+/// A no-op until the total has been lazily seeded — the eventual first walk sees
+/// the file anyway. `pdf_dir` must be spelled exactly as readers pass it.
+pub fn note_pdf_bytes_delta(pdf_dir: &Path, delta: i64) {
+    if let Some(t) = PDF_STORAGE_TOTALS
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get_mut(pdf_dir)
+    {
+        *t = t.saturating_add_signed(delta);
+    }
+}
+
+/// Best-effort remove of a managed PDF built as `pdf_dir.join(name)`, subtracting
+/// its size from the cached total on success. For cleanup paths that hold the exact
+/// dest path (import rollback, failed attach/share saves).
+pub fn remove_pdf_counted(path: &Path) {
+    let sz = std::fs::metadata(path).map_or(0, |m| m.len());
+    if std::fs::remove_file(path).is_ok() && sz > 0 {
+        if let Some(dir) = path.parent() {
+            note_pdf_bytes_delta(dir, -(sz as i64));
+        }
+    }
 }
 
 /// `pdf_storage_bytes` in MB. Port of `files.pdf_storage_mb`.
@@ -134,7 +187,17 @@ pub fn delete_pdf(pdf_dir: &Path, path: &str) -> bool {
         return false;
     }
     // Inside the boundary: remove if present, ignore a missing file (idempotent delete).
-    let _ = std::fs::remove_file(&target);
+    // A removed direct-child `*.pdf` comes off the cached total (matching what the
+    // seed walk counts); nested or non-.pdf targets were never in it.
+    let sz = std::fs::metadata(&target).map_or(0, |m| m.len());
+    if std::fs::remove_file(&target).is_ok()
+        && target.parent() == Some(managed.as_path())
+        && target
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().ends_with(".pdf"))
+    {
+        note_pdf_bytes_delta(pdf_dir, -(sz as i64));
+    }
     true
 }
 
@@ -168,7 +231,12 @@ pub async fn download_pdf(
             "PDF storage is full: {existing} bytes already saved of the {max_total_bytes} byte total limit (pdf_save_limit_mb)."
         )));
     }
-    crate::sources::download::download_pdf(&dest, url, remaining).await
+    let out = crate::sources::download::download_pdf(&dest, url, remaining).await?;
+    note_pdf_bytes_delta(
+        pdf_dir,
+        std::fs::metadata(&out).map_or(0, |m| m.len()) as i64,
+    );
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -235,8 +303,8 @@ mod tests {
         // Missing dir → 0.0.
         assert_eq!(pdf_storage_mb(&pdf_dir.join("nope")), 0.0);
 
-        // Empty dir → 0.0.
-        assert_eq!(pdf_storage_mb(pdf_dir), 0.0);
+        // Empty dir → 0.0 (own dir: the total is cached per dir on first read).
+        assert_eq!(pdf_storage_mb(tempfile::tempdir().unwrap().path()), 0.0);
 
         // 1 MB + 0.5 MB of pdf, plus a non-pdf that must be ignored.
         write_pdf(pdf_dir, "a v1.pdf", 1024 * 1024);
@@ -244,6 +312,38 @@ mod tests {
         write_pdf(pdf_dir, "notes.txt", 9_000_000);
         let mb = pdf_storage_mb(pdf_dir);
         assert!((mb - 1.5).abs() < 1e-9, "expected ~1.5 MB, got {mb}");
+    }
+
+    /// The cached total walks once, then tracks the service add/delete seams
+    /// without re-walking — proven by an out-of-band file the cache must not see.
+    #[test]
+    fn pdf_storage_total_tracks_service_mutations_without_rewalk() {
+        let dir = tempfile::tempdir().unwrap();
+        let pdf_dir = dir.path();
+        let a = write_pdf(pdf_dir, "av1.pdf", 100);
+        write_pdf(pdf_dir, "bv1.pdf", 50);
+
+        // Lazy seed walk.
+        assert_eq!(pdf_storage_bytes(pdf_dir), 150);
+
+        // Delete through the service seam → decrement, still equal to a fresh walk.
+        assert!(delete_pdf(pdf_dir, a.to_str().unwrap()));
+        assert_eq!(pdf_storage_bytes(pdf_dir), 50);
+        assert_eq!(pdf_storage_bytes(pdf_dir), walk_pdf_storage_bytes(pdf_dir));
+
+        // Counted cleanup helper (rollback/attach failure paths) → same.
+        let c = write_pdf(pdf_dir, "cv1.pdf", 30);
+        note_pdf_bytes_delta(pdf_dir, 30); // as the import/attach write seams do
+        assert_eq!(pdf_storage_bytes(pdf_dir), 80);
+        remove_pdf_counted(&c);
+        assert_eq!(pdf_storage_bytes(pdf_dir), 50);
+        assert_eq!(pdf_storage_bytes(pdf_dir), walk_pdf_storage_bytes(pdf_dir));
+
+        // An out-of-band file is invisible to the cache (no re-walk happens)…
+        write_pdf(pdf_dir, "sneakyv1.pdf", 7);
+        assert_eq!(pdf_storage_bytes(pdf_dir), 50);
+        // …which is exactly the ponytail drift ceiling: a fresh walk sees it.
+        assert_eq!(walk_pdf_storage_bytes(pdf_dir), 57);
     }
 
     #[test]

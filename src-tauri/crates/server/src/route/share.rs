@@ -1414,13 +1414,14 @@ async fn shared_pdf(
             std::fs::rename(&tmp, &dest)
         };
         write().map_err(|e| ApiError::new(500, format!("could not save shared PDF: {e}")))?;
+        linxiv_core::service::files::note_pdf_bytes_delta(&pdf_dir, bytes.len() as i64);
         wrote = true;
     }
     let path = dest.to_string_lossy().into_owned();
     if let Err(e) = state.with_conn(|c| paper_svc::mark_pdf_saved(c, &source_id, &path, version)) {
         // Only clean up a file this request wrote, not one a concurrent request saved.
         if wrote {
-            std::fs::remove_file(&dest).ok();
+            linxiv_core::service::files::remove_pdf_counted(&dest);
         }
         return Err(ApiError::new(500, e.to_string()));
     }

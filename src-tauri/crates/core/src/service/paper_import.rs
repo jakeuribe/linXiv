@@ -107,7 +107,9 @@ where
 
     fs::create_dir_all(pdf_dir)
         .map_err(|e| CoreError::Internal(format!("import_pdf: mkdir {pdf_dir:?} failed: {e}")))?;
-    let tmp_path = pdf_dir.join(format!("_upload_{}.pdf", unique_token()));
+    // `.part`, not `.pdf`: the storage-total walk counts `*.pdf`, and the upload
+    // must not be counted until it is renamed into place.
+    let tmp_path = pdf_dir.join(format!("_upload_{}.part", unique_token()));
     fs::write(&tmp_path, content).map_err(|e| {
         let _ = fs::remove_file(&tmp_path);
         CoreError::Internal(format!("import_pdf: write temp PDF failed: {e}"))
@@ -368,9 +370,14 @@ fn import_body(
         // Dedupe: keep the existing PDF, drop the upload.
         let _ = fs::remove_file(tmp_path);
     } else {
+        // Delta vs whatever already sat at final_path (a crash orphan the rename
+        // replaces), so the cached storage total tracks the walk exactly.
+        let old = fs::metadata(&final_path).map_or(0, |m| m.len());
         fs::rename(tmp_path, &final_path).map_err(|e| {
             CoreError::Internal(format!("import_pdf: move PDF into place failed: {e}"))
         })?;
+        let new = fs::metadata(&final_path).map_or(0, |m| m.len());
+        crate::service::files::note_pdf_bytes_delta(pdf_dir, new as i64 - old as i64);
         st.wrote_final_path = true;
         store::mark_pdf_saved(conn, &sid, &final_path.to_string_lossy(), ver)?;
     }
@@ -400,7 +407,7 @@ fn rollback(conn: &mut Connection, tmp_path: &Path, st: &ImportState) {
             if let Ok(Some(row)) = store::get_paper(conn, sid, st.version) {
                 if row.pdf_path.is_none() {
                     if let Some(fp) = &st.final_path {
-                        let _ = fs::remove_file(fp);
+                        crate::service::files::remove_pdf_counted(fp);
                     }
                     let _ = store::hard_delete_paper(conn, sid);
                 }
@@ -414,7 +421,7 @@ fn rollback(conn: &mut Connection, tmp_path: &Path, st: &ImportState) {
     // PDF_PATH was NULL — the re-soft-delete won't unlink, but the file is real.
     if st.wrote_final_path && !st.inserted_new_root {
         if let Some(fp) = &st.final_path {
-            let _ = fs::remove_file(fp);
+            crate::service::files::remove_pdf_counted(fp);
         }
     }
     // Python also logs an orphan-row warning when inserted_new_version &&
