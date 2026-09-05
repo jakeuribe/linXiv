@@ -30,7 +30,10 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
 
 /// `GET /api/authors?exclude_single=` — `api_authors_list`.
 fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
-    let min_papers = if ctx.q_bool("exclude_single") { 2 } else { 0 };
+    // Floor of 1, not 0: paperless AUTHOR rows exist by design (trash-linked
+    // papers keep their links for restore; ADR-0009 leaves hard-delete orphans)
+    // and must stay out of the list. CLI keeps 0 to see them.
+    let min_papers = if ctx.q_bool("exclude_single") { 2 } else { 1 };
     let authors = state.with_conn(|conn| svc_author::list_with_paper_count(conn, min_papers))?;
     Ok(json!({ "authors": authors }))
 }
@@ -297,6 +300,45 @@ mod tests {
             .collect();
         assert!(paper_ids.contains(&pid1));
         assert!(paper_ids.contains(&pid2));
+    }
+
+    #[tokio::test]
+    async fn list_hides_authors_with_no_active_papers() {
+        let st = state();
+        // canonical: one active paper; dup: only paper about to be trashed.
+        let (active, trashed, _pid1, _pid2) = st.with_conn(seed_two_authors_with_papers);
+        st.with_conn(|conn| {
+            conn.execute(
+                "UPDATE PAPER_ROOTS SET STATUS = 'deleted' WHERE SOURCE_ID = 'arxiv:2'",
+                [],
+            )
+            .unwrap();
+            // A hard-delete orphan (ADR-0009): AUTHOR row with no links at all.
+            svc_author::create(
+                conn,
+                &AuthorIn {
+                    full_name: "Ghost Author".into(),
+                    first_name: None,
+                    last_name: None,
+                    orcid: None,
+                },
+            )
+            .unwrap()
+        });
+
+        let resp = req(&st, "GET", "/api/authors", None).await.unwrap();
+        let ids: Vec<i64> = resp["authors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["author_id"].as_i64().unwrap())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![active],
+            "trash-linked and orphan authors must not list"
+        );
+        let _ = trashed;
     }
 
     #[tokio::test]
