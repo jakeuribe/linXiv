@@ -128,15 +128,54 @@ pub(crate) fn path_i64(seg: &str) -> Result<i64, ApiError> {
 /// Match a request to a `linxiv-core` call. Thin wrapper over `route_inner` that
 /// logs 5xx errors to stderr — otherwise a handler failure only exists as a UI
 /// toast and is undiagnosable after the fact.
+/// Should a successful request poke the debounced share-sync loop? Any
+/// non-GET may have touched a shared project's mirrored content (papers,
+/// notes, annotations, tags, project metadata) — except the POST endpoints
+/// that are read-only lookups/searches (search writes only when its body
+/// sets `save`); those would otherwise dial peers on every search.
+fn nudges_share_sync(req: &ApiRequest) -> bool {
+    if req.method == "GET" {
+        return false;
+    }
+    let path = req.path.split('?').next().unwrap_or("");
+    let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    match segs.as_slice() {
+        // arxiv search is the only search that can save (its body's `save`
+        // flag bulk-saves results); openalex saves via its separate /save arm.
+        ["api", "arxiv", "search"] => {
+            req.body
+                .as_ref()
+                .and_then(|b| b.get("save"))
+                .and_then(Value::as_bool)
+                == Some(true)
+        }
+        ["api", "openalex" | "crossref", "search"]
+        | ["api", "doi", "resolve"]
+        | ["api", "papers", "saved"] => false,
+        // Writes to state that shares never mirror (PAPER_TO_READING, search
+        // UI state, the LaTeX editor's vault) — status clicks, every search,
+        // and editor file ops would otherwise dial peers a few seconds later.
+        ["api", "reading-status", ..] | ["api", "search", "state"] | ["api", "editor", ..] => false,
+        // POSTs that only read the library and write an external file (or a
+        // throwaway temp): import preview, project export, DB backup.
+        ["api", "projects", "import", "preview"]
+        | ["api", "projects", _, "export"]
+        | ["api", "storage", "backup"] => false,
+        _ => true,
+    }
+}
+
 pub async fn route(state: &AppState, req: ApiRequest) -> Result<Value, ApiError> {
     let res = route_inner(state, &req).await;
-    if let Err(e) = &res {
-        if e.status >= 500 {
+    match &res {
+        Ok(_) if nudges_share_sync(&req) => crate::share_sync::nudge(),
+        Err(e) if e.status >= 500 => {
             eprintln!(
                 "[linxiv] {} {} -> {}: {}",
                 req.method, req.path, e.status, e.detail
             );
         }
+        _ => {}
     }
     res
 }
@@ -372,5 +411,84 @@ mod tests {
         assert_eq!(pct_decode("2204.12985"), "2204.12985");
         assert_eq!(pct_decode("a%20b"), "a b");
         assert_eq!(pct_decode("trailing%"), "trailing%"); // malformed: left as-is
+    }
+
+    fn nudge_req(method: &str, path: &str, body: Option<Value>) -> ApiRequest {
+        ApiRequest {
+            method: method.into(),
+            path: path.into(),
+            body,
+        }
+    }
+
+    #[test]
+    fn share_sync_nudge_skips_reads_and_read_only_posts() {
+        // GETs never nudge; genuine writes do.
+        assert!(!nudges_share_sync(&nudge_req("GET", "/api/papers", None)));
+        assert!(nudges_share_sync(&nudge_req("POST", "/api/projects", None)));
+        assert!(nudges_share_sync(&nudge_req(
+            "DELETE",
+            "/api/papers/arxiv:1",
+            None
+        )));
+        // POST-shaped lookups/searches are read-only — no nudge…
+        for p in [
+            "/api/arxiv/search",
+            "/api/openalex/search",
+            "/api/crossref/search",
+            "/api/doi/resolve",
+            "/api/papers/saved",
+        ] {
+            assert!(!nudges_share_sync(&nudge_req("POST", p, None)), "{p}");
+        }
+        assert!(!nudges_share_sync(&nudge_req(
+            "POST",
+            "/api/arxiv/search?x=1",
+            Some(json!({ "save": false }))
+        )));
+        // …unless arxiv search's body actually saves the results. openalex
+        // has no save field on its search — always read-only.
+        assert!(nudges_share_sync(&nudge_req(
+            "POST",
+            "/api/arxiv/search",
+            Some(json!({ "query": "q", "save": true }))
+        )));
+        assert!(!nudges_share_sync(&nudge_req(
+            "POST",
+            "/api/openalex/search",
+            Some(json!({ "query": "q", "save": true }))
+        )));
+        // Writes shares never mirror don't nudge either.
+        assert!(!nudges_share_sync(&nudge_req(
+            "PUT",
+            "/api/reading-status/arxiv:1",
+            None
+        )));
+        assert!(!nudges_share_sync(&nudge_req(
+            "POST",
+            "/api/search/state",
+            None
+        )));
+        assert!(!nudges_share_sync(&nudge_req(
+            "POST",
+            "/api/editor/vault/1/fs",
+            None
+        )));
+        // Read-the-DB, write-an-external-file POSTs don't nudge either.
+        for p in [
+            "/api/projects/import/preview",
+            "/api/projects/3/export",
+            "/api/storage/backup",
+        ] {
+            assert!(!nudges_share_sync(&nudge_req("POST", p, None)), "{p}");
+        }
+        // But the actual project import (the real DB write) still does.
+        assert!(nudges_share_sync(&nudge_req(
+            "POST",
+            "/api/projects/import/commit",
+            None
+        )));
+        // The save endpoints next to them still nudge.
+        assert!(nudges_share_sync(&nudge_req("POST", "/api/doi/save", None)));
     }
 }

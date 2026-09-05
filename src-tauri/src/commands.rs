@@ -38,7 +38,7 @@ pub fn spawn_interval_sync(app: tauri::AppHandle) {
             let state = app.state::<AppState>();
             let share = app.state::<ShareState>();
             share_sync::sync_all(&state, &share).await;
-            tokio::time::sleep(share_sync::INTERVAL_SYNC_PERIOD).await;
+            share_sync::next_sync_due().await;
         }
     });
 }

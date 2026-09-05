@@ -459,6 +459,40 @@ pub async fn sync_all(state: &AppState, share: &ShareState) {
 /// front door (Tauri app, headless bin) spawns its own loop over [`sync_all`].
 pub const INTERVAL_SYNC_PERIOD: Duration = Duration::from_secs(300);
 
+/// Debounce after a mutation nudge before the pass runs, so a burst (bulk add)
+/// coalesces into ~one sync instead of N.
+pub const NUDGE_DEBOUNCE: Duration = Duration::from_secs(3);
+
+static NUDGE: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+/// Poke the background sync loop: a write that may have touched a shared
+/// project's mirrored content landed. Cheap and non-blocking; `route()` calls
+/// this on every successful non-GET request.
+pub fn nudge() {
+    NUDGE.notify_one();
+}
+
+/// Sleep until the next sync pass is due: the fixed interval, or sooner when a
+/// mutation [`nudge`] arrives (plus [`NUDGE_DEBOUNCE`] so bursts coalesce).
+/// Both front doors' loops call this between [`sync_all`] passes.
+pub async fn next_sync_due() {
+    next_sync_due_on(&NUDGE, INTERVAL_SYNC_PERIOD, NUDGE_DEBOUNCE).await
+}
+
+async fn next_sync_due_on(nudge: &tokio::sync::Notify, interval: Duration, debounce: Duration) {
+    tokio::select! {
+        _ = tokio::time::sleep(interval) => {}
+        _ = nudge.notified() => {
+            tokio::time::sleep(debounce).await;
+            // Drain nudges that landed during the debounce window: the pass
+            // about to run covers them, and a leftover permit would re-fire
+            // it immediately. Zero timeout polls `notified` once, consuming a
+            // stored permit without blocking.
+            let _ = tokio::time::timeout(Duration::ZERO, nudge.notified()).await;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -535,6 +569,30 @@ mod tests {
 
         let v = sync_share(&state, &share, SID).await.unwrap();
         assert_eq!(v, json!({ "synced": false, "reason": "no ticket" }));
+    }
+
+    // Virtual time (start_paused): a nudge wakes the loop after the debounce
+    // window, a mid-debounce nudge coalesces into the same pass (its permit is
+    // drained), and an un-nudged wait runs the full interval.
+    #[tokio::test(start_paused = true)]
+    async fn nudge_wakes_early_and_burst_coalesces() {
+        let n = std::sync::Arc::new(tokio::sync::Notify::new());
+        let interval = Duration::from_secs(300);
+        let debounce = Duration::from_secs(3);
+
+        n.notify_one();
+        let burst = n.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(1)).await; // lands mid-debounce
+            burst.notify_one();
+        });
+        let t0 = tokio::time::Instant::now();
+        next_sync_due_on(&n, interval, debounce).await;
+        assert_eq!(t0.elapsed(), debounce);
+
+        let t1 = tokio::time::Instant::now();
+        next_sync_due_on(&n, interval, debounce).await;
+        assert_eq!(t1.elapsed(), interval, "mid-debounce nudge must be drained");
     }
 
     #[test]

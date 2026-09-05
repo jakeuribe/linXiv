@@ -251,7 +251,7 @@ fn spawn_interval_sync(ctx: &Ctx) {
     tokio::spawn(async move {
         loop {
             share_sync::sync_all(&state, &share).await;
-            tokio::time::sleep(share_sync::INTERVAL_SYNC_PERIOD).await;
+            share_sync::next_sync_due().await;
         }
     });
 }
