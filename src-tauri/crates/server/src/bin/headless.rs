@@ -91,7 +91,9 @@ async fn main() {
         share: Arc::new(share_state),
         token,
         started,
-        relay: Arc::new(Mutex::new(RelayLog::default())),
+        relay: Arc::new(Mutex::new(RelayLog::open(
+            data_dir.join("relay_access_log.jsonl"),
+        ))),
         transfers: Arc::new(Mutex::new(TransferLog::default())),
     };
     if node_bound && ctx.share.mark_sync_started() {
@@ -204,15 +206,29 @@ fn spawn_interval_sync(ctx: &Ctx) {
 
 /// The desktop app refreshes the home feed when the user opens the screen; an
 /// always-on node polls instead. No-op while `home_feed_url` is unset — the
-/// settings read each tick is a small JSON file.
-/// `ponytail: fixed 30-minute cadence; make it a setting if tuning is wanted.`
-const FEED_POLL: Duration = Duration::from_secs(30 * 60);
+/// settings read each tick is a small JSON file. Cadence comes from the
+/// `headless_feed_poll_minutes` setting (default 30), re-read every tick so a
+/// `PATCH /api/settings` takes effect on the next tick without a restart.
+const FEED_POLL_DEFAULT: Duration = Duration::from_secs(30 * 60);
+
+/// `headless_feed_poll_minutes` → sleep duration. Missing / non-positive /
+/// non-integer falls back to the default rather than a hot loop.
+fn feed_poll_period(minutes: Option<i64>) -> Duration {
+    minutes
+        .filter(|&m| m > 0)
+        .map(|m| Duration::from_secs(m as u64 * 60))
+        .unwrap_or(FEED_POLL_DEFAULT)
+}
 
 fn spawn_feed_poll(state: Arc<AppState>) {
     tokio::spawn(async move {
         loop {
+            let mut period = FEED_POLL_DEFAULT;
             match linxiv_core::config::UserSettings::load() {
                 Ok(s) => {
+                    period = feed_poll_period(
+                        s.get("headless_feed_poll_minutes").and_then(|v| v.as_i64()),
+                    );
                     let url = s
                         .get("home_feed_url")
                         .and_then(|v| v.as_str())
@@ -228,7 +244,7 @@ fn spawn_feed_poll(state: Arc<AppState>) {
                 }
                 Err(e) => eprintln!("feed poll: settings unreadable: {e}"),
             }
-            tokio::time::sleep(FEED_POLL).await;
+            tokio::time::sleep(period).await;
         }
     });
 }
@@ -246,13 +262,20 @@ fn spawn_feed_poll(state: Arc<AppState>) {
 
 const RELAY_LOG_CAP: usize = 200;
 
+/// Rotate the on-disk audit file past this size (one `.1` generation kept),
+/// so a hammered public node can't grow it without bound.
+const RELAY_LOG_FILE_CAP: u64 = 5 * 1024 * 1024;
+
 /// Recent relay access decisions plus refused api knocks (`source` tells
-/// them apart: "relay" vs "api").
-/// ponytail: in-memory only, resets on restart; persist if audit matters.
-#[derive(Default)]
+/// them apart: "relay" vs "api"). Appended as JSONL under the data dir so the
+/// audit trail survives restarts; the in-memory tail serves the admin route.
 struct RelayLog {
     seq: u64,
     entries: VecDeque<serde_json::Value>,
+    /// Append handle; `None` when the file can't be opened (warned once at
+    /// startup) — the in-memory log keeps working.
+    file: Option<std::fs::File>,
+    path: std::path::PathBuf,
 }
 
 /// Knock ids are attacker-controlled bytes (a real endpoint id is 64 hex
@@ -263,17 +286,65 @@ fn clean_log_id(s: &str) -> String {
 }
 
 impl RelayLog {
+    /// Open (or create) the JSONL audit file and seed the in-memory tail +
+    /// `seq` from it, so restarts continue the sequence instead of resetting.
+    fn open(path: std::path::PathBuf) -> Self {
+        let mut seq = 0;
+        let mut entries = VecDeque::new();
+        if let Ok(s) = std::fs::read_to_string(&path) {
+            for v in s.lines().filter_map(|l| serde_json::from_str(l).ok()) {
+                let v: serde_json::Value = v;
+                seq = seq.max(v["seq"].as_u64().unwrap_or(0));
+                if entries.len() >= RELAY_LOG_CAP {
+                    entries.pop_front();
+                }
+                entries.push_back(v);
+            }
+        }
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| eprintln!("warning: access log {} unwritable: {e}", path.display()))
+            .ok();
+        Self {
+            seq,
+            entries,
+            file,
+            path,
+        }
+    }
+
     fn push(&mut self, endpoint_id: Option<&str>, allowed: bool, source: &str) {
         self.seq += 1;
-        if self.entries.len() >= RELAY_LOG_CAP {
-            self.entries.pop_front();
-        }
-        self.entries.push_back(serde_json::json!({
+        let entry = serde_json::json!({
             "seq": self.seq,
+            "at": chrono::Utc::now().to_rfc3339(),
             "endpoint_id": endpoint_id.map(clean_log_id),
             "allowed": allowed,
             "source": source,
-        }));
+        });
+        if self
+            .file
+            .as_ref()
+            .and_then(|f| f.metadata().ok())
+            .is_some_and(|m| m.len() > RELAY_LOG_FILE_CAP)
+        {
+            let _ = std::fs::rename(&self.path, self.path.with_extension("jsonl.1"));
+            self.file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&self.path)
+                .ok();
+        }
+        if let Some(f) = &mut self.file {
+            use std::io::Write;
+            let _ = writeln!(f, "{entry}");
+        }
+        if self.entries.len() >= RELAY_LOG_CAP {
+            self.entries.pop_front();
+        }
+        self.entries.push_back(entry);
     }
 }
 
@@ -594,6 +665,33 @@ mod tests {
         // Idempotent re-add without a role: rights are preserved, not reset.
         upsert_member(&mut members, id, None);
         assert_eq!(members[0].role, Role::Read);
+    }
+
+    /// Restart survival: a reopened log continues the sequence and still
+    /// holds the persisted entries.
+    #[test]
+    fn relay_log_persists_across_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("relay_access_log.jsonl");
+        let mut log = super::RelayLog::open(path.clone());
+        log.push(Some("aa"), false, "relay");
+        log.push(None, true, "api");
+        drop(log);
+        let mut reopened = super::RelayLog::open(path);
+        assert_eq!(reopened.entries.len(), 2);
+        assert_eq!(reopened.seq, 2);
+        reopened.push(Some("bb"), true, "relay");
+        assert_eq!(reopened.entries.back().unwrap()["seq"], 3);
+    }
+
+    #[test]
+    fn feed_poll_period_defaults_and_rejects_nonpositive() {
+        use super::{feed_poll_period, FEED_POLL_DEFAULT};
+        use std::time::Duration;
+        assert_eq!(feed_poll_period(None), FEED_POLL_DEFAULT);
+        assert_eq!(feed_poll_period(Some(0)), FEED_POLL_DEFAULT);
+        assert_eq!(feed_poll_period(Some(-5)), FEED_POLL_DEFAULT);
+        assert_eq!(feed_poll_period(Some(5)), Duration::from_secs(300));
     }
 
     #[test]
