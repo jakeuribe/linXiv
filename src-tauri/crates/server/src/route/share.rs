@@ -1414,7 +1414,7 @@ async fn shared_pdf(
             std::fs::rename(&tmp, &dest)
         };
         write().map_err(|e| ApiError::new(500, format!("could not save shared PDF: {e}")))?;
-        linxiv_core::service::files::note_pdf_bytes_delta(&pdf_dir, bytes.len() as i64);
+        linxiv_core::service::files::note_pdf_written(&dest, bytes.len() as u64);
         wrote = true;
     }
     let path = dest.to_string_lossy().into_owned();

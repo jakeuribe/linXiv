@@ -86,15 +86,9 @@ fn attach_pdf(state: &AppState, source_id: &str, ctx: &ReqCtx<'_>) -> Result<Val
         }
         std::fs::create_dir_all(&pdf_dir)
             .map_err(|e| ApiError::new(500, format!("{}: {e}", pdf_dir.display())))?;
-        // Delta vs a copy the write replaces (re-attach) keeps the cached
-        // storage total in step with the walk.
-        let old = std::fs::metadata(&dest).map_or(0, |m| m.len());
         std::fs::write(&dest, &content)
             .map_err(|e| ApiError::new(500, format!("{}: {e}", dest.display())))?;
-        linxiv_core::service::files::note_pdf_bytes_delta(
-            &pdf_dir,
-            content.len() as i64 - old as i64,
-        );
+        linxiv_core::service::files::note_pdf_written(&dest, content.len() as u64);
         let dest_str = dest.to_string_lossy().into_owned();
         if let Err(e) = svc_paper::mark_pdf_saved(conn, source_id, &dest_str, ver) {
             linxiv_core::service::files::remove_pdf_counted(&dest);

@@ -370,14 +370,13 @@ fn import_body(
         // Dedupe: keep the existing PDF, drop the upload.
         let _ = fs::remove_file(tmp_path);
     } else {
-        // Delta vs whatever already sat at final_path (a crash orphan the rename
-        // replaces), so the cached storage total tracks the walk exactly.
-        let old = fs::metadata(&final_path).map_or(0, |m| m.len());
         fs::rename(tmp_path, &final_path).map_err(|e| {
             CoreError::Internal(format!("import_pdf: move PDF into place failed: {e}"))
         })?;
-        let new = fs::metadata(&final_path).map_or(0, |m| m.len());
-        crate::service::files::note_pdf_bytes_delta(pdf_dir, new as i64 - old as i64);
+        crate::service::files::note_pdf_written(
+            &final_path,
+            fs::metadata(&final_path).map_or(0, |m| m.len()),
+        );
         st.wrote_final_path = true;
         store::mark_pdf_saved(conn, &sid, &final_path.to_string_lossy(), ver)?;
     }

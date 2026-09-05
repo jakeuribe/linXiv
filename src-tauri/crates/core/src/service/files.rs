@@ -51,25 +51,35 @@ pub fn pdf_path(
     std.is_file().then_some(std)
 }
 
-/// Running total of managed PDF bytes per `pdf_dir`, keyed by the path exactly as the
-/// caller passes it (DI resolves one spelling per process). Lazily seeded by a full
-/// walk on first read, then kept current by [`note_pdf_bytes_delta`] on every write/
-/// delete seam that core (and the server's two direct-write routes) own.
-static PDF_STORAGE_TOTALS: std::sync::LazyLock<std::sync::Mutex<HashMap<PathBuf, u64>>> =
-    std::sync::LazyLock::new(Default::default);
+/// Cached size of every managed `*.pdf` per `pdf_dir`, keyed by the dir path exactly
+/// as the caller passes it (DI resolves one spelling per process). Lazily seeded by a
+/// full walk on first read, then kept current by [`note_pdf_written`]/
+/// [`note_pdf_removed`] on every write/delete seam that core (and the server's two
+/// direct-write routes) own. Per-file, not a running delta: a re-write of the same
+/// dest replaces its entry, so overlapping writes can't double-count the total.
+static PDF_STORAGE: std::sync::LazyLock<
+    std::sync::Mutex<HashMap<PathBuf, HashMap<std::ffi::OsString, u64>>>,
+> = std::sync::LazyLock::new(Default::default);
 
-/// The full scan behind the cache: total size of all `*.pdf` files directly in
-/// `pdf_dir`, `0` if the dir is absent. Files that vanish mid-scan are skipped
+/// The full scan behind the cache: name → size of all `*.pdf` files directly in
+/// `pdf_dir`, empty if the dir is absent. Files that vanish mid-scan are skipped
 /// (Python ignores `FileNotFoundError`).
+fn walk_pdf_files(pdf_dir: &Path) -> HashMap<std::ffi::OsString, u64> {
+    std::fs::read_dir(pdf_dir).map_or_else(
+        |_| HashMap::new(),
+        |entries| {
+            entries
+                .flatten()
+                .filter(|e| e.file_name().to_string_lossy().ends_with(".pdf"))
+                .filter_map(|e| Some((e.file_name(), e.metadata().ok()?.len())))
+                .collect()
+        },
+    )
+}
+
+#[cfg(test)]
 fn walk_pdf_storage_bytes(pdf_dir: &Path) -> u64 {
-    std::fs::read_dir(pdf_dir).map_or(0, |entries| {
-        entries
-            .flatten()
-            .filter(|e| e.file_name().to_string_lossy().ends_with(".pdf"))
-            .filter_map(|e| e.metadata().ok())
-            .map(|m| m.len())
-            .sum()
-    })
+    walk_pdf_files(pdf_dir).values().sum()
 }
 
 /// Total size of all managed `*.pdf` files in `pdf_dir`, in bytes — the basis of the
@@ -77,43 +87,59 @@ fn walk_pdf_storage_bytes(pdf_dir: &Path) -> u64 {
 /// and `download_pdf` below). Walks the dir ONCE per process (lazy init), then serves
 /// the running total maintained by the write/delete seams.
 ///
-/// ponytail: files changed outside those seams (manual deletes in the folder, crash
-/// orphans, an init walk racing a concurrent write) drift the total until process
-/// restart, when the next walk re-seeds it; add explicit invalidation only if a real
-/// out-of-band mutator appears.
+/// ponytail: files changed outside this process's seams (manual deletes in the
+/// folder, crash orphans, an init walk racing a concurrent write, and writes by a
+/// sibling linxiv process — CLI/MCP against the same library) drift the total until
+/// process restart, when the next walk re-seeds it; move the total into the DB if
+/// cross-process accuracy ever matters.
 pub fn pdf_storage_bytes(pdf_dir: &Path) -> u64 {
-    let mut totals = PDF_STORAGE_TOTALS.lock().unwrap_or_else(|p| p.into_inner());
-    match totals.get(pdf_dir) {
-        Some(t) => *t,
-        None => {
-            let t = walk_pdf_storage_bytes(pdf_dir);
-            totals.insert(pdf_dir.to_path_buf(), t);
-            t
-        }
+    let mut cache = PDF_STORAGE.lock().unwrap_or_else(|p| p.into_inner());
+    cache
+        .entry(pdf_dir.to_path_buf())
+        .or_insert_with(|| walk_pdf_files(pdf_dir))
+        .values()
+        .sum()
+}
+
+/// Record a managed PDF write: `dest` (built as `pdf_dir.join(name)`, so its parent
+/// keeps the readers' `pdf_dir` spelling) now holds `size` bytes. Sets the file's
+/// cache entry — last writer wins, never accumulates. A no-op until the dir's cache
+/// has been lazily seeded (the eventual first walk sees the file anyway) and for
+/// non-`.pdf` names (the walk wouldn't count them).
+pub fn note_pdf_written(dest: &Path, size: u64) {
+    let (Some(dir), Some(name)) = (dest.parent(), dest.file_name()) else {
+        return;
+    };
+    if !name.to_string_lossy().ends_with(".pdf") {
+        return;
+    }
+    if let Some(files) = PDF_STORAGE
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get_mut(dir)
+    {
+        files.insert(name.to_os_string(), size);
     }
 }
 
-/// Adjust `pdf_dir`'s cached total after a managed PDF write (+) or delete (−).
-/// A no-op until the total has been lazily seeded — the eventual first walk sees
-/// the file anyway. `pdf_dir` must be spelled exactly as readers pass it.
-pub fn note_pdf_bytes_delta(pdf_dir: &Path, delta: i64) {
-    if let Some(t) = PDF_STORAGE_TOTALS
+/// Forget `name` from `pdf_dir`'s cache after a managed delete.
+fn forget_pdf(pdf_dir: &Path, name: &std::ffi::OsStr) {
+    if let Some(files) = PDF_STORAGE
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .get_mut(pdf_dir)
     {
-        *t = t.saturating_add_signed(delta);
+        files.remove(name);
     }
 }
 
-/// Best-effort remove of a managed PDF built as `pdf_dir.join(name)`, subtracting
-/// its size from the cached total on success. For cleanup paths that hold the exact
+/// Best-effort remove of a managed PDF built as `pdf_dir.join(name)`, dropping it
+/// from the cached storage total on success. For cleanup paths that hold the exact
 /// dest path (import rollback, failed attach/share saves).
 pub fn remove_pdf_counted(path: &Path) {
-    let sz = std::fs::metadata(path).map_or(0, |m| m.len());
-    if std::fs::remove_file(path).is_ok() && sz > 0 {
-        if let Some(dir) = path.parent() {
-            note_pdf_bytes_delta(dir, -(sz as i64));
+    if std::fs::remove_file(path).is_ok() {
+        if let (Some(dir), Some(name)) = (path.parent(), path.file_name()) {
+            forget_pdf(dir, name);
         }
     }
 }
@@ -187,16 +213,13 @@ pub fn delete_pdf(pdf_dir: &Path, path: &str) -> bool {
         return false;
     }
     // Inside the boundary: remove if present, ignore a missing file (idempotent delete).
-    // A removed direct-child `*.pdf` comes off the cached total (matching what the
-    // seed walk counts); nested or non-.pdf targets were never in it.
-    let sz = std::fs::metadata(&target).map_or(0, |m| m.len());
-    if std::fs::remove_file(&target).is_ok()
-        && target.parent() == Some(managed.as_path())
-        && target
-            .file_name()
-            .is_some_and(|n| n.to_string_lossy().ends_with(".pdf"))
-    {
-        note_pdf_bytes_delta(pdf_dir, -(sz as i64));
+    // A removed direct child comes out of the cached storage total, keyed by `pdf_dir`
+    // as the readers spell it (the canonicalized parent may not match); nested or
+    // non-.pdf targets were never in it.
+    if std::fs::remove_file(&target).is_ok() && target.parent() == Some(managed.as_path()) {
+        if let Some(name) = target.file_name() {
+            forget_pdf(pdf_dir, name);
+        }
     }
     true
 }
@@ -232,10 +255,7 @@ pub async fn download_pdf(
         )));
     }
     let out = crate::sources::download::download_pdf(&dest, url, remaining).await?;
-    note_pdf_bytes_delta(
-        pdf_dir,
-        std::fs::metadata(&out).map_or(0, |m| m.len()) as i64,
-    );
+    note_pdf_written(&out, std::fs::metadata(&out).map_or(0, |m| m.len()));
     Ok(out)
 }
 
@@ -333,7 +353,11 @@ mod tests {
 
         // Counted cleanup helper (rollback/attach failure paths) → same.
         let c = write_pdf(pdf_dir, "cv1.pdf", 30);
-        note_pdf_bytes_delta(pdf_dir, 30); // as the import/attach write seams do
+        note_pdf_written(&c, 30); // as the import/attach write seams do
+        assert_eq!(pdf_storage_bytes(pdf_dir), 80);
+        // Re-noting the same dest replaces its entry — overlapping writes to one
+        // file can never double-count the total.
+        note_pdf_written(&c, 30);
         assert_eq!(pdf_storage_bytes(pdf_dir), 80);
         remove_pdf_counted(&c);
         assert_eq!(pdf_storage_bytes(pdf_dir), 50);

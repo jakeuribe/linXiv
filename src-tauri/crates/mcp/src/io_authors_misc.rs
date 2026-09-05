@@ -264,7 +264,9 @@ impl Server {
         json_ok(&json!({ "metadata": meta, "saved": true }))
     }
 
-    #[tool(description = "List all authors in the library with their paper counts.")]
+    #[tool(
+        description = "List authors that have at least one active paper in the library, with their paper counts."
+    )]
     pub async fn list_authors(&self) -> Result<String, ErrorData> {
         let authors = self
             .with_conn(|conn| svc_author::list_with_paper_count(conn, 1))
