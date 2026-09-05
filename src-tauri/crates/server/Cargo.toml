@@ -64,6 +64,11 @@ getrandom = "0.3"
 # line outside [package] gets clobbered by scripts/set_release_version.sh.
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
+# systemd-logind sleep/idle inhibitor for the headless bin (already in the
+# tree via keyring's secret-service backend; tokio executor, same as there).
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus = { version = "4", default-features = false, features = ["tokio"] }
+
 [dev-dependencies]
 # Feed-refresh tests mock the arXiv endpoint.
 wiremock = "0.6"
