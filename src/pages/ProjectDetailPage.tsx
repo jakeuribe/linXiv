@@ -34,6 +34,7 @@ import {
 } from "../lib/paperMutations";
 import { errText } from "../lib/errText";
 import { useConfirmWithTimeout } from "../hooks/useConfirmWithTimeout";
+import { showContextMenu } from "../lib/contextMenu";
 
 // ---------------------------------------------------------------------------
 // Main page
@@ -179,23 +180,31 @@ export default function ProjectDetailPage() {
 
   const projectPapers: Paper[] = (project && papersData?.papers) || [];
 
-  async function handleRemoveSelected() {
-    if (selectedIds.size === 0) return;
+  async function removePapers(idsArray: string[]) {
+    if (idsArray.length === 0 || removing) return;
     setRemoving(true);
     setRemoveError(null);
     try {
-      const idsArray = [...selectedIds];
       const results = await Promise.allSettled(
         idsArray.map((sid) => removePaperFromProject(projectId, sid))
       );
-      const failedCount = results.filter((r) => r.status === "rejected").length;
-      if (failedCount > 0) {
-        selectAll(idsArray.filter((_, i) => results[i].status === "rejected"));
-        setRemoveError(`Failed to remove ${failedCount} paper${failedCount !== 1 ? "s" : ""}`);
-      } else {
-        // Reading statuses need no client cleanup: PAPER_TO_READING's composite
-        // FK cascades away with the membership row.
-        clear();
+      const failedIds = idsArray.filter((_, i) => results[i].status === "rejected");
+      // Reading statuses need no client cleanup: PAPER_TO_READING's composite
+      // FK cascades away with the membership row. Drop the removed ids from
+      // the LIVE selection (not this render's snapshot, and never wholesale —
+      // a context-menu removal must not wipe an unrelated selection), keeping
+      // failed ids selected so a retry via the bar acts on them.
+      const live = useSelectionStore.getState().selectedIds;
+      selectAll([
+        ...new Set([
+          ...[...live].filter((sid) => !idsArray.includes(sid)),
+          ...failedIds,
+        ]),
+      ]);
+      if (failedIds.length > 0) {
+        setRemoveError(
+          `Failed to remove ${failedIds.length} paper${failedIds.length !== 1 ? "s" : ""}`
+        );
       }
       await invalidateProjectMembershipQueries(queryClient);
     } catch (err) {
@@ -203,6 +212,38 @@ export default function ProjectDetailPage() {
     } finally {
       setRemoving(false);
     }
+  }
+
+  function handleRemoveSelected() {
+    return removePapers([...selectedIds]);
+  }
+
+  // Right-click in a multi-selection acts on the whole selection; otherwise on
+  // the clicked row alone.
+  function handleRowContextMenu(e: React.MouseEvent, paper: Paper) {
+    const ids =
+      selectedIds.has(paper.source_id) && selectedIds.size > 1
+        ? [...selectedIds]
+        : [paper.source_id];
+    showContextMenu(e, [
+      {
+        text: "Open",
+        action: () =>
+          navigate(`/library/${paper.source_fk}`, {
+            state: { fromProjectId: projectId },
+          }),
+      },
+      ...(!readOnly
+        ? ([
+            "separator",
+            {
+              text: `Remove${ids.length > 1 ? ` ${ids.length} Papers` : ""} from Project`,
+              action: () => void removePapers(ids),
+              enabled: !removing,
+            },
+          ] as const)
+        : []),
+    ]);
   }
 
   async function handleArchive() {
@@ -504,6 +545,7 @@ export default function ProjectDetailPage() {
                 projectId={projectId}
                 project={project}
                 selectable={!readOnly}
+                onContextMenu={(e) => handleRowContextMenu(e, paper)}
               />
             ))
           )}

@@ -26,6 +26,7 @@ import { SelectionBar } from "../components/papers/SelectionBar";
 import { ImportDialog } from "../components/import/ImportDialog";
 import { EmptyState } from "../components/ui/empty-state";
 import { errText } from "../lib/errText";
+import { showContextMenu } from "../lib/contextMenu";
 
 const PAPER_FETCH_LIMIT = 5000;
 const VIRTUALIZER_ESTIMATE_HEIGHT = 120;
@@ -75,6 +76,10 @@ export default function LibraryPage() {
   const [newProjectName, setNewProjectName] = useState("");
   const [importOpen, setImportOpen] = useState(false);
   const [pendingDeleteIds, setPendingDeleteIds] = useState<string[]>([]);
+  // Context-menu "Add to Project…" targets: kept separate from selectedIds so
+  // right-clicking an unselected paper never disturbs an unrelated selection
+  // (same invariant pendingDeleteIds preserves for trash).
+  const [pendingAddIds, setPendingAddIds] = useState<string[]>([]);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const selectedIds = useSelectionStore((s) => s.selectedIds);
@@ -128,8 +133,12 @@ export default function LibraryPage() {
     onSettled: () => {
       invalidatePaperQueries(queryClient);
     },
-    onSuccess: () => {
-      clear();
+    onSuccess: (_data, ids) => {
+      // Deselect only what was deleted, from the live selection — a
+      // context-menu delete of an unselected paper must not wipe an
+      // unrelated multi-selection made before (or during) the request.
+      const live = useSelectionStore.getState().selectedIds;
+      selectAll([...live].filter((sid) => !ids.includes(sid)));
     },
     onError: (err) => {
       setDeleteError(
@@ -138,12 +147,31 @@ export default function LibraryPage() {
     },
   });
 
+  // Ref so selectFailures (called from mutation callbacks) sees the current
+  // pending-add set without a stale closure. On partial failure onDone is NOT
+  // called, so this is still populated when selectFailures runs.
+  const pendingAddIdsRef = useRef<string[]>([]);
+  pendingAddIdsRef.current = pendingAddIds;
   const projectPickerUi = {
     setError: setProjectPickerError,
-    selectFailures: selectAll,
+    // Same invariant as delete/remove: drop only the acted-upon ids from the
+    // live selection, keep the failed ones selected for a retry — a context-
+    // menu add must never wipe an unrelated multi-selection on failure.
+    selectFailures: (failedIds: string[]) => {
+      const pending = pendingAddIdsRef.current;
+      const live = useSelectionStore.getState().selectedIds;
+      const base =
+        pending.length > 0 ? [...live].filter((id) => !pending.includes(id)) : [];
+      selectAll([...new Set([...base, ...failedIds])]);
+    },
     onDone: () => {
       setProjectPickerOpen(false);
-      clear();
+      // Context-menu adds leave the (unrelated) selection alone; only the
+      // selection-bar path clears it, as before.
+      setPendingAddIds((pending) => {
+        if (pending.length === 0) clear();
+        return [];
+      });
     },
     clearName: () => setNewProjectName(""),
   };
@@ -197,6 +225,45 @@ export default function LibraryPage() {
     [navigate]
   );
 
+  // Right-click on a paper in a multi-selection acts on the whole selection
+  // (OS convention); otherwise on the clicked paper alone. Selection is read
+  // via getState() and the visible set via a ref so the callback stays stable
+  // for PaperCard's memo. Like the selection-bar delete, the selection is
+  // intersected with the currently visible papers so a selected-but-
+  // filtered-out paper is never acted on invisibly.
+  const visibleIdsRef = useRef<Set<string>>(new Set());
+  visibleIdsRef.current = useMemo(
+    () => new Set(filtered.map((p) => p.source_id)),
+    [filtered]
+  );
+  const handlePaperContextMenu = useCallback(
+    (e: React.MouseEvent, paper: Paper) => {
+      const sel = useSelectionStore.getState().selectedIds;
+      const visible = visibleIdsRef.current;
+      const ids =
+        sel.has(paper.source_id) && sel.size > 1
+          ? [...sel].filter((id) => visible.has(id) || id === paper.source_id)
+          : [paper.source_id];
+      const suffix = ids.length > 1 ? ` ${ids.length} Papers` : "";
+      showContextMenu(e, [
+        { text: "Open", action: () => handleNavigate(paper.source_fk) },
+        {
+          text: `Add${suffix} to Project…`,
+          action: () => {
+            setPendingAddIds(ids);
+            setProjectPickerOpen(true);
+          },
+        },
+        "separator",
+        {
+          text: `Move${suffix} to Trash…`,
+          action: () => setPendingDeleteIds(ids),
+        },
+      ]);
+    },
+    [handleNavigate]
+  );
+
   // Re-sorting keeps the row count identical, so the browser never clamps
   // scrollTop — without this the user stays at row 800 of a list that now holds
   // entirely different papers there.
@@ -221,9 +288,23 @@ export default function LibraryPage() {
     setPendingDeleteIds([]);
   }
 
+  function addTargetIds(): string[] {
+    return pendingAddIds.length > 0 ? pendingAddIds : Array.from(selectedIds);
+  }
+
+  // Every way out of the picker (X, Escape, Cancel) must drop pendingAddIds,
+  // or a later selection-bar add silently acts on the stale context targets.
+  function closeProjectPicker() {
+    setProjectPickerOpen(false);
+    setProjectPickerError(null);
+    setNewProjectName("");
+    setPendingAddIds([]);
+    createProjectMutation.reset();
+  }
+
   function handleAddToProject(projectId: number) {
     if (addToProjectMutation.isPending) return;
-    const ids = Array.from(selectedIds);
+    const ids = addTargetIds();
     if (ids.length === 0) return; // nothing to add
     addToProjectMutation.mutate({ projectId, sourceIds: ids });
   }
@@ -390,6 +471,7 @@ export default function LibraryPage() {
                   paper={filtered[vItem.index]}
                   showCheckbox
                   onNavigate={handleNavigate}
+                  onContextMenu={handlePaperContextMenu}
                 />
               </div>
             ))}
@@ -450,12 +532,7 @@ export default function LibraryPage() {
       {/* Add to project dialog */}
       <Dialog
         open={projectPickerOpen}
-        onClose={() => {
-          setProjectPickerOpen(false);
-          setProjectPickerError(null);
-          setNewProjectName("");
-          createProjectMutation.reset();
-        }}
+        onClose={closeProjectPicker}
         title="Add to Project"
       >
         <div className="space-y-3">
@@ -475,7 +552,7 @@ export default function LibraryPage() {
                 onSubmit={(e) => {
                   e.preventDefault();
                   const name = newProjectName.trim();
-                  if (name) createProjectMutation.mutate({ name, sourceIds: [...selectedIds] });
+                  if (name) createProjectMutation.mutate({ name, sourceIds: addTargetIds() });
                 }}
                 onKeyDown={formSubmitOnCtrlEnter}
                 className="flex gap-2"
@@ -519,16 +596,7 @@ export default function LibraryPage() {
             </div>
           )}
           <div className="flex justify-end pt-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                setProjectPickerOpen(false);
-                setProjectPickerError(null);
-                setNewProjectName("");
-                createProjectMutation.reset();
-              }}
-            >
+            <Button variant="ghost" size="sm" onClick={closeProjectPicker}>
               Cancel
             </Button>
           </div>

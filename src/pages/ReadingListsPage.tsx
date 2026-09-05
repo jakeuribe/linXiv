@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { BookMarked } from "lucide-react";
-import { listProjects, createProject } from "../api/projects";
+import { listProjects, createProject, archiveProject } from "../api/projects";
+import type { Paper, Project } from "../types/api";
+import { showContextMenu } from "../lib/contextMenu";
 import { listProjectPapers } from "../api/papers";
 import { ProjectCard } from "../components/projects/ProjectCard";
 import { PaperCard } from "../components/papers/PaperCard";
@@ -12,7 +14,7 @@ import { EmptyState } from "../components/ui/empty-state";
 import { Input } from "../components/ui/input";
 import { Segmented } from "../components/ui/segmented";
 import { Spinner } from "../components/ui/spinner";
-import { StatusButton } from "../components/reading/StatusButton";
+import { StatusButton, useSetReadingStatus } from "../components/reading/StatusButton";
 import {
   READING_LIST_TAG,
   isReadingListProject,
@@ -23,6 +25,8 @@ import {
   READING_STATUS_QUERY_KEY,
   fetchReadingStatuses,
 } from "../api/readingStatus";
+import { listReceived, sharingAvailable } from "../api/share";
+import { receivedShareRole } from "../lib/shareRole";
 import { errText } from "../lib/errText";
 
 function NewReadingListDialog({
@@ -109,8 +113,51 @@ function NewReadingListDialog({
 
 export default function ReadingListsPage() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [view, setView] = useState<"lists" | "queue">("lists");
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const setStatus = useSetReadingStatus();
+
+  // Same archive call ProjectDetailPage's ··· menu makes (a reading list IS a
+  // project); archiving hides the list and its queue rows.
+  async function handleArchive(project: Project) {
+    setActionError(null);
+    try {
+      await archiveProject(project.id);
+      await invalidateProjectMutationQueries(queryClient);
+    } catch (err) {
+      setActionError(errText(err, "Failed to archive reading list"));
+    }
+  }
+
+  function handleListContextMenu(e: React.MouseEvent, project: Project) {
+    // §7 viewer read-only: no Archive on a viewer-role shared list — same
+    // gating as ProjectDetailPage's edit affordances.
+    const viewer = receivedShareRole(project, receivedShares) === "viewer";
+    showContextMenu(e, [
+      { text: "Open", action: () => navigate(`/projects/${project.id}`) },
+      ...(viewer ? [] : [{ text: "Archive", action: () => void handleArchive(project) }]),
+    ]);
+  }
+
+  // Depends on the stable `mutate` fn, not the per-render mutation object, so
+  // the callback keeps its identity and PaperCard's memo actually skips.
+  const setStatusMutate = setStatus.mutate;
+  const handleQueueContextMenu = useCallback(
+    (e: React.MouseEvent, paper: Paper) => {
+      const mark = (status: "reading" | "read" | undefined) =>
+        setStatusMutate({ sourceId: paper.source_id, status });
+      showContextMenu(e, [
+        { text: "Open", action: () => navigate(`/library/${paper.source_fk}`) },
+        "separator",
+        { text: "Mark Reading", action: () => mark("reading") },
+        { text: "Mark Read", action: () => mark("read") },
+        { text: "Mark Unread", action: () => mark(undefined) },
+      ]);
+    },
+    [navigate, setStatusMutate]
+  );
   const { data: statuses = {} } = useQuery({
     queryKey: READING_STATUS_QUERY_KEY,
     queryFn: fetchReadingStatuses,
@@ -124,6 +171,12 @@ export default function ReadingListsPage() {
   const readingLists = useMemo(() => {
     return (projectsData?.projects ?? []).filter(isReadingListProject);
   }, [projectsData]);
+
+  const { data: receivedShares } = useQuery({
+    queryKey: ["share", "received"],
+    queryFn: listReceived,
+    enabled: sharingAvailable && readingLists.some((p) => p.share_id),
+  });
 
   // One server-filtered fetch per reading list — membership is decided in SQL,
   // so a >200-paper library no longer truncates the queue. Keys match the
@@ -176,6 +229,12 @@ export default function ReadingListsPage() {
         </div>
       )}
 
+      {actionError && (
+        <p className="text-xs" style={{ color: "var(--color-danger)" }}>
+          {actionError}
+        </p>
+      )}
+
       {isError && (
         <div
           className="rounded-lg border p-4 text-sm"
@@ -212,6 +271,7 @@ export default function ReadingListsPage() {
                 ),
               }}
               onClick={() => navigate(`/projects/${project.id}`)}
+              onContextMenu={(e) => handleListContextMenu(e, project)}
             />
           ))}
         </div>
@@ -233,6 +293,7 @@ export default function ReadingListsPage() {
                 <PaperCard
                   paper={paper}
                   onNavigate={(sfk) => navigate(`/library/${sfk}`)}
+                  onContextMenu={handleQueueContextMenu}
                 />
               </div>
               <StatusButton sourceId={paper.source_id} />
