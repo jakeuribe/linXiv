@@ -4,12 +4,14 @@ import type { Clause, SearchResult } from "../types/api";
 // Diverged from core's `service::search_state::SavedSearch`: core stores
 // clauses/results/sort_prefs as untyped JSON (`Vec<Value>`/`Map`) and has no
 // `updated_at` (added by the route) — not generatable until core types them.
+// `saved_ids` still exists on the wire (the backend defaults it to []) but the
+// GUI no longer reads or writes it: saved state is the ["papers","saved",...]
+// react-query lookup, not a persisted snapshot.
 export interface SearchState {
   clauses: Clause[];
   source: string;
   max_results: number;
   results: SearchResult[];
-  saved_ids: string[];
   sort_prefs: Record<string, string> | null;
   updated_at: string;
 }
@@ -25,26 +27,11 @@ export async function getSearchState(): Promise<SearchState | null> {
   return data.state;
 }
 
-export async function appendSavedId(sourceId: string): Promise<void> {
-  const state = await getSearchState();
-  if (!state) return;
-  if (state.saved_ids.includes(sourceId)) return;
-  await saveSearchState(
-    state.clauses,
-    state.source,
-    state.max_results,
-    state.results,
-    [...state.saved_ids, sourceId],
-    state.sort_prefs,
-  );
-}
-
 export async function saveSearchState(
   clauses: Clause[],
   source: string,
   maxResults: number,
   results: SearchResult[],
-  savedIds: string[],
   sortPrefs: Record<string, string> | null = null,
 ): Promise<void> {
   await libraryFetch("/api/search/state", {
@@ -54,7 +41,6 @@ export async function saveSearchState(
       source,
       max_results: maxResults,
       results,
-      saved_ids: savedIds,
       sort_prefs: sortPrefs,
     }),
   });

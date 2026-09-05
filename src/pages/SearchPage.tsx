@@ -14,7 +14,7 @@ import {
 } from "../api/search";
 import { getSearchState, saveSearchState } from "../api/searchState";
 import { getSettings } from "../api/settings";
-import { listPapers } from "../api/papers";
+import { listPapers, getSavedSourceIds } from "../api/papers";
 import type { Clause, SearchResult, Paper } from "../types/api";
 import { isArxivId } from "../lib/papers";
 import { invalidatePaperMutationQueries } from "../lib/paperMutations";
@@ -42,10 +42,11 @@ function paperToSearchResult(paper: Paper): SearchResult {
     published: paper.published ?? "",
     paper_url: paper.url ?? "",
     primary_category: paper.category ?? "",
-    // Reconstruct namespaced entry_id (e.g. "arxiv:2204.12985") to match the API path contract.
-    // Fallback to bare source_id when source is null (BibTeX/PDF imports); those papers are always
-    // pre-saved (isSaved=true) so entry_id is never used for dispatch in that case.
-    entry_id: paper.source ? `${paper.source}:${paper.source_id}` : paper.source_id,
+    // `entry_id` is the canonical stored id ("arxiv:2204.12985") — what the
+    // saved-lookup query keys on. `paper.source_id` from /api/papers IS that
+    // stored id verbatim, so no reconstruction (prefixing `paper.source` onto
+    // an already-namespaced id would double the prefix and never match).
+    entry_id: paper.source_id,
   };
 }
 
@@ -119,7 +120,6 @@ export default function SearchPage() {
   const [advClauses, setAdvClauses] = useState<Clause[]>([makeClause()]);
 
   const [results, setResults] = useState<SearchResult[] | null>(null);
-  const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
   const [isAppending, setIsAppending] = useState(false);
   const [viewSort, setViewSort] = useState<ViewSort>("default");
 
@@ -127,6 +127,22 @@ export default function SearchPage() {
     () => (results ? applyViewSort(results, viewSort) : null),
     [results, viewSort],
   );
+
+  // The one source of truth for "already in library": ask the backend which of
+  // the current results' canonical ids it holds. Keyed under ["papers"] so the
+  // invalidation fan-out in lib/paperMutations.ts (every save/delete/restore in
+  // the app routes through it) marks it stale, and react-query revalidates on
+  // mount/focus — restored search state gets fresh indicators, never a snapshot.
+  const entryIds = useMemo(
+    () => (results ?? []).map((r) => r.entry_id).sort(),
+    [results],
+  );
+  const { data: savedEntryIds } = useQuery({
+    queryKey: ["papers", "saved", entryIds],
+    queryFn: () => getSavedSourceIds(entryIds),
+    enabled: entryIds.length > 0,
+  });
+  const savedIds = useMemo(() => new Set(savedEntryIds), [savedEntryIds]);
 
 const { data: settings } = useQuery({ queryKey: ["settings"], queryFn: getSettings });
   const historyEnabled = settings?.search_history_enabled !== false;
@@ -143,7 +159,6 @@ const { data: settings } = useQuery({ queryKey: ["settings"], queryFn: getSettin
           if (SOURCES.includes(state.source as Source)) setSource(state.source as Source);
           setMaxResults(state.max_results);
           setResults(state.results);
-          setSavedIds(new Set(state.saved_ids));
           setSortPrefs(parseSortPrefs(state.sort_prefs));
         }
       })
@@ -186,11 +201,10 @@ const { data: settings } = useQuery({ queryKey: ["settings"], queryFn: getSettin
     src: Source,
     max: number,
     res: SearchResult[],
-    saved: string[],
     prefs: SortPrefs,
   ) {
     const clause = [{ operator: "AND" as const, field: "all" as const, value: query, uid: "persisted" }];
-    saveSearchState(clause, src, max, res, saved, prefs).catch(() => {});
+    saveSearchState(clause, src, max, res, prefs).catch(() => {});
   }
 
   // Core search runner — accepts explicit prefs so sort-change re-search works without waiting for state.
@@ -208,18 +222,16 @@ const { data: settings } = useQuery({ queryKey: ["settings"], queryFn: getSettin
     }
 
     const base = results ?? [];
-    const baseSaved = savedIds;
 
+    // Saved indicators come from the ["papers","saved",...] query keyed on the
+    // merged result set, so onSuccess only has to store the results; the
+    // responses' `saved_source_ids` snapshot is deliberately unused.
     if (source === "arxiv") {
       arxivSearch.mutate({ query, sort: prefs.arxivSort }, {
         onSuccess: (data) => {
           const merged = mode === "append" ? mergeResults(base, data.results) : data.results;
-          const mergedSaved = mode === "append"
-            ? new Set([...baseSaved, ...data.saved_source_ids])
-            : new Set(data.saved_source_ids);
           setResults(merged);
-          setSavedIds(mergedSaved);
-          persistState(query, source, maxResults, merged, [...mergedSaved], prefs);
+          persistState(query, source, maxResults, merged, prefs);
         },
         onSettled: () => { if (mode === "append") setIsAppending(false); },
       });
@@ -227,12 +239,8 @@ const { data: settings } = useQuery({ queryKey: ["settings"], queryFn: getSettin
       openAlexSearch.mutate({ query, sort: prefs.openAlexSort }, {
         onSuccess: (data) => {
           const merged = mode === "append" ? mergeResults(base, data.results) : data.results;
-          const mergedSaved = mode === "append"
-            ? new Set([...baseSaved, ...data.saved_source_ids])
-            : new Set(data.saved_source_ids);
           setResults(merged);
-          setSavedIds(mergedSaved);
-          persistState(query, source, maxResults, merged, [...mergedSaved], prefs);
+          persistState(query, source, maxResults, merged, prefs);
         },
         onSettled: () => { if (mode === "append") setIsAppending(false); },
       });
@@ -240,12 +248,8 @@ const { data: settings } = useQuery({ queryKey: ["settings"], queryFn: getSettin
       localSearch.mutate(query, {
         onSuccess: (data) => {
           const merged = mode === "append" ? mergeResults(base, data) : data;
-          const mergedSaved = mode === "append"
-            ? new Set([...baseSaved, ...data.map((r) => r.source_id)])
-            : new Set(data.map((r) => r.source_id));
           setResults(merged);
-          setSavedIds(mergedSaved);
-          persistState(query, source, maxResults, merged, [...mergedSaved], prefs);
+          persistState(query, source, maxResults, merged, prefs);
         },
         onSettled: () => { if (mode === "append") setIsAppending(false); },
       });
@@ -257,9 +261,8 @@ const { data: settings } = useQuery({ queryKey: ["settings"], queryFn: getSettin
 
   function handleClear() {
     setResults(null);
-    setSavedIds(new Set());
     setIsAppending(false);
-    persistState(queryText, source, maxResults, [], [], sortPrefs);
+    persistState(queryText, source, maxResults, [], sortPrefs);
   }
 
   function handleSortChange(field: "arxivSort" | "openAlexSort", value: string) {
@@ -272,12 +275,15 @@ const { data: settings } = useQuery({ queryKey: ["settings"], queryFn: getSettin
     } else if (/^W\d+$/.test(sourceId)) {
       await saveOpenAlex(sourceId);
     } else {
-      // Local-search results (doi:, local: source types) are always pre-saved so isSaved=true
-      // in handleCheck prevents reaching here. Throw to surface any unexpected call site.
+      // Local-search rows are in the library, so the saved query reports them
+      // and the row renders an indicator, not a save button — this is
+      // unreachable from the UI. Throw to surface any unexpected call site.
       throw new Error(`Unknown source ID format: ${sourceId}`);
     }
-    setSavedIds((prev) => new Set([...prev, sourceId]));
-    invalidatePaperMutationQueries(queryClient);
+    // Await the fan-out so the saved query has refetched (and the row's
+    // indicator flipped) before the row's saving spinner clears — the query
+    // cache is the only saved state there is.
+    await invalidatePaperMutationQueries(queryClient);
   }, [queryClient]);
 
   const handleViewPdf = useCallback((result: SearchResult, isSaved: boolean) => {
@@ -519,7 +525,7 @@ const { data: settings } = useQuery({ queryKey: ["settings"], queryFn: getSettin
               <ResultRow
                 key={result.source_id}
                 result={result}
-                saved={savedIds.has(result.source_id)}
+                saved={savedIds.has(result.entry_id)}
                 onSave={handleSavePaper}
                 onViewPdf={handleViewPdf}
               />

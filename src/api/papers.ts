@@ -54,6 +54,20 @@ export function listProjectPapers(projectId: number): Promise<{ papers: Paper[] 
   return listPapers(PAPER_LIMIT_MAX, 0, undefined, projectId);
 }
 
+/**
+ * Which of the given canonical stored ids (`entry_id`s, e.g. "arxiv:2204.12985")
+ * the library holds active. Matches echo back verbatim; trashed/unknown ids are
+ * absent. Backs the search page's saved indicator.
+ */
+export async function getSavedSourceIds(entryIds: string[]): Promise<string[]> {
+  if (entryIds.length === 0) return [];
+  const data = await libraryFetch<{ saved_source_ids: string[] }>(
+    "/api/papers/saved",
+    { method: "POST", body: JSON.stringify({ source_ids: entryIds }) }
+  );
+  return data.saved_source_ids;
+}
+
 export async function getPaper(sourceId: string): Promise<Paper> {
   return libraryFetch<Paper>(`/api/papers/${encodeURIComponent(sourceId)}`);
 }

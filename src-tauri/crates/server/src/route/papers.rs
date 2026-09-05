@@ -33,6 +33,7 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
         // `search` and `full-text-pending` must precede the generic
         // `{source_id}` arm (all 3 segments).
         ("GET", ["api", "papers", "search"]) => Some(search(state, ctx)),
+        ("POST", ["api", "papers", "saved"]) => Some(saved(state, ctx)),
         ("GET", ["api", "papers", "full-text-pending"]) => Some(full_text_pending(state)),
         ("POST", ["api", "papers", id, "full-text"]) => Some(fetch_full_text(state, id, ctx).await),
         ("GET", ["api", "papers", id]) => Some(get_one(state, id)),
@@ -185,6 +186,20 @@ pub(crate) async fn ingest_full_text(
 ) -> Result<svc_paper::FullTextReceipt, ApiError> {
     let fetched = svc_paper::fetch_full_text(paper, &config::data_dir()).await?;
     Ok(state.with_conn(|conn| fetched.commit(conn))?)
+}
+
+/// `POST /api/papers/saved` — which of the given canonical stored ids
+/// (`arxiv:2204.12985`-style, the wire `entry_id`) the library holds active.
+/// Matches are echoed verbatim; trashed and unknown ids are simply absent.
+/// The search page's saved-indicator query is the caller.
+fn saved(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
+    #[derive(Deserialize)]
+    struct Body {
+        source_ids: Vec<String>,
+    }
+    let b: Body = ctx.parse_body()?;
+    let ids = state.with_conn(|conn| svc_paper::existing_source_ids(conn, &b.source_ids))?;
+    Ok(json!({ "saved_source_ids": ids }))
 }
 
 /// `GET /api/papers/{source_id}` — `api_get_paper`. Bare `to_dict()`.
@@ -347,6 +362,44 @@ mod tests {
         .unwrap();
         m.doi = doi.map(String::from);
         m
+    }
+
+    /// The saved-lookup contract the search page's indicator rests on: stored
+    /// active ids echo back verbatim (namespaced), trashed and unknown ids are
+    /// absent, and an empty list is fine.
+    #[tokio::test]
+    async fn saved_reports_active_stored_ids_verbatim() {
+        let st = state();
+        st.with_conn(|conn| {
+            svc_paper::save_paper_metadata(conn, &meta("arxiv:2204.12985", None), None)?;
+            svc_paper::save_paper_metadata(conn, &meta("openalex:W123", None), None)?;
+            svc_paper::delete(conn, &sid_key("openalex:W123"))
+        })
+        .unwrap();
+
+        let out = req(
+            &st,
+            "POST",
+            "/api/papers/saved",
+            Some(json!({ "source_ids": [
+                "arxiv:2204.12985", // stored -> reported, namespaced as sent
+                "openalex:W123",    // trashed -> absent
+                "arxiv:1111.00001", // never saved -> absent
+            ] })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(out, json!({ "saved_source_ids": ["arxiv:2204.12985"] }));
+
+        let empty = req(
+            &st,
+            "POST",
+            "/api/papers/saved",
+            Some(json!({ "source_ids": [] })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(empty, json!({ "saved_source_ids": [] }));
     }
 
     /// The merge endpoint's three faces: 404 for an unknown duplicate, 409 for
