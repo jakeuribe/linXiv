@@ -1,6 +1,9 @@
 import { useRef, useState } from "react";
+import { useNavigate } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { listProjects, createProject } from "../api/projects";
+import { listProjects, createProject, archiveProject, restoreProject } from "../api/projects";
+import type { Project } from "../types/api";
+import { showContextMenu } from "../lib/contextMenu";
 import { ProjectGrid } from "../components/projects/ProjectGrid";
 import { ColorSwatch } from "../components/projects/ColorSwatch";
 import { PRESET_COLORS } from "../components/projects/constants";
@@ -12,6 +15,8 @@ import { Textarea } from "../components/ui/input";
 import { Spinner } from "../components/ui/spinner";
 import { formSubmitOnCtrlEnter } from "../lib/submitShortcut";
 import { invalidateProjectMutationQueries } from "../lib/paperMutations";
+import { listReceived, sharingAvailable } from "../api/share";
+import { receivedShareRole } from "../lib/shareRole";
 import { errText } from "../lib/errText";
 
 function NewProjectDialog({
@@ -154,12 +159,48 @@ function NewProjectDialog({
 }
 
 export default function ProjectsPage() {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  // Same archive/restore calls ProjectDetailPage's ··· menu makes.
+  async function setProjectStatus(project: Project, action: "archive" | "restore") {
+    setActionError(null);
+    try {
+      await (action === "archive" ? archiveProject : restoreProject)(project.id);
+      await invalidateProjectMutationQueries(queryClient);
+    } catch (err) {
+      setActionError(errText(err, `Failed to ${action} project`));
+    }
+  }
+
+  function handleProjectContextMenu(e: React.MouseEvent, project: Project) {
+    // §7 viewer read-only: same gating as ProjectDetailPage's overflow menu —
+    // a viewer-role shared project gets no edit affordances, only Open.
+    const viewer = receivedShareRole(project, receivedShares) === "viewer";
+    showContextMenu(e, [
+      { text: "Open", action: () => navigate(`/projects/${project.id}`) },
+      ...(viewer
+        ? []
+        : [
+            project.status === "archived"
+              ? { text: "Restore", action: () => void setProjectStatus(project, "restore") }
+              : { text: "Archive", action: () => void setProjectStatus(project, "archive") },
+          ]),
+    ]);
+  }
 
   const { data, isLoading, isError, error } = useQuery({
     queryKey: ["projects", showArchived ? "archived" : "active"],
     queryFn: () => listProjects(showArchived ? "archived" : "active"),
+  });
+
+  const { data: receivedShares } = useQuery({
+    queryKey: ["share", "received"],
+    queryFn: listReceived,
+    enabled: sharingAvailable && (data?.projects ?? []).some((p) => p.share_id),
   });
 
   const { data: archivedData } = useQuery({
@@ -212,6 +253,13 @@ export default function ProjectsPage() {
         </div>
       )}
 
+      {/* Context-menu action error */}
+      {actionError && (
+        <p className="text-xs" style={{ color: "var(--color-danger)" }}>
+          {actionError}
+        </p>
+      )}
+
       {/* Error */}
       {isError && (
         <div
@@ -239,7 +287,11 @@ export default function ProjectsPage() {
 
       {/* Grid */}
       {projects.length > 0 && (
-        <ProjectGrid projects={projects} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" />
+        <ProjectGrid
+          projects={projects}
+          className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"
+          onProjectContextMenu={handleProjectContextMenu}
+        />
       )}
 
       <NewProjectDialog

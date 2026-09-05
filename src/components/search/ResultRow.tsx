@@ -5,6 +5,7 @@ import type { SearchResult } from "../../types/api";
 import { isArxivId } from "../../lib/papers";
 import { errText } from "../../lib/errText";
 import { MathText } from "../../lib/tex";
+import { showContextMenu } from "../../lib/contextMenu";
 
 interface ResultRowProps {
   result: SearchResult;
@@ -43,6 +44,18 @@ export function ResultRow({ result, saved, onSave, onViewPdf }: ResultRowProps) 
   return (
     <div
       className="border-b border-[var(--color-border)] last:border-b-0"
+      onContextMenu={(e) =>
+        showContextMenu(e, [
+          {
+            text: saved ? "In Library" : "Save to Library",
+            action: () => void handleSave(),
+            enabled: !saved && !saving,
+          },
+          ...(result.paper_url && isArxivId(result.source_id)
+            ? [{ text: "View PDF", action: () => onViewPdf(result, saved) }]
+            : []),
+        ])
+      }
     >
       <div
         className="flex items-start gap-3 px-4 py-3 hover:bg-[var(--color-panel)] transition-colors cursor-pointer"
