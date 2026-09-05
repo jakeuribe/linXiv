@@ -4,7 +4,6 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Document, Page, pdfjs } from "react-pdf";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import { fetchArxiv } from "../api/search";
-import { appendSavedId } from "../api/searchState";
 import { bytesToBase64, isTauri } from "../api/client";
 import { libraryFetch } from "../stores/backend";
 import { getPdfProxyUrl } from "../api/papers";
@@ -85,9 +84,8 @@ export default function PdfPreviewPage() {
     onSuccess: (data) => {
       if (data.saved) {
         setSaved(true);
-        appendSavedId(data.source_id).catch((e) =>
-          console.error("appendSavedId failed:", e)
-        );
+        // The search page's saved indicator is a ["papers",...] query, so this
+        // invalidation is all it needs to pick the save up.
         invalidatePaperMutationQueries(queryClient);
       }
     },
