@@ -106,8 +106,8 @@
 <h2>Access log <button id="refresh" class="plain">refresh</button></h2>
 <p class="muted">To join: connect the device once, find its denied entry below, add its id above.</p>
 <table>
-  <thead><tr><th>#</th><th>endpoint id</th><th>via</th><th>allowed</th></tr></thead>
-  <tbody id="log"><tr><td colspan="4" class="muted">loading…</td></tr></tbody>
+  <thead><tr><th>#</th><th>when (UTC)</th><th>endpoint id</th><th>via</th><th>allowed</th></tr></thead>
+  <tbody id="log"><tr><td colspan="5" class="muted">loading…</td></tr></tbody>
 </table>
 
 <h2>Transfers</h2>
@@ -262,7 +262,7 @@ async function loadLog() {
   if (!entries.length) {
     const tr = tb.insertRow();
     const td = tr.insertCell();
-    td.colSpan = 4;
+    td.colSpan = 5;
     td.className = "muted";
     text(td, "no entries yet");
     return;
@@ -270,6 +270,7 @@ async function loadLog() {
   for (const e of entries.slice().reverse()) { // newest first
     const tr = tb.insertRow();
     text(tr.insertCell(), String(e.seq));
+    text(tr.insertCell(), (e.at || "").replace("T", " ").slice(0, 19) || "—");
     const idCell = tr.insertCell();
     idCell.className = "mono";
     text(idCell, e.endpoint_id || "—");
