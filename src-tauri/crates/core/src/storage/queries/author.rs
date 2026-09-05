@@ -591,6 +591,26 @@ mod tests {
     }
 
     #[test]
+    fn list_with_paper_count_zero_count_authors_only_at_min_zero() {
+        let conn = open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        let (_pid, a1, a2) = seed(&conn);
+        // Trash the only paper: both authors keep their links but count 0.
+        conn.execute("UPDATE PAPER_ROOTS SET STATUS = 'deleted'", [])
+            .unwrap();
+        // Link-less orphan, the shape hard delete leaves behind (ADR-0009).
+        let ghost = create_author(&conn, "Ghost Author", None, None, None).unwrap();
+
+        // min_papers=1 (the UI default) hides all of them...
+        assert!(list_with_paper_count(&conn, 1).unwrap().is_empty());
+        // ...min_papers=0 (CLI) still surfaces every author, count 0.
+        let all = list_with_paper_count(&conn, 0).unwrap();
+        let ids: HashSet<i64> = all.iter().map(|a| a.base.author_id).collect();
+        assert_eq!(ids, HashSet::from([a1, a2, ghost]));
+        assert!(all.iter().all(|a| a.paper_count == 0));
+    }
+
+    #[test]
     fn unlink_and_delete() {
         let conn = open_in_memory().unwrap();
         init_db(&conn).unwrap();

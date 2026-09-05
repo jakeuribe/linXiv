@@ -267,7 +267,7 @@ impl Server {
     #[tool(description = "List all authors in the library with their paper counts.")]
     pub async fn list_authors(&self) -> Result<String, ErrorData> {
         let authors = self
-            .with_conn(|conn| svc_author::list_with_paper_count(conn, 0))
+            .with_conn(|conn| svc_author::list_with_paper_count(conn, 1))
             .map_err(map_core)?;
         json_ok(&authors)
     }
