@@ -3,8 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Lock } from "lucide-react";
 import {
   getShareSettings,
-  importReceived,
   leaveShare,
+  unlinkShare,
   unpublishShare,
   updateShareSettings,
   type ShareDirection,
@@ -18,7 +18,7 @@ import { Button } from "../ui/button";
 import { Dialog } from "../ui/dialog";
 import { OptionSelect } from "../ui/select";
 import { Spinner } from "../ui/spinner";
-import { type ShareRole } from "./ShareCard";
+import { useImportReceived, type ShareRole } from "./ShareCard";
 import { MembersSection } from "./MembersSection";
 
 const DIRECTION_OPTIONS: { value: ShareDirection; label: string }[] = [
@@ -88,8 +88,9 @@ export function ShareSettingsDialog({
       invalidateShares();
     },
   });
-  const importM = useMutation({
-    mutationFn: () => importReceived(share.share_id),
+  const importM = useImportReceived(share.share_id);
+  const unlinkM = useMutation({
+    mutationFn: () => unlinkShare(share.share_id),
     onSuccess: () => {
       invalidateShares();
       invalidateProjectMutationQueries(queryClient);
@@ -114,7 +115,12 @@ export function ShareSettingsDialog({
   });
 
   const err =
-    update.error ?? importM.error ?? leaveM.error ?? unpublishM.error ?? settings.error;
+    update.error ??
+    importM.error ??
+    unlinkM.error ??
+    leaveM.error ??
+    unpublishM.error ??
+    settings.error;
   const settingsUnusable = settings.isLoading || settings.isError;
   const paused = settings.data?.paused ?? share.paused;
   const dangerLabel = hosted ? "Unpublish" : "Leave share";
@@ -177,9 +183,25 @@ export function ShareSettingsDialog({
               {importM.isPending ? <Spinner size={14} /> : "Import to library"}
             </Button>
           ) : (
-            <span className="truncate text-[13px]" style={{ color: "var(--color-muted)" }}>
-              {linkedProject?.name ?? `Project #${share.project_fk}`}
-            </span>
+            <div className="flex min-w-0 items-center gap-2">
+              <span
+                className="truncate text-[13px]"
+                style={{ color: "var(--color-muted)" }}
+              >
+                {linkedProject?.name ?? `Project #${share.project_fk}`}
+              </span>
+              {/* Detaches the link only — membership, mirror, and the local
+                  project all stay; the row flips back to "Import to library". */}
+              <Button
+                variant="muted"
+                size="sm"
+                title="Unlink local project"
+                onClick={() => unlinkM.mutate()}
+                disabled={unlinkM.isPending}
+              >
+                {unlinkM.isPending ? <Spinner size={14} /> : "Unlink"}
+              </Button>
+            </div>
           )}
         </SettingsRow>
         {err != null && (

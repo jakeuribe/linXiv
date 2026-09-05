@@ -241,6 +241,12 @@ pub fn find_by_share_id(conn: &Connection, share_id: &str) -> Result<Option<i64>
     pq::find_by_share_id(conn, share_id)
 }
 
+/// Detach the local project (if any) linked to this share_id; the project and
+/// the share both survive. Returns whether a link existed.
+pub fn release_share_id(conn: &Connection, share_id: &str) -> Result<bool> {
+    Ok(pq::release_share_id(conn, share_id)? > 0)
+}
+
 /// Adopt share_id for this project; errors if another live project claims it.
 pub fn adopt_share_id(conn: &Connection, project_fk: i64, share_id: &str) -> Result<()> {
     pq::release_share_id_from_deleted(conn, share_id)?;

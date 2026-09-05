@@ -153,6 +153,15 @@ export async function importReceived(
   return shareApi("POST", `/api/share/received/${shareId}/import`);
 }
 
+/** Detach the linked local project from a received share. Membership, mirror,
+ *  and the local project all stay; interval sync keeps the mirror fresh but
+ *  stops importing until {@link importReceived} creates a new link. */
+export async function unlinkShare(
+  shareId: string
+): Promise<{ unlinked: boolean }> {
+  return shareApi("POST", `/api/share/received/${shareId}/unlink`);
+}
+
 /** One-shot sync of a single share, honoring its paused/direction settings. */
 export async function syncShare(
   shareId: string

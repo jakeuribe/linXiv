@@ -255,6 +255,9 @@ pub async fn dispatch(
                 .map(|fk| json!({ "project_fk": fk }));
         }
         ("POST", ["api", "share", "received", id, "leave"]) => return leave(share, id).await,
+        ("POST", ["api", "share", "received", id, "unlink"]) => {
+            return unlink(state, share, id).await
+        }
         ("POST", ["api", "share", id, "sync"]) => {
             return share_sync::sync_share(state, share, id).await
         }
@@ -694,6 +697,30 @@ async fn leave(share: &ShareState, id: &str) -> Result<Value, ApiError> {
     let _ = std::fs::remove_file(share_sync::ticket_path(dir, id));
     let _ = std::fs::remove_file(share_sync::settings_path(dir, id));
     Ok(json!({ "left": true, "forgotten": forgotten }))
+}
+
+/// `POST /api/share/received/{id}/unlink` — detach the linked local project
+/// from a received share. Membership, mirror, and the project all stay; the
+/// interval sync keeps refreshing the mirror but stops importing (its import
+/// legs are gated on `find_by_share_id`). Re-importing creates a fresh link.
+async fn unlink(state: &AppState, share: &ShareState, id: &str) -> Result<Value, ApiError> {
+    if !valid_share_id(id) {
+        return Err(ApiError::new(404, format!("share {id:?} not found")));
+    }
+    let dir = share.share_dir();
+    // Received mirrors only: clearing a hoster project's SHARE_ID would drop
+    // its publish identity.
+    if !doc_path(&received_dir(dir), id).is_file()
+        && !doc_path(&e2ee_received_dir(dir), id).is_file()
+    {
+        return Err(ApiError::new(
+            404,
+            format!("received share {id:?} not found"),
+        ));
+    }
+    let _lock = share.lock_writes(id).await;
+    let unlinked = state.with_conn(|c| project_svc::release_share_id(c, id))?;
+    Ok(json!({ "unlinked": unlinked }))
 }
 
 /// `GET /api/share/received/{id}` — the full subgraph of one received mirror
@@ -1746,6 +1773,71 @@ mod tests {
             .unwrap()
             .unwrap();
             assert_eq!(p.source_fks.len(), 1, "paper not re-linked twice");
+        });
+    }
+
+    #[tokio::test]
+    async fn unlink_clears_link_keeps_project_and_mirror() {
+        let state = empty_state();
+        let dir = tempfile::tempdir().unwrap();
+        let share = ShareState::new(dir.path());
+        save(&received_dir(dir.path()), &remote_shared(SID, "b")).unwrap();
+        let fk = share_sync::import_received(&state, dir.path(), SID).unwrap();
+
+        let v = unlink(&state, &share, SID).await.unwrap();
+
+        assert_eq!(v["unlinked"], json!(true));
+        state.with_conn(|c| {
+            assert_eq!(project_svc::find_by_share_id(c, SID).unwrap(), None);
+            // The project itself survives the unlink.
+            assert!(project_svc::get(
+                c,
+                &project_svc::Project {
+                    project_fk: Some(fk)
+                },
+            )
+            .unwrap()
+            .is_some());
+        });
+        assert!(doc_path(&received_dir(dir.path()), SID).exists());
+        // Idempotent: a second unlink reports no link; unknown id → 404.
+        let v = unlink(&state, &share, SID).await.unwrap();
+        assert_eq!(v["unlinked"], json!(false));
+        assert_eq!(
+            unlink(&state, &share, "44444444-4444-4444-8444-444444444444")
+                .await
+                .unwrap_err()
+                .status,
+            404
+        );
+    }
+
+    #[tokio::test]
+    async fn unlink_refuses_hoster_share() {
+        // A hosted doc lives at the share-dir root, not under received/ —
+        // unlink must 404 and leave the publish-identity link intact.
+        let mut conn = storage::open_in_memory().unwrap();
+        storage::init_db(&conn).unwrap();
+        let fk = project_svc::create(
+            &mut conn,
+            &linxiv_core::models::ProjectIn {
+                name: "Hosted".into(),
+                description: String::new(),
+                color: None,
+                tags: vec![],
+                source_fks: vec![],
+            },
+        )
+        .unwrap();
+        project_svc::adopt_share_id(&conn, fk, SID).unwrap();
+        let state = AppState::from_parts(conn, std::env::temp_dir(), std::env::temp_dir());
+        let dir = tempfile::tempdir().unwrap();
+        let share = ShareState::new(dir.path());
+        save(dir.path(), &remote_shared(SID, "b")).unwrap();
+
+        assert_eq!(unlink(&state, &share, SID).await.unwrap_err().status, 404);
+        state.with_conn(|c| {
+            assert_eq!(project_svc::find_by_share_id(c, SID).unwrap(), Some(fk));
         });
     }
 
