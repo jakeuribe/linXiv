@@ -147,7 +147,7 @@ pub fn merge_papers(
             return Ok(());
         }
         if from != to.as_path() {
-            fs::rename(from, &to).map_err(|e| {
+            crate::service::files::rename_pdf_counted(pdf_dir, from, &to).map_err(|e| {
                 CoreError::Internal(format!(
                     "merge_papers: renaming PDF {from:?} -> {to:?} failed: {e}"
                 ))
@@ -183,14 +183,14 @@ pub fn merge_papers(
         }
     }
     if let Err(e) = fs_result {
-        return Err(fold_undo_failures(e, undo_renames(&done)));
+        return Err(fold_undo_failures(e, undo_renames(pdf_dir, &done)));
     }
 
     // ── DB phase ────────────────────────────────────────────────────────────
     let stats: MergeStats = match store::merge_paper_roots(conn, &plan, &renames) {
         Ok(s) => s,
         Err(e) => {
-            return Err(fold_undo_failures(e, undo_renames(&done)));
+            return Err(fold_undo_failures(e, undo_renames(pdf_dir, &done)));
         }
     };
 
@@ -246,10 +246,10 @@ pub fn merge_papers(
 
 /// Reverse the FS phase, reporting what could NOT be restored (the caller
 /// folds failures into its error instead of silently losing them).
-fn undo_renames(done: &[DoneRename]) -> Vec<String> {
+fn undo_renames(pdf_dir: &Path, done: &[DoneRename]) -> Vec<String> {
     let mut failed = Vec::new();
     for r in done.iter().rev() {
-        if let Err(e) = fs::rename(&r.to, &r.from) {
+        if let Err(e) = crate::service::files::rename_pdf_counted(pdf_dir, &r.to, &r.from) {
             failed.push(format!("{:?} -> {:?}: {e}", r.to, r.from));
         }
     }
@@ -367,6 +367,34 @@ mod tests {
         assert_eq!(row(1), (expect("arxiv_Wv1.pdf"), true));
         assert_eq!(row(2), (expect("arxiv_Wv2.pdf"), true));
         assert_eq!(row(3), (expect("arxiv_Wv3.pdf"), true));
+    }
+
+    /// The rename must move the storage-cache entry with the file: a phantom
+    /// entry under the loser's name has the same size as the renamed file, so
+    /// the total only skews once the renamed PDF is deleted — assert there.
+    #[test]
+    fn merge_renames_keep_the_pdf_storage_cache_in_sync() {
+        use crate::service::files::{delete_pdf, pdf_storage_bytes};
+        let dir = tempdir().unwrap();
+        let (mut conn, w, _l) = seeded(dir.path());
+        assert!(pdf_storage_bytes(dir.path()) > 0); // seed the cache pre-merge
+
+        merge_papers(
+            &mut conn,
+            dir.path(),
+            &PaperRef::SourceFk(w),
+            &PaperRef::source("local:L".into()),
+        )
+        .unwrap();
+
+        let renamed = dir.path().join("arxiv_Wv2.pdf");
+        assert!(delete_pdf(dir.path(), &renamed.to_string_lossy()));
+        // Fresh walk with the production filter (.pdf files only), so the
+        // comparison holds the real counting semantics, not read_dir's.
+        let walk: u64 = crate::service::files::walk_pdf_files(dir.path())
+            .values()
+            .sum();
+        assert_eq!(pdf_storage_bytes(dir.path()), walk);
     }
 
     #[test]
@@ -549,7 +577,7 @@ mod tests {
             from: dir.path().join("orig2.pdf"),
             to: dir.path().join("never-existed.pdf"),
         };
-        let failed = undo_renames(&[restorable, gone]);
+        let failed = undo_renames(dir.path(), &[restorable, gone]);
         assert_eq!(failed.len(), 1);
         assert!(dir.path().join("orig.pdf").is_file());
 
