@@ -74,8 +74,10 @@ pub enum Dir {
 }
 
 // cmd_search: search the source, dump the results as `SearchResultOut` — the
-// canonical search wire shape all three surfaces emit (ADR-0011). The
+// canonical remote-search wire shape all three surfaces emit (ADR-0011). The
 // `[search] {e}` prefix line + error JSON mirror Python's two-line stderr on failure.
+// `--local` instead dumps the library rows (`PaperDetails`) that
+// `GET /api/papers/search` returns — library hits, not remote-search results.
 pub async fn search(args: SearchArgs, ctx: &mut Ctx) -> anyhow::Result<()> {
     // `--local`: the same `svc_paper::search_library` FTS + note merge the GUI
     // route and `paper search` call; `--max` caps hits like their `limit`.

@@ -184,11 +184,8 @@ pub(super) fn import_pdfs(
             .next()
             .unwrap_or(&entry.archive_name);
         let dest = pdf_dir.join(basename);
-        // Delta vs a pre-existing copy the write replaces (re-import) keeps the
-        // cached storage total in step with the walk.
-        let old = std::fs::metadata(&dest).map_or(0, |m| m.len());
         std::fs::write(&dest, &entry.bytes).map_err(|e| CoreError::Internal(e.to_string()))?;
-        crate::service::files::note_pdf_bytes_delta(pdf_dir, entry.bytes.len() as i64 - old as i64);
+        crate::service::files::note_pdf_written(&dest, entry.bytes.len() as u64);
         let dest_str = dest.to_string_lossy().to_string();
 
         if let Err(e) = paper::mark_pdf_saved(conn, &name.source_id, &dest_str, name.version) {

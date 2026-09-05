@@ -49,9 +49,9 @@ fn author_fk_for_name(tx: &Transaction, full_name: &str) -> Result<i64> {
 /// paper references any more (ADR-0009: hard-delete leaves orphans, this does not).
 /// `author_orcids`, index-aligned with `authors` when present, fills a NULL
 /// ORCID only (never overwrites); inherits `author_fk_for_name`'s name-collision ceiling.
-/// GC only deletes rows holding nothing a re-sync couldn't recreate: a row with
-/// an ORCID or split first/last names (set only outside this path) survives even
-/// paperless, so a respelled author name can't destroy manually-entered data.
+/// GC only deletes bare rows: no ORCID, no split first/last names. The schema keeps
+/// no provenance, so an ORCID-bearing row — filled from source metadata above or set
+/// manually — is kept even paperless; manual edits never die to a respelled name.
 fn sync_paper_authors(
     tx: &Transaction,
     paper_id: i64,

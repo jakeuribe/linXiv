@@ -158,7 +158,14 @@ const { data: settings } = useQuery({ queryKey: ["settings"], queryFn: getSettin
           if (firstClause?.value) setQueryText(firstClause.value);
           if (SOURCES.includes(state.source as Source)) setSource(state.source as Source);
           setMaxResults(state.max_results);
-          setResults(state.results);
+          // A namespaced source_id IS the canonical stored id (remote results
+          // carry a stripped one) — pre-existing persisted rows prefixed source
+          // onto it again ("arxiv:arxiv:X", "crossref:doi:X") and would never
+          // match the saved lookup.
+          setResults(state.results.map((r) => ({
+            ...r,
+            entry_id: r.source_id.includes(":") ? r.source_id : r.entry_id,
+          })));
           setSortPrefs(parseSortPrefs(state.sort_prefs));
         }
       })
@@ -274,12 +281,16 @@ const { data: settings } = useQuery({ queryKey: ["settings"], queryFn: getSettin
       await fetchArxiv(sourceId, true);
     } else if (/^W\d+$/.test(sourceId)) {
       await saveOpenAlex(sourceId);
-    } else {
-      // Local-search rows are in the library, so the saved query reports them
-      // and the row renders an indicator, not a save button — this is
-      // unreachable from the UI. Throw to surface any unexpected call site.
-      throw new Error(`Unknown source ID format: ${sourceId}`);
+    } else if (sourceId.startsWith("arxiv:")) {
+      // Namespaced ids arrive when a row offers save before the saved lookup
+      // resolves (or after it failed); re-saving a library paper is an
+      // idempotent upsert.
+      await fetchArxiv(sourceId.slice("arxiv:".length), true);
+    } else if (/^openalex:W\d+$/.test(sourceId)) {
+      await saveOpenAlex(sourceId.slice("openalex:".length));
     }
+    // Any other id (doi:/local:) exists only as a library paper — nothing
+    // remote to save; the refetch below corrects the row's indicator.
     // Await the fan-out so the saved query has refetched (and the row's
     // indicator flipped) before the row's saving spinner clears — the query
     // cache is the only saved state there is.
