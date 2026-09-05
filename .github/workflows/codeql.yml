@@ -15,17 +15,18 @@
 name: CodeQL
 
 on:
-  push:
-    branches: [main]
   pull_request:
-    branches: [main]
-  schedule:
-    # Weekly, matching the cadence default setup was configured with.
-    - cron: "23 1 * * 1"
+    branches: [main, dev]
 
 jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
+    # PRs to main always scan; PRs to dev skip for trusted authors.
+    # TRUSTED_AUTHORS is a repo Actions variable holding a JSON array of
+    # GitHub usernames, e.g. ["jakeuribe"]. Unset/empty means trust no one.
+    if: >-
+      github.base_ref == 'main' ||
+      !contains(fromJSON(vars.TRUSTED_AUTHORS || '[]'), github.event.pull_request.user.login)
     runs-on: ubuntu-latest
     permissions:
       security-events: write
