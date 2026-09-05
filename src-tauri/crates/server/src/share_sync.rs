@@ -740,6 +740,26 @@ mod tests {
             .unwrap();
         assert!(p.project_tags.contains(&"post-invite".to_string()));
 
+        // Unlink B's local project, then sync again: the reader leg must keep
+        // refreshing the mirror WITHOUT re-creating the project link — that
+        // gate (find_by_share_id before import) is what the unlink feature's
+        // "stops mirroring, membership survives" promise rests on.
+        assert!(state_b
+            .with_conn(|c| project_svc::release_share_id(c, E2EE_SID))
+            .unwrap());
+        let v = slow(sync_share(&state_b, &share_b, E2EE_SID))
+            .await
+            .unwrap();
+        assert_eq!(v["synced"], json!(true));
+        assert_eq!(v["role"], json!("reader"));
+        assert_eq!(
+            state_b
+                .with_conn(|c| project_svc::find_by_share_id(c, E2EE_SID))
+                .unwrap(),
+            None,
+            "sync must not re-link an unlinked share"
+        );
+
         share_a.shutdown().await.unwrap();
         share_b.shutdown().await.unwrap();
     }

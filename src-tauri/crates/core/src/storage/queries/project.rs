@@ -130,6 +130,14 @@ pub fn share_id_claimed_by_other(
         .is_some())
 }
 
+/// Clear SHARE_ID from any live (non-trashed) holder of this share_id.
+pub fn release_share_id(conn: &Connection, share_id: &str) -> Result<usize> {
+    Ok(conn.execute(
+        "UPDATE PROJECT SET SHARE_ID = NULL WHERE SHARE_ID = ?1 AND STATUS != 'deleted'",
+        [share_id],
+    )?)
+}
+
 /// Clear SHARE_ID from any trashed (STATUS = 'deleted') holder of this share_id.
 pub fn release_share_id_from_deleted(conn: &Connection, share_id: &str) -> Result<usize> {
     Ok(conn.execute(
