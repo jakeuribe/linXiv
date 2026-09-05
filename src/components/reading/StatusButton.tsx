@@ -6,25 +6,22 @@ import {
 } from "../../api/readingStatus";
 import { cycleStatus, statusLabel, type ReadingStatus } from "../../lib/readingStatus";
 
-export function StatusButton({ sourceId }: { sourceId: string }) {
+/** Set a paper's reading status (undefined = unread). Optimistic: the pill
+ *  must flip on click (parity with the old local store); the settle-time
+ *  invalidation reconciles with the backend. Shared by the pill button and the
+ *  reading-queue context menu. */
+export function useSetReadingStatus() {
   const queryClient = useQueryClient();
-  const { data: statuses } = useQuery({
-    queryKey: READING_STATUS_QUERY_KEY,
-    queryFn: fetchReadingStatuses,
-  });
-  const status = statuses?.[sourceId];
-  const cycle = useMutation({
-    mutationFn: (next: ReadingStatus | undefined) =>
-      putReadingStatus(sourceId, next ?? "unread"),
-    // Optimistic: the pill must flip on click (parity with the old local
-    // store); the settle-time invalidation reconciles with the backend.
-    onMutate: (next) => {
+  return useMutation({
+    mutationFn: ({ sourceId, status }: { sourceId: string; status: ReadingStatus | undefined }) =>
+      putReadingStatus(sourceId, status ?? "unread"),
+    onMutate: ({ sourceId, status }) => {
       queryClient.setQueryData(
         READING_STATUS_QUERY_KEY,
         (cur: Record<string, ReadingStatus> | undefined) => {
           const map = { ...cur };
-          if (next === undefined) delete map[sourceId];
-          else map[sourceId] = next;
+          if (status === undefined) delete map[sourceId];
+          else map[sourceId] = status;
           return map;
         }
       );
@@ -32,6 +29,15 @@ export function StatusButton({ sourceId }: { sourceId: string }) {
     onSettled: () =>
       queryClient.invalidateQueries({ queryKey: READING_STATUS_QUERY_KEY }),
   });
+}
+
+export function StatusButton({ sourceId }: { sourceId: string }) {
+  const { data: statuses } = useQuery({
+    queryKey: READING_STATUS_QUERY_KEY,
+    queryFn: fetchReadingStatuses,
+  });
+  const status = statuses?.[sourceId];
+  const cycle = useSetReadingStatus();
   const color =
     status === "read"
       ? "var(--color-success)"
@@ -41,7 +47,7 @@ export function StatusButton({ sourceId }: { sourceId: string }) {
   return (
     <button
       type="button"
-      onClick={(e) => { e.stopPropagation(); cycle.mutate(cycleStatus(status)); }}
+      onClick={(e) => { e.stopPropagation(); cycle.mutate({ sourceId, status: cycleStatus(status) }); }}
       title="Cycle status: unread → reading → read → unread"
       className="font-mono font-medium shrink-0 self-start cursor-pointer"
       style={{

@@ -20,14 +20,17 @@ interface PaperRowProps {
   project: Pick<Project, "project_tags">;
   /** Viewer read-only shares hide the selection checkbox (spec §7). */
   selectable: boolean;
+  /** Native context menu (Tauri); browser dev falls through to the default. */
+  onContextMenu?: React.MouseEventHandler;
 }
 
-export function PaperRow({ paper, checked, onToggle, projectId, project, selectable }: PaperRowProps) {
+export function PaperRow({ paper, checked, onToggle, projectId, project, selectable, onContextMenu }: PaperRowProps) {
   const navigate = useNavigate();
   const authors = paper.authors.slice(0, 3).join(", ");
 
   return (
     <div
+      onContextMenu={onContextMenu}
       className="flex items-start gap-3 px-4 py-3 transition-colors hover:bg-[var(--color-panel)]"
       style={{ borderBottom: "1px solid var(--color-border)" }}
     >

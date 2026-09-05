@@ -11,12 +11,16 @@ interface PaperCardProps {
   paper: Paper;
   showCheckbox?: boolean;
   onNavigate: (sfk: number) => void;
+  /** Native context menu (Tauri); browser dev falls through to the default.
+   *  Takes the paper so pages can pass one stable callback (the card is memoized). */
+  onContextMenu?: (e: React.MouseEvent, paper: Paper) => void;
 }
 
 export const PaperCard = memo(function PaperCard({
   paper,
   showCheckbox = false,
   onNavigate,
+  onContextMenu,
 }: PaperCardProps) {
   const isSelected = useSelectionStore((s) => s.selectedIds.has(paper.source_id));
   const toggle = useSelectionStore((s) => s.toggle);
@@ -41,6 +45,7 @@ export const PaperCard = memo(function PaperCard({
 
   return (
     <div
+      onContextMenu={onContextMenu && ((e) => onContextMenu(e, paper))}
       className={[
         "flex items-start gap-4 bg-panel border border-border shadow-card transition-all",
         isSelected ? "ring-1 ring-accent" : "",
