@@ -49,6 +49,9 @@ fn author_fk_for_name(tx: &Transaction, full_name: &str) -> Result<i64> {
 /// paper references any more (ADR-0009: hard-delete leaves orphans, this does not).
 /// `author_orcids`, index-aligned with `authors` when present, fills a NULL
 /// ORCID only (never overwrites); inherits `author_fk_for_name`'s name-collision ceiling.
+/// GC only deletes rows holding nothing a re-sync couldn't recreate: a row with
+/// an ORCID or split first/last names (set only outside this path) survives even
+/// paperless, so a respelled author name can't destroy manually-entered data.
 fn sync_paper_authors(
     tx: &Transaction,
     paper_id: i64,
@@ -88,6 +91,7 @@ fn sync_paper_authors(
         tx.execute(
             &format!(
                 "DELETE FROM AUTHOR WHERE AUTHOR_FK IN ({placeholders}) \
+                 AND AUTHOR_ORCID IS NULL AND AUTHOR_FIRST IS NULL AND AUTHOR_LAST IS NULL \
                  AND NOT EXISTS (SELECT 1 FROM PAPER_TO_AUTHOR \
                                  WHERE AUTHOR_FK = AUTHOR.AUTHOR_FK)"
             ),
@@ -535,6 +539,57 @@ mod tests {
         save_paper_metadata(&mut conn, &m2, None).unwrap();
         assert_eq!(orcid(&conn, "Alice").as_deref(), Some("0000-1")); // unchanged
         assert_eq!(orcid(&conn, "Bob").as_deref(), Some("0000-2")); // filled, was NULL
+    }
+
+    #[test]
+    fn author_gc_spares_manual_orcid_on_respelled_name() {
+        let mut conn = open_in_memory().unwrap();
+        init_db(&conn).unwrap();
+        save_paper_metadata(&mut conn, &meta("arxiv:X", 1), None).unwrap();
+        let source_fk = ensure_paper_root(&mut conn, "arxiv:X").unwrap();
+
+        // Manually set Alice's ORCID via the real manual-edit path.
+        let alice_fk: i64 = conn
+            .query_row(
+                "SELECT AUTHOR_FK FROM AUTHOR WHERE AUTHOR_FULL_NAME = 'Alice'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        crate::storage::queries::author::update_author(
+            &conn,
+            alice_fk,
+            None,
+            None,
+            None,
+            Some("0000-7"),
+        )
+        .unwrap();
+
+        // Re-save with both names respelled: old spellings become paperless.
+        let mut m2 = meta("arxiv:X", 1);
+        m2.authors = vec!["Alicia".into(), "Robert".into()];
+        repair_paper(&mut conn, source_fk, &m2).unwrap();
+
+        // Alice's row holds a manually-set ORCID -> exempt from GC.
+        let kept: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM AUTHOR WHERE AUTHOR_FK = ? AND AUTHOR_ORCID = '0000-7'",
+                [alice_fk],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept, 1, "manual ORCID row must survive a respelling");
+
+        // Bob's row held nothing beyond the auto-created name -> still GC'd.
+        let bob: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM AUTHOR WHERE AUTHOR_FULL_NAME = 'Bob'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bob, 0, "bare paperless rows are still garbage-collected");
     }
 
     #[test]
