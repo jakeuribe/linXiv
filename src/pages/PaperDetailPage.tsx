@@ -528,8 +528,12 @@ export default function PaperDetailPage() {
             : undefined
         }
       >
-        {/* Left pane: PDF */}
-        <div className={hasPdfContent ? "min-h-0 overflow-y-auto bg-surface2 border-r border-border" : "shrink-0 flex items-center gap-3 flex-wrap px-6 py-3 bg-surface2 border-b border-border"}>
+        {/* Left pane: PDF. While the metadata editor (a non-modal dialog with
+            a z-40 click shield) is open, raise this pane above the shield so
+            the PDF stays selectable while the rest of the page is inert.
+            Only when it actually shows a PDF — the no-PDF strip holds
+            mutating save/link buttons that must stay behind the shield. */}
+        <div className={`${showEditor && hasPdfContent ? "relative z-[45] " : ""}${hasPdfContent ? "min-h-0 overflow-y-auto bg-surface2 border-r border-border" : "shrink-0 flex items-center gap-3 flex-wrap px-6 py-3 bg-surface2 border-b border-border"}`}>
           <div className={hasPdfContent ? "h-full flex flex-col" : "contents"}>
             <PdfPane
               paper={paper}
