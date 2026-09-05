@@ -15,19 +15,47 @@ interface DialogProps {
   title: string;
   children: ReactNode;
   size?: keyof typeof SIZE_CLASSES;
+  // Non-modal: no overlay/focus trap, anchored to the right so the page (e.g.
+  // the PDF pane) stays visible and interactive; outside clicks don't dismiss.
+  // (Tab still wraps inside the content: Radix's FocusScope loops regardless
+  // of modality.)
+  modal?: boolean;
+  // Radix Content's onOpenAutoFocus, for callers that must steer (or
+  // suppress) the mount-time focus — e.g. keep a PDF text selection alive.
+  onOpenAutoFocus?: (e: Event) => void;
 }
 
-export function Dialog({ open, onClose, title, children, size = "md" }: DialogProps) {
+export function Dialog({
+  open,
+  onClose,
+  title,
+  children,
+  size = "md",
+  modal = true,
+  onOpenAutoFocus,
+}: DialogProps) {
   const maxW = SIZE_CLASSES[size];
   return (
-    <RadixDialog.Root open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
+    <RadixDialog.Root open={open} onOpenChange={(o) => { if (!o) onClose(); }} modal={modal}>
       <RadixDialog.Portal>
-        <RadixDialog.Overlay
-          className="fixed inset-0 z-40 backdrop-blur-sm animate-in fade-in"
-          style={{ backgroundColor: "rgba(0,0,0,0.45)" }}
-        />
+        {modal ? (
+          <RadixDialog.Overlay
+            className="fixed inset-0 z-40 backdrop-blur-sm animate-in fade-in"
+            style={{ backgroundColor: "rgba(0,0,0,0.45)" }}
+          />
+        ) : (
+          // Invisible click shield: outside clicks must not reach page
+          // controls (navigating away would silently discard the dialog's
+          // state). A pane the page wants to keep interactive (the PDF)
+          // raises itself above z-40 while the dialog is open.
+          <div className="fixed inset-0 z-40" aria-hidden />
+        )}
         <RadixDialog.Content
-          className={`lx-rise fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100vh-3rem)] w-[calc(100%-2rem)] ${maxW} -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden`}
+          onInteractOutside={modal ? undefined : (e) => e.preventDefault()}
+          onOpenAutoFocus={onOpenAutoFocus}
+          className={`lx-rise fixed top-1/2 z-50 flex max-h-[calc(100vh-3rem)] w-[calc(100%-2rem)] ${maxW} -translate-y-1/2 flex-col overflow-hidden ${
+            modal ? "left-1/2 -translate-x-1/2" : "right-4"
+          }`}
           style={{
             backgroundColor: "var(--color-panel)",
             border: "1px solid var(--color-border)",
