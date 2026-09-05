@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 // linxiv:// links), so these never follow a remote default backend.
 import { apiFetch } from "./client";
 
+// Assembled inline by route/pdfs.rs (paper rows + fs metadata) — no core
+// struct to generate.
 export interface SavedPdf {
   source_id: string;
   source_fk: number;

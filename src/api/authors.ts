@@ -29,6 +29,7 @@ export async function updateAuthor(
   });
 }
 
+// Envelope assembled inline by route/authors.rs — no core struct to generate.
 export interface MergeCandidates {
   /** Shares this author's ORCID — near-certain duplicate. */
   candidates: BasicAuthorDetails[];
