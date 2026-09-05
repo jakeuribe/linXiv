@@ -1,15 +1,19 @@
 import { useEffect, useRef, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useMutationState, useQueryClient } from "@tanstack/react-query";
 import { Lock, Settings2 } from "lucide-react";
 import {
   downloadSharedPdf,
+  importReceived,
   listReceivedPapers,
   syncShare,
   type SharedSummary,
   shareErrText,
 } from "../../api/share";
 import { ApiError } from "../../api/client";
-import { invalidatePaperMutationQueries } from "../../lib/paperMutations";
+import {
+  invalidatePaperMutationQueries,
+  invalidateProjectMutationQueries,
+} from "../../lib/paperMutations";
 import { SHARE_SYNC_MUTATION_KEY } from "../../lib/syncPill";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
@@ -89,6 +93,30 @@ function syncCounters(d: {
   return `applied ${d.applied} · no key ${d.no_key ?? 0} · failed ${d.failed ?? 0}`;
 }
 
+/** Import a received mirror into the library; shared by the card's visible
+ * "Import to library" button and the settings dialog's Local-project row.
+ * `isPending` is derived across ALL instances of the keyed mutation, so the
+ * dialog's button is disabled while the card's import is in flight (and vice
+ * versa) instead of firing a duplicate import. */
+export function useImportReceived(shareId: string) {
+  const queryClient = useQueryClient();
+  const key = ["share", "import-received", shareId];
+  const m = useMutation({
+    mutationKey: key,
+    mutationFn: () => importReceived(shareId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["share", "published"] });
+      queryClient.invalidateQueries({ queryKey: ["share", "received"] });
+      invalidateProjectMutationQueries(queryClient);
+    },
+  });
+  const pendingAnywhere =
+    useMutationState({
+      filters: { mutationKey: key, status: "pending" },
+    }).length > 0;
+  return { ...m, isPending: m.isPending || pendingAnywhere };
+}
+
 export function ShareCard({
   share,
   role,
@@ -100,6 +128,7 @@ export function ShareCard({
 }) {
   const hosted = role === "Hoster";
   const queryClient = useQueryClient();
+  const importM = useImportReceived(share.share_id);
   const sync = useMutation({
     // Registers under the shared key so the header SyncStatusPill sees it.
     mutationKey: SHARE_SYNC_MUTATION_KEY,
@@ -114,6 +143,12 @@ export function ShareCard({
   useEffect(() => {
     resetRef.current();
   }, [share.synced_at, share.paused]);
+  // A fresh mirror (unlink → re-import gives a new project_fk) must not show
+  // the previous mirror's "Saved N of M PDFs" result.
+  const pdfsResetRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    pdfsResetRef.current();
+  }, [share.project_fk]);
   // Sequential fetch of every has_pdf paper; result summarized below.
   const [pdfProgress, setPdfProgress] = useState({ done: 0, total: 0 });
   const pdfCancelRef = useRef(false);
@@ -160,6 +195,7 @@ export function ShareCard({
       invalidatePaperMutationQueries(queryClient);
     },
   });
+  pdfsResetRef.current = pdfs.reset;
   return (
     <div className="flex flex-col overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-panel)]">
       <div className="px-5 pb-3.5 pt-4">
@@ -242,6 +278,16 @@ export function ShareCard({
             )}
           </>
         )}
+        {!hosted && !share.pending && share.project_fk == null && (
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => importM.mutate()}
+            disabled={importM.isPending}
+          >
+            {importM.isPending ? <Spinner size={14} /> : "Import to library"}
+          </Button>
+        )}
         <Button
           variant="muted"
           size="sm"
@@ -273,6 +319,11 @@ export function ShareCard({
           style={{ color: "var(--color-ink-3)" }}
         >
           {syncCounters(sync.data)}
+        </p>
+      )}
+      {importM.isError && (
+        <p className="px-5 pb-3 text-xs" style={{ color: "var(--color-danger)" }}>
+          {shareErrText(importM.error)}
         </p>
       )}
       {pdfs.isError && (
