@@ -20,6 +20,7 @@ import {
   Globe,
 } from "lucide-react";
 import { useUiStore, type SidebarPageKey } from "../../stores/ui";
+import { showContextMenu } from "../../lib/contextMenu";
 import { useImportJobsStore } from "../../stores/importJobs";
 import { useBackendStore } from "../../stores/backend";
 import { remoteIndicatorLabel } from "../../lib/remoteBackend";
@@ -150,8 +151,22 @@ function ImportProgress({ collapsed }: { collapsed: boolean }) {
 }
 
 export function Sidebar() {
-  const { sidebarCollapsed, toggleSidebar, sidebarPages } = useUiStore();
+  const { sidebarCollapsed, toggleSidebar, sidebarPages, setSidebarPage } = useUiStore();
   const w = sidebarCollapsed ? COLLAPSED_W : EXPANDED_W;
+
+  // Right-click anywhere on the nav: the same show/hide-page toggles Settings
+  // has, as native check items — so a hidden page can be re-shown from here
+  // too (its own entry is gone from the nav, so per-item menus can't do it).
+  function handleNavContextMenu(e: React.MouseEvent) {
+    showContextMenu(
+      e,
+      NAV_ITEMS.filter((n) => n.pageKey).map((n) => ({
+        text: n.label,
+        checked: sidebarPages[n.pageKey!],
+        action: () => setSidebarPage(n.pageKey!, !sidebarPages[n.pageKey!]),
+      }))
+    );
+  }
 
   return (
     <aside
@@ -207,7 +222,7 @@ export function Sidebar() {
       <RemoteModeBadge collapsed={sidebarCollapsed} />
 
       {/* Navigation */}
-      <nav className="flex-1 px-3 flex flex-col gap-1">
+      <nav className="flex-1 px-3 flex flex-col gap-1" onContextMenu={handleNavContextMenu}>
         {NAV_ITEMS.filter(({ pageKey }) => !pageKey || sidebarPages[pageKey]).map(({ to, label, icon, end }) => (
           <NavLink
             key={to}

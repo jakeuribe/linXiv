@@ -1,9 +1,11 @@
-import { Menu } from "@tauri-apps/api/menu";
+import { CheckMenuItem, Menu } from "@tauri-apps/api/menu";
+import { LogicalPosition } from "@tauri-apps/api/dpi";
 import { isTauri } from "../api/client";
 
 export type ContextMenuItem =
   | "separator"
-  | { text: string; action: () => void; enabled?: boolean };
+  // `checked` present (even false) makes it a native check item.
+  | { text: string; action: () => void; enabled?: boolean; checked?: boolean };
 
 // Rust-side menu resources are only freed via close(); keep one live menu and
 // close it before the next popup so repeated right-clicks don't accumulate.
@@ -40,13 +42,25 @@ export function showContextMenu(
   e.preventDefault();
   e.stopPropagation();
   armMenuSweeper();
+  // Captured before the async hop: the menu pops where the mouse actually
+  // clicked (webview-logical coords), not wherever the OS last showed one.
+  const at = new LogicalPosition(e.clientX, e.clientY);
   const gen = ++generation;
   (async () => {
     const menu = await Menu.new({
-      items: items.map((item) =>
-        item === "separator"
-          ? { item: "Separator" as const }
-          : { text: item.text, action: item.action, enabled: item.enabled ?? true }
+      items: await Promise.all(
+        items.map((item) =>
+          item === "separator"
+            ? { item: "Separator" as const }
+            : item.checked !== undefined
+              ? CheckMenuItem.new({
+                  text: item.text,
+                  checked: item.checked,
+                  enabled: item.enabled ?? true,
+                  action: item.action,
+                })
+              : { text: item.text, action: item.action, enabled: item.enabled ?? true }
+        )
       ),
     });
     if (gen !== generation) {
@@ -57,7 +71,7 @@ export function showContextMenu(
     const prev = lastMenu;
     lastMenu = menu;
     await prev?.close().catch(() => {});
-    await menu.popup();
+    await menu.popup(at);
   })().catch((err) => {
     // A newer click closing this menu mid-flight is expected; anything else
     // (menu API systematically failing) must not fail silent — right-click
