@@ -1,4 +1,5 @@
 import { isTauri } from "./client";
+import { isHttpUrl } from "../lib/papers";
 
 // linXiv ships its releases on GitHub, so "check for updates" compares the
 // installed version against the latest published GitHub Release. 
@@ -127,8 +128,14 @@ export async function checkForUpdates(): Promise<UpdateResult> {
   return { current, latest, hasUpdate, releaseUrl };
 }
 
-/** Open a release URL in the user's default browser (system browser, not the app webview). */
-export async function openReleaseUrl(url: string): Promise<void> {
+/** Open a URL in the user's default browser (system browser, not the app webview).
+ *  http(s) only: callers pass free-text urls (imports, metadata edits), and the
+ *  opener plugin would hand any scheme — file:, custom URIs — to the OS. */
+export async function openExternalUrl(url: string): Promise<void> {
+  if (!isHttpUrl(url)) {
+    console.error("refusing to open non-http(s) url:", url);
+    return;
+  }
   if (isTauri) {
     const { openUrl } = await import("@tauri-apps/plugin-opener");
     await openUrl(url);

@@ -2,17 +2,9 @@ import { invoke } from "@tauri-apps/api/core";
 // Settings -> Storage manages the LOCAL disk (saved-PDF files and their
 // linxiv:// links), so these never follow a remote default backend.
 import { apiFetch } from "./client";
+import type { SavedPdf } from "../types/api";
 
-// Assembled inline by route/pdfs.rs (paper rows + fs metadata) — no core
-// struct to generate.
-export interface SavedPdf {
-  source_id: string;
-  source_fk: number;
-  title: string;
-  // Always >= 1: the list endpoint skips version-0 rows (no on-disk filename).
-  version: number;
-  size_bytes: number;
-}
+export type { SavedPdf };
 
 export async function listSavedPdfs(): Promise<{ pdfs: SavedPdf[] }> {
   return apiFetch<{ pdfs: SavedPdf[] }>("/api/pdfs");

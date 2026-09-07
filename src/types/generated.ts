@@ -48,6 +48,31 @@ export type SearchResultOut = {
   entry_id: string,
 };
 
+export type ArxivSearchResponse = {
+  results: Array<SearchResultOut>,
+  /**
+   * Which results the library already holds (stripped ids).
+   */
+  saved_source_ids: Array<string>,
+};
+
+export type ArxivFetchResponse = {
+  paper: SearchResultOut,
+  saved: boolean,
+  /**
+   * Stripped id — the stored id when saved, else the fetched one.
+   */
+  source_id: string,
+};
+
+export type OpenAlexSearchResponse = {
+  results: Array<SearchResultOut>,
+  /**
+   * Which results the library already holds (stripped ids).
+   */
+  saved_source_ids: Array<string>,
+};
+
 export type Status = "active" | "archived" | "deleted";
 
 export type ProjectOut = {
@@ -455,4 +480,26 @@ export type EditorProjectSummary = {
   sourceFk: number,
   projectId: number | null,
   updatedAt: string | null,
+};
+
+export type SavedPdf = {
+  source_id: string,
+  source_fk: number,
+  title: string,
+  /**
+   * Always >= 1: rows whose PDF is missing on disk are skipped.
+   */
+  version: number,
+  size_bytes: number,
+};
+
+export type MergeCandidates = {
+  /**
+   * Shares this author's ORCID — near-certain duplicate.
+   */
+  candidates: Array<BasicAuthorDetails>,
+  /**
+   * Shares only the exact full name — weak evidence, never overlaps `candidates`.
+   */
+  name_candidates: Array<BasicAuthorDetails>,
 };

@@ -2,6 +2,7 @@
   "name": "linxiv-gui-react",
   "private": true,
   "version": "0.4.2",
+  "license": "GPL-3.0-or-later",
   "type": "module",
   "scripts": {
     "submodules": "git submodule update --init --recursive || true",

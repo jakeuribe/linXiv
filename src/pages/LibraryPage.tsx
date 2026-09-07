@@ -26,7 +26,9 @@ import { SelectionBar } from "../components/papers/SelectionBar";
 import { ImportDialog } from "../components/import/ImportDialog";
 import { EmptyState } from "../components/ui/empty-state";
 import { errText } from "../lib/errText";
-import { showContextMenu } from "../lib/contextMenu";
+import { copyItem, showContextMenu } from "../lib/contextMenu";
+import { isArxivPaper, landingUrl } from "../lib/papers";
+import { openExternalUrl } from "../api/updates";
 
 const PAPER_FETCH_LIMIT = 5000;
 const VIRTUALIZER_ESTIMATE_HEIGHT = 120;
@@ -245,8 +247,18 @@ export default function LibraryPage() {
           ? [...sel].filter((id) => visible.has(id) || id === paper.source_id)
           : [paper.source_id];
       const suffix = ids.length > 1 ? ` ${ids.length} Papers` : "";
+      // Open/copy act on the clicked paper alone even inside a multi-selection.
+      const url = landingUrl(paper);
       showContextMenu(e, [
         { text: "Open", action: () => handleNavigate(paper.source_fk) },
+        ...(url && !isArxivPaper(paper)
+          ? [
+              {
+                text: "Open Page",
+                action: () => void openExternalUrl(url).catch(console.error),
+              },
+            ]
+          : []),
         {
           text: `Add${suffix} to Project…`,
           action: () => {
@@ -254,6 +266,9 @@ export default function LibraryPage() {
             setProjectPickerOpen(true);
           },
         },
+        "separator",
+        copyItem("Copy ID", paper.source_id),
+        ...(paper.doi ? [copyItem("Copy DOI", paper.doi)] : []),
         "separator",
         {
           text: `Move${suffix} to Trash…`,

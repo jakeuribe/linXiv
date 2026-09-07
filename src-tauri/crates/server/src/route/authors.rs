@@ -6,7 +6,7 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use linxiv_core::service::author::{self as svc_author, Author, Authors};
+use linxiv_core::service::author::{self as svc_author, Author, Authors, MergeCandidates};
 use linxiv_core::service::paper::{self as svc_paper, PaperRef};
 
 use crate::route::{path_i64, ApiError, ReqCtx};
@@ -73,7 +73,10 @@ fn merge_candidates(state: &AppState, id: &str) -> Result<Value, ApiError> {
         by_name.sort_by_key(|c| c.author_id);
         Ok((orcid, by_name))
     })?;
-    Ok(json!({ "candidates": orcid, "name_candidates": by_name }))
+    crate::route::to_value(&MergeCandidates {
+        candidates: orcid,
+        name_candidates: by_name,
+    })
 }
 
 /// `POST /api/authors/{id}/papers/{paper_id}` — attach one paper to an author

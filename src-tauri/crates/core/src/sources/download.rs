@@ -236,7 +236,8 @@ fn host_is_public(url: &Url) -> bool {
 
 /// SECURITY CORE: reject any non-public address (private, loopback, link-local, unique-local,
 /// multicast, unspecified, CGNAT-shared, 0.0.0.0/8). Mirrors Python's `ipaddress` is_* checks.
-fn is_public_addr(ip: IpAddr) -> bool {
+/// The one SSRF classifier in the crate — the feed guard reuses it too.
+pub(crate) fn is_public_addr(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => is_public_v4(v4),
         IpAddr::V6(v6) => {

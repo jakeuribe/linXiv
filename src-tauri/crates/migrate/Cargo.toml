@@ -2,6 +2,7 @@
 name = "linxiv-migrate"
 version = "0.4.2"
 edition = "2021"
+license = "GPL-3.0-or-later"
 
 [[bin]]
 name = "linxiv-migrate"

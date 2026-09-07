@@ -106,6 +106,9 @@ pub(crate) fn render() -> String {
     let mut out = String::from(HEADER);
     out.push_str(&decl::<PaperDetails>());
     out.push_str(&decl::<SearchResultOut>());
+    out.push_str(&decl::<ArxivSearchResponse>());
+    out.push_str(&decl::<ArxivFetchResponse>());
+    out.push_str(&decl::<OpenAlexSearchResponse>());
     out.push_str(&decl::<Status>());
     out.push_str(&decl::<ProjectOut>());
     out.push_str(&decl::<NoteDetails>());
@@ -138,6 +141,8 @@ pub(crate) fn render() -> String {
     out.push_str(&decl::<crate::service::trash::TrashedProjectRow>());
     out.push_str(&decl::<crate::service::trash::RestoredPaper>());
     out.push_str(&decl::<crate::service::editor_project::EditorProjectSummary>());
+    out.push_str(&decl::<crate::service::files::SavedPdf>());
+    out.push_str(&decl::<crate::service::author::MergeCandidates>());
     out
 }
 

@@ -18,7 +18,8 @@ import type { GraphFilterState } from "../lib/graph/filter";
 import { EMPTY_FILTER, joinTypes, matchGraph, noMatchCause } from "../lib/graph/filter";
 import type { ForceSettings } from "../lib/graph/layout";
 import { DEFAULT_FORCES } from "../lib/graph/layout";
-import type { GraphCanvasHandle } from "../components/graph/GraphCanvas";
+import type { GraphCanvasHandle, GraphNodeContext } from "../components/graph/GraphCanvas";
+import { copyItem, showContextMenu } from "../lib/contextMenu";
 import GraphPanels from "../components/graph/GraphPanels";
 import { Spinner } from "../components/ui/spinner";
 import { Button } from "../components/ui/button";
@@ -316,6 +317,27 @@ export default function GraphPage() {
     [navigate]
   );
 
+  // Open goes wherever a plain tap on the node would have.
+  const handleNodeContextMenu = useCallback(
+    (e: MouseEvent, node: GraphNodeContext) => {
+      showContextMenu(e, [
+        {
+          text: "Open",
+          action: () => {
+            if (node.type === "paper") handlePaperTap(node.id, false);
+            else if (node.type === "author" && node.authorId != null)
+              handleAuthorTap(node.authorId);
+            else if (node.type === "tag") handleTagTap(node.label);
+          },
+        },
+        "separator",
+        copyItem("Copy Label", node.label),
+        ...(node.sourceId ? [copyItem("Copy ID", node.sourceId)] : []),
+      ]);
+    },
+    [handlePaperTap, handleAuthorTap, handleTagTap]
+  );
+
   const handleSelectAllVisible = useCallback(() => {
     if (!match || match.hiddenTypes.has("paper")) return;
     setSelectedIds(new Set(match.papers));
@@ -404,6 +426,7 @@ export default function GraphPage() {
                 onAuthorTap={handleAuthorTap}
                 onTagTap={handleTagTap}
                 onBackgroundTap={clearSelection}
+                onNodeContextMenu={handleNodeContextMenu}
               />
             </Suspense>
             {/* The canvas is the one surface in the app with no "no results"

@@ -33,6 +33,16 @@ pub struct Authors {
     pub author_ids: Option<Vec<i64>>,
 }
 
+/// `GET /api/authors/{id}/merge-candidates` envelope — likely duplicates for
+/// the merge UI, split by evidence strength.
+#[derive(Debug, serde::Serialize, ts_rs::TS)]
+pub struct MergeCandidates {
+    /// Shares this author's ORCID — near-certain duplicate.
+    pub candidates: Vec<BasicAuthorDetails>,
+    /// Shares only the exact full name — weak evidence, never overlaps `candidates`.
+    pub name_candidates: Vec<BasicAuthorDetails>,
+}
+
 // `list_authors(paper_id, name)` priority: paper_id wins (name ignored), else
 // name exact-match (NOCASE in storage), else every author. Ported faithfully.
 fn list_authors(
