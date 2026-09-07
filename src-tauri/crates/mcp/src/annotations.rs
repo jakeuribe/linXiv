@@ -87,7 +87,7 @@ impl Server {
             })?;
             match svc_ann::get(conn, id).map_err(core_err)? {
                 Some(a) => json_ok(&a),
-                None => json_ok(&json!({ "id": id })),
+                None => json_ok(&svc_ann::CreatedAnnotation { id }),
             }
         })
     }

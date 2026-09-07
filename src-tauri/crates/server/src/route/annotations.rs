@@ -4,13 +4,13 @@
 //! frontend; the backend stores and returns it verbatim.
 
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 
-use linxiv_core::models::{AnnotationIn, AnnotationUpdateIn};
+use linxiv_core::models::{AnnotationIn, AnnotationUpdateIn, OkReceipt};
 use linxiv_core::service::annotation::{self as svc_ann, Annotations};
 use linxiv_core::service::paper as svc_paper;
 
-use crate::route::{path_i64, ApiError, ReqCtx};
+use crate::route::{path_i64, to_value, ApiError, ReqCtx};
 use crate::state::AppState;
 
 /// Returns `Some(result)` if this group owns `(method, path)`, else `None`.
@@ -33,19 +33,18 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let project_fk = ctx.q_i64("project_id");
     let all_projects = ctx.q_bool("all_projects");
     state.with_conn(|conn| {
-        let root = match svc_paper::get_paper_root(conn, source_id)? {
-            Some(r) => r,
-            None => return Ok(json!({ "annotations": [] })),
+        let annotations = match svc_paper::get_paper_root(conn, source_id)? {
+            Some(root) => svc_ann::get_many(
+                conn,
+                &Annotations {
+                    source_fk: Some(root.source_fk),
+                    project_fk,
+                    all_projects,
+                },
+            )?,
+            None => Vec::new(),
         };
-        let annotations = svc_ann::get_many(
-            conn,
-            &Annotations {
-                source_fk: Some(root.source_fk),
-                project_fk,
-                all_projects,
-            },
-        )?;
-        Ok(json!({ "annotations": annotations }))
+        to_value(&svc_ann::AnnotationListResponse { annotations })
     })
 }
 
@@ -78,7 +77,7 @@ fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
                 uuid: None,
             },
         )?;
-        Ok(json!({ "id": id }))
+        to_value(&svc_ann::CreatedAnnotation { id })
     })
 }
 
@@ -100,7 +99,7 @@ fn update(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
         )? {
             return Err(ApiError::new(404, "Annotation not found"));
         }
-        Ok(json!({ "ok": true }))
+        to_value(&OkReceipt { ok: true })
     })
 }
 
@@ -111,7 +110,7 @@ fn delete(state: &AppState, id: &str) -> Result<Value, ApiError> {
         if !svc_ann::delete(conn, annotation_id)? {
             return Err(ApiError::new(404, "Annotation not found"));
         }
-        Ok(json!({ "ok": true }))
+        to_value(&OkReceipt { ok: true })
     })
 }
 
@@ -119,6 +118,7 @@ fn delete(state: &AppState, id: &str) -> Result<Value, ApiError> {
 mod tests {
     use super::*;
     use crate::route::testutil::{req, state};
+    use serde_json::json;
 
     const ANCHOR: &str = r##"{"v":1,"version":1,"page":1,"color":"#ffd400","quote":"q","rects":[{"x":0,"y":0,"w":0.5,"h":0.1}]}"##;
 

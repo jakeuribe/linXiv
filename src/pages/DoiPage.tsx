@@ -7,8 +7,8 @@ import { Input } from "../components/ui/input";
 import { Spinner } from "../components/ui/spinner";
 import { resolveDoi, saveDoi } from "../api/search";
 
-// DoiMetadata is typed as Record<string, unknown> in the API module.
-// Cast to this shape for display purposes.
+// The wire type is the generated PaperMetadata; cast to this looser shape
+// for display purposes (tolerates absent/renamed keys across sources).
 interface DisplayMetadata {
   title?: string;
   authors?: string | string[];

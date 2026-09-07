@@ -10,11 +10,12 @@
 //! every arxiv/openalex search + fetch arm.
 
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use linxiv_core::error::CoreError;
 use linxiv_core::models::{
-    strip_namespace, ArxivFetchResponse, ArxivSearchResponse, OpenAlexSearchResponse,
+    strip_namespace, ArxivFetchResponse, ArxivSearchResponse, CrossrefSearchResponse,
+    DoiResolveResponse, DoiSaveResponse, OpenAlexSaveResponse, OpenAlexSearchResponse,
     PaperMetadata, SearchResultOut,
 };
 use linxiv_core::service::{paper as svc_paper, source as svc_source};
@@ -39,11 +40,6 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
 /// `api/app.py`'s `except Exception: 502` for the search/fetch source calls.
 fn upstream_502(e: CoreError) -> ApiError {
     ApiError::new(502, e.to_string())
-}
-
-/// `meta.model_dump(mode="json")` — the full PaperMetadata serde shape.
-fn meta_json(meta: &PaperMetadata) -> Result<Value, ApiError> {
-    serde_json::to_value(meta).map_err(|e| ApiError::new(500, e.to_string()))
 }
 
 fn default_max_results() -> i64 {
@@ -217,7 +213,10 @@ async fn openalex_save(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiE
             other => ApiError::new(502, other.to_string()),
         })?;
     let (stored, _) = state.with_conn(|conn| svc_paper::save_paper_metadata(conn, &meta, None))?;
-    Ok(json!({ "saved": true, "source_id": strip_namespace(&stored) }))
+    to_value(&OpenAlexSaveResponse {
+        saved: true,
+        source_id: strip_namespace(&stored),
+    })
 }
 
 /// `POST /api/crossref/search` — same envelope as the openalex arm. The wire body
@@ -239,7 +238,7 @@ async fn crossref_search(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
         .await
         .map_err(upstream_502)?;
     let results: Vec<SearchResultOut> = results.into_iter().map(SearchResultOut::from).collect();
-    Ok(json!({ "results": results }))
+    to_value(&CrossrefSearchResponse { results })
 }
 
 /// `POST /api/doi/resolve` (830–836). `400` on a bad DOI (CoreError::BadRequest →
@@ -254,7 +253,7 @@ async fn doi_resolve_route(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
         return Err(ApiError::new(422, "doi must not be empty"));
     }
     let meta = svc_source::resolve_doi(b.doi.trim()).await?;
-    Ok(json!({ "metadata": meta_json(&meta)? }))
+    to_value(&DoiResolveResponse { metadata: meta })
 }
 
 /// `POST /api/doi/save` (843–850). Resolve then save; returns the resolved meta.
@@ -269,7 +268,10 @@ async fn doi_save_route(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, Api
     }
     let meta = svc_source::resolve_doi(b.doi.trim()).await?;
     state.with_conn(|conn| svc_paper::save_paper_metadata(conn, &meta, None))?;
-    Ok(json!({ "metadata": meta_json(&meta)?, "saved": true }))
+    to_value(&DoiSaveResponse {
+        metadata: meta,
+        saved: true,
+    })
 }
 
 #[cfg(test)]
@@ -277,6 +279,7 @@ mod tests {
     use super::*;
     use crate::route::{route, ApiRequest};
     use linxiv_core::storage;
+    use serde_json::json;
 
     fn state() -> AppState {
         let conn = storage::open_in_memory().unwrap();

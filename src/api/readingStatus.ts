@@ -1,5 +1,9 @@
 import { ApiError } from "./client.ts";
 import { libraryFetch } from "../stores/backend.ts";
+import type {
+  ReadingStatusesResponse,
+  ReadingStatusReceipt,
+} from "../types/api";
 import {
   parsePersistedReadingStatuses,
   pushLegacyStatuses,
@@ -12,9 +16,7 @@ import {
  * `crates/core/src/service/reading_list.rs` for the keying contract. */
 export const READING_STATUS_QUERY_KEY = ["reading-status"];
 
-export async function getReadingStatuses(): Promise<{
-  statuses: Record<string, ReadingStatus>;
-}> {
+export async function getReadingStatuses(): Promise<ReadingStatusesResponse> {
   return libraryFetch("/api/reading-status");
 }
 
@@ -23,7 +25,7 @@ export async function getReadingStatuses(): Promise<{
 export async function putReadingStatus(
   sourceId: string,
   status: ReadingStatus | "unread"
-): Promise<{ ok: boolean; applied: number }> {
+): Promise<ReadingStatusReceipt> {
   return libraryFetch(`/api/reading-status/${encodeURIComponent(sourceId)}`, {
     method: "PUT",
     body: JSON.stringify({ status }),

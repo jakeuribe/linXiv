@@ -166,6 +166,18 @@ pub(crate) fn render() -> String {
     out.push_str(&decl::<crate::service::tag::TagDetail>());
     out.push_str(&decl::<AuthorsResponse>());
     out.push_str(&decl::<AuthorMergeResponse>());
+    // sources/notes/reading-status/annotations route envelopes
+    out.push_str(&decl::<PaperMetadata>());
+    out.push_str(&decl::<OpenAlexSaveResponse>());
+    out.push_str(&decl::<DoiResolveResponse>());
+    out.push_str(&decl::<DoiSaveResponse>());
+    out.push_str(&decl::<crate::service::note::NoteListResponse>());
+    out.push_str(&decl::<crate::service::note::NoteGetResponse>());
+    out.push_str(&decl::<crate::service::note::DeletedNote>());
+    out.push_str(&decl::<crate::service::annotation::AnnotationListResponse>());
+    out.push_str(&decl::<crate::service::annotation::CreatedAnnotation>());
+    out.push_str(&decl::<crate::service::reading_list::ReadingStatusesResponse>());
+    out.push_str(&decl::<crate::service::reading_list::ReadingStatusReceipt>());
     out
 }
 

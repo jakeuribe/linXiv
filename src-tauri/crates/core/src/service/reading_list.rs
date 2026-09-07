@@ -51,6 +51,34 @@ pub fn statuses(conn: &Connection) -> Result<Vec<(String, ReadingStatus)>> {
     q::statuses_by_source_id(conn)
 }
 
+/// `GET /api/reading-status` envelope (route/reading_status.rs).
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+pub struct ReadingStatusesResponse {
+    /// Sparse `SOURCE_ID → status` map: unread papers are absent.
+    #[ts(type = "Record<string, \"reading\" | \"read\">")]
+    pub statuses: serde_json::Map<String, serde_json::Value>,
+}
+
+/// [`statuses`] in the wire envelope shape.
+pub fn statuses_response(conn: &Connection) -> Result<ReadingStatusesResponse> {
+    let mut map = serde_json::Map::new();
+    for (sid, status) in statuses(conn)? {
+        // as_str is Some for every stored row (Unread is never stored).
+        if let Some(s) = status.as_str() {
+            map.insert(sid, serde_json::Value::String(s.to_string()));
+        }
+    }
+    Ok(ReadingStatusesResponse { statuses: map })
+}
+
+/// `PUT /api/reading-status/{source_id}` envelope. `applied` = reading lists
+/// written; 0 when the paper is on none (a no-op, not an error).
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+pub struct ReadingStatusReceipt {
+    pub ok: bool,
+    pub applied: usize,
+}
+
 /// Set `source_id`'s status in every non-trashed reading list it belongs to,
 /// atomically. Returns the number of lists written — 0 (a no-op, not an error)
 /// when the paper is on no reading list. `PaperNotFound` for an unknown id.

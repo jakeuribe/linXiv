@@ -8,11 +8,11 @@
 //! localStorage only), so the envelopes below are the contract.
 
 use serde::Deserialize;
-use serde_json::{json, Map, Value};
+use serde_json::Value;
 
 use linxiv_core::service::reading_list;
 
-use crate::route::{ApiError, ReqCtx};
+use crate::route::{to_value, ApiError, ReqCtx};
 use crate::state::AppState;
 
 pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<Value, ApiError>> {
@@ -26,15 +26,8 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
 /// `GET /api/reading-status` — `{"statuses": {source_id: "reading"|"read"}}`.
 /// Sparse: unread papers are absent.
 fn list(state: &AppState) -> Result<Value, ApiError> {
-    let statuses = state.with_conn(|conn| reading_list::statuses(conn))?;
-    let mut map = Map::new();
-    for (sid, status) in statuses {
-        // as_str is Some for every stored row (Unread is never stored).
-        if let Some(s) = status.as_str() {
-            map.insert(sid, Value::String(s.to_string()));
-        }
-    }
-    Ok(json!({ "statuses": map }))
+    let statuses = state.with_conn(|conn| reading_list::statuses_response(conn))?;
+    to_value(&statuses)
 }
 
 /// `PUT /api/reading-status/{source_id}` — set the paper's status in every
@@ -50,13 +43,14 @@ fn put(state: &AppState, sid: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError>
     // CoreError::Validation → 422, matching FastAPI enum-body coercion.
     let status = b.status.parse::<reading_list::ReadingStatus>()?;
     let applied = state.with_conn(|conn| reading_list::set_for_paper(conn, sid, status))?;
-    Ok(json!({ "ok": true, "applied": applied }))
+    to_value(&reading_list::ReadingStatusReceipt { ok: true, applied })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::route::testutil::{req, state};
+    use serde_json::json;
 
     /// Seed a paper root plus a tagged reading-list project through the public
     /// routes where possible (paper roots have no route, so that row is direct).

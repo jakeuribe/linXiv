@@ -91,7 +91,7 @@ pub(crate) fn date_min() -> NaiveDate {
 /// Normalized paper representation produced by every Provider module.
 /// `categories`/`tags` stay `Option` here (pydantic `list[str] | None`),
 /// unlike the DB-row `PaperDetails` where they default to an empty `Vec`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct PaperMetadata {
     /// Namespaced ID, e.g. "arxiv:2204.12985", "openalex:W31...", "local:{hash}".
     pub source_id: String,
@@ -217,6 +217,36 @@ pub struct OpenAlexSearchResponse {
     pub results: Vec<SearchResultOut>,
     /// Which results the library already holds (stripped ids).
     pub saved_source_ids: Vec<String>,
+}
+
+/// `POST /api/openalex/save` envelope (route/sources.rs).
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct OpenAlexSaveResponse {
+    pub saved: bool,
+    /// Stripped id of the stored paper.
+    pub source_id: String,
+}
+
+/// `POST /api/crossref/search` envelope (route/sources.rs). No frontend
+/// caller today, so it is not in ts_bindings; the shape is still pinned here.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct CrossrefSearchResponse {
+    pub results: Vec<SearchResultOut>,
+}
+
+/// `POST /api/doi/resolve` envelope (route/sources.rs) — the full normalized
+/// `PaperMetadata`, not the `SearchResultOut` projection.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct DoiResolveResponse {
+    pub metadata: PaperMetadata,
+}
+
+/// `POST /api/doi/save` envelope — one shape on route, `linxiv doi save`,
+/// and MCP `save_doi`.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct DoiSaveResponse {
+    pub metadata: PaperMetadata,
+    pub saved: bool,
 }
 
 /// `{"ok": true}` — the bare acknowledgement for writes with nothing else to
