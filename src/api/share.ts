@@ -29,6 +29,10 @@ async function shareApi<T>(
 
 export const sharingAvailable = isTauri;
 
+// The envelope types in this file stay hand-written: the Rust structs live in
+// the server crate beside `route/share.rs` (share data has no linxiv-core
+// home), and the core ts_bindings generator only renders core types.
+
 export type MemberRole = "hoster" | "editor" | "viewer";
 
 // Diverged from `crates/share::model::SharedSummary` (not Serialize, no
