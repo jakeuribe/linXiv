@@ -7,7 +7,7 @@ import {
   importPdf,
   commitImport,
   previewImport,
-  type ImportPreview,
+  type ImportPreviewResponse,
 } from "../../api/exportImport";
 import { Button } from "../ui/button";
 import { Dialog } from "../ui/dialog";
@@ -31,7 +31,7 @@ interface QueueEntry {
   uid: number;
   file: File;
   kind: KnownFileKind;
-  preview?: ImportPreview;
+  preview?: ImportPreviewResponse;
   onConflict: "merge" | "overwrite";
 }
 

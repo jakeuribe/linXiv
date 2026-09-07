@@ -864,6 +864,61 @@ pub fn full_text_backfill_count(conn: &Connection) -> Result<i64> {
     store::full_text_backfill_count(conn)
 }
 
+// ── route envelopes ──────────────────────────────────────────────────────────
+
+/// `GET /api/papers` and `GET /api/papers/search` envelope (route/papers.rs).
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+pub struct PapersListing {
+    pub papers: Vec<PaperDetails>,
+}
+
+/// `GET /api/papers/sfk/{fk}/versions` envelope (route/papers.rs).
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+pub struct PaperVersionsResponse {
+    pub source_id: String,
+    pub latest_version: i64,
+    pub versions: Vec<store::PaperVersionMeta>,
+}
+
+/// [`list_version_meta`] assembled into the versions envelope; same `None`
+/// (unresolved or version-less root) semantics.
+pub fn version_listing(
+    conn: &Connection,
+    paper: &PaperRef,
+) -> Result<Option<PaperVersionsResponse>> {
+    Ok(
+        list_version_meta(conn, paper)?.map(|(source_id, versions)| PaperVersionsResponse {
+            source_id,
+            latest_version: versions.last().expect("non-empty").version,
+            versions,
+        }),
+    )
+}
+
+/// `GET /api/papers/sfk/{fk}/doi-candidates` envelope (route/papers.rs).
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+pub struct DoiCandidates {
+    pub candidates: Vec<store::DoiVersionCandidate>,
+}
+
+/// `GET /api/papers/full-text-pending` envelope (route/papers.rs).
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+pub struct FullTextPending {
+    pub pending: i64,
+}
+
+/// `POST /api/papers/saved` envelope (route/papers.rs).
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+pub struct SavedSourceIds {
+    pub saved_source_ids: Vec<String>,
+}
+
+/// Delete-paper receipt — `DELETE /api/papers/{id}` and MCP `delete_paper`.
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+pub struct DeletedPaperReceipt {
+    pub deleted: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

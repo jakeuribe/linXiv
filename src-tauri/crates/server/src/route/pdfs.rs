@@ -3,7 +3,7 @@
 //! `service::files::pdf_path` (stored custom path first, then the managed
 //! location). Shape mirrors `mcp/src/notes_pdf_trash.rs::get_pdf_path`.
 
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use linxiv_core::error::CoreError;
 use linxiv_core::service::files;
@@ -28,9 +28,9 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
 fn list_saved(state: &AppState) -> Result<Value, ApiError> {
     // Pull the rows under the lock; stat the files outside it.
     let papers = state.with_conn(|conn| svc_paper::list_pdf_papers(conn))?;
-    let mut out = files::saved_pdf_sizes(&state.pdf_dir, papers);
-    out.truncate(SAVED_PDF_LIST_CAP);
-    Ok(json!({ "pdfs": out }))
+    let mut pdfs = files::saved_pdf_sizes(&state.pdf_dir, papers);
+    pdfs.truncate(SAVED_PDF_LIST_CAP);
+    crate::route::to_value(&files::SavedPdfListing { pdfs })
 }
 
 /// `DELETE /api/pdfs/{source_id}` — `api_delete_saved_pdf`. Drops every version's
@@ -43,7 +43,7 @@ fn delete_saved(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
         }
         Ok(())
     })?;
-    Ok(json!({ "deleted": true }))
+    crate::route::to_value(&files::DeletedPdf { deleted: true })
 }
 
 /// `GET /api/papers/{source_id:path}/pdf-path?version=` — `api_paper_pdf_path`.

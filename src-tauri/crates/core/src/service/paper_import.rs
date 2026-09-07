@@ -36,8 +36,9 @@ use std::sync::Mutex;
 pub(crate) static IMPORT_ROOT_LOCK: Mutex<()> = Mutex::new(());
 
 /// Result of a successful `import_pdf` (Python `PaperImportResult`, defined in
-/// `service/paper.py` — a service result, not a storage model).
-#[derive(Debug, Clone, Serialize)]
+/// `service/paper.py` — a service result, not a storage model). The
+/// `POST /api/papers/import/pdf` envelope, emitted verbatim by MCP too.
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct PaperImportResult {
     pub source_id: String,
     pub title: String,

@@ -237,3 +237,35 @@ pub struct ImportPreview {
     pub has_pdfs: bool,
     pub format_version: i64,
 }
+
+/// `POST /api/projects/import/preview` envelope (route/uploads.rs) —
+/// [`ImportPreview`] minus `annotation_count`, which the route never exposed.
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+pub struct ImportPreviewResponse {
+    pub project_name: String,
+    pub description: String,
+    pub paper_count: usize,
+    pub note_count: usize,
+    pub has_pdfs: bool,
+    pub format_version: i64,
+}
+
+impl From<ImportPreview> for ImportPreviewResponse {
+    fn from(p: ImportPreview) -> Self {
+        ImportPreviewResponse {
+            project_name: p.project_name,
+            description: p.description,
+            paper_count: p.paper_count,
+            note_count: p.note_count,
+            has_pdfs: p.has_pdfs,
+            format_version: p.format_version,
+        }
+    }
+}
+
+/// `POST /api/projects/import/commit` envelope — the created/merged project id.
+/// MCP `import_project` emits the same shape.
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+pub struct ImportedProject {
+    pub project_id: i64,
+}

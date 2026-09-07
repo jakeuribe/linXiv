@@ -534,6 +534,14 @@ pub fn link_imported(conn: &Connection, project_fk: i64, source_ids: &[String]) 
 /// rows across all projects (single transaction). Returns the PROJECT_FKs it was in.
 pub use crate::storage::queries::project::remove_paper_from_all_projects;
 
+/// Remove-from-all-projects receipt — `DELETE /api/papers/sfk/{fk}/projects`
+/// and MCP `remove_paper_from_all_projects` emit the same shape.
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+pub struct RemovedFromProjects {
+    pub ok: bool,
+    pub removed_from_projects: Vec<i64>,
+}
+
 /// `service/project.py::remove_paper_from_all_projects_by_id` — resolve a paper id
 /// (stripped) then delete its membership everywhere. `None` if the id is unknown.
 pub fn remove_paper_from_all_projects_by_id(
