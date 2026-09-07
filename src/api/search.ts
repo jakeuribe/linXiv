@@ -2,6 +2,9 @@ import { libraryFetch } from "../stores/backend.ts";
 import type {
   ArxivFetchResponse,
   ArxivSearchResponse,
+  DoiResolveResponse,
+  DoiSaveResponse,
+  OpenAlexSaveResponse,
   OpenAlexSearchResponse,
 } from "../types/api";
 
@@ -31,22 +34,14 @@ export async function fetchArxiv(
   });
 }
 
-export interface DoiMetadata {
-  [key: string]: unknown;
-}
-
-export async function resolveDoi(
-  doi: string
-): Promise<{ metadata: DoiMetadata }> {
+export async function resolveDoi(doi: string): Promise<DoiResolveResponse> {
   return libraryFetch("/api/doi/resolve", {
     method: "POST",
     body: JSON.stringify({ doi }),
   });
 }
 
-export async function saveDoi(
-  doi: string
-): Promise<{ metadata: DoiMetadata; saved: boolean }> {
+export async function saveDoi(doi: string): Promise<DoiSaveResponse> {
   return libraryFetch("/api/doi/save", {
     method: "POST",
     body: JSON.stringify({ doi }),
@@ -68,7 +63,7 @@ export async function searchOpenAlex(
 
 export async function saveOpenAlex(
   sourceId: string,
-): Promise<{ saved: boolean; source_id: string }> {
+): Promise<OpenAlexSaveResponse> {
   return libraryFetch("/api/openalex/save", {
     method: "POST",
     body: JSON.stringify({ source_id: sourceId }),

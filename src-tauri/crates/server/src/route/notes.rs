@@ -3,7 +3,7 @@
 //! Core binding mirrors `mcp/src/notes_pdf_trash.rs`. Shape copies `authors.rs`.
 
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use linxiv_core::models::{NoteIn, NoteUpdateIn};
 use linxiv_core::service::editor_project as svc_editor;
@@ -34,20 +34,19 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let project_fk = ctx.q_i64("project_id");
     let all_projects = ctx.q_bool("all_projects");
     state.with_conn(|conn| {
-        let root = match svc_paper::get_paper_root(conn, source_id)? {
-            Some(r) => r,
-            None => return Ok(json!({ "notes": [] })),
+        let notes = match svc_paper::get_paper_root(conn, source_id)? {
+            Some(root) => svc_note::get_many(
+                conn,
+                &Notes {
+                    source_fk: Some(root.source_fk),
+                    project_fk,
+                    all_projects,
+                    ..Default::default()
+                },
+            )?,
+            None => Vec::new(),
         };
-        let notes = svc_note::get_many(
-            conn,
-            &Notes {
-                source_fk: Some(root.source_fk),
-                project_fk,
-                all_projects,
-                ..Default::default()
-            },
-        )?;
-        Ok(json!({ "notes": notes }))
+        crate::route::to_value(&svc_note::NoteListResponse { notes })
     })
 }
 
@@ -57,7 +56,7 @@ fn get(state: &AppState, id: &str) -> Result<Value, ApiError> {
     let note_id = path_i64(id)?;
     state.with_conn(|conn| {
         let note = svc_note::get_required(conn, note_id)?;
-        Ok(json!({ "note": note }))
+        crate::route::to_value(&svc_note::NoteGetResponse { note })
     })
 }
 
@@ -139,6 +138,7 @@ mod tests {
     use super::*;
     use crate::route::{route, ApiRequest};
     use linxiv_core::storage;
+    use serde_json::json;
 
     fn state() -> AppState {
         let conn = storage::open_in_memory().unwrap();

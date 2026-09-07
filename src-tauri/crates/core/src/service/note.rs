@@ -54,9 +54,21 @@ pub fn get_required(conn: &Connection, note_id: i64) -> Result<NoteDetails> {
 }
 
 /// Delete-note wire envelope, shared by all three surfaces.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, ts_rs::TS)]
 pub struct DeletedNote {
     pub deleted_note_id: i64,
+}
+
+/// `GET /api/notes` envelope (route/notes.rs). Unknown paper → empty list.
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+pub struct NoteListResponse {
+    pub notes: Vec<NoteDetails>,
+}
+
+/// `GET /api/notes/{id}` envelope (route/notes.rs).
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+pub struct NoteGetResponse {
+    pub note: NoteDetails,
 }
 
 /// Every note, CREATED_AT ASC.

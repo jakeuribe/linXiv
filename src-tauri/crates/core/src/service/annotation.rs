@@ -18,6 +18,19 @@ pub struct Annotations {
     pub all_projects: bool,
 }
 
+/// `GET /api/annotations` envelope (route/annotations.rs). Unknown paper →
+/// empty list.
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+pub struct AnnotationListResponse {
+    pub annotations: Vec<AnnotationDetails>,
+}
+
+/// Create-annotation wire receipt (`{"id": n}`), shared by route and MCP.
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+pub struct CreatedAnnotation {
+    pub id: i64,
+}
+
 /// Fetch a single annotation by id. `Ok(None)` if absent.
 pub fn get(conn: &Connection, id: i64) -> Result<Option<AnnotationDetails>> {
     q::get_annotation(conn, id)

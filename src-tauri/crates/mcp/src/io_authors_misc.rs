@@ -261,7 +261,10 @@ impl Server {
         self.with_conn(|conn| svc_paper::save_paper_metadata(conn, &meta, None))
             .map_err(map_core)?;
         // Route parity (`POST /api/doi/save`): the resolved metadata + saved flag.
-        json_ok(&json!({ "metadata": meta, "saved": true }))
+        json_ok(&linxiv_core::models::DoiSaveResponse {
+            metadata: meta,
+            saved: true,
+        })
     }
 
     #[tool(

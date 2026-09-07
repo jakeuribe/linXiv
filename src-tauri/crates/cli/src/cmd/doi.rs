@@ -1,8 +1,8 @@
 //! Group `doi` — cmd_doi_* in `linxiv_cli.py`.
 
 use clap::Subcommand;
-use serde_json::json;
 
+use linxiv_core::models::DoiSaveResponse;
 use linxiv_core::service::{paper as svc_paper, source as svc_source};
 
 use crate::ctx::Ctx;
@@ -30,15 +30,13 @@ pub async fn run(cmd: DoiCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         // (`POST /api/doi/save`): the resolved metadata + saved flag.
         DoiCmd::Save { .. } => {
             svc_paper::save_paper_metadata(&mut ctx.conn, &meta, None)?;
-            output(&save_value(&meta));
+            output(&DoiSaveResponse {
+                metadata: meta,
+                saved: true,
+            });
         }
     }
     Ok(())
-}
-
-/// `doi save` response — the same envelope route's `POST /api/doi/save` returns.
-fn save_value(meta: &linxiv_core::models::PaperMetadata) -> serde_json::Value {
-    json!({ "metadata": meta, "saved": true })
 }
 
 #[cfg(test)]
@@ -49,6 +47,7 @@ mod tests {
     /// not the old `{source_id, version, title}` triple.
     #[test]
     fn doi_save_emits_route_envelope() {
+        use serde_json::json;
         let meta: linxiv_core::models::PaperMetadata = serde_json::from_value(json!({
             "source_id": "doi:10.1000/xyz",
             "version": 1,
@@ -58,7 +57,11 @@ mod tests {
             "summary": "S",
         }))
         .unwrap();
-        let v = save_value(&meta);
+        let v = serde_json::to_value(DoiSaveResponse {
+            metadata: meta,
+            saved: true,
+        })
+        .unwrap();
         let keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
         assert_eq!(keys, ["metadata", "saved"]);
         assert_eq!(v["saved"], json!(true));

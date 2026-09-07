@@ -1,11 +1,16 @@
 import { libraryFetch } from "../stores/backend.ts";
-import type { Note } from "../types/api";
+import type {
+  DeletedNote,
+  Note,
+  NoteGetResponse,
+  NoteListResponse,
+} from "../types/api";
 
 export async function getNotes(
   sourceId: string,
   projectId?: number | null,
   allProjects?: boolean
-): Promise<{ notes: Note[] }> {
+): Promise<NoteListResponse> {
   const params = new URLSearchParams({ source_id: sourceId });
   // all_projects is an unconditional override on the backend: when set, every
   // scope is returned and project_id is ignored. Mirror that here so a caller
@@ -15,11 +20,11 @@ export async function getNotes(
   } else if (projectId !== undefined && projectId !== null) {
     params.set("project_id", String(projectId));
   }
-  return libraryFetch<{ notes: Note[] }>(`/api/notes?${params.toString()}`);
+  return libraryFetch<NoteListResponse>(`/api/notes?${params.toString()}`);
 }
 
-export async function getNote(id: number): Promise<{ note: Note }> {
-  return libraryFetch<{ note: Note }>(`/api/notes/${id}`);
+export async function getNote(id: number): Promise<NoteGetResponse> {
+  return libraryFetch<NoteGetResponse>(`/api/notes/${id}`);
 }
 
 export interface NoteCreateBody {
@@ -51,8 +56,6 @@ export async function updateNote(
   });
 }
 
-export async function deleteNote(
-  id: number
-): Promise<{ deleted_note_id: number }> {
+export async function deleteNote(id: number): Promise<DeletedNote> {
   return libraryFetch(`/api/notes/${id}`, { method: "DELETE" });
 }

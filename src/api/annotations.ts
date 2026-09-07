@@ -1,11 +1,15 @@
 import { libraryFetch } from "../stores/backend.ts";
-import type { Annotation } from "../types/api";
+import type {
+  AnnotationListResponse,
+  CreatedAnnotation,
+  OkReceipt,
+} from "../types/api";
 
 export async function getAnnotations(
   sourceId: string,
   projectId?: number | null,
   allProjects?: boolean
-): Promise<{ annotations: Annotation[] }> {
+): Promise<AnnotationListResponse> {
   const params = new URLSearchParams({ source_id: sourceId });
   // all_projects is an unconditional override on the backend: when set, every
   // scope is returned and project_id is ignored. Mirror that here.
@@ -14,7 +18,7 @@ export async function getAnnotations(
   } else if (projectId !== undefined && projectId !== null) {
     params.set("project_id", String(projectId));
   }
-  return libraryFetch<{ annotations: Annotation[] }>(
+  return libraryFetch<AnnotationListResponse>(
     `/api/annotations?${params.toString()}`
   );
 }
@@ -28,7 +32,7 @@ export interface AnnotationCreateBody {
 
 export async function createAnnotation(
   body: AnnotationCreateBody
-): Promise<{ id: number }> {
+): Promise<CreatedAnnotation> {
   return libraryFetch("/api/annotations", {
     method: "POST",
     body: JSON.stringify(body),
@@ -38,13 +42,13 @@ export async function createAnnotation(
 export async function updateAnnotation(
   id: number,
   comment: string
-): Promise<{ ok: boolean }> {
+): Promise<OkReceipt> {
   return libraryFetch(`/api/annotations/${id}`, {
     method: "PATCH",
     body: JSON.stringify({ comment }),
   });
 }
 
-export async function deleteAnnotation(id: number): Promise<{ ok: boolean }> {
+export async function deleteAnnotation(id: number): Promise<OkReceipt> {
   return libraryFetch(`/api/annotations/${id}`, { method: "DELETE" });
 }

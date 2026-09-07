@@ -71,6 +71,17 @@ export type {
   TagDetail,
   AuthorsResponse,
   AuthorMergeResponse,
+  PaperMetadata,
+  OpenAlexSaveResponse,
+  DoiResolveResponse,
+  DoiSaveResponse,
+  NoteListResponse,
+  NoteGetResponse,
+  DeletedNote,
+  AnnotationListResponse,
+  CreatedAnnotation,
+  ReadingStatusesResponse,
+  ReadingStatusReceipt,
 } from "./generated";
 
 // Frontend names for the generated serializers. The Rust name is the model,
