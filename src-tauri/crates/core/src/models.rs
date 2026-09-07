@@ -194,6 +194,31 @@ impl From<PaperMetadata> for SearchResultOut {
     }
 }
 
+/// `POST /api/arxiv/search` envelope (route/sources.rs).
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct ArxivSearchResponse {
+    pub results: Vec<SearchResultOut>,
+    /// Which results the library already holds (stripped ids).
+    pub saved_source_ids: Vec<String>,
+}
+
+/// `POST /api/arxiv/fetch` envelope (route/sources.rs).
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct ArxivFetchResponse {
+    pub paper: SearchResultOut,
+    pub saved: bool,
+    /// Stripped id — the stored id when saved, else the fetched one.
+    pub source_id: String,
+}
+
+/// `POST /api/openalex/search` envelope (route/sources.rs).
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct OpenAlexSearchResponse {
+    pub results: Vec<SearchResultOut>,
+    /// Which results the library already holds (stripped ids).
+    pub saved_source_ids: Vec<String>,
+}
+
 // ---------------------------------------------------------------------------
 // SERIALIZER 2 — PaperDetails (service/models/paper.py PaperDetails.to_dict)
 // ---------------------------------------------------------------------------

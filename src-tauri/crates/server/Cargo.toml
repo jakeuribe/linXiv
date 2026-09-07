@@ -6,6 +6,7 @@
 name = "linxiv-server"
 version = "0.4.2"
 edition = "2021"
+license = "GPL-3.0-or-later"
 
 [lib]
 name = "linxiv_server"
@@ -70,7 +71,9 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 zbus = { version = "4", default-features = false, features = ["tokio"] }
 
 [dev-dependencies]
-# Feed-refresh tests mock the arXiv endpoint.
+# Feed-refresh tests mock the arXiv endpoint; the feature lets the SSRF guard
+# admit the wiremock loopback host (core's own cfg!(test) doesn't reach here).
+linxiv-core = { path = "../core", features = ["allow-private-feeds"] }
 wiremock = "0.6"
 # Remote-query tests bind in-process endpoint pairs, like the p2p crate's own
 # tests/api.rs.

@@ -4,9 +4,11 @@
 //! link points at arxiv.org carry an extracted `arxiv_id` so the UI can deep-link
 //! into the existing arXiv save flow.
 //!
-//! The fetch takes an arbitrary user URL, so it is guarded: http(s) schemes only
-//! (re-checked on every redirect hop), a total timeout, and a streamed body cap.
+//! The fetch takes an arbitrary user URL, so it is guarded: http(s) schemes only,
+//! hosts must resolve to global addresses (both re-checked on every redirect hop),
+//! a total timeout, and a streamed body cap.
 
+use std::net::IpAddr;
 use std::path::Path;
 use std::time::Duration;
 
@@ -488,6 +490,56 @@ fn assert_scheme_http(url: &str) -> Result<()> {
     }
 }
 
+/// SSRF guard for user-supplied feed URLs: http(s) only, and the host (IP
+/// literal or DNS name) must resolve to public addresses per the crate's one
+/// classifier, `download::is_public_addr`. `get_checked` re-runs this on every
+/// redirect hop, so redirect targets are re-checked too. The lookup is
+/// `tokio::net::lookup_host`, so it stays preemptible by the caller's
+/// `FETCH_TIMEOUT` instead of blocking a runtime worker in getaddrinfo.
+/// ponytail: first-cut — resolution here and reqwest's own connect are separate
+/// lookups, so a DNS-rebinding host can still slip through; pinning the checked
+/// address for the connect needs a custom resolver if this ever matters.
+async fn assert_feed_url(url: &str) -> Result<()> {
+    assert_scheme_http(url)?;
+    // Tests fetch from a loopback wiremock — this crate's own under cfg(test),
+    // downstream crates' via the allow-private-feeds dev-only feature. The
+    // reject step stays covered by `non_public_addrs_rejected`.
+    if cfg!(any(test, feature = "allow-private-feeds")) {
+        return Ok(());
+    }
+    let parsed = Url::parse(url).expect("checked by assert_scheme_http");
+    let host = parsed.host_str().expect("http(s) URLs always carry a host");
+    // host_str keeps brackets on IPv6 literals ("[::1]"); strip them before
+    // parsing. IP-literal hosts are judged directly, no DNS.
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(host);
+    let addrs: Vec<IpAddr> = if let Ok(ip) = bare.parse::<IpAddr>() {
+        vec![ip]
+    } else {
+        let port = parsed.port_or_known_default().unwrap_or(80);
+        tokio::net::lookup_host((bare, port))
+            .await
+            .map_err(|e| CoreError::Upstream(format!("resolve feed host for {url:?}: {e}")))?
+            .map(|a| a.ip())
+            .collect()
+    };
+    reject_non_public(&addrs)
+}
+
+/// The reject step of the guard, split from the resolve step so it stays
+/// testable under the test escapes above. Unresolved (empty) counts as unsafe,
+/// matching `download::host_is_public`.
+fn reject_non_public(addrs: &[IpAddr]) -> Result<()> {
+    if addrs.is_empty() || addrs.iter().any(|ip| !super::download::is_public_addr(*ip)) {
+        return Err(CoreError::BadRequest(
+            "feed URL resolves to a private address".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Fetch and parse a feed URL under `FETCH_TIMEOUT`. `data_dir` carries the
 /// shared `.arxiv_ratelimit` file so arXiv-hosted feeds coordinate with every
 /// other arXiv-bound call (search, version check, downloads).
@@ -500,11 +552,18 @@ pub async fn fetch_feed(url: &str, data_dir: &Path) -> Result<Feed> {
     parse_feed(&body)
 }
 
-/// GET via the shared redirect-follow helper (scheme guard re-checked on every
-/// hop; arXiv-host hops honour the shared cool-down + spacing), then stream the
-/// body under a cap (Content-Length may be absent or lying).
+/// GET via the shared redirect-follow helper (scheme + private-address guard
+/// re-checked on every hop; arXiv-host hops honour the shared cool-down +
+/// spacing), then stream the body under a cap (Content-Length may be absent
+/// or lying).
 async fn fetch_body(url: &str, data_dir: &Path) -> Result<Vec<u8>> {
-    let mut resp = http::get_checked(url, &[], assert_scheme_http, Some(data_dir)).await?;
+    let mut resp = http::get_checked(
+        url,
+        &[],
+        |u| async move { assert_feed_url(&u).await },
+        Some(data_dir),
+    )
+    .await?;
     if !resp.status().is_success() {
         return Err(CoreError::Upstream(format!(
             "feed GET {:?} returned {}",
@@ -685,6 +744,23 @@ mod tests {
             let err = assert_scheme_http(bad).unwrap_err();
             assert_eq!(err.http_status(), 400, "{bad}");
         }
+    }
+
+    #[test]
+    fn non_public_addrs_rejected() {
+        // Classification breadth lives with the shared classifier
+        // (`download::is_public_addr_classifies_ssrf_vectors`); this covers
+        // the feed guard's reject wiring.
+        let ip = |s: &str| s.parse::<IpAddr>().unwrap();
+        assert!(reject_non_public(&[ip("93.184.216.34"), ip("2606:2800::1")]).is_ok());
+        // One private address among publics is enough to reject.
+        let err = reject_non_public(&[ip("93.184.216.34"), ip("127.0.0.1")]).unwrap_err();
+        assert!(matches!(err, CoreError::BadRequest(_)), "got {err:?}");
+        assert!(err.to_string().contains("private address"));
+        // CGNAT comes from the shared classifier, not the old local one.
+        assert!(reject_non_public(&[ip("100.64.0.5")]).is_err());
+        // Unresolved == unsafe.
+        assert!(reject_non_public(&[]).is_err());
     }
 
     #[tokio::test]

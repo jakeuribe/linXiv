@@ -2,10 +2,11 @@ import { useState } from "react";
 import { Badge } from "../ui/badge";
 import { Spinner } from "../ui/spinner";
 import type { SearchResult } from "../../types/api";
-import { isArxivId } from "../../lib/papers";
+import { isArxivId, isHttpUrl } from "../../lib/papers";
 import { errText } from "../../lib/errText";
 import { MathText } from "../../lib/tex";
-import { showContextMenu } from "../../lib/contextMenu";
+import { copyItem, showContextMenu } from "../../lib/contextMenu";
+import { openExternalUrl } from "../../api/updates";
 
 interface ResultRowProps {
   result: SearchResult;
@@ -53,7 +54,18 @@ export function ResultRow({ result, saved, onSave, onViewPdf }: ResultRowProps) 
           },
           ...(result.paper_url && isArxivId(result.source_id)
             ? [{ text: "View PDF", action: () => onViewPdf(result, saved) }]
-            : []),
+            : result.paper_url && isHttpUrl(result.paper_url)
+              ? [
+                  // Same landing URL as the expanded panel's "Open →" link.
+                  {
+                    text: "Open Page",
+                    action: () =>
+                      void openExternalUrl(result.paper_url).catch(console.error),
+                  },
+                ]
+              : []),
+          "separator",
+          copyItem("Copy ID", result.source_id),
         ])
       }
     >

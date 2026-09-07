@@ -8,7 +8,7 @@ import {
   getCurrentVersion,
   getLinuxPackageKind,
   installUpdate,
-  openReleaseUrl,
+  openExternalUrl,
   type LinuxPackageKind,
   type UpdateResult,
 } from "../../api/updates";
@@ -137,7 +137,7 @@ function UpdateMessage({
         <Button
           variant={isTauri ? "muted" : "primary"}
           size="sm"
-          onClick={() => openReleaseUrl(result.releaseUrl).catch(console.error)}
+          onClick={() => openExternalUrl(result.releaseUrl).catch(console.error)}
         >
           Download
         </Button>
@@ -160,7 +160,7 @@ function UpdateMessage({
         <Button
           variant="muted"
           size="sm"
-          onClick={() => openReleaseUrl(result.releaseUrl).catch(console.error)}
+          onClick={() => openExternalUrl(result.releaseUrl).catch(console.error)}
         >
           View
         </Button>

@@ -140,23 +140,34 @@ pub async fn get_guarded_with(
     allow: &[&str],
     headers: &[(&str, &str)],
 ) -> Result<reqwest::Response> {
-    get_checked(url, headers, |u| assert_host_allowed(u, allow), None).await
+    get_checked(
+        url,
+        headers,
+        |u| async move { assert_host_allowed(&u, allow) },
+        None,
+    )
+    .await
 }
 
 /// Shared redirect-follow GET: `check` guards the initial URL and every hop
-/// before the request is sent. `arxiv_pace = Some(data_dir)` makes arXiv-host
+/// before the request is sent (async so a check may resolve DNS without
+/// blocking the runtime). `arxiv_pace = Some(data_dir)` makes arXiv-host
 /// hops honour the shared cool-down + `MIN_SPACING` and record a 429 cool-down
 /// (callers whose pacing is done upstream, e.g. `arxiv_get`, pass `None`).
-pub(crate) async fn get_checked(
+pub(crate) async fn get_checked<F, Fut>(
     url: &str,
     headers: &[(&str, &str)],
-    check: impl Fn(&str) -> Result<()>,
+    check: F,
     arxiv_pace: Option<&Path>,
-) -> Result<reqwest::Response> {
+) -> Result<reqwest::Response>
+where
+    F: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = Result<()>>,
+{
     let client = client();
     let mut current = url.to_string();
     for _ in 0..=MAX_REDIRECTS {
-        check(&current)?;
+        check(current.clone()).await?;
         let pace_dir = arxiv_pace.filter(|_| is_arxiv_url(&current));
         if let Some(dir) = pace_dir {
             if let Some(remaining) = cooldown_remaining(dir, Utc::now()) {

@@ -11,6 +11,7 @@ import {
 } from "d3-force";
 import type { ForceLink, Simulation, SimulationLinkDatum, SimulationNodeDatum } from "d3-force";
 
+import { isTauri } from "../../api/client";
 import type { ThemeColors } from "../../lib/theme";
 import type { GraphIndex, GraphNodeType, GraphView } from "../../lib/graph/model";
 import type { GraphMatch } from "../../lib/graph/filter";
@@ -66,6 +67,15 @@ export interface GraphCanvasHandle {
   relayout(): void;
 }
 
+/** What a right-clicked node hands the page — enough to open or copy it. */
+export interface GraphNodeContext {
+  id: string;
+  type: GraphNodeType;
+  label: string;
+  sourceId?: string;
+  authorId?: number;
+}
+
 export interface GraphCanvasProps {
   view: GraphView;
   index: GraphIndex;
@@ -91,6 +101,7 @@ export interface GraphCanvasProps {
   onAuthorTap: (authorId: number) => void;
   onTagTap: (label: string) => void;
   onBackgroundTap: () => void;
+  onNodeContextMenu: (e: MouseEvent, node: GraphNodeContext) => void;
 }
 
 interface TooltipState extends TooltipContent {
@@ -117,6 +128,7 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(function Gra
     onAuthorTap,
     onTagTap,
     onBackgroundTap,
+    onNodeContextMenu,
   },
   ref
 ) {
@@ -142,8 +154,8 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(function Gra
   // change to the filter, the selection or a callback.
   const latest = useRef({ view, index, match, selectedIds, theme, gutter, measureGutter, forces });
   latest.current = { view, index, match, selectedIds, theme, gutter, measureGutter, forces };
-  const handlers = useRef({ onPaperTap, onAuthorTap, onTagTap, onBackgroundTap });
-  handlers.current = { onPaperTap, onAuthorTap, onTagTap, onBackgroundTap };
+  const handlers = useRef({ onPaperTap, onAuthorTap, onTagTap, onBackgroundTap, onNodeContextMenu });
+  handlers.current = { onPaperTap, onAuthorTap, onTagTap, onBackgroundTap, onNodeContextMenu };
 
   /**
    * One-shot: reframe the next time the simulation settles. Armed by a cold load
@@ -427,6 +439,20 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(function Gra
         handlers.current.onBackgroundTap();
       });
 
+      // The graph is one canvas, so per-node DOM contextmenu events never
+      // happen — cytoscape's own right-click gesture is the hook instead.
+      cy.on("cxttap", "node", (e) => {
+        setTooltip(null);
+        const n = e.target as NodeSingular;
+        handlers.current.onNodeContextMenu(e.originalEvent as MouseEvent, {
+          id: n.id(),
+          type: n.data("type") as GraphNodeType,
+          label: n.data("label") as string,
+          sourceId: n.data("source_id") as string | undefined,
+          authorId: n.data("author_id") as number | undefined,
+        });
+      });
+
       cy.on("mouseover", "node", (e) => showTooltipFor(e.target));
       cy.on("mouseout", "node", () => setTooltip(null));
       // The box is placed in rendered (screen) coordinates, so a pan or zoom
@@ -664,6 +690,12 @@ const GraphCanvas = forwardRef<GraphCanvasHandle, GraphCanvasProps>(function Gra
         ref={containerRef}
         style={{ position: "absolute", inset: 0 }}
         onMouseLeave={hideTooltip}
+        // cxttap's originalEvent is the press, not this contextmenu event, so
+        // the webview's default menu has to be put down here or it opens on
+        // top of the native one.
+        onContextMenu={(e) => {
+          if (isTauri) e.preventDefault();
+        }}
       />
       {tooltip && (
         <div

@@ -1,5 +1,5 @@
 import { libraryFetch } from "../stores/backend.ts";
-import type { Author, AuthorDetail, BasicAuthorDetails } from "../types/api";
+import type { Author, AuthorDetail, MergeCandidates } from "../types/api";
 
 export interface AuthorUpdateBody {
   full_name?: string | null;
@@ -29,13 +29,7 @@ export async function updateAuthor(
   });
 }
 
-// Envelope assembled inline by route/authors.rs — no core struct to generate.
-export interface MergeCandidates {
-  /** Shares this author's ORCID — near-certain duplicate. */
-  candidates: BasicAuthorDetails[];
-  /** Shares only the exact full name — weak evidence, never overlaps `candidates`. */
-  name_candidates: BasicAuthorDetails[];
-}
+export type { MergeCandidates };
 
 export async function getMergeCandidates(authorId: number): Promise<MergeCandidates> {
   return libraryFetch<MergeCandidates>(`/api/authors/${authorId}/merge-candidates`);

@@ -56,10 +56,46 @@ function armMenuSweeper() {
   );
 }
 
+/** A "Copy …" entry. The webview may withhold navigator.clipboard outside a
+ *  DOM gesture (menu actions arrive via a Tauri event), so fall back to a
+ *  hidden-textarea execCommand copy before giving up. */
+export function copyItem(text: string, value: string): ContextMenuItem {
+  return {
+    text,
+    action: () => {
+      // navigator.clipboard itself may be absent (older WebKitGTK).
+      if (navigator.clipboard?.writeText) {
+        void navigator.clipboard.writeText(value).catch((err) => {
+          if (!execCommandCopy(value)) console.error(`${text} failed:`, err);
+        });
+      } else if (!execCommandCopy(value)) {
+        console.error(`${text} failed: no clipboard API`);
+      }
+    },
+  };
+}
+
+function execCommandCopy(value: string): boolean {
+  const ta = document.createElement("textarea");
+  ta.value = value;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } finally {
+    ta.remove();
+  }
+  return ok;
+}
+
 /** Pop a native context menu at the cursor. Outside Tauri (browser dev) this
- *  is a no-op that lets the browser's default menu through. */
+ *  is a no-op that lets the browser's default menu through. Accepts a plain
+ *  MouseEvent too — cytoscape's cxttap hands over the native event. */
 export function showContextMenu(
-  e: React.MouseEvent,
+  e: React.MouseEvent | MouseEvent,
   items: ContextMenuItem[]
 ): void {
   if (!isTauri) return;

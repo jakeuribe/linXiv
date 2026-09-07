@@ -13,10 +13,13 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use linxiv_core::error::CoreError;
-use linxiv_core::models::{strip_namespace, PaperMetadata, SearchResultOut};
+use linxiv_core::models::{
+    strip_namespace, ArxivFetchResponse, ArxivSearchResponse, OpenAlexSearchResponse,
+    PaperMetadata, SearchResultOut,
+};
 use linxiv_core::service::{paper as svc_paper, source as svc_source};
 
-use crate::route::{ApiError, ReqCtx};
+use crate::route::{to_value, ApiError, ReqCtx};
 use crate::state::AppState;
 
 /// Returns `Some(result)` if this group owns `(method, path)`, else `None`.
@@ -128,7 +131,10 @@ async fn arxiv_search(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiEr
     let saved = saved_ids(state, &results, b.save)?;
 
     let results: Vec<SearchResultOut> = results.into_iter().map(SearchResultOut::from).collect();
-    Ok(json!({ "results": results, "saved_source_ids": saved }))
+    to_value(&ArxivSearchResponse {
+        results,
+        saved_source_ids: saved,
+    })
 }
 
 /// `POST /api/arxiv/fetch` (804–823). `404` not-found / `502` other. The save is
@@ -157,7 +163,11 @@ async fn arxiv_fetch(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiErr
         source_id = strip_namespace(&stored);
     }
     let paper = SearchResultOut::from(meta);
-    Ok(json!({ "paper": paper, "saved": b.save, "source_id": source_id }))
+    to_value(&ArxivFetchResponse {
+        paper,
+        saved: b.save,
+        source_id,
+    })
 }
 
 /// `POST /api/openalex/search` (1177–1187). `502` on any source error. Never
@@ -182,7 +192,10 @@ async fn openalex_search(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, Ap
         .map_err(upstream_502)?;
     let saved = saved_ids(state, &results, false)?;
     let results: Vec<SearchResultOut> = results.into_iter().map(SearchResultOut::from).collect();
-    Ok(json!({ "results": results, "saved_source_ids": saved }))
+    to_value(&OpenAlexSearchResponse {
+        results,
+        saved_source_ids: saved,
+    })
 }
 
 /// `POST /api/openalex/save` (1475–1489). `404`/`400`/`502` on fetch. The save is

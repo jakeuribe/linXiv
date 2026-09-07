@@ -34,7 +34,9 @@ import {
 } from "../lib/paperMutations";
 import { errText } from "../lib/errText";
 import { useConfirmWithTimeout } from "../hooks/useConfirmWithTimeout";
-import { showContextMenu } from "../lib/contextMenu";
+import { copyItem, showContextMenu } from "../lib/contextMenu";
+import { isArxivPaper, landingUrl } from "../lib/papers";
+import { openExternalUrl } from "../api/updates";
 
 // ---------------------------------------------------------------------------
 // Main page
@@ -225,6 +227,7 @@ export default function ProjectDetailPage() {
       selectedIds.has(paper.source_id) && selectedIds.size > 1
         ? [...selectedIds]
         : [paper.source_id];
+    const url = landingUrl(paper);
     showContextMenu(e, [
       {
         text: "Open",
@@ -233,6 +236,17 @@ export default function ProjectDetailPage() {
             state: { fromProjectId: projectId },
           }),
       },
+      ...(url && !isArxivPaper(paper)
+        ? [
+            {
+              text: "Open Page",
+              action: () => void openExternalUrl(url).catch(console.error),
+            },
+          ]
+        : []),
+      "separator",
+      copyItem("Copy ID", paper.source_id),
+      ...(paper.doi ? [copyItem("Copy DOI", paper.doi)] : []),
       ...(!readOnly
         ? ([
             "separator",
