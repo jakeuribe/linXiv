@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { CheckMenuItem, Menu } from "@tauri-apps/api/menu";
 import { LogicalPosition } from "@tauri-apps/api/dpi";
 import { isTauri } from "../api/client";
+import { useUiStore } from "../stores/ui";
 
 export type ContextMenuItem =
   | "separator"
@@ -16,9 +17,19 @@ export type ContextMenuItem =
 // observed live in eu-stack). Queueing behind the previous popup's resolution
 // guarantees the mutex is free before any close/build/popup runs.
 let chain: Promise<void> = Promise.resolve();
-let lastMenu: Menu | null = null;
+// Check items are their own Rust-side resources; menu.close() frees only the
+// menu, so they're tracked and closed alongside it or they leak per click.
+type LiveMenu = { menu: Menu; extras: CheckMenuItem[] };
+let lastMenu: LiveMenu | null = null;
 // Rapid right-clicks are last-writer-wins: superseded queued popups no-op.
 let generation = 0;
+
+async function closeMenu(m: LiveMenu | null): Promise<void> {
+  if (!m) return;
+  await Promise.all(
+    [m.menu, ...m.extras].map((r) => r.close().catch(() => {}))
+  );
+}
 
 // Steps must never reject (each catches internally) so one failure can't
 // wedge the chain and kill right-click app-wide.
@@ -37,7 +48,7 @@ function armMenuSweeper() {
     "pointerdown",
     () => {
       enqueue(async () => {
-        await lastMenu?.close().catch(() => {});
+        await closeMenu(lastMenu);
         lastMenu = null;
       });
     },
@@ -56,42 +67,66 @@ export function showContextMenu(
   e.stopPropagation();
   armMenuSweeper();
   // Captured before the async hop: the menu pops where the mouse actually
-  // clicked (webview-logical coords), not wherever the OS last showed one.
-  const clickX = e.clientX;
-  const clickY = e.clientY;
+  // clicked, not wherever the OS last showed one. clientX/Y are in zoomed CSS
+  // px (interface zoom is webview-native zoom); window-logical px = client × zoom.
+  const zoom = useUiStore.getState().zoom;
+  const clickX = e.clientX * zoom;
+  const clickY = e.clientY * zoom;
   const gen = ++generation;
   enqueue(async () => {
     if (gen !== generation) return; // superseded while queued
+    const extras: CheckMenuItem[] = [];
+    let menu: Menu | null = null;
     try {
       // Popups anchor to the toplevel window, whose origin on Linux (CSD)
       // includes titlebar/shadow chrome outside the webview — Rust measures
       // that per popup (it changes on maximize). (0,0) on other platforms.
       const offset = invoke<[number, number]>("menu_popup_offset").catch(
-        () => [0, 0] as [number, number]
+        (err) => {
+          console.warn("menu_popup_offset failed; menu may misplace:", err);
+          return [0, 0] as [number, number];
+        }
       );
-      const menu = await Menu.new({
-        items: await Promise.all(
-          items.map((item) =>
-            item === "separator"
-              ? { item: "Separator" as const }
-              : item.checked !== undefined
-                ? CheckMenuItem.new({
-                    text: item.text,
-                    checked: item.checked,
-                    enabled: item.enabled ?? true,
-                    action: item.action,
-                  })
-                : { text: item.text, action: item.action, enabled: item.enabled ?? true }
-          )
-        ),
-      });
-      await lastMenu?.close().catch(() => {});
-      lastMenu = menu;
+      // Built sequentially so a failure can't race a still-pending item into
+      // `extras` after the catch has already swept it.
+      const menuItems: Array<
+        CheckMenuItem | { item: "Separator" } | { text: string; action: () => void; enabled: boolean }
+      > = [];
+      for (const item of items) {
+        if (item === "separator") {
+          menuItems.push({ item: "Separator" });
+        } else if (item.checked !== undefined) {
+          const check = await CheckMenuItem.new({
+            text: item.text,
+            checked: item.checked,
+            enabled: item.enabled ?? true,
+            action: item.action,
+          });
+          extras.push(check);
+          menuItems.push(check);
+        } else {
+          menuItems.push({ text: item.text, action: item.action, enabled: item.enabled ?? true });
+        }
+      }
+      menu = await Menu.new({ items: menuItems });
+      const built: LiveMenu = { menu, extras };
+      await closeMenu(lastMenu);
+      lastMenu = null;
       const [dx, dy] = await offset;
+      if (gen !== generation) {
+        // Superseded while building; no popup is in flight, so closing here
+        // is safe. No awaits between this check and popup(), so it's final.
+        await closeMenu(built);
+        return;
+      }
+      lastMenu = built;
       // Resolves when the menu is dismissed, which is what keeps the chain
       // (and the resources-table mutex) honest.
       await menu.popup(new LogicalPosition(clickX + dx, clickY + dy));
     } catch (err) {
+      // Free whatever was built before the failure — nothing else holds it.
+      await Promise.all([menu, ...extras].map((r) => r?.close().catch(() => {})));
+      if (lastMenu?.menu === menu) lastMenu = null;
       // Menu API systematically failing must not fail silent — right-click
       // would be dead app-wide with no trace.
       console.error("native context menu failed:", err);
