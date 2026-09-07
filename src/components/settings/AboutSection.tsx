@@ -19,9 +19,15 @@ import {
   UPDATE_FREQUENCIES,
   type UpdateFrequency,
 } from "../../lib/updateSchedule";
+import { checkUpdates as checkPluginUpdates } from "../../api/editorPlugin";
+import {
+  errMessage,
+  PLUGIN_UPDATE_CHECK_QUERY_KEY,
+} from "../../lib/editorPluginUtils";
 import { Button } from "../ui/button";
 import { OptionSelect } from "../ui/select";
 import { Spinner } from "../ui/spinner";
+import { PluginCheckMessage } from "./EditorPluginSection";
 import { SettingGroup, SettingGroupLabel, SettingRow } from "./SettingRow";
 import { errText } from "../../lib/errText";
 
@@ -206,6 +212,21 @@ export function AboutSection() {
     retry: false,
   });
 
+  // Editor-plugin half of the unified check (ADR 0017). Shares its key with
+  // EditorPluginSection (a different Settings tab) so a check run here lights
+  // up the Update button there. Never auto-fetches — button-driven only.
+  const {
+    data: pluginCheck,
+    error: pluginCheckError,
+    isFetching: pluginChecking,
+    refetch: refetchPluginCheck,
+  } = useQuery({
+    queryKey: [PLUGIN_UPDATE_CHECK_QUERY_KEY],
+    queryFn: checkPluginUpdates,
+    enabled: false,
+    retry: false,
+  });
+
   // The query is disabled outside the deep link, and a disabled observer is
   // served cached data without ever refetching it. Age is checked here so a
   // verdict from hours ago isn't presented as the current one.
@@ -240,6 +261,9 @@ export function AboutSection() {
   function handleCheck() {
     setInstallError(null);
     void refetch();
+    // Plugin commands only exist under Tauri; in browser dev the editor runs
+    // from its own dev server and there is nothing to check.
+    if (isTauri) void refetchPluginCheck();
   }
 
   async function handleInstall() {
@@ -269,8 +293,13 @@ export function AboutSection() {
               : "Development build"
           }
         >
-          <Button variant="muted" size="sm" onClick={handleCheck} disabled={checking}>
-            {checking ? (
+          <Button
+            variant="muted"
+            size="sm"
+            onClick={handleCheck}
+            disabled={checking || pluginChecking}
+          >
+            {checking || pluginChecking ? (
               <>
                 <Spinner size={14} /> Checking…
               </>
@@ -319,6 +348,28 @@ export function AboutSection() {
                 <span style={{ color: "var(--color-danger)" }}>{checkError.message}</span>
               )
             )}
+          </SettingRow>
+        )}
+        {isTauri && (pluginChecking || pluginCheck || pluginCheckError) && (
+          <SettingRow label="Editor plugin">
+            {pluginChecking ? (
+              <span className="flex items-center gap-2 text-sm text-muted">
+                <Spinner size={14} /> Checking…
+              </span>
+            ) : pluginCheckError ? (
+              <span style={{ color: "var(--color-danger)" }}>
+                {errMessage(pluginCheckError)}
+              </span>
+            ) : pluginCheck ? (
+              <span className="flex items-center gap-3 flex-wrap">
+                <PluginCheckMessage check={pluginCheck} />
+                {pluginCheck.updateAvailable && !pluginCheck.noCompatibleRelease && (
+                  <span className="text-muted">
+                    Install from Settings → Integrations.
+                  </span>
+                )}
+              </span>
+            ) : null}
           </SettingRow>
         )}
       </SettingGroup>
