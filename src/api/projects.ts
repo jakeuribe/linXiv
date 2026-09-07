@@ -1,10 +1,15 @@
 import { libraryFetch } from "../stores/backend.ts";
-import type { PaperMembershipReceipt, Project } from "../types/api";
+import type {
+  BulkAddReceipt,
+  CreatedProject,
+  OkReceipt,
+  PaperMembershipReceipt,
+  Project,
+  ProjectsResponse,
+} from "../types/api";
 
-export async function listProjects(
-  status = "active"
-): Promise<{ projects: Project[] }> {
-  return libraryFetch<{ projects: Project[] }>(`/api/projects?status=${status}`);
+export async function listProjects(status = "active"): Promise<ProjectsResponse> {
+  return libraryFetch<ProjectsResponse>(`/api/projects?status=${status}`);
 }
 
 export async function getProject(id: number): Promise<Project> {
@@ -20,7 +25,7 @@ export interface ProjectCreateBody {
 
 export async function createProject(
   body: ProjectCreateBody
-): Promise<{ project: { id: number; name: string } }> {
+): Promise<CreatedProject> {
   return libraryFetch("/api/projects", {
     method: "POST",
     body: JSON.stringify(body),
@@ -38,22 +43,22 @@ export interface ProjectUpdateBody {
 export async function updateProject(
   id: number,
   body: ProjectUpdateBody
-): Promise<{ ok: boolean }> {
+): Promise<OkReceipt> {
   return libraryFetch(`/api/projects/${id}`, {
     method: "PATCH",
     body: JSON.stringify(body),
   });
 }
 
-export async function deleteProject(id: number): Promise<{ ok: boolean }> {
+export async function deleteProject(id: number): Promise<OkReceipt> {
   return libraryFetch(`/api/projects/${id}`, { method: "DELETE" });
 }
 
-export async function archiveProject(id: number): Promise<{ ok: boolean }> {
+export async function archiveProject(id: number): Promise<OkReceipt> {
   return updateProject(id, { status: "archived" });
 }
 
-export async function restoreProject(id: number): Promise<{ ok: boolean }> {
+export async function restoreProject(id: number): Promise<OkReceipt> {
   return updateProject(id, { status: "active" });
 }
 
@@ -79,11 +84,11 @@ const BULK_ADD_CHUNK = 5_000;
 export async function addPapersToProject(
   projectId: number,
   sourceIds: string[]
-): Promise<{ ok: boolean; failed: string[] }> {
+): Promise<BulkAddReceipt> {
   const ids = [...new Set(sourceIds)];
   const failed: string[] = [];
   for (let i = 0; i < ids.length; i += BULK_ADD_CHUNK) {
-    const res = await libraryFetch<{ ok: boolean; failed: string[] }>(
+    const res = await libraryFetch<BulkAddReceipt>(
       `/api/projects/${projectId}/papers/bulk`,
       {
         method: "POST",

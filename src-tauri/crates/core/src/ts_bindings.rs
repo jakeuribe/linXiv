@@ -158,6 +158,14 @@ pub(crate) fn render() -> String {
     out.push_str(&decl::<crate::service::export_import::ImportedProject>());
     out.push_str(&decl::<crate::service::files::SavedPdfListing>());
     out.push_str(&decl::<crate::service::files::DeletedPdf>());
+    // Library-organization route group (route/{projects,tags,authors}.rs).
+    out.push_str(&decl::<ProjectsResponse>());
+    out.push_str(&decl::<CreatedProject>());
+    out.push_str(&decl::<crate::service::project::BulkAddReceipt>());
+    out.push_str(&decl::<crate::service::tag::TagsResponse>());
+    out.push_str(&decl::<crate::service::tag::TagDetail>());
+    out.push_str(&decl::<AuthorsResponse>());
+    out.push_str(&decl::<AuthorMergeResponse>());
     out
 }
 

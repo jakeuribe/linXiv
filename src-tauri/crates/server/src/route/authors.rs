@@ -4,8 +4,9 @@
 //! copies this shape. Core binding mirrors `mcp/src/io_authors_misc.rs`.
 
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 
+use linxiv_core::models::{AuthorMergeResponse, AuthorWithPapers, AuthorsResponse, OkReceipt};
 use linxiv_core::service::author::{self as svc_author, Author, Authors, MergeCandidates};
 use linxiv_core::service::paper::{self as svc_paper, PaperRef};
 
@@ -35,7 +36,7 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     // and must stay out of the list. CLI keeps 0 to see them.
     let min_papers = if ctx.q_bool("exclude_single") { 2 } else { 1 };
     let authors = state.with_conn(|conn| svc_author::list_with_paper_count(conn, min_papers))?;
-    Ok(json!({ "authors": authors }))
+    crate::route::to_value(&AuthorsResponse { authors })
 }
 
 /// `GET /api/authors/{id}` — `api_author_get` → `_author_detail_response`.
@@ -97,7 +98,7 @@ fn link_paper(state: &AppState, id: &str, pid: &str) -> Result<Value, ApiError> 
             conn, author_id, paper_id, None,
         )?)
     })?;
-    Ok(json!({ "ok": true }))
+    crate::route::to_value(&OkReceipt { ok: true })
 }
 
 /// `DELETE /api/authors/{id}/papers/{paper_id}` — detach one paper from an
@@ -118,7 +119,7 @@ fn unlink_paper(state: &AppState, id: &str, pid: &str) -> Result<Value, ApiError
         }
         Ok(())
     })?;
-    Ok(json!({ "ok": true }))
+    crate::route::to_value(&OkReceipt { ok: true })
 }
 
 /// `PATCH /api/authors/{id}` — `api_author_update`. Forwards the (all-optional)
@@ -162,11 +163,10 @@ fn merge(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError
         }
         Ok(svc_author::merge(conn, canonical_id, &b.duplicate_ids)?)
     })?;
-    let mut v = detail_response(state, canonical_id)?;
-    if let Value::Object(map) = &mut v {
-        map.insert("merged_ids".into(), json!(merged_ids));
-    }
-    Ok(v)
+    crate::route::to_value(&AuthorMergeResponse {
+        detail: detail_struct(state, canonical_id)?,
+        merged_ids,
+    })
 }
 
 /// `DELETE /api/authors/{id}` — `api_author_delete`. 404 if absent, 409 if still
@@ -174,16 +174,19 @@ fn merge(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError
 fn delete(state: &AppState, id: &str) -> Result<Value, ApiError> {
     let author_id = path_i64(id)?;
     state.with_conn(|conn| svc_author::delete(conn, &author_ref(author_id)))?;
-    Ok(json!({ "ok": true }))
+    crate::route::to_value(&OkReceipt { ok: true })
 }
 
-/// The canonical `AuthorWithPapers` composite — shared by GET and PATCH.
-fn detail_response(state: &AppState, author_id: i64) -> Result<Value, ApiError> {
+/// The canonical `AuthorWithPapers` composite — shared by GET, PATCH and merge.
+fn detail_struct(state: &AppState, author_id: i64) -> Result<AuthorWithPapers, ApiError> {
     state.with_conn(|conn| {
-        let detail = svc_author::get_with_papers(conn, author_id)?
-            .ok_or_else(|| ApiError::new(404, "Author not found"))?;
-        crate::route::to_value(&detail)
+        svc_author::get_with_papers(conn, author_id)?
+            .ok_or_else(|| ApiError::new(404, "Author not found"))
     })
+}
+
+fn detail_response(state: &AppState, author_id: i64) -> Result<Value, ApiError> {
+    crate::route::to_value(&detail_struct(state, author_id)?)
 }
 
 fn author_ref(author_id: i64) -> Author {
@@ -201,6 +204,7 @@ mod tests {
     use linxiv_core::models::AuthorIn;
     use linxiv_core::storage;
     use rusqlite::{params, Connection};
+    use serde_json::json;
 
     fn state() -> AppState {
         let conn = storage::open_in_memory().unwrap();
@@ -295,6 +299,15 @@ mod tests {
 
         assert_eq!(resp["merged_ids"], json!([dup]));
         assert_eq!(resp["paper_count"], json!(2));
+        // Wire pin: the flattened detail keys come first, merged_ids stays last.
+        let keys: Vec<&str> = resp
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(keys.first(), Some(&"author_id"));
+        assert_eq!(keys.last(), Some(&"merged_ids"));
         let paper_ids: Vec<i64> = resp["papers"]
             .as_array()
             .unwrap()

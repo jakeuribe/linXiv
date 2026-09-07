@@ -1,5 +1,12 @@
 import { libraryFetch } from "../stores/backend.ts";
-import type { Author, AuthorDetail, MergeCandidates } from "../types/api";
+import type {
+  Author,
+  AuthorDetail,
+  AuthorMergeResponse,
+  AuthorsResponse,
+  MergeCandidates,
+  OkReceipt,
+} from "../types/api";
 
 export interface AuthorUpdateBody {
   full_name?: string | null;
@@ -10,7 +17,7 @@ export interface AuthorUpdateBody {
 
 export async function listAuthors(excludeSingle = false): Promise<Author[]> {
   const query = excludeSingle ? "?exclude_single=true" : "";
-  const data = await libraryFetch<{ authors: Author[] }>(`/api/authors${query}`);
+  const data = await libraryFetch<AuthorsResponse>(`/api/authors${query}`);
   return data.authors;
 }
 
@@ -36,13 +43,13 @@ export async function getMergeCandidates(authorId: number): Promise<MergeCandida
 }
 
 export async function linkAuthorToPaper(authorId: number, paperId: number): Promise<void> {
-  await libraryFetch<{ ok: boolean }>(`/api/authors/${authorId}/papers/${paperId}`, {
+  await libraryFetch<OkReceipt>(`/api/authors/${authorId}/papers/${paperId}`, {
     method: "POST",
   });
 }
 
 export async function unlinkAuthorFromPaper(authorId: number, paperId: number): Promise<void> {
-  await libraryFetch<{ ok: boolean }>(`/api/authors/${authorId}/papers/${paperId}`, {
+  await libraryFetch<OkReceipt>(`/api/authors/${authorId}/papers/${paperId}`, {
     method: "DELETE",
   });
 }
@@ -50,8 +57,8 @@ export async function unlinkAuthorFromPaper(authorId: number, paperId: number): 
 export async function mergeAuthors(
   canonicalId: number,
   duplicateIds: number[],
-): Promise<AuthorDetail> {
-  return libraryFetch<AuthorDetail>(`/api/authors/${canonicalId}/merge`, {
+): Promise<AuthorMergeResponse> {
+  return libraryFetch<AuthorMergeResponse>(`/api/authors/${canonicalId}/merge`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ duplicate_ids: duplicateIds }),
@@ -59,7 +66,7 @@ export async function mergeAuthors(
 }
 
 export async function deleteAuthor(authorId: number): Promise<void> {
-  await libraryFetch<{ ok: boolean }>(`/api/authors/${authorId}`, {
+  await libraryFetch<OkReceipt>(`/api/authors/${authorId}`, {
     method: "DELETE",
   });
 }
