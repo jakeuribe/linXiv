@@ -3927,6 +3927,7 @@ name = "linxiv-app"
 version = "0.4.2"
 dependencies = [
  "futures-util",
+ "gtk",
  "iroh",
  "linxiv-core",
  "linxiv-p2p",

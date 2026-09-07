@@ -84,6 +84,10 @@ iroh = "1.0.2"
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Same 0.18 line tao/wry use; menu_popup_offset needs the gtk widget APIs.
+gtk = "0.18"
+
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2"
 
