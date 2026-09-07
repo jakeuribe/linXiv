@@ -6,6 +6,7 @@ import type {
   BibtexImportReceipt,
   ImportPreviewResponse,
   ImportedProject,
+  OkReceipt,
   PaperImportResult,
 } from "../types/api";
 
@@ -58,7 +59,7 @@ export async function exportProject(
       filters: [{ name: "linXiv Project", extensions: ["lxproj"] }],
     });
     if (!destPath) throw pickerCancelled();
-    await libraryFetch(`/api/projects/${projectId}/export`, {
+    await libraryFetch<OkReceipt>(`/api/projects/${projectId}/export`, {
       method: "POST",
       body: JSON.stringify({ project_id: projectId, include_pdfs: includePdfs, dest_path: destPath }),
     });
@@ -110,7 +111,7 @@ export async function exportBibtex(projectId: number, projectName?: string): Pro
       filters: [{ name: "BibTeX", extensions: ["bib"] }],
     });
     if (!destPath) throw pickerCancelled();
-    await libraryFetch(`/api/projects/${projectId}/export/bibtex?dest_path=${encodeURIComponent(destPath)}`);
+    await libraryFetch<OkReceipt>(`/api/projects/${projectId}/export/bibtex?dest_path=${encodeURIComponent(destPath)}`);
     return;
   }
   const { blob } = await fetchBlob(`${BASE_URL}/api/projects/${projectId}/export/bibtex`);
@@ -124,7 +125,7 @@ export async function exportObsidian(projectId: number, projectName?: string): P
     const destDir = Array.isArray(picked) ? picked[0] : picked;
     if (!destDir) throw pickerCancelled();
     const destPath = await pathJoin(destDir, slug);
-    await libraryFetch(`/api/projects/${projectId}/export/obsidian?dest_path=${encodeURIComponent(destPath)}`);
+    await libraryFetch<OkReceipt>(`/api/projects/${projectId}/export/obsidian?dest_path=${encodeURIComponent(destPath)}`);
     return;
   }
   const { blob } = await fetchBlob(`${BASE_URL}/api/projects/${projectId}/export/obsidian`);

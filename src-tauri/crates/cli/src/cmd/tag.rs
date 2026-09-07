@@ -6,7 +6,7 @@ use serde_json::json;
 use linxiv_core::models::TagIn;
 use linxiv_core::service::paper::{self as svc_paper, PaperRef};
 use linxiv_core::service::project as svc_project;
-use linxiv_core::service::tag::{self as svc_tag, Tag};
+use linxiv_core::service::tag::{self as svc_tag, CreatedTag, DeletedTag, PaperTags, Tag};
 
 use crate::ctx::Ctx;
 use crate::output::{as_source_id, fail, output};
@@ -56,14 +56,20 @@ pub async fn run(cmd: TagCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             let source_id = as_source_id(&ctx.conn, &source_id);
             let updated = svc_paper::add_paper_tags(&mut ctx.conn, &source_id, &tags)
                 .unwrap_or_else(|e| fail(e));
-            output(&json!({ "source_id": source_id, "tags": updated }));
+            output(&PaperTags {
+                source_id,
+                tags: updated,
+            });
         }
         // cmd_tag_remove
         TagCmd::Remove { source_id, tags } => {
             let source_id = as_source_id(&ctx.conn, &source_id);
             let updated = svc_paper::remove_paper_tags(&mut ctx.conn, &source_id, &tags)
                 .unwrap_or_else(|e| fail(e));
-            output(&json!({ "source_id": source_id, "tags": updated }));
+            output(&PaperTags {
+                source_id,
+                tags: updated,
+            });
         }
         // cmd_tag_list: missing paper -> empty list (no error), matching get_paper_tags.
         TagCmd::List { source_id } => {
@@ -71,7 +77,7 @@ pub async fn run(cmd: TagCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             let tags = svc_paper::get(&ctx.conn, &PaperRef::source(source_id.clone()))?
                 .map(|d| d.tags)
                 .unwrap_or_default();
-            output(&json!({ "source_id": source_id, "tags": tags }));
+            output(&PaperTags { source_id, tags });
         }
         // cmd_tag_list_all
         TagCmd::ListAll => {
@@ -85,7 +91,7 @@ pub async fn run(cmd: TagCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                     label: label.clone(),
                 },
             )?;
-            output(&json!({ "tag_id": tag_id, "label": label }));
+            output(&CreatedTag { tag_id, label });
         }
         // cmd_tag_delete
         TagCmd::Delete { tag_id } => {
@@ -96,7 +102,9 @@ pub async fn run(cmd: TagCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
                     label: None,
                 },
             )?;
-            output(&json!({ "deleted_tag_id": tag_id }));
+            output(&DeletedTag {
+                deleted_tag_id: tag_id,
+            });
         }
         // cmd_tag_add_project: the service fn owns the resolve-or-fail guard.
         TagCmd::AddProject { project_id, tags } => {

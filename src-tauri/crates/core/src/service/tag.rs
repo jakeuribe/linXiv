@@ -8,10 +8,48 @@
 //! `storage::queries::tag`; the service issues no raw SQL.
 
 use rusqlite::Connection;
+use serde::Serialize;
+use ts_rs::TS;
 
 use crate::error::Result;
-use crate::models::{TagDetails, TagIn, TagWithCount};
+use crate::models::{PaperDetails, ProjectOut, Status, TagDetails, TagIn, TagWithCount};
 use crate::storage::queries::tag as q;
+
+/// `GET /api/tags` envelope (route/tags.rs).
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct TagsResponse {
+    pub tags: Vec<TagWithCount>,
+}
+
+/// `GET /api/tags/{label}` envelope (route/tags.rs) — see [`detail`].
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct TagDetail {
+    /// Canonical stored casing; the raw query label when the tag is unknown.
+    pub label: String,
+    pub papers: Vec<PaperDetails>,
+    pub projects: Vec<ProjectOut>,
+}
+
+/// `POST /api/tags` / `linxiv tag create` envelope.
+#[derive(Debug, Clone, Serialize)]
+pub struct CreatedTag {
+    pub tag_id: i64,
+    pub label: String,
+}
+
+/// `DELETE /api/tags/{id}` / `linxiv tag delete` envelope.
+#[derive(Debug, Clone, Serialize)]
+pub struct DeletedTag {
+    pub deleted_tag_id: i64,
+}
+
+/// A paper's tag list after a tag mutation — `POST`/`DELETE
+/// /api/papers/{id}/tags` and `linxiv tag add/remove/list`.
+#[derive(Debug, Clone, Serialize)]
+pub struct PaperTags {
+    pub source_id: String,
+    pub tags: Vec<String>,
+}
 
 /// `service/tag.py::Tag` — single-tag lookup. Resolution order: tag_id -> label.
 #[derive(Debug, Default, Clone)]
@@ -123,6 +161,46 @@ pub fn project_fks_by_label(conn: &Connection, label: &str) -> Result<Vec<i64>> 
 /// Every named tag with its active-paper count, for the Tags index table.
 pub fn list_tags_with_count(conn: &Connection) -> Result<Vec<TagWithCount>> {
     q::list_tags_with_count(conn)
+}
+
+/// The tag-detail composite (`api_tag_detail`): canonical label via [`get`]
+/// (raw label if the tag is unknown), papers via `get_papers_by_tag`, projects
+/// via a NOCASE PROJECT_TO_TAG lookup narrowing `get_many` to the tagged fks.
+pub fn detail(conn: &Connection, label: &str) -> Result<TagDetail> {
+    let canonical = get(
+        conn,
+        &Tag {
+            label: Some(label.to_string()),
+            ..Default::default()
+        },
+    )?
+    .and_then(|t| t.label)
+    .unwrap_or_else(|| label.to_string());
+
+    let papers = crate::service::paper::get_papers_by_tag(conn, label)?;
+
+    // Status::Active filter matches Python's `_LIST_PROJECTS_BY_TAG_SQL`
+    // (`AND pr.STATUS = 'active'`): PROJECT_TO_TAG rows survive soft-delete, so
+    // an unfiltered lookup would leak archived/deleted projects the API excludes.
+    // Empty fks must short-circuit: get_many treats an empty project_fks
+    // filter as "no filter" and would return every active project.
+    let fks = project_fks_by_label(conn, label)?;
+    let tagged = if fks.is_empty() {
+        Vec::new()
+    } else {
+        let active = crate::service::project::Projects {
+            project_fks: Some(fks),
+            status: Some(Status::Active),
+        };
+        crate::service::project::get_many(conn, &active)?
+    };
+    let projects = crate::service::project::to_out_many(conn, tagged)?;
+
+    Ok(TagDetail {
+        label: canonical,
+        papers,
+        projects,
+    })
 }
 
 #[cfg(test)]

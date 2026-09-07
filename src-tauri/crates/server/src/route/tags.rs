@@ -5,12 +5,11 @@
 //! owns and `None` to pass. Core binding mirrors `mcp/src/projects_tags.rs`.
 
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 
-use linxiv_core::models::{Status, TagIn};
+use linxiv_core::models::TagIn;
 use linxiv_core::service::paper as svc_paper;
-use linxiv_core::service::project::{self as svc_project, Projects};
-use linxiv_core::service::tag::{self as svc_tag, Tag};
+use linxiv_core::service::tag::{self as svc_tag, CreatedTag, DeletedTag, PaperTags, Tag};
 
 use crate::route::{path_i64, ApiError, ReqCtx};
 use crate::state::AppState;
@@ -34,49 +33,14 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
 /// index can render a table sortable by name or by count.
 fn list(state: &AppState) -> Result<Value, ApiError> {
     let tags = state.with_conn(|conn| svc_tag::list_tags_with_count(conn))?;
-    Ok(json!({ "tags": tags }))
+    crate::route::to_value(&svc_tag::TagsResponse { tags })
 }
 
-/// `GET /api/tags/{label}` — `api_tag_detail`. Canonical label via `tag::get`
-/// (raw label if the tag is unknown); papers via `get_papers_by_tag`; projects
-/// via a NOCASE PROJECT_TO_TAG lookup narrowing `get_many` to the tagged fks.
+/// `GET /api/tags/{label}` — `api_tag_detail`. The composite lives in core
+/// (`svc_tag::detail` → `TagDetail`): canonical label, papers, active projects.
 fn detail(state: &AppState, label: &str) -> Result<Value, ApiError> {
-    state.with_conn(|conn| -> Result<Value, ApiError> {
-        let canonical = svc_tag::get(
-            conn,
-            &Tag {
-                label: Some(label.to_string()),
-                ..Default::default()
-            },
-        )?
-        .and_then(|t| t.label)
-        .unwrap_or_else(|| label.to_string());
-
-        let papers = serde_json::to_value(svc_paper::get_papers_by_tag(conn, label)?)
-            .map_err(|e| ApiError::new(500, e.to_string()))?;
-
-        // Status::Active filter matches Python's `_LIST_PROJECTS_BY_TAG_SQL`
-        // (`AND pr.STATUS = 'active'`): PROJECT_TO_TAG rows survive soft-delete, so
-        // an unfiltered lookup would leak archived/deleted projects the API excludes.
-        // Empty fks must short-circuit: get_many treats an empty project_fks
-        // filter as "no filter" and would return every active project.
-        let fks = svc_tag::project_fks_by_label(conn, label)?;
-        let tagged = if fks.is_empty() {
-            Vec::new()
-        } else {
-            let active = Projects {
-                project_fks: Some(fks),
-                status: Some(Status::Active),
-            };
-            svc_project::get_many(conn, &active)?
-        };
-        let projects = svc_project::to_out_many(conn, tagged)?
-            .into_iter()
-            .map(|p| serde_json::to_value(p).map_err(|e| ApiError::new(500, e.to_string())))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        Ok(json!({ "label": canonical, "papers": papers, "projects": projects }))
-    })
+    let d = state.with_conn(|conn| svc_tag::detail(conn, label))?;
+    crate::route::to_value(&d)
 }
 
 /// `POST /api/tags` — `svc_tag::upsert`, same envelope as the CLI `tag create`.
@@ -99,7 +63,7 @@ fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
             },
         )
     })?;
-    Ok(json!({ "tag_id": tag_id, "label": label }))
+    crate::route::to_value(&CreatedTag { tag_id, label })
 }
 
 /// `DELETE /api/tags/{id}` — `svc_tag::delete` by numeric id. Core's delete is a
@@ -117,7 +81,9 @@ fn delete(state: &AppState, id: &str) -> Result<Value, ApiError> {
         svc_tag::delete(conn, &key)?;
         Ok(())
     })?;
-    Ok(json!({ "deleted_tag_id": tag_id }))
+    crate::route::to_value(&DeletedTag {
+        deleted_tag_id: tag_id,
+    })
 }
 
 /// The `{"tags": [...]}` body both paper-tag arms take. Trimmed, blanks dropped,
@@ -148,7 +114,10 @@ fn body_tags(ctx: &ReqCtx<'_>) -> Result<Vec<String>, ApiError> {
 fn add_tags(state: &AppState, source_id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let tags = body_tags(ctx)?;
     let updated = state.with_conn(|conn| svc_paper::add_paper_tags(conn, source_id, &tags))?;
-    Ok(json!({ "source_id": source_id, "tags": updated }))
+    crate::route::to_value(&PaperTags {
+        source_id: source_id.to_string(),
+        tags: updated,
+    })
 }
 
 /// `DELETE /api/papers/{source_id}/tags` — `svc_paper::remove_paper_tags`; returns
@@ -156,7 +125,10 @@ fn add_tags(state: &AppState, source_id: &str, ctx: &ReqCtx<'_>) -> Result<Value
 fn remove_tags(state: &AppState, source_id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let tags = body_tags(ctx)?;
     let updated = state.with_conn(|conn| svc_paper::remove_paper_tags(conn, source_id, &tags))?;
-    Ok(json!({ "source_id": source_id, "tags": updated }))
+    crate::route::to_value(&PaperTags {
+        source_id: source_id.to_string(),
+        tags: updated,
+    })
 }
 
 #[cfg(test)]
@@ -165,6 +137,7 @@ mod tests {
     use crate::route::{route, ApiRequest};
     use linxiv_core::models::PaperMetadata;
     use linxiv_core::storage;
+    use serde_json::json;
 
     fn state() -> AppState {
         let conn = storage::open_in_memory().unwrap();
@@ -376,7 +349,7 @@ mod tests {
     #[tokio::test]
     async fn detail_lists_only_active_projects_with_the_label_nocase() {
         use linxiv_core::models::ProjectIn;
-        use linxiv_core::service::project::Project;
+        use linxiv_core::service::project::{self as svc_project, Project};
 
         let st = state();
         fn mk(conn: &mut rusqlite::Connection, name: &str, tags: Vec<String>) -> i64 {

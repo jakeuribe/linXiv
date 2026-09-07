@@ -7,13 +7,16 @@ use std::path::Path;
 
 use rusqlite::Connection;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use linxiv_core::error::CoreError;
 use linxiv_core::formats;
-use linxiv_core::models::{PaperDetails, ProjectDetails, ProjectIn, ProjectUpdateIn, Status};
+use linxiv_core::models::{
+    CreatedProject, CreatedProjectRef, OkReceipt, PaperDetails, ProjectDetails, ProjectIn,
+    ProjectOut, ProjectUpdateIn, ProjectsResponse, Status,
+};
 use linxiv_core::service::export_import;
-use linxiv_core::service::project::{self, Project, Projects};
+use linxiv_core::service::project::{self, BulkAddReceipt, Project, Projects};
 
 use crate::route::{path_i64, ApiError, ReqCtx};
 use crate::state::AppState;
@@ -71,7 +74,7 @@ fn export(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
         )?;
         Ok(())
     })?;
-    Ok(json!({ "ok": true }))
+    crate::route::to_value(&OkReceipt { ok: true })
 }
 
 /// `GET /api/projects/{id}/export/{bibtex,obsidian}?dest_path=` — the dest_path
@@ -94,7 +97,7 @@ fn export_text(
         Ok(fmt(&project::export_papers(conn, &proj.source_fks)?))
     })?;
     std::fs::write(dest, content).map_err(|e| ApiError::new(500, e.to_string()))?;
-    Ok(json!({ "ok": true }))
+    crate::route::to_value(&OkReceipt { ok: true })
 }
 
 /// Canonical project wire shape — `service::project::to_out` (SERIALIZER 3;
@@ -106,7 +109,7 @@ pub(crate) fn project_out(conn: &Connection, p: ProjectDetails) -> Result<Value,
 /// `GET /api/projects?status=` — `api_projects`. Default "active"; "all" => no filter.
 fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let status = ctx.q("status").unwrap_or("active").to_string();
-    let out = state.with_conn(|conn| -> Result<Vec<Value>, ApiError> {
+    let projects = state.with_conn(|conn| -> Result<Vec<ProjectOut>, ApiError> {
         let filter = match status.as_str() {
             "all" => Projects::default(),
             // app.py parity: an unparseable filter matches nothing, it is not a 400.
@@ -121,12 +124,9 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
         let mut projects = project::get_many(conn, &filter)?;
         // app.py drops null-id rows (data-integrity guard)
         projects.retain(|p| p.id.is_some());
-        project::to_out_many(conn, projects)?
-            .into_iter()
-            .map(|p| serde_json::to_value(p).map_err(|e| ApiError::new(500, e.to_string())))
-            .collect()
+        Ok(project::to_out_many(conn, projects)?)
     })?;
-    Ok(json!({ "projects": out }))
+    crate::route::to_value(&ProjectsResponse { projects })
 }
 
 /// `POST /api/projects` — `api_project_create`.
@@ -154,7 +154,9 @@ fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
         source_fks: Vec::new(), // papers are linked via POST /projects/{id}/papers
     };
     let fk = state.with_conn(|conn| project::create(conn, &pin))?;
-    Ok(json!({ "project": { "id": fk, "name": name } }))
+    crate::route::to_value(&CreatedProject {
+        project: CreatedProjectRef { id: fk, name },
+    })
 }
 
 /// `color_from_hex(hex) if hex else None`, 400 "Invalid color_hex" on a bad value.
@@ -230,7 +232,7 @@ fn patch(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError
             CoreError::ProjectDeleted(m) | CoreError::Validation(m) => ApiError::new(400, m),
             other => other.into(),
         })?;
-    Ok(json!({ "ok": true }))
+    crate::route::to_value(&OkReceipt { ok: true })
 }
 
 /// `DELETE /api/projects/{id}` — `api_project_delete`. 404 if absent, then soft-delete.
@@ -244,7 +246,7 @@ fn delete(state: &AppState, id: &str) -> Result<Value, ApiError> {
         project::delete(conn, &proj)?;
         Ok(())
     })?;
-    Ok(json!({ "ok": true }))
+    crate::route::to_value(&OkReceipt { ok: true })
 }
 
 /// `POST /api/projects/{id}/papers` — `api_project_add_paper`. Core's shared
@@ -270,7 +272,10 @@ fn add_papers_bulk(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value
     }
     let b: Body = ctx.parse_body()?;
     let failed = state.with_conn(|conn| project::add_papers(conn, pid, &b.source_ids))?;
-    Ok(json!({ "ok": failed.is_empty(), "failed": failed }))
+    crate::route::to_value(&BulkAddReceipt {
+        ok: failed.is_empty(),
+        failed,
+    })
 }
 
 /// `DELETE /api/projects/{id}/papers/{sid}` — `api_project_remove_paper`. `sid`
@@ -286,6 +291,7 @@ mod tests {
     use super::*;
     use crate::route::{route, ApiRequest};
     use linxiv_core::storage;
+    use serde_json::json;
 
     fn state() -> AppState {
         let conn = storage::open_in_memory().unwrap();

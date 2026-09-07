@@ -64,6 +64,13 @@ export type {
   TrashedProjectRow,
   RestoredPaper,
   EditorProjectSummary,
+  ProjectsResponse,
+  CreatedProject,
+  BulkAddReceipt,
+  TagsResponse,
+  TagDetail,
+  AuthorsResponse,
+  AuthorMergeResponse,
 } from "./generated";
 
 // Frontend names for the generated serializers. The Rust name is the model,

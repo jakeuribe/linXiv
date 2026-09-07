@@ -368,6 +368,21 @@ pub struct AuthorWithPapers {
     pub papers: Vec<AuthorPaperPreview>,
 }
 
+/// `GET /api/authors` envelope (route/authors.rs).
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct AuthorsResponse {
+    pub authors: Vec<AuthorWithCount>,
+}
+
+/// `POST /api/authors/{id}/merge` envelope (route/authors.rs) — the canonical
+/// author's detail plus the duplicate ids actually folded in.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct AuthorMergeResponse {
+    #[serde(flatten)]
+    pub detail: AuthorWithPapers,
+    pub merged_ids: Vec<i64>,
+}
+
 // ---------------------------------------------------------------------------
 // Project (service/models/project.py)
 // ---------------------------------------------------------------------------
@@ -448,6 +463,26 @@ pub struct ProjectOut {
     pub updated_at: Option<NaiveDateTime>,
     pub archived_at: Option<NaiveDateTime>,
     pub share_id: Option<String>,
+}
+
+/// `GET /api/projects` envelope (route/projects.rs).
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct ProjectsResponse {
+    pub projects: Vec<ProjectOut>,
+}
+
+/// `POST /api/projects` envelope (route/projects.rs) — a bare id/name stub, not
+/// the full `ProjectOut` (the create body can't carry papers yet).
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct CreatedProject {
+    #[ts(inline)]
+    pub project: CreatedProjectRef,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct CreatedProjectRef {
+    pub id: i64,
+    pub name: String,
 }
 
 // ---------------------------------------------------------------------------

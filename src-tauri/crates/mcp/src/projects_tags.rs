@@ -494,7 +494,7 @@ impl Server {
                     None,
                 ));
             }
-            jval(json!({ "tag_id": tag_id, "label": label }))
+            jval(&linxiv_core::service::tag::CreatedTag { tag_id, label })
         })
     }
 

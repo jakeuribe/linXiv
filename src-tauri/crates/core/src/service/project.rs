@@ -465,6 +465,14 @@ pub fn export_papers(conn: &Connection, source_fks: &[i64]) -> Result<Vec<PaperD
     crate::service::paper::get_by_source_fks(conn, source_fks)
 }
 
+/// `POST /api/projects/{id}/papers/bulk` envelope (route/projects.rs) —
+/// partial success: unknown source_ids land in `failed`, the rest are added.
+#[derive(Debug, serde::Serialize, ts_rs::TS)]
+pub struct BulkAddReceipt {
+    pub ok: bool,
+    pub failed: Vec<String>,
+}
+
 /// Receipt for the single-paper membership ops — one shape for all three
 /// surfaces (`ok` + ids + the project's post-op paper count).
 #[derive(Debug, serde::Serialize, ts_rs::TS)]
