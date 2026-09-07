@@ -465,8 +465,7 @@ pub fn export_papers(conn: &Connection, source_fks: &[i64]) -> Result<Vec<PaperD
     crate::service::paper::get_by_source_fks(conn, source_fks)
 }
 
-/// `POST /api/projects/{id}/papers/bulk` envelope (route/projects.rs) —
-/// partial success: unknown source_ids land in `failed`, the rest are added.
+/// `POST /api/projects/{id}/papers/bulk` envelope — partial success: unknown source_ids land in `failed`.
 #[derive(Debug, serde::Serialize, ts_rs::TS)]
 pub struct BulkAddReceipt {
     pub ok: bool,
@@ -542,8 +541,7 @@ pub fn link_imported(conn: &Connection, project_fk: i64, source_ids: &[String]) 
 /// rows across all projects (single transaction). Returns the PROJECT_FKs it was in.
 pub use crate::storage::queries::project::remove_paper_from_all_projects;
 
-/// Remove-from-all-projects receipt — `DELETE /api/papers/sfk/{fk}/projects`
-/// and MCP `remove_paper_from_all_projects` emit the same shape.
+/// `DELETE /api/papers/sfk/{fk}/projects` receipt; MCP emits the same shape.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 pub struct RemovedFromProjects {
     pub ok: bool,

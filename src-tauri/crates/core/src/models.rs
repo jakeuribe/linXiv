@@ -219,39 +219,32 @@ pub struct OpenAlexSearchResponse {
     pub saved_source_ids: Vec<String>,
 }
 
-/// `POST /api/openalex/save` envelope (route/sources.rs).
+/// `POST /api/openalex/save` envelope (route/sources.rs); `source_id` is the stripped stored id.
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct OpenAlexSaveResponse {
     pub saved: bool,
-    /// Stripped id of the stored paper.
     pub source_id: String,
 }
 
-/// `POST /api/crossref/search` envelope (route/sources.rs). No frontend
-/// caller today, so it is not in ts_bindings; the shape is still pinned here.
+/// `POST /api/crossref/search` envelope (route/sources.rs) — no frontend caller, so not TS-exported.
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct CrossrefSearchResponse {
     pub results: Vec<SearchResultOut>,
 }
 
-/// `POST /api/doi/resolve` envelope (route/sources.rs) — the full normalized
-/// `PaperMetadata`, not the `SearchResultOut` projection.
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct DoiResolveResponse {
     pub metadata: PaperMetadata,
 }
 
-/// `POST /api/doi/save` envelope — one shape on route, `linxiv doi save`,
-/// and MCP `save_doi`.
+/// `POST /api/doi/save` envelope — one shape for route, CLI, and MCP `save_doi`.
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct DoiSaveResponse {
     pub metadata: PaperMetadata,
     pub saved: bool,
 }
 
-/// `{"ok": true}` — the bare acknowledgement for writes with nothing else to
-/// report (e.g. `PUT /api/papers/{id}/pdf`, `PATCH /api/settings`,
-/// `POST /api/versions/ack`, `POST /api/feed/dismiss`).
+/// `{"ok": true}` — the bare acknowledgement for writes with nothing else to report.
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct OkReceipt {
     pub ok: bool,
@@ -399,14 +392,12 @@ pub struct AuthorWithPapers {
     pub papers: Vec<AuthorPaperPreview>,
 }
 
-/// `GET /api/authors` envelope (route/authors.rs).
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct AuthorsResponse {
     pub authors: Vec<AuthorWithCount>,
 }
 
-/// `POST /api/authors/{id}/merge` envelope (route/authors.rs) — the canonical
-/// author's detail plus the duplicate ids actually folded in.
+/// `POST /api/authors/{id}/merge` envelope (route/authors.rs) — canonical detail + folded-in ids.
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct AuthorMergeResponse {
     #[serde(flatten)]
@@ -496,14 +487,12 @@ pub struct ProjectOut {
     pub share_id: Option<String>,
 }
 
-/// `GET /api/projects` envelope (route/projects.rs).
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct ProjectsResponse {
     pub projects: Vec<ProjectOut>,
 }
 
-/// `POST /api/projects` envelope (route/projects.rs) — a bare id/name stub, not
-/// the full `ProjectOut` (the create body can't carry papers yet).
+/// `POST /api/projects` envelope (route/projects.rs) — a bare id/name stub, not a full `ProjectOut`.
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct CreatedProject {
     #[ts(inline)]

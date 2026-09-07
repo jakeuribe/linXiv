@@ -18,8 +18,6 @@ pub struct Annotations {
     pub all_projects: bool,
 }
 
-/// `GET /api/annotations` envelope (route/annotations.rs). Unknown paper →
-/// empty list.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 pub struct AnnotationListResponse {
     pub annotations: Vec<AnnotationDetails>,

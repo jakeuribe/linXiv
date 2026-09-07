@@ -31,7 +31,6 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     to_value(&EditorProjectsResponse { projects })
 }
 
-/// `POST /api/editor/projects` request body.
 #[derive(Deserialize, ts_rs::TS)]
 #[ts(optional_fields = nullable)]
 pub struct CreateEditorProjectBody {

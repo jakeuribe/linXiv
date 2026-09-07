@@ -19,7 +19,7 @@ use crate::route::share::ShareState;
 use crate::route::ApiError;
 use crate::state::AppState;
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default, ts_rs::TS)]
 #[serde(rename_all = "snake_case")]
 pub enum SyncDirection {
     #[default]
@@ -30,7 +30,7 @@ pub enum SyncDirection {
 
 /// Per-share sync settings, stored as `share_dir/settings/<id>.json` — share-local
 /// sidecar state.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, ts_rs::TS)]
 pub struct ShareSettings {
     #[serde(default)]
     pub paused: bool,

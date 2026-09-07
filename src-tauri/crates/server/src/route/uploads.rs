@@ -58,7 +58,6 @@ fn reject_oversized_b64(file_b64: &str, msg: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
-/// `PUT /api/papers/{source_id}/pdf` request body.
 #[derive(Deserialize, ts_rs::TS)]
 pub struct UploadPdfBody {
     pub file_b64: String,
@@ -99,7 +98,6 @@ fn attach_pdf(state: &AppState, source_id: &str, ctx: &ReqCtx<'_>) -> Result<Val
     })
 }
 
-/// `POST /api/papers/import/pdf` request body.
 #[derive(Deserialize, ts_rs::TS)]
 #[ts(optional_fields = nullable)]
 pub struct ImportPdfBody {
@@ -155,7 +153,6 @@ async fn import_pdf(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     crate::route::to_value(&result)
 }
 
-/// `POST /api/papers/import/bibtex` request body.
 #[derive(Deserialize, ts_rs::TS)]
 #[ts(optional_fields = nullable)]
 pub struct ImportBibtexBody {
@@ -174,7 +171,6 @@ fn import_bibtex(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> 
     crate::route::to_value(&receipt)
 }
 
-/// `POST /api/projects/import/preview` request body.
 #[derive(Deserialize, ts_rs::TS)]
 pub struct ImportPreviewBody {
     pub file_b64: String,
@@ -193,7 +189,6 @@ fn import_preview(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     crate::route::to_value(&export_import::ImportPreviewResponse::from(p))
 }
 
-/// `POST /api/projects/import/commit` request body.
 #[derive(Deserialize, ts_rs::TS)]
 #[ts(optional_fields = nullable)]
 pub struct ImportCommitBody {

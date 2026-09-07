@@ -16,7 +16,7 @@ import { getNotes, deleteNote } from "../api/notes";
 import { getAnnotations, deleteAnnotation, updateAnnotation } from "../api/annotations";
 import { listProjects } from "../api/projects";
 import { apiFetch, bytesToBase64, isTauri } from "../api/client";
-import type { Note, Paper, Annotation } from "../types/api";
+import type { Note, Paper, Annotation, UploadPdfBody } from "../types/api";
 import { PdfReader } from "../components/pdf/PdfReader";
 import { PagePill } from "../components/pdf/PagePill";
 import { parseAnchor } from "../lib/pdfAnchor";
@@ -229,7 +229,7 @@ export default function PaperDetailPage() {
       const bytes = await pdfPreviewDocRef.current.getData();
       const path = `/api/papers/${encodeURIComponent(sourceId)}/pdf`;
       if (isTauri) {
-        await libraryFetch(path, { method: "PUT", body: JSON.stringify({ file_b64: bytesToBase64(bytes) }) });
+        await libraryFetch(path, { method: "PUT", body: JSON.stringify({ file_b64: bytesToBase64(bytes) } satisfies UploadPdfBody) });
       } else {
         const form = new FormData();
         form.append("file", new Blob([bytes.slice()], { type: "application/pdf" }), `${sourceId}.pdf`);
@@ -246,7 +246,7 @@ export default function PaperDetailPage() {
       const path = `/api/papers/${encodeURIComponent(sourceId)}/pdf`;
       if (isTauri) {
         const file_b64 = bytesToBase64(new Uint8Array(await file.arrayBuffer()));
-        await libraryFetch(path, { method: "PUT", body: JSON.stringify({ file_b64 }) });
+        await libraryFetch(path, { method: "PUT", body: JSON.stringify({ file_b64 } satisfies UploadPdfBody) });
       } else {
         const form = new FormData();
         form.append("file", file, file.name);

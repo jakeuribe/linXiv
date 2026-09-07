@@ -2,6 +2,7 @@ import { ApiError } from "./client.ts";
 import { libraryFetch } from "../stores/backend.ts";
 import type {
   ReadingStatusesResponse,
+  ReadingStatusPutBody,
   ReadingStatusReceipt,
 } from "../types/api";
 import {
@@ -26,9 +27,10 @@ export async function putReadingStatus(
   sourceId: string,
   status: ReadingStatus | "unread"
 ): Promise<ReadingStatusReceipt> {
+  const body: ReadingStatusPutBody = { status };
   return libraryFetch(`/api/reading-status/${encodeURIComponent(sourceId)}`, {
     method: "PUT",
-    body: JSON.stringify({ status }),
+    body: JSON.stringify(body),
   });
 }
 

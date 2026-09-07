@@ -122,7 +122,6 @@ fn unlink_paper(state: &AppState, id: &str, pid: &str) -> Result<Value, ApiError
     crate::route::to_value(&OkReceipt { ok: true })
 }
 
-/// `PATCH /api/authors/{id}` request body.
 #[derive(Deserialize, ts_rs::TS)]
 #[ts(optional_fields = nullable)]
 pub struct AuthorUpdateBody {
@@ -150,7 +149,6 @@ fn update(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     detail_response(state, author_id)
 }
 
-/// `POST /api/authors/{id}/merge` request body.
 #[derive(Deserialize, ts_rs::TS)]
 pub struct AuthorMergeBody {
     #[serde(default)]
@@ -183,7 +181,7 @@ fn delete(state: &AppState, id: &str) -> Result<Value, ApiError> {
     crate::route::to_value(&OkReceipt { ok: true })
 }
 
-/// The canonical `AuthorWithPapers` composite — shared by GET, PATCH and merge.
+/// The canonical `AuthorWithPapers` composite — shared by GET and PATCH.
 fn detail_struct(state: &AppState, author_id: i64) -> Result<AuthorWithPapers, ApiError> {
     state.with_conn(|conn| {
         svc_author::get_with_papers(conn, author_id)?

@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { listAuthors, getAuthor, updateAuthor, deleteAuthor, mergeAuthors, getMergeCandidates, linkAuthorToPaper, unlinkAuthorFromPaper } from "../api/authors";
-import type { AuthorUpdateBody } from "../api/authors";
+import type { AuthorUpdateBody } from "../types/api";
 import { Spinner } from "../components/ui/spinner";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -14,7 +14,7 @@ import { submitOnCtrlEnter } from "../lib/submitShortcut";
 import { invalidateAuthorQueries } from "../lib/paperMutations";
 
 // Matches an author against a free-text query across full/first/last name and ORCID.
-function authorMatchesQuery(a: { full_name?: string | null; first_name?: string | null; last_name?: string | null; orcid?: string | null }, query: string) {
+function authorMatchesQuery(a: AuthorUpdateBody, query: string) {
   const q = query.trim().toLowerCase();
   if (!q) return true;
   return (

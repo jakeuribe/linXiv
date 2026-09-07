@@ -21,7 +21,6 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
     }
 }
 
-/// `POST /api/storage/backup` request body.
 #[derive(Deserialize, ts_rs::TS)]
 pub struct StorageBackupBody {
     pub dest_path: PathBuf,
@@ -60,7 +59,6 @@ fn backup(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
         .map_err(|e| ApiError::new(500, format!("could not serialize backup result: {e}")))
 }
 
-/// `POST /api/storage/restore` request body.
 #[derive(Deserialize, ts_rs::TS)]
 pub struct StorageRestoreBody {
     pub src_path: PathBuf,

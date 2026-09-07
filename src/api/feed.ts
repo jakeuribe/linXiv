@@ -1,5 +1,11 @@
 import { libraryFetch } from "../stores/backend.ts";
-import type { FeedFilterRule, FeedResponse, FeedRulesResponse } from "../types/api";
+import type {
+  FeedDismissBody,
+  FeedFilterRule,
+  FeedResponse,
+  FeedRuleCreateBody,
+  FeedRulesResponse,
+} from "../types/api";
 
 export async function getFeed(url: string): Promise<FeedResponse> {
   return libraryFetch<FeedResponse>(`/api/feed?url=${encodeURIComponent(url)}`);
@@ -10,9 +16,10 @@ export async function dismissFeedEntry(
   version: number,
   permanent = false,
 ): Promise<void> {
+  const body: FeedDismissBody = { arxiv_id: arxivId, version, permanent };
   await libraryFetch("/api/feed/dismiss", {
     method: "POST",
-    body: JSON.stringify({ arxiv_id: arxivId, version, permanent }),
+    body: JSON.stringify(body),
   });
 }
 
@@ -26,9 +33,10 @@ export async function createFeedRule(
   keywords: string,
   action: FeedFilterRule["action"] = "DENY",
 ): Promise<void> {
+  const body: FeedRuleCreateBody = { field, keywords, action };
   await libraryFetch("/api/feed/rules", {
     method: "POST",
-    body: JSON.stringify({ field, keywords, action }),
+    body: JSON.stringify(body),
   });
 }
 

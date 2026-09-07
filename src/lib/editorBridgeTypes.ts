@@ -17,6 +17,7 @@
 // never use '*'.
 
 import type { ThemeColors, ThemeMode } from "./theme";
+import type { FsOp, FsResult } from "../types/generated";
 
 // Re-export so bridge consumers can pull the palette types from one place without
 // reaching back into ../lib/theme themselves.
@@ -25,18 +26,11 @@ export type { ThemeColors, ThemeMode };
 // ---- FS-adapter RPC payloads ---------------------------------------
 // `op` mirrors the HostFsAdapter (FsDirHandle / FsFileHandle) method surface the
 // embedded editor consumes; the host resolves each op against linXiv's /api (or disk).
+// FsOp/FsResult are generated from the canonical Rust wire types
+// (crates/core/src/service/vault.rs) and re-exported here so the bridge contract
+// stays in one place; the rest of this file is still hand-mirrored per the header.
 
-export type FsOp =
-  | { kind: "list"; path: string } // values()
-  | { kind: "readFile"; path: string } // getFile().text()/arrayBuffer()
-  | { kind: "writeFile"; path: string; data: string; binary?: boolean } // createWritable().write
-  | { kind: "mkdir"; path: string } // getDirectoryHandle(create)
-  | { kind: "remove"; path: string; recursive?: boolean }; // removeEntry
-
-export type FsResult =
-  | { kind: "list"; entries: Array<{ name: string; kind: "file" | "directory" }> }
-  | { kind: "readFile"; data: string; binary: boolean }
-  | { kind: "ok" };
+export type { FsOp, FsResult };
 
 // ---- Guest -> Host -------------------------------------------------
 

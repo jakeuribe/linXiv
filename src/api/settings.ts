@@ -3,7 +3,7 @@
 import { apiFetch } from "./client";
 import { libraryFetch } from "../stores/backend.ts";
 import { queryClient } from "../lib/queryClient";
-import type { OkReceipt, Settings, Stats } from "../types/api";
+import type { EnvPatchBody, OkReceipt, Settings, Stats } from "../types/api";
 
 export async function getSettings(): Promise<Settings> {
   return apiFetch<Settings>("/api/settings");
@@ -28,9 +28,10 @@ export async function updateEnv(
   key: string,
   value: string
 ): Promise<OkReceipt> {
+  const body: EnvPatchBody = { key, value };
   const result = await apiFetch<OkReceipt>("/api/env", {
     method: "PATCH",
-    body: JSON.stringify({ key, value }),
+    body: JSON.stringify(body),
   });
   await queryClient.invalidateQueries({ queryKey: ["settings"] });
   return result;

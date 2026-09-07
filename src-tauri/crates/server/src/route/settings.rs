@@ -35,7 +35,6 @@ pub(crate) async fn handle(_state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result
     }
 }
 
-/// `PATCH /api/env` request body.
 #[derive(Deserialize, ts_rs::TS)]
 pub struct EnvPatchBody {
     pub key: String,

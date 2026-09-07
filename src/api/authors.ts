@@ -2,6 +2,7 @@ import { libraryFetch } from "../stores/backend.ts";
 import type {
   Author,
   AuthorDetail,
+  AuthorMergeBody,
   AuthorMergeResponse,
   AuthorsResponse,
   AuthorUpdateBody,
@@ -54,10 +55,11 @@ export async function mergeAuthors(
   canonicalId: number,
   duplicateIds: number[],
 ): Promise<AuthorMergeResponse> {
+  const body: AuthorMergeBody = { duplicate_ids: duplicateIds };
   return libraryFetch<AuthorMergeResponse>(`/api/authors/${canonicalId}/merge`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ duplicate_ids: duplicateIds }),
+    body: JSON.stringify(body),
   });
 }
 

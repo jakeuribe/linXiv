@@ -35,9 +35,7 @@ pub struct FeedPage {
     pub window_was_empty: bool,
 }
 
-/// `GET /api/feed` envelope: channel title + the filtered page. `entries` are
-/// the cached entry blobs (untyped JSON), so this stays hand-written in
-/// `src/types/api.ts` rather than TS-generated.
+/// `GET /api/feed` envelope; `entries` are untyped cached blobs, so the TS type stays hand-written.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct FeedResponse {
     pub title: String,
@@ -45,13 +43,11 @@ pub struct FeedResponse {
     pub saved_arxiv_ids: Vec<String>,
 }
 
-/// `GET /api/feed/rules` envelope.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 pub struct FeedRulesResponse {
     pub rules: Vec<FilterRule>,
 }
 
-/// `POST /api/feed/rules` envelope: the created rule's id.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 pub struct CreatedFeedRule {
     pub rule_id: i64,

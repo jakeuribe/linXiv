@@ -5,6 +5,8 @@ import type {
   OkReceipt,
   PaperMembershipReceipt,
   Project,
+  ProjectAddPaperBody,
+  ProjectAddPapersBulkBody,
   ProjectCreateBody,
   ProjectUpdateBody,
   ProjectsResponse,
@@ -58,9 +60,10 @@ export async function addPaperToProject(
   projectId: number,
   sourceId: string
 ): Promise<PaperMembershipReceipt> {
+  const body: ProjectAddPaperBody = { source_id: sourceId };
   return libraryFetch(`/api/projects/${projectId}/papers`, {
     method: "POST",
-    body: JSON.stringify({ source_id: sourceId }),
+    body: JSON.stringify(body),
   });
 }
 
@@ -77,11 +80,14 @@ export async function addPapersToProject(
   const ids = [...new Set(sourceIds)];
   const failed: string[] = [];
   for (let i = 0; i < ids.length; i += BULK_ADD_CHUNK) {
+    const body: ProjectAddPapersBulkBody = {
+      source_ids: ids.slice(i, i + BULK_ADD_CHUNK),
+    };
     const res = await libraryFetch<BulkAddReceipt>(
       `/api/projects/${projectId}/papers/bulk`,
       {
         method: "POST",
-        body: JSON.stringify({ source_ids: ids.slice(i, i + BULK_ADD_CHUNK) }),
+        body: JSON.stringify(body),
       }
     );
     failed.push(...res.failed);

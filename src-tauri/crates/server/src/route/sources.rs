@@ -101,7 +101,6 @@ fn saved_ids(
     })
 }
 
-/// `POST /api/arxiv/search` request body.
 #[derive(Deserialize, ts_rs::TS)]
 pub struct ArxivSearchBody {
     pub query: String,
@@ -138,7 +137,6 @@ async fn arxiv_search(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiEr
     })
 }
 
-/// `POST /api/arxiv/fetch` request body.
 #[derive(Deserialize, ts_rs::TS)]
 pub struct ArxivFetchBody {
     pub source_id: String,
@@ -174,7 +172,6 @@ async fn arxiv_fetch(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiErr
     })
 }
 
-/// `POST /api/openalex/search` request body.
 #[derive(Deserialize, ts_rs::TS)]
 pub struct OpenAlexSearchBody {
     pub query: String,
@@ -206,7 +203,6 @@ async fn openalex_search(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, Ap
     })
 }
 
-/// `POST /api/openalex/save` request body.
 #[derive(Deserialize, ts_rs::TS)]
 pub struct OpenAlexSaveBody {
     pub source_id: String,
@@ -233,7 +229,6 @@ async fn openalex_save(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiE
     })
 }
 
-/// `POST /api/crossref/search` request body.
 #[derive(Deserialize, ts_rs::TS)]
 pub struct CrossrefSearchBody {
     pub query: String,
@@ -258,7 +253,6 @@ async fn crossref_search(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     to_value(&CrossrefSearchResponse { results })
 }
 
-/// `POST /api/doi/resolve` request body.
 #[derive(Deserialize, ts_rs::TS)]
 pub struct DoiResolveBody {
     pub doi: String,
@@ -275,7 +269,6 @@ async fn doi_resolve_route(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     to_value(&DoiResolveResponse { metadata: meta })
 }
 
-/// `POST /api/doi/save` request body.
 #[derive(Deserialize, ts_rs::TS)]
 pub struct DoiSaveBody {
     pub doi: String,

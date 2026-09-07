@@ -20,14 +20,12 @@ pub use crate::storage::queries::version_check::{
     MAX_VERSION_CHECK_BATCH,
 };
 
-/// `POST /api/versions/check` envelope: one poll pass's report.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 pub struct VersionCheckResponse {
     pub checked: usize,
     pub new_versions: Vec<NewVersion>,
 }
 
-/// `GET /api/versions/new` envelope: un-acknowledged new-version flags.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 pub struct NewVersionsResponse {
     pub new_versions: Vec<NewVersion>,

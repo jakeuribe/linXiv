@@ -102,7 +102,6 @@ pub async fn refresh(state: &AppState, url: &str, retention_days: i64) -> Result
     Ok(fetched.title)
 }
 
-/// `POST /api/feed/dismiss` request body.
 #[derive(Deserialize, ts_rs::TS)]
 pub struct FeedDismissBody {
     pub arxiv_id: String,
@@ -126,7 +125,6 @@ fn list_rules(state: &AppState) -> Result<Value, ApiError> {
     to_value(&FeedRulesResponse { rules })
 }
 
-/// `POST /api/feed/rules` request body.
 #[derive(Deserialize, ts_rs::TS)]
 pub struct FeedRuleCreateBody {
     pub field: FilterField,

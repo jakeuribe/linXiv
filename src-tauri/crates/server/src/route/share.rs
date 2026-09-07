@@ -215,18 +215,14 @@ impl From<ShareError> for ApiError {
 }
 
 // ── typed envelopes ──────────────────────────────────────────────────────────
-// Share data has no linxiv-core home (it lives in the quarantined linxiv-share
-// crate), so core's ts_bindings generator cannot render these; the TS twins
-// stay hand-written in src/api/share.ts. Serialize field order IS the wire key
-// order (serde_json preserve_order) — do not reorder fields.
+// Rendered into src/types/api.ts by this crate's ts_bindings generator;
+// src/api/share.ts import-aliases them (SummaryRow → SharedSummary, …).
+// Serialize field order IS the wire key order (serde_json preserve_order) —
+// do not reorder fields.
 
-/// One row of `GET /api/share/projects` / `GET /api/share/received`
-/// (`SharedSummary` in src/api/share.ts). The optional tail fields are
-/// annotations: `e2ee` + `member_count` on hosted e2ee shares, `pending` on
-/// placeholder mirrors, `role` from the live query in the role-stamped
-/// received listing.
-#[derive(Debug, Serialize)]
-struct SummaryRow {
+/// One row of `GET /api/share/{projects,received}` (`SharedSummary` in src/api/share.ts).
+#[derive(Debug, Serialize, ts_rs::TS)]
+pub struct SummaryRow {
     share_id: String,
     name: String,
     paper_count: usize,
@@ -234,60 +230,61 @@ struct SummaryRow {
     tag_count: usize,
     synced_at: Option<String>,
     paused: bool,
+    // Always serialized, but optional in the TS contract so partial rows
+    // (tests, optimistic caches) can omit it.
+    #[ts(optional = nullable)]
     project_fk: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     e2ee: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     member_count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pending: Option<bool>,
+    // Plain string in Rust; the TS union mirrors MemberRole in src/api/share.ts.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "\"hoster\" | \"editor\" | \"viewer\"")]
     role: Option<&'static str>,
 }
 
-/// `GET /api/share/projects` envelope.
-#[derive(Debug, Serialize)]
-struct SharedProjectsListing {
+#[derive(Debug, Serialize, ts_rs::TS)]
+pub struct SharedProjectsListing {
     shared_projects: Vec<SummaryRow>,
 }
 
-/// `GET /api/share/received` envelope (`list_received_with_role` stamps
-/// `role` on the rows first).
-#[derive(Debug, Serialize)]
-struct ReceivedListing {
+#[derive(Debug, Serialize, ts_rs::TS)]
+pub struct ReceivedListing {
     received: Vec<SummaryRow>,
 }
 
-/// `POST /api/share/received/{id}/import` envelope.
-#[derive(Debug, Serialize)]
-struct ImportedReceipt {
+#[derive(Debug, Serialize, ts_rs::TS)]
+pub struct ImportedReceipt {
     project_fk: i64,
 }
 
-/// `POST /api/share/{id}/unpublish` envelope (`e2ee` only on e2ee docs).
-#[derive(Debug, Serialize)]
-struct UnpublishedReceipt {
+#[derive(Debug, Serialize, ts_rs::TS)]
+pub struct UnpublishedReceipt {
     unpublished: bool,
     share_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     e2ee: Option<bool>,
 }
 
-/// `POST /api/share/received/{id}/leave` envelope.
-#[derive(Debug, Serialize)]
-struct LeftReceipt {
+#[derive(Debug, Serialize, ts_rs::TS)]
+pub struct LeftReceipt {
     left: bool,
     forgotten: bool,
 }
 
-/// `POST /api/share/received/{id}/unlink` envelope.
-#[derive(Debug, Serialize)]
-struct UnlinkedReceipt {
+#[derive(Debug, Serialize, ts_rs::TS)]
+pub struct UnlinkedReceipt {
     unlinked: bool,
 }
 
 /// `GET /api/share/received/{id}` envelope — one mirror's full subgraph.
-/// `papers` rows come from `SharedPaper::to_summary_value` (linxiv-share).
 #[derive(Debug, Serialize)]
 struct ReceivedDetail {
     share_id: String,
@@ -309,24 +306,20 @@ struct ReceivedNote {
     updated_at: Option<String>,
 }
 
-/// `POST /api/share/project/{id}/publish` and `/publish_secure` envelope
-/// (`e2ee` only on the secure arm).
-#[derive(Debug, Serialize)]
-struct PublishedReceipt {
+#[derive(Debug, Serialize, ts_rs::TS)]
+pub struct PublishedReceipt {
     share_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     e2ee: Option<bool>,
 }
 
-/// `POST /api/share/project/{id}/ticket` envelope.
-#[derive(Debug, Serialize)]
-struct TicketMinted {
+#[derive(Debug, Serialize, ts_rs::TS)]
+pub struct TicketMinted {
     ticket: String,
     share_id: String,
 }
 
-/// `POST /api/share/join` envelope — the joined mirror's counts (`e2ee` only
-/// via the invite fall-through).
 #[derive(Debug, Serialize)]
 struct JoinedSummary {
     share_id: String,
@@ -338,8 +331,6 @@ struct JoinedSummary {
     e2ee: Option<bool>,
 }
 
-/// `POST /api/share/join` envelope when an e2ee invite adopted with no
-/// content yet (host unreachable, or no key for our epoch).
 #[derive(Debug, Serialize)]
 struct JoinPending {
     share_id: String,
@@ -348,29 +339,27 @@ struct JoinPending {
     reason: &'static str,
 }
 
-/// `GET /api/share/member_code` envelope.
-#[derive(Debug, Serialize)]
-struct MemberCode {
+#[derive(Debug, Serialize, ts_rs::TS)]
+pub struct MemberCode {
     code: String,
 }
 
-/// `POST /api/share/{id}/invite` envelope.
-#[derive(Debug, Serialize)]
-struct InviteMinted {
+#[derive(Debug, Serialize, ts_rs::TS)]
+pub struct InviteMinted {
     invite: String,
 }
 
-/// `GET /api/share/{id}/members` envelope.
-#[derive(Debug, Serialize)]
-struct MembersListing {
+#[derive(Debug, Serialize, ts_rs::TS)]
+pub struct MembersListing {
     members: Vec<MemberRow>,
 }
 
-/// One member in [`MembersListing`] (`ShareMember` in src/api/share.ts).
-#[derive(Debug, Serialize)]
-struct MemberRow {
+#[derive(Debug, Serialize, ts_rs::TS)]
+pub struct MemberRow {
     member_id: String,
     name: Option<String>,
+    // Plain string in Rust; the TS union mirrors MemberRole in src/api/share.ts.
+    #[ts(type = "\"hoster\" | \"editor\" | \"viewer\"")]
     role: String,
     invited_at: String,
     revoked: bool,
@@ -379,36 +368,31 @@ struct MemberRow {
     invite: Option<String>,
 }
 
-/// `POST /api/share/{id}/member/{mid}/role` envelope.
-#[derive(Debug, Serialize)]
-struct RoleChanged {
+#[derive(Debug, Serialize, ts_rs::TS)]
+pub struct RoleChanged {
     member_id: String,
     role: String,
 }
 
-/// `POST /api/share/{id}/revoke` envelope.
-#[derive(Debug, Serialize)]
-struct RevokedReceipt {
+#[derive(Debug, Serialize, ts_rs::TS)]
+pub struct RevokedReceipt {
     revoked: bool,
 }
 
-/// `POST /api/share/{id}/rekey` envelope.
-#[derive(Debug, Serialize)]
-struct RekeyedReceipt {
+#[derive(Debug, Serialize, ts_rs::TS)]
+pub struct RekeyedReceipt {
     rekeyed: bool,
     members: usize,
 }
 
-/// `POST /api/share/{id}/member/{mid}/remove` envelope.
-#[derive(Debug, Serialize)]
-struct RemovedReceipt {
+#[derive(Debug, Serialize, ts_rs::TS)]
+pub struct RemovedReceipt {
     removed: bool,
     member_id: String,
 }
 
-/// `POST /api/share/{id}/pdf` envelope — where the decrypted PDF was saved.
-#[derive(Debug, Serialize)]
-struct SharedPdfSaved {
+#[derive(Debug, Serialize, ts_rs::TS)]
+pub struct SharedPdfSaved {
     source_id: String,
     version: i64,
     path: String,
@@ -567,9 +551,7 @@ pub fn list_shared(state: &AppState, share: &ShareState) -> Result<Value, ApiErr
     })
 }
 
-/// The `received` rows: every mirror materialized by `join`, each carrying the
-/// `project_fk` of the linked local project (null pre-import), plus the
-/// pending placeholders.
+/// The `received` rows: every `join`-materialized mirror plus the pending placeholders.
 fn received_rows(state: &AppState, share: &ShareState) -> Result<Vec<SummaryRow>, ApiError> {
     let dir = share.store.share_dir();
     let rec = received_dir(dir);
@@ -589,8 +571,7 @@ fn received_rows(state: &AppState, share: &ShareState) -> Result<Vec<SummaryRow>
     Ok(out)
 }
 
-/// `GET /api/share/received` — summaries of every mirror materialized by `join`.
-/// `pub` so the headless bin's status aggregate reuses it (no role queries).
+/// `GET /api/share/received` — every mirror's summary; `pub` for the headless bin.
 pub fn list_received(state: &AppState, share: &ShareState) -> Result<Value, ApiError> {
     to_value(&ReceivedListing {
         received: received_rows(state, share)?,
@@ -1784,8 +1765,7 @@ mod tests {
         handle(state, share, &ctx).expect("share arm matched")
     }
 
-    /// Wire-shape pin: SummaryRow's optional tail keys must appear in the
-    /// legacy insertion order and vanish (not null out) when unset.
+    /// Wire-shape pin: optional tail keys keep legacy order and vanish when unset.
     #[test]
     fn summary_row_wire_shape() {
         let hosted = SummaryRow {

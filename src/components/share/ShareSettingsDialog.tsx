@@ -18,7 +18,7 @@ import { Button } from "../ui/button";
 import { Dialog } from "../ui/dialog";
 import { OptionSelect } from "../ui/select";
 import { Spinner } from "../ui/spinner";
-import { useImportReceived, type ShareRole } from "./ShareCard";
+import { useImportReceived, type ShareRoleLabel } from "./ShareCard";
 import { MembersSection } from "./MembersSection";
 
 const DIRECTION_OPTIONS: { value: ShareDirection; label: string }[] = [
@@ -42,7 +42,7 @@ export function ShareSettingsDialog({
   onClose,
 }: {
   share: SharedSummary;
-  role: ShareRole;
+  role: ShareRoleLabel;
   onClose: () => void;
 }) {
   const hosted = role === "Hoster";

@@ -48,7 +48,6 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     })
 }
 
-/// `POST /api/annotations` request body.
 #[derive(Deserialize, ts_rs::TS)]
 #[ts(optional_fields = nullable)]
 pub struct AnnotationCreateBody {
@@ -85,7 +84,6 @@ fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     })
 }
 
-/// `PATCH /api/annotations/{id}` request body.
 #[derive(Deserialize, ts_rs::TS)]
 pub struct AnnotationUpdateBody {
     pub comment: String,

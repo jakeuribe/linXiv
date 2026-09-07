@@ -30,7 +30,6 @@ fn list(state: &AppState) -> Result<Value, ApiError> {
     to_value(&statuses)
 }
 
-/// `PUT /api/reading-status/{source_id}` request body.
 #[derive(Deserialize, ts_rs::TS)]
 pub struct ReadingStatusPutBody {
     pub status: String,

@@ -590,9 +590,6 @@ export type TagsResponse = {
 };
 
 export type TagDetail = {
-  /**
-   * Canonical stored casing; the raw query label when the tag is unknown.
-   */
   label: string,
   papers: Array<PaperDetails>,
   projects: Array<ProjectOut>,
@@ -647,9 +644,6 @@ export type PaperMetadata = {
 
 export type OpenAlexSaveResponse = {
   saved: boolean,
-  /**
-   * Stripped id of the stored paper.
-   */
   source_id: string,
 };
 
@@ -683,9 +677,6 @@ export type CreatedAnnotation = {
 };
 
 export type ReadingStatusesResponse = {
-  /**
-   * Sparse `SOURCE_ID → status` map: unread papers are absent.
-   */
   statuses: Record<string, "reading" | "read">,
 };
 
@@ -940,4 +931,146 @@ export type ProjectAddPapersBulkBody = {
 export type ProjectExportBody = {
   dest_path?: string | null,
   include_pdfs?: boolean,
+};
+
+export type FsOp = {
+  "kind": "list",
+  path: string,
+  } | { "kind": "readFile",
+  path: string,
+  } | { "kind": "writeFile",
+  path: string,
+  data: string,
+  binary?: boolean,
+  } | { "kind": "mkdir",
+  path: string,
+  } | { "kind": "remove",
+  path: string,
+  recursive?: boolean,
+};
+
+export type DirEntry = {
+  name: string,
+  /**
+   * "directory" | "file" (the guest re-joins each basename to the parent).
+   */
+  kind: "file" | "directory",
+};
+
+export type FsResult = {
+  "kind": "list",
+  entries: Array<DirEntry>,
+  } | { "kind": "readFile",
+  data: string,
+  binary: boolean,
+  } | { "kind": "ok"
+};
+
+export type SummaryRow = {
+  share_id: string,
+  name: string,
+  paper_count: number,
+  note_count: number,
+  tag_count: number,
+  synced_at: string | null,
+  paused: boolean,
+  project_fk?: number | null,
+  e2ee?: boolean,
+  member_count?: number,
+  pending?: boolean,
+  role?: "hoster" | "editor" | "viewer",
+};
+
+export type SharedProjectsListing = {
+  shared_projects: Array<SummaryRow>,
+};
+
+export type ReceivedListing = {
+  received: Array<SummaryRow>,
+};
+
+export type ImportedReceipt = {
+  project_fk: number,
+};
+
+export type UnpublishedReceipt = {
+  unpublished: boolean,
+  share_id: string,
+  e2ee?: boolean,
+};
+
+export type LeftReceipt = {
+  left: boolean,
+  forgotten: boolean,
+};
+
+export type UnlinkedReceipt = {
+  unlinked: boolean,
+};
+
+export type PublishedReceipt = {
+  share_id: string,
+  e2ee?: boolean,
+};
+
+export type TicketMinted = {
+  ticket: string,
+  share_id: string,
+};
+
+export type MemberCode = {
+  code: string,
+};
+
+export type InviteMinted = {
+  invite: string,
+};
+
+export type MemberRow = {
+  member_id: string,
+  name: string | null,
+  role: "hoster" | "editor" | "viewer",
+  invited_at: string,
+  revoked: boolean,
+  verified: boolean,
+  /**
+   * Re-sendable while the grant stands; `None` once revoked.
+   */
+  invite: string | null,
+};
+
+export type MembersListing = {
+  members: Array<MemberRow>,
+};
+
+export type RoleChanged = {
+  member_id: string,
+  role: string,
+};
+
+export type RevokedReceipt = {
+  revoked: boolean,
+};
+
+export type RekeyedReceipt = {
+  rekeyed: boolean,
+  members: number,
+};
+
+export type RemovedReceipt = {
+  removed: boolean,
+  member_id: string,
+};
+
+export type SharedPdfSaved = {
+  source_id: string,
+  version: number,
+  path: string,
+};
+
+export type SyncDirection = "two_way" | "shared_to_local" | "local_to_shared";
+
+export type ShareSettings = {
+  paused: boolean,
+  direction: SyncDirection,
 };

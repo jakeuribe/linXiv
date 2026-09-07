@@ -44,7 +44,6 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
     }
 }
 
-/// `POST /api/projects/{id}/export` request body.
 #[derive(Deserialize, ts_rs::TS)]
 #[ts(optional_fields = nullable)]
 pub struct ProjectExportBody {
@@ -133,7 +132,6 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     crate::route::to_value(&ProjectsResponse { projects })
 }
 
-/// `POST /api/projects` request body.
 #[derive(Deserialize, ts_rs::TS)]
 #[ts(optional_fields = nullable)]
 pub struct ProjectCreateBody {
@@ -188,7 +186,6 @@ fn get_one(state: &AppState, id: &str) -> Result<Value, ApiError> {
     })
 }
 
-/// `PATCH /api/projects/{id}` request body.
 #[derive(Deserialize, ts_rs::TS)]
 #[ts(optional_fields = nullable)]
 pub struct ProjectUpdateBody {
@@ -261,7 +258,6 @@ fn delete(state: &AppState, id: &str) -> Result<Value, ApiError> {
     crate::route::to_value(&OkReceipt { ok: true })
 }
 
-/// `POST /api/projects/{id}/papers` request body.
 #[derive(Deserialize, ts_rs::TS)]
 pub struct ProjectAddPaperBody {
     pub source_id: String,
@@ -277,7 +273,6 @@ fn add_paper(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiE
     crate::route::to_value(&receipt)
 }
 
-/// `POST /api/projects/{id}/papers/bulk` request body.
 #[derive(Deserialize, ts_rs::TS)]
 pub struct ProjectAddPapersBulkBody {
     pub source_ids: Vec<String>,

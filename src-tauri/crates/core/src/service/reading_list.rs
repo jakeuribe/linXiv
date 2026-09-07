@@ -51,10 +51,9 @@ pub fn statuses(conn: &Connection) -> Result<Vec<(String, ReadingStatus)>> {
     q::statuses_by_source_id(conn)
 }
 
-/// `GET /api/reading-status` envelope (route/reading_status.rs).
+/// `GET /api/reading-status` envelope (route/reading_status.rs) — a sparse `SOURCE_ID → status` map: unread papers are absent.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 pub struct ReadingStatusesResponse {
-    /// Sparse `SOURCE_ID → status` map: unread papers are absent.
     #[ts(type = "Record<string, \"reading\" | \"read\">")]
     pub statuses: serde_json::Map<String, serde_json::Value>,
 }
@@ -71,8 +70,7 @@ pub fn statuses_response(conn: &Connection) -> Result<ReadingStatusesResponse> {
     Ok(ReadingStatusesResponse { statuses: map })
 }
 
-/// `PUT /api/reading-status/{source_id}` envelope. `applied` = reading lists
-/// written; 0 when the paper is on none (a no-op, not an error).
+/// `PUT /api/reading-status/{source_id}` envelope; `applied` = reading lists written (0 = no-op).
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 pub struct ReadingStatusReceipt {
     pub ok: bool,

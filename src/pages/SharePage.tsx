@@ -14,7 +14,7 @@ import { useSlowHint } from "../hooks/useSlowHint";
 import { Button } from "../components/ui/button";
 import { Input, Textarea } from "../components/ui/input";
 import { Spinner } from "../components/ui/spinner";
-import { ShareCard, type ShareRole } from "../components/share/ShareCard";
+import { ShareCard, type ShareRoleLabel } from "../components/share/ShareCard";
 import { SyncStatusPill } from "../components/share/SyncStatusPill";
 import { ShareSettingsDialog } from "../components/share/ShareSettingsDialog";
 import { ShareProjectDialog } from "../components/share/ShareProjectDialog";
@@ -27,7 +27,7 @@ export default function SharePage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [settingsFor, setSettingsFor] = useState<{
     shareId: string;
-    role: ShareRole;
+    role: ShareRoleLabel;
   } | null>(null);
   const [joinInput, setJoinInput] = useState("");
   const [joining, setJoining] = useState(false);
@@ -135,7 +135,7 @@ export default function SharePage() {
   }
 
   const loading = published.isLoading || received.isLoading;
-  const cards: { share: SharedSummary; role: ShareRole }[] = [
+  const cards: { share: SharedSummary; role: ShareRoleLabel }[] = [
     ...(published.data ?? []).map((s) => ({ share: s, role: "Hoster" as const })),
     ...(received.data ?? []).map((s) => ({ share: s, role: "Reader" as const })),
   ];
