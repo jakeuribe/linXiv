@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { isTauri } from "../../api/client";
 import {
   checkUpdates,
@@ -10,13 +11,17 @@ import {
   type PluginStatus,
   type UpdateCheck,
 } from "../../api/editorPlugin";
-import { fmtMB, errMessage } from "../../lib/editorPluginUtils";
+import {
+  fmtMB,
+  errMessage,
+  PLUGIN_UPDATE_CHECK_QUERY_KEY,
+} from "../../lib/editorPluginUtils";
 import { Button } from "../ui/button";
 import { Dialog } from "../ui/dialog";
 import { Spinner } from "../ui/spinner";
 import { SettingGroup, SettingGroupLabel, SettingRow } from "./SettingRow";
 
-function CheckMessage({ check }: { check: UpdateCheck }) {
+export function PluginCheckMessage({ check }: { check: UpdateCheck }) {
   if (check.noCompatibleRelease) {
     return (
       <span style={{ color: "var(--color-danger)" }}>
@@ -38,12 +43,21 @@ function CheckMessage({ check }: { check: UpdateCheck }) {
 
 export function EditorPluginSection() {
   const [info, setInfo] = useState<PluginStatus | null>(null);
-  const [check, setCheck] = useState<UpdateCheck | null>(null);
-  const [busy, setBusy] = useState<"check" | "install" | "uninstall" | null>(null);
+  const [busy, setBusy] = useState<"install" | "uninstall" | null>(null);
   const [progress, setProgress] = useState<InstallProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmUninstall, setConfirmUninstall] = useState(false);
   const alive = useRef(true);
+  const queryClient = useQueryClient();
+
+  // Populated by the unified "Check for updates" in the About tab (shared
+  // key, ADR 0017); this section only consumes the cached verdict.
+  const { data: check } = useQuery({
+    queryKey: [PLUGIN_UPDATE_CHECK_QUERY_KEY],
+    queryFn: checkUpdates,
+    enabled: false,
+    retry: false,
+  });
 
   const refresh = useCallback(async (isStale: () => boolean) => {
     try {
@@ -64,20 +78,6 @@ export function EditorPluginSection() {
     };
   }, [refresh]);
 
-  async function handleCheck() {
-    setBusy("check");
-    setError(null);
-    setCheck(null);
-    try {
-      const c = await checkUpdates();
-      if (alive.current) setCheck(c);
-    } catch (e) {
-      if (alive.current) setError(errMessage(e));
-    } finally {
-      if (alive.current) setBusy(null);
-    }
-  }
-
   async function handleInstall() {
     setBusy("install");
     setError(null);
@@ -89,7 +89,7 @@ export function EditorPluginSection() {
       const s = await install();
       if (alive.current) {
         setInfo(s);
-        setCheck(null);
+        queryClient.removeQueries({ queryKey: [PLUGIN_UPDATE_CHECK_QUERY_KEY] });
       }
     } catch (e) {
       if (alive.current) setError(errMessage(e));
@@ -109,7 +109,7 @@ export function EditorPluginSection() {
       const s = await uninstall();
       if (alive.current) {
         setInfo(s);
-        setCheck(null);
+        queryClient.removeQueries({ queryKey: [PLUGIN_UPDATE_CHECK_QUERY_KEY] });
       }
     } catch (e) {
       if (alive.current) setError(errMessage(e));
@@ -150,15 +150,13 @@ export function EditorPluginSection() {
             ) : info.installed ? (
               <>
                 Version {info.pluginVersion ?? "?"} installed · {fmtMB(info.onDiskBytes)} on disk
+                · check for updates from the About tab
               </>
             ) : (
               "Not installed. Enable the Editor tab, and navigate to it to find the download."
             )
           }
         >
-          <Button variant="muted" size="sm" onClick={() => void handleCheck()} disabled={busy != null}>
-            {busy === "check" ? <Spinner size={14} /> : "Check for updates"}
-          </Button>
           {check?.updateAvailable && !check.noCompatibleRelease && (
             <Button variant="primary" size="sm" onClick={() => void handleInstall()} disabled={busy != null}>
               {installing ? <Spinner size={14} /> : info?.installed ? "Update" : "Install"}
@@ -183,7 +181,7 @@ export function EditorPluginSection() {
                     : `Downloading${pct != null ? ` ${pct}%` : "…"}`}
               </span>
             ) : check ? (
-              <CheckMessage check={check} />
+              <PluginCheckMessage check={check} />
             ) : null}
           </SettingRow>
         )}

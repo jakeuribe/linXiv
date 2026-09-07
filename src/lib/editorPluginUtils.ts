@@ -5,6 +5,10 @@
 
 import type { PluginError } from "../api/editorPlugin";
 
+/** Shared react-query key for the plugin update check: AboutSection's unified
+ *  "Check for updates" writes it, EditorPluginSection reads it (ADR 0017). */
+export const PLUGIN_UPDATE_CHECK_QUERY_KEY = "editor-plugin-update-check";
+
 export function fmtMB(bytes: number | null | undefined): string {
   return bytes == null ? "?" : `${Math.max(1, Math.round(bytes / 1e6))} MB`;
 }
