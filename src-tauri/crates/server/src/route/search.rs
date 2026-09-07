@@ -48,22 +48,26 @@ fn get_state(state: &AppState) -> Result<Value, ApiError> {
     to_value(&SearchStateResponse { state: st })
 }
 
+/// `POST /api/search/state` request body.
+///
 /// `SearchStateBody` (app.py 769-775) — typed so a wrong field type 422s like
-/// pydantic (rather than being silently coerced to a default).
+/// pydantic (rather than being silently coerced to a default). `clauses`,
+/// `results` and `sort_prefs` are untyped JSON passthrough (serde_json values),
+/// so no ts-rs derive: the crate's ts-rs lacks the `serde-json-impl` feature.
 #[derive(Deserialize)]
-struct SearchStateBody {
+pub struct SearchStateBody {
     #[serde(default)]
-    clauses: Vec<Map<String, Value>>,
+    pub clauses: Vec<Map<String, Value>>,
     #[serde(default = "default_source")]
-    source: String,
+    pub source: String,
     #[serde(default = "default_max_results")]
-    max_results: i64,
+    pub max_results: i64,
     #[serde(default)]
-    results: Vec<Value>,
+    pub results: Vec<Value>,
     #[serde(default)]
-    saved_ids: Vec<String>,
+    pub saved_ids: Vec<String>,
     #[serde(default)]
-    sort_prefs: Option<Map<String, Value>>,
+    pub sort_prefs: Option<Map<String, Value>>,
 }
 fn default_source() -> String {
     "arxiv".into()

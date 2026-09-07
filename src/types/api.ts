@@ -91,7 +91,18 @@ export type {
   HardDeletedPaper,
   RestoredProject,
   HardDeletedProject,
+  NoteCreateBody,
+  NoteUpdateBody,
+  AnnotationCreateBody,
+  AuthorUpdateBody,
+  CreateEditorProjectBody,
+  ProjectCreateBody,
+  ProjectUpdateBody,
 } from "./generated";
+
+// `PUT /api/papers/sfk/{fk}` body — core names it RepairFields; the UI has
+// always called it PaperRepairBody.
+export type { RepairFields as PaperRepairBody } from "./generated";
 
 // Frontend names for the generated serializers. The Rust name is the model,
 // the alias is what the UI has always called it.

@@ -4,7 +4,13 @@
 // so ApiFsResponder (src/lib/editorFsResponder.ts) is a thin wrapper over vaultFsOp.
 
 import { libraryFetch } from "../stores/backend.ts";
-import type { EditorProjectSummary, EditorProjectsResponse } from "../types/api";
+import type {
+  CreateEditorProjectBody,
+  EditorProjectSummary,
+  EditorProjectsResponse,
+} from "../types/api";
+
+export type { CreateEditorProjectBody };
 import type { FsOp, FsResult } from "../lib/editorBridgeTypes";
 import type { DocOpenPayload } from "../lib/editorBridge";
 
@@ -20,15 +26,6 @@ export async function listEditorProjects(
     `/api/editor/projects${q}`
   );
   return res.projects;
-}
-
-export interface CreateEditorProjectBody {
-  project_name: string;
-  main_file?: string;
-  /** Paper this project is "about". Omitted ⇒ standalone (sentinel paper root). */
-  source_id?: string | null;
-  /** Optional linXiv project scope. */
-  project_id?: number | null;
 }
 
 /** Create an editor project (note + scaffolded vault). Returns the new note id. */

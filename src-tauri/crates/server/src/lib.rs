@@ -11,3 +11,5 @@ pub mod remote_query;
 pub mod route;
 pub mod share_sync;
 pub mod state;
+#[cfg(test)]
+mod ts_bindings;

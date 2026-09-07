@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use tokio::sync::Mutex;
 
 /// Cap on a single network op (mint ticket / fetch); past it the request returns
@@ -1705,6 +1705,7 @@ async fn shared_pdf(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::collections::HashMap;
 
     use chrono::NaiveDate;

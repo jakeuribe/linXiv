@@ -48,18 +48,22 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     })
 }
 
+/// `POST /api/annotations` request body.
+#[derive(Deserialize, ts_rs::TS)]
+#[ts(optional_fields = nullable)]
+pub struct AnnotationCreateBody {
+    pub source_id: String,
+    #[serde(default)]
+    pub project_id: Option<i64>,
+    pub anchor: String,
+    #[serde(default)]
+    #[ts(as = "Option<String>", optional)]
+    pub comment: String,
+}
+
 /// `POST /api/annotations`. 404 if the paper is not in the library.
 fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
-    #[derive(Deserialize)]
-    struct Body {
-        source_id: String,
-        #[serde(default)]
-        project_id: Option<i64>,
-        anchor: String,
-        #[serde(default)]
-        comment: String,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: AnnotationCreateBody = ctx.parse_body()?;
     // Pre-trim, like pydantic's min_length=1; notes.rs and sources.rs run the
     // same check. A whitespace-only id falls through to resolve_source_fk.
     if b.source_id.is_empty() {
@@ -81,14 +85,16 @@ fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     })
 }
 
+/// `PATCH /api/annotations/{id}` request body.
+#[derive(Deserialize, ts_rs::TS)]
+pub struct AnnotationUpdateBody {
+    pub comment: String,
+}
+
 /// `PATCH /api/annotations/{id}` — edit the written comment. 404 if no row matched.
 fn update(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let annotation_id = path_i64(id)?;
-    #[derive(Deserialize)]
-    struct Body {
-        comment: String,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: AnnotationUpdateBody = ctx.parse_body()?;
     state.with_conn(|conn| {
         if !svc_ann::update(
             conn,

@@ -31,18 +31,22 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     to_value(&EditorProjectsResponse { projects })
 }
 
+/// `POST /api/editor/projects` request body.
+#[derive(Deserialize, ts_rs::TS)]
+#[ts(optional_fields = nullable)]
+pub struct CreateEditorProjectBody {
+    pub project_name: String,
+    #[serde(default = "default_main_file")]
+    #[ts(as = "Option<String>", optional)]
+    pub main_file: String,
+    pub source_id: Option<String>,
+    pub project_id: Option<i64>,
+}
+
 /// `POST /api/editor/projects` — `api_editor_project_create`. ValueError → 400 is
 /// `BadRequest`'s native status; returns the 3-key created dict core gives.
 fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
-    #[derive(Deserialize)]
-    struct Body {
-        project_name: String,
-        #[serde(default = "default_main_file")]
-        main_file: String,
-        source_id: Option<String>,
-        project_id: Option<i64>,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: CreateEditorProjectBody = ctx.parse_body()?;
     // pydantic Field(min_length=1): an empty name is a 422 before the handler runs
     // (whitespace passes here, then core sanitizes it to "Untitled").
     if b.project_name.is_empty() {

@@ -2,9 +2,13 @@ import { libraryFetch } from "../stores/backend.ts";
 import type {
   DeletedNote,
   Note,
+  NoteCreateBody,
   NoteGetResponse,
   NoteListResponse,
+  NoteUpdateBody,
 } from "../types/api";
+
+export type { NoteCreateBody, NoteUpdateBody };
 
 export async function getNotes(
   sourceId: string,
@@ -27,23 +31,11 @@ export async function getNote(id: number): Promise<NoteGetResponse> {
   return libraryFetch<NoteGetResponse>(`/api/notes/${id}`);
 }
 
-export interface NoteCreateBody {
-  source_id: string;
-  project_id?: number | null;
-  title?: string;
-  content?: string;
-}
-
 export async function createNote(body: NoteCreateBody): Promise<Note> {
   return libraryFetch("/api/notes", {
     method: "POST",
     body: JSON.stringify(body),
   });
-}
-
-export interface NoteUpdateBody {
-  title?: string;
-  content?: string;
 }
 
 export async function updateNote(

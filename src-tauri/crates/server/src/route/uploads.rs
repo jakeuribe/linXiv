@@ -58,15 +58,16 @@ fn reject_oversized_b64(file_b64: &str, msg: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
-#[derive(Deserialize)]
-struct FileBody {
-    file_b64: String,
+/// `PUT /api/papers/{source_id}/pdf` request body.
+#[derive(Deserialize, ts_rs::TS)]
+pub struct UploadPdfBody {
+    pub file_b64: String,
 }
 
 /// `PUT /api/papers/{id}/pdf` — `api_attach_pdf`. Store PDF bytes the client already
 /// fetched for a saved paper. Order matches app.py: 404 paper → 413 size → 400 magic.
 fn attach_pdf(state: &AppState, source_id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
-    let b: FileBody = ctx.parse_body()?;
+    let b: UploadPdfBody = ctx.parse_body()?;
     reject_oversized_b64(&b.file_b64, "PDF exceeds size limit")?;
     let content = decode_b64(&b.file_b64)?;
     let pdf_dir = state.pdf_dir.clone();
@@ -98,16 +99,19 @@ fn attach_pdf(state: &AppState, source_id: &str, ctx: &ReqCtx<'_>) -> Result<Val
     })
 }
 
+/// `POST /api/papers/import/pdf` request body.
+#[derive(Deserialize, ts_rs::TS)]
+#[ts(optional_fields = nullable)]
+pub struct ImportPdfBody {
+    pub file_b64: String,
+    pub filename: Option<String>,
+}
+
 /// `POST /api/papers/import/pdf` — `api_import_pdf`. Resolve metadata (network)
 /// OUTSIDE the DB lock, then run the sync DB+FS import under it (mirrors
 /// `import_pdf_default` without holding the mutex across the await).
 async fn import_pdf(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
-    #[derive(Deserialize)]
-    struct Body {
-        file_b64: String,
-        filename: Option<String>,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: ImportPdfBody = ctx.parse_body()?;
     // app.py: `project_id: int | None = Query(...)` — links the imported paper to
     // a project (core's import_pdf runs the membership guard + link).
     let project_id = ctx.q_i64("project_id");
@@ -151,27 +155,36 @@ async fn import_pdf(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     crate::route::to_value(&result)
 }
 
+/// `POST /api/papers/import/bibtex` request body.
+#[derive(Deserialize, ts_rs::TS)]
+#[ts(optional_fields = nullable)]
+pub struct ImportBibtexBody {
+    pub file_b64: String,
+    pub project_id: Option<i64>,
+}
+
 /// `POST /api/papers/import/bibtex` — `api_import_bibtex`. `service::paper_import`
 /// owns guard order, parse and link; `?` maps ProjectNotFound → 404, the
 /// ProjectDeleted/BadRequest/PaperLink refusals → 400.
 fn import_bibtex(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
-    #[derive(Deserialize)]
-    struct Body {
-        file_b64: String,
-        project_id: Option<i64>,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: ImportBibtexBody = ctx.parse_body()?;
     let content = decode_b64(&b.file_b64)?;
     let text = String::from_utf8_lossy(&content).into_owned();
     let receipt = state.with_conn(|conn| paper_import::import_bibtex(conn, &text, b.project_id))?;
     crate::route::to_value(&receipt)
 }
 
+/// `POST /api/projects/import/preview` request body.
+#[derive(Deserialize, ts_rs::TS)]
+pub struct ImportPreviewBody {
+    pub file_b64: String,
+}
+
 /// `POST /api/projects/import/preview` — `api_import_preview`. `preview_import`
 /// takes a zip PATH, so spill the decoded bytes to a temp `.lxproj` first; any
 /// error (write, open, parse) is a 400. The temp file is removed on every path.
 fn import_preview(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
-    let b: FileBody = ctx.parse_body()?;
+    let b: ImportPreviewBody = ctx.parse_body()?;
     let content = decode_b64(&b.file_b64)?;
     let tmp = write_temp_lxproj(&content)?;
     let res = export_import::preview_import(&tmp);
@@ -180,15 +193,18 @@ fn import_preview(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     crate::route::to_value(&export_import::ImportPreviewResponse::from(p))
 }
 
+/// `POST /api/projects/import/commit` request body.
+#[derive(Deserialize, ts_rs::TS)]
+#[ts(optional_fields = nullable)]
+pub struct ImportCommitBody {
+    pub file_b64: String,
+    pub on_conflict: Option<String>,
+}
+
 /// `POST /api/projects/import/commit` — `api_import_commit`. `on_conflict` defaults
 /// to "merge"; a `ProjectImportError` is a 422, any other failure a 400.
 fn import_commit(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
-    #[derive(Deserialize)]
-    struct Body {
-        file_b64: String,
-        on_conflict: Option<String>,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: ImportCommitBody = ctx.parse_body()?;
     let on_conflict = match b.on_conflict.as_deref() {
         None | Some("merge") => OnConflict::Merge,
         Some("overwrite") => OnConflict::Overwrite,

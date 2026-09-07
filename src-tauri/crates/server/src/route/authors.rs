@@ -122,18 +122,21 @@ fn unlink_paper(state: &AppState, id: &str, pid: &str) -> Result<Value, ApiError
     crate::route::to_value(&OkReceipt { ok: true })
 }
 
+/// `PATCH /api/authors/{id}` request body.
+#[derive(Deserialize, ts_rs::TS)]
+#[ts(optional_fields = nullable)]
+pub struct AuthorUpdateBody {
+    pub full_name: Option<String>,
+    pub first_name: Option<String>,
+    pub last_name: Option<String>,
+    pub orcid: Option<String>,
+}
+
 /// `PATCH /api/authors/{id}` — `api_author_update`. Forwards the (all-optional)
 /// fields to `update_fields`, then returns the same detail shape as GET.
 fn update(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let author_id = path_i64(id)?;
-    #[derive(Deserialize)]
-    struct Body {
-        full_name: Option<String>,
-        first_name: Option<String>,
-        last_name: Option<String>,
-        orcid: Option<String>,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: AuthorUpdateBody = ctx.parse_body()?;
     state.with_conn(|conn| {
         svc_author::update_fields(
             conn,
@@ -147,16 +150,19 @@ fn update(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     detail_response(state, author_id)
 }
 
+/// `POST /api/authors/{id}/merge` request body.
+#[derive(Deserialize, ts_rs::TS)]
+pub struct AuthorMergeBody {
+    #[serde(default)]
+    #[ts(as = "Option<Vec<i64>>", optional)]
+    pub duplicate_ids: Vec<i64>,
+}
+
 /// `POST /api/authors/{id}/merge` — fold `duplicate_ids` into author `{id}`,
 /// re-pointing their papers, then returns the canonical author's detail shape.
 fn merge(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let canonical_id = path_i64(id)?;
-    #[derive(Deserialize)]
-    struct Body {
-        #[serde(default)]
-        duplicate_ids: Vec<i64>,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: AuthorMergeBody = ctx.parse_body()?;
     let merged_ids = state.with_conn(|conn| -> Result<Vec<i64>, ApiError> {
         if svc_author::get(conn, &author_ref(canonical_id))?.is_none() {
             return Err(ApiError::new(404, "Author not found"));

@@ -60,19 +60,24 @@ fn get(state: &AppState, id: &str) -> Result<Value, ApiError> {
     })
 }
 
+/// `POST /api/notes` request body.
+#[derive(Deserialize, ts_rs::TS)]
+#[ts(optional_fields = nullable)]
+pub struct NoteCreateBody {
+    pub source_id: String,
+    pub project_id: Option<i64>,
+    pub paper_id: Option<i64>,
+    #[serde(default)]
+    #[ts(as = "Option<String>", optional)]
+    pub title: String,
+    #[serde(default)]
+    #[ts(as = "Option<String>", optional)]
+    pub content: String,
+}
+
 /// `POST /api/notes` — `api_note_create`. 404 if the paper is not in the library.
 fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
-    #[derive(Deserialize)]
-    struct Body {
-        source_id: String,
-        project_id: Option<i64>,
-        paper_id: Option<i64>,
-        #[serde(default)]
-        title: String,
-        #[serde(default)]
-        content: String,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: NoteCreateBody = ctx.parse_body()?;
     // Pydantic NoteCreate.source_id is Field(min_length=1): an empty source_id is a
     // 422 before the handler, not a 404. (Checked pre-trim, like pydantic.)
     if b.source_id.is_empty() {
@@ -95,15 +100,18 @@ fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     })
 }
 
+/// `PATCH /api/notes/{id}` request body.
+#[derive(Deserialize, ts_rs::TS)]
+#[ts(optional_fields = nullable)]
+pub struct NoteUpdateBody {
+    pub title: Option<String>,
+    pub content: Option<String>,
+}
+
 /// `PATCH /api/notes/{id}` — `api_note_update`. 404 if no row matched.
 fn update(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let note_id = path_i64(id)?;
-    #[derive(Deserialize)]
-    struct Body {
-        title: Option<String>,
-        content: Option<String>,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: NoteUpdateBody = ctx.parse_body()?;
     state.with_conn(|conn| {
         // No row matched -> the shared 404; else the canonical update envelope
         // is the full NoteDetails serialization.

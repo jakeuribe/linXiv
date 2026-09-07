@@ -102,17 +102,20 @@ pub async fn refresh(state: &AppState, url: &str, retention_days: i64) -> Result
     Ok(fetched.title)
 }
 
+/// `POST /api/feed/dismiss` request body.
+#[derive(Deserialize, ts_rs::TS)]
+pub struct FeedDismissBody {
+    pub arxiv_id: String,
+    pub version: i64,
+    #[serde(default)]
+    #[ts(as = "Option<bool>", optional)]
+    pub permanent: bool,
+}
+
 /// `POST /api/feed/dismiss` — hide an entry. `permanent: true` blocks the
 /// whole paper; otherwise dismisses just this `version` (the default).
 fn dismiss(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
-    #[derive(Deserialize)]
-    struct Body {
-        arxiv_id: String,
-        version: i64,
-        #[serde(default)]
-        permanent: bool,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: FeedDismissBody = ctx.parse_body()?;
     state.with_conn(|conn| svc_feed::dismiss(conn, &b.arxiv_id, b.version, b.permanent))?;
     to_value(&OkReceipt { ok: true })
 }
@@ -123,19 +126,23 @@ fn list_rules(state: &AppState) -> Result<Value, ApiError> {
     to_value(&FeedRulesResponse { rules })
 }
 
+/// `POST /api/feed/rules` request body.
+#[derive(Deserialize, ts_rs::TS)]
+pub struct FeedRuleCreateBody {
+    pub field: FilterField,
+    pub keywords: String,
+    #[serde(default = "default_action")]
+    #[ts(as = "Option<FilterAction>", optional)]
+    pub action: FilterAction,
+}
+
+fn default_action() -> FilterAction {
+    FilterAction::Deny
+}
+
 /// `POST /api/feed/rules` — create an auto-filter rule.
 fn create_rule(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
-    #[derive(Deserialize)]
-    struct Body {
-        field: FilterField,
-        keywords: String,
-        #[serde(default = "default_action")]
-        action: FilterAction,
-    }
-    fn default_action() -> FilterAction {
-        FilterAction::Deny
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: FeedRuleCreateBody = ctx.parse_body()?;
     let rule_id =
         state.with_conn(|conn| svc_feed::create_rule(conn, b.field, &b.keywords, b.action))?;
     to_value(&CreatedFeedRule { rule_id })

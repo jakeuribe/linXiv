@@ -4,16 +4,12 @@ import type {
   AuthorDetail,
   AuthorMergeResponse,
   AuthorsResponse,
+  AuthorUpdateBody,
   MergeCandidates,
   OkReceipt,
 } from "../types/api";
 
-export interface AuthorUpdateBody {
-  full_name?: string | null;
-  first_name?: string | null;
-  last_name?: string | null;
-  orcid?: string | null;
-}
+export type { AuthorUpdateBody };
 
 export async function listAuthors(excludeSingle = false): Promise<Author[]> {
   const query = excludeSingle ? "?exclude_single=true" : "";

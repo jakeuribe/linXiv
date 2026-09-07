@@ -292,17 +292,21 @@ pub fn parse_published(s: &str) -> Result<NaiveDate> {
         .map_err(|_| CoreError::Validation(format!("Invalid date {}; use YYYY-MM-DD", pyrepr(s))))
 }
 
+/// `PUT /api/papers/sfk/{fk}` (paper repair) request body.
+///
 /// The user-editable Paper Repair fields, shared by all three front doors:
 /// the route PUT body (mirrors `PaperRepairBody` in `src/api/papers.ts`),
 /// the CLI flags, and the MCP tool params. `published` stays a `String` so
 /// the date is parsed here by [`parse_published`], identically per surface.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ts_rs::TS)]
+#[ts(optional_fields = nullable)]
 pub struct RepairFields {
     pub title: String,
     pub authors: Vec<String>,
     /// Publication date (YYYY-MM-DD).
     pub published: String,
     #[serde(default)]
+    #[ts(as = "Option<String>", optional)]
     pub summary: String,
     #[serde(default)]
     pub category: Option<String>,

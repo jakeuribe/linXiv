@@ -39,16 +39,19 @@ fn default_limit() -> i64 {
     20
 }
 
+/// `POST /api/orcid/backfill` request body.
+#[derive(Deserialize, ts_rs::TS)]
+pub struct OrcidBackfillBody {
+    #[serde(default = "default_limit")]
+    #[ts(as = "Option<i64>", optional)]
+    pub limit: i64,
+}
+
 /// `POST /api/orcid/backfill` — one pass over `limit` random ORCID-less,
 /// DOI-linked authors, via CrossRef then OpenAlex per DOI (paced, one write).
 async fn backfill(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
-    #[derive(Deserialize)]
-    struct Body {
-        #[serde(default = "default_limit")]
-        limit: i64,
-    }
     let limit = match ctx.body {
-        Some(_) => ctx.parse_body::<Body>()?.limit,
+        Some(_) => ctx.parse_body::<OrcidBackfillBody>()?.limit,
         None => default_limit(),
     };
     if !(1..=100).contains(&limit) {

@@ -35,6 +35,13 @@ pub(crate) async fn handle(_state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result
     }
 }
 
+/// `PATCH /api/env` request body.
+#[derive(Deserialize, ts_rs::TS)]
+pub struct EnvPatchBody {
+    pub key: String,
+    pub value: String,
+}
+
 /// `PATCH /api/env` — `api_env_patch`. Allowlist-gated (400 otherwise). Python
 /// `set_key`s `.env` then mutates `os.environ`. The in-process app has no `.env`
 /// load path, so this sets the live process env var (the source clients + the GET
@@ -45,12 +52,7 @@ pub(crate) async fn handle(_state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result
 /// the env at startup — cross-restart env persistence is part of the wider
 /// "Rust app never loads a persisted .env" gap, out of this route's scope.
 fn env_patch(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
-    #[derive(Deserialize)]
-    struct Body {
-        key: String,
-        value: String,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: EnvPatchBody = ctx.parse_body()?;
     if !ALLOWED_ENV_KEYS.contains(&b.key.as_str()) {
         return Err(ApiError::new(
             400,
