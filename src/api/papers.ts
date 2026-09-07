@@ -2,6 +2,7 @@ import { BASE_URL, isTauri } from "./client.ts";
 import { libraryFetch } from "../stores/backend.ts";
 import type {
   Paper,
+  PaperRepairBody,
   PapersListing,
   PaperVersionsResponse,
   DoiCandidates,
@@ -115,16 +116,7 @@ export async function deletePaper(sourceId: string): Promise<DeletedPaperReceipt
   );
 }
 
-export interface PaperRepairBody {
-  title: string;
-  authors: string[];
-  published: string;
-  summary: string;
-  category?: string | null;
-  doi?: string | null;
-  url?: string | null;
-  tags?: string[] | null;
-}
+export type { PaperRepairBody };
 
 export async function removeFromAllProjects(sfk: number): Promise<RemovedFromProjects> {
   return libraryFetch(`/api/papers/sfk/${sfk}/projects`, { method: "DELETE" });

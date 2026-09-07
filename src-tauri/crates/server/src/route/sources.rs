@@ -101,20 +101,25 @@ fn saved_ids(
     })
 }
 
+/// `POST /api/arxiv/search` request body.
+#[derive(Deserialize, ts_rs::TS)]
+pub struct ArxivSearchBody {
+    pub query: String,
+    #[serde(default = "default_max_results")]
+    #[ts(as = "Option<i64>", optional)]
+    pub max_results: i64,
+    #[serde(default)]
+    #[ts(as = "Option<bool>", optional)]
+    pub save: bool,
+    #[serde(default = "default_sort")]
+    #[ts(as = "Option<String>", optional)]
+    pub sort: String,
+}
+
 /// `POST /api/arxiv/search` (740–758). `502` on any source error. `save` bulk-saves
 /// every result; `saved_source_ids` reports library membership either way.
 async fn arxiv_search(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
-    #[derive(Deserialize)]
-    struct Body {
-        query: String,
-        #[serde(default = "default_max_results")]
-        max_results: i64,
-        #[serde(default)]
-        save: bool,
-        #[serde(default = "default_sort")]
-        sort: String,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: ArxivSearchBody = ctx.parse_body()?;
     if b.query.is_empty() {
         return Err(ApiError::new(422, "query must not be empty"));
     }
@@ -133,16 +138,19 @@ async fn arxiv_search(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiEr
     })
 }
 
+/// `POST /api/arxiv/fetch` request body.
+#[derive(Deserialize, ts_rs::TS)]
+pub struct ArxivFetchBody {
+    pub source_id: String,
+    #[serde(default = "default_true")]
+    #[ts(as = "Option<bool>", optional)]
+    pub save: bool,
+}
+
 /// `POST /api/arxiv/fetch` (804–823). `404` not-found / `502` other. The save is
 /// idempotent (INSERT OR IGNORE), so re-fetching a stored paper cannot conflict.
 async fn arxiv_fetch(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
-    #[derive(Deserialize)]
-    struct Body {
-        source_id: String,
-        #[serde(default = "default_true")]
-        save: bool,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: ArxivFetchBody = ctx.parse_body()?;
     if b.source_id.is_empty() {
         return Err(ApiError::new(422, "source_id must not be empty"));
     }
@@ -166,18 +174,22 @@ async fn arxiv_fetch(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiErr
     })
 }
 
+/// `POST /api/openalex/search` request body.
+#[derive(Deserialize, ts_rs::TS)]
+pub struct OpenAlexSearchBody {
+    pub query: String,
+    #[serde(default = "default_max_results")]
+    #[ts(as = "Option<i64>", optional)]
+    pub max_results: i64,
+    #[serde(default = "default_sort")]
+    #[ts(as = "Option<String>", optional)]
+    pub sort: String,
+}
+
 /// `POST /api/openalex/search` (1177–1187). `502` on any source error. Never
 /// saves; `saved_source_ids` reports what the library already holds.
 async fn openalex_search(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
-    #[derive(Deserialize)]
-    struct Body {
-        query: String,
-        #[serde(default = "default_max_results")]
-        max_results: i64,
-        #[serde(default = "default_sort")]
-        sort: String,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: OpenAlexSearchBody = ctx.parse_body()?;
     if b.query.is_empty() {
         return Err(ApiError::new(422, "query must not be empty"));
     }
@@ -194,14 +206,16 @@ async fn openalex_search(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, Ap
     })
 }
 
+/// `POST /api/openalex/save` request body.
+#[derive(Deserialize, ts_rs::TS)]
+pub struct OpenAlexSaveBody {
+    pub source_id: String,
+}
+
 /// `POST /api/openalex/save` (1475–1489). `404`/`400`/`502` on fetch. The save is
 /// idempotent (INSERT OR IGNORE). Returns the stripped stored source_id.
 async fn openalex_save(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
-    #[derive(Deserialize)]
-    struct Body {
-        source_id: String,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: OpenAlexSaveBody = ctx.parse_body()?;
     if b.source_id.is_empty() {
         return Err(ApiError::new(422, "source_id must not be empty"));
     }
@@ -219,17 +233,20 @@ async fn openalex_save(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiE
     })
 }
 
+/// `POST /api/crossref/search` request body.
+#[derive(Deserialize, ts_rs::TS)]
+pub struct CrossrefSearchBody {
+    pub query: String,
+    #[serde(default = "default_max_results")]
+    #[ts(as = "Option<i64>", optional)]
+    pub max_results: i64,
+}
+
 /// `POST /api/crossref/search` — same envelope as the openalex arm. The wire body
 /// carries no `sort`, so this arm pins relevance; a transport failure is a 502
 /// rather than an empty result list.
 async fn crossref_search(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
-    #[derive(Deserialize)]
-    struct Body {
-        query: String,
-        #[serde(default = "default_max_results")]
-        max_results: i64,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: CrossrefSearchBody = ctx.parse_body()?;
     if b.query.is_empty() {
         return Err(ApiError::new(422, "query must not be empty"));
     }
@@ -241,14 +258,16 @@ async fn crossref_search(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     to_value(&CrossrefSearchResponse { results })
 }
 
+/// `POST /api/doi/resolve` request body.
+#[derive(Deserialize, ts_rs::TS)]
+pub struct DoiResolveBody {
+    pub doi: String,
+}
+
 /// `POST /api/doi/resolve` (830–836). `400` on a bad DOI (CoreError::BadRequest →
 /// 400 via `?`, matching Python's `ValueError`).
 async fn doi_resolve_route(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
-    #[derive(Deserialize)]
-    struct Body {
-        doi: String,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: DoiResolveBody = ctx.parse_body()?;
     if b.doi.is_empty() {
         return Err(ApiError::new(422, "doi must not be empty"));
     }
@@ -256,13 +275,15 @@ async fn doi_resolve_route(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     to_value(&DoiResolveResponse { metadata: meta })
 }
 
+/// `POST /api/doi/save` request body.
+#[derive(Deserialize, ts_rs::TS)]
+pub struct DoiSaveBody {
+    pub doi: String,
+}
+
 /// `POST /api/doi/save` (843–850). Resolve then save; returns the resolved meta.
 async fn doi_save_route(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
-    #[derive(Deserialize)]
-    struct Body {
-        doi: String,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: DoiSaveBody = ctx.parse_body()?;
     if b.doi.is_empty() {
         return Err(ApiError::new(422, "doi must not be empty"));
     }

@@ -40,19 +40,22 @@ fn default_limit() -> i64 {
     20
 }
 
+/// `POST /api/versions/check` request body.
+#[derive(Deserialize, ts_rs::TS)]
+pub struct VersionsCheckBody {
+    #[serde(default = "default_limit")]
+    #[ts(as = "Option<i64>", optional)]
+    pub limit: i64,
+}
+
 /// `POST /api/versions/check` — one poll pass over the stalest `limit` papers.
 /// Candidates are read, the single batched arXiv call awaits with no DB lock
 /// held, then results are applied. `502` on an arXiv failure (nothing recorded,
 /// so the same papers stay at the front of the staleness queue).
 async fn check(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
-    #[derive(Deserialize)]
-    struct Body {
-        #[serde(default = "default_limit")]
-        limit: i64,
-    }
     // Body is optional: no body → defaults.
     let limit = match ctx.body {
-        Some(_) => ctx.parse_body::<Body>()?.limit,
+        Some(_) => ctx.parse_body::<VersionsCheckBody>()?.limit,
         None => default_limit(),
     };
     if !(1..=100).contains(&limit) {
@@ -86,13 +89,15 @@ fn list_new(state: &AppState) -> Result<Value, ApiError> {
     to_value(&NewVersionsResponse { new_versions: list })
 }
 
+/// `POST /api/versions/ack` request body.
+#[derive(Deserialize, ts_rs::TS)]
+pub struct VersionsAckBody {
+    pub source_fk: i64,
+}
+
 /// `POST /api/versions/ack` — clear the flag for one paper. 404 when unset.
 fn ack(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
-    #[derive(Deserialize)]
-    struct Body {
-        source_fk: i64,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: VersionsAckBody = ctx.parse_body()?;
     let cleared = state.with_conn(|conn| svc::ack(conn, b.source_fk))?;
     if !cleared {
         return Err(ApiError::new(404, "no new version flagged for this paper"));

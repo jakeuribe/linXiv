@@ -5,8 +5,12 @@ import type {
   OkReceipt,
   PaperMembershipReceipt,
   Project,
+  ProjectCreateBody,
+  ProjectUpdateBody,
   ProjectsResponse,
 } from "../types/api";
+
+export type { ProjectCreateBody, ProjectUpdateBody };
 
 export async function listProjects(status = "active"): Promise<ProjectsResponse> {
   return libraryFetch<ProjectsResponse>(`/api/projects?status=${status}`);
@@ -16,13 +20,6 @@ export async function getProject(id: number): Promise<Project> {
   return libraryFetch<Project>(`/api/projects/${id}`);
 }
 
-export interface ProjectCreateBody {
-  name: string;
-  description?: string;
-  color_hex?: string | null;
-  project_tags?: string[];
-}
-
 export async function createProject(
   body: ProjectCreateBody
 ): Promise<CreatedProject> {
@@ -30,14 +27,6 @@ export async function createProject(
     method: "POST",
     body: JSON.stringify(body),
   });
-}
-
-export interface ProjectUpdateBody {
-  name?: string;
-  description?: string;
-  color_hex?: string | null;
-  status?: string;
-  project_tags?: string[];
 }
 
 export async function updateProject(

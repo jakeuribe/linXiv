@@ -4068,6 +4068,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
+ "ts-rs",
  "wiremock",
  "zbus 4.4.0",
 ]

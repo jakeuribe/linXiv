@@ -33,6 +33,10 @@ linxiv-share = { path = "../share", features = ["auth-keyhive", "sync-beelay"] }
 # handler + NodeAddress, served on the share node's endpoint.
 linxiv-p2p = { path = "../p2p" }
 serde = { version = "1", features = ["derive"] }
+# TS derives on the route request structs + the ts_bindings generator (moved
+# here from core: this crate tops the dep graph, so one render() reaches every
+# crate's wire types).
+ts-rs = { version = "12", features = ["chrono-impl"] }
 # preserve_order: route arms must match api/app.py's response envelopes exactly,
 # key order included (see route/mod.rs).
 serde_json = { version = "1", features = ["preserve_order"] }

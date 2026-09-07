@@ -30,16 +30,18 @@ fn list(state: &AppState) -> Result<Value, ApiError> {
     to_value(&statuses)
 }
 
+/// `PUT /api/reading-status/{source_id}` request body.
+#[derive(Deserialize, ts_rs::TS)]
+pub struct ReadingStatusPutBody {
+    pub status: String,
+}
+
 /// `PUT /api/reading-status/{source_id}` — set the paper's status in every
 /// reading list it belongs to; `"unread"` clears it. `applied` is the number of
 /// lists written (0 when the paper is on no reading list — a no-op, not an
 /// error, so the client's localStorage migration can push blindly).
 fn put(state: &AppState, sid: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
-    #[derive(Deserialize)]
-    struct Body {
-        status: String,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: ReadingStatusPutBody = ctx.parse_body()?;
     // CoreError::Validation → 422, matching FastAPI enum-body coercion.
     let status = b.status.parse::<reading_list::ReadingStatus>()?;
     let applied = state.with_conn(|conn| reading_list::set_for_paper(conn, sid, status))?;

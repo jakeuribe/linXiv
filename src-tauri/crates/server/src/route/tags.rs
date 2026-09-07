@@ -43,14 +43,16 @@ fn detail(state: &AppState, label: &str) -> Result<Value, ApiError> {
     crate::route::to_value(&d)
 }
 
+/// `POST /api/tags` request body.
+#[derive(Deserialize, ts_rs::TS)]
+pub struct TagCreateBody {
+    pub label: String,
+}
+
 /// `POST /api/tags` — `svc_tag::upsert`, same envelope as the CLI `tag create`.
 /// Upsert semantics: an existing label returns its id instead of erroring.
 fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
-    #[derive(Deserialize)]
-    struct Body {
-        label: String,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: TagCreateBody = ctx.parse_body()?;
     let label = b.label.trim().to_string();
     if label.is_empty() {
         return Err(ApiError::new(422, "label must not be empty"));
@@ -86,15 +88,17 @@ fn delete(state: &AppState, id: &str) -> Result<Value, ApiError> {
     })
 }
 
+/// `POST`/`DELETE /api/papers/{source_id}/tags` request body.
+#[derive(Deserialize, ts_rs::TS)]
+pub struct PaperTagsBody {
+    pub tags: Vec<String>,
+}
+
 /// The `{"tags": [...]}` body both paper-tag arms take. Trimmed, blanks dropped,
 /// case-deduped — the normalization `create` and `add_project_tags` already
 /// apply, so a label of `"  "` can't reach the TAG table. Nothing left is a 422.
 fn body_tags(ctx: &ReqCtx<'_>) -> Result<Vec<String>, ApiError> {
-    #[derive(Deserialize)]
-    struct Body {
-        tags: Vec<String>,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: PaperTagsBody = ctx.parse_body()?;
     let mut seen = std::collections::HashSet::new();
     let tags: Vec<String> = b
         .tags

@@ -172,16 +172,18 @@ pub(crate) async fn ingest_full_text(
     Ok(state.with_conn(|conn| fetched.commit(conn))?)
 }
 
+/// `POST /api/papers/saved` request body.
+#[derive(Deserialize, ts_rs::TS)]
+pub struct PaperSavedBody {
+    pub source_ids: Vec<String>,
+}
+
 /// `POST /api/papers/saved` — which of the given canonical stored ids
 /// (`arxiv:2204.12985`-style, the wire `entry_id`) the library holds active.
 /// Matches are echoed verbatim; trashed and unknown ids are simply absent.
 /// The search page's saved-indicator query is the caller.
 fn saved(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
-    #[derive(Deserialize)]
-    struct Body {
-        source_ids: Vec<String>,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: PaperSavedBody = ctx.parse_body()?;
     let ids = state.with_conn(|conn| svc_paper::existing_source_ids(conn, &b.source_ids))?;
     to_value(&svc_paper::SavedSourceIds {
         saved_source_ids: ids,
@@ -229,6 +231,12 @@ fn repair(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     })
 }
 
+/// `POST /api/papers/sfk/{fk}/merge` request body.
+#[derive(Deserialize, ts_rs::TS)]
+pub struct PaperMergeBody {
+    pub loser_source_fk: i64,
+}
+
 /// `POST /api/papers/sfk/{fk}/merge` — `merge_papers`. Merges the duplicate
 /// root named in the body INTO this paper (this paper's metadata is canonical;
 /// the duplicate's notes, annotations, memberships, tags, missing versions and
@@ -236,11 +244,7 @@ fn repair(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
 /// 409 on self/trashed/share-linked duplicates (see `merge_plan`'s guards).
 fn merge(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let winner_fk = path_i64(fk)?;
-    #[derive(Deserialize)]
-    struct Body {
-        loser_source_fk: i64,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: PaperMergeBody = ctx.parse_body()?;
     let pdf_dir = state.pdf_dir.clone();
     // Holds the conn lock across the FS phase too — same-dir renames, bounded
     // by the loser's version count.

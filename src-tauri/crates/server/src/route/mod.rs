@@ -28,26 +28,26 @@ use linxiv_core::service::paper as svc_paper;
 
 use crate::state::AppState;
 
-mod annotations;
-mod authors;
-mod editor;
+pub(crate) mod annotations; // request-body structs rendered by ts_bindings
+pub(crate) mod authors; // request-body structs rendered by ts_bindings
+pub(crate) mod editor; // request-body structs rendered by ts_bindings
 pub mod feed; // refresh reused by the headless bin's feed poll loop
 mod graph;
-mod notes;
-mod orcid;
+pub(crate) mod notes; // request-body structs rendered by ts_bindings
+pub(crate) mod orcid; // request-body structs rendered by ts_bindings
 pub(crate) mod papers; // ingest_full_text reused by the background full-text worker
 pub(crate) mod pdfs; // resolve_pdf reused by remote_query's byte lane
-mod projects;
-mod reading_status;
+pub(crate) mod projects; // request-body structs rendered by ts_bindings
+pub(crate) mod reading_status; // request-body structs rendered by ts_bindings
 mod search;
-mod settings;
+pub(crate) mod settings; // request-body structs rendered by ts_bindings
 pub mod share; // ShareState + share_api command, managed beside AppState in main.rs
-mod sources;
-mod storage;
-mod tags;
+pub(crate) mod sources; // request-body structs rendered by ts_bindings
+pub(crate) mod storage; // request-body structs rendered by ts_bindings
+pub(crate) mod tags; // request-body structs rendered by ts_bindings
 mod trash;
-mod uploads;
-mod versions;
+pub(crate) mod uploads; // request-body structs rendered by ts_bindings
+pub(crate) mod versions; // request-body structs rendered by ts_bindings
 
 /// One webview→backend call. `body` is the parsed JSON request body (None for
 /// GET/DELETE without a body), including base64 file uploads (`uploads.rs`).

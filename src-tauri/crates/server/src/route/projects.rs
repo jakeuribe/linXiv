@@ -44,18 +44,22 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
     }
 }
 
+/// `POST /api/projects/{id}/export` request body.
+#[derive(Deserialize, ts_rs::TS)]
+#[ts(optional_fields = nullable)]
+pub struct ProjectExportBody {
+    pub dest_path: Option<String>,
+    #[serde(default)]
+    #[ts(as = "Option<bool>", optional)]
+    pub include_pdfs: bool,
+}
+
 /// `POST /api/projects/{id}/export` — `api_project_export` (dest_path branch only).
 /// Writes the `.lxproj` archive to `dest_path` and returns `{ok}`. The streaming
 /// (no-dest_path) branch is browser-only; the Tauri frontend always sends a path.
 fn export(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let project_fk = path_i64(id)?;
-    #[derive(Deserialize)]
-    struct Body {
-        dest_path: Option<String>,
-        #[serde(default)]
-        include_pdfs: bool,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: ProjectExportBody = ctx.parse_body()?;
     let Some(dest) = b.dest_path.filter(|s| !s.is_empty()) else {
         return Err(ApiError::new(
             400,
@@ -129,18 +133,23 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     crate::route::to_value(&ProjectsResponse { projects })
 }
 
+/// `POST /api/projects` request body.
+#[derive(Deserialize, ts_rs::TS)]
+#[ts(optional_fields = nullable)]
+pub struct ProjectCreateBody {
+    pub name: String,
+    #[serde(default)]
+    #[ts(as = "Option<String>", optional)]
+    pub description: String,
+    pub color_hex: Option<String>,
+    #[serde(default)]
+    #[ts(as = "Option<Vec<String>>", optional)]
+    pub project_tags: Vec<String>,
+}
+
 /// `POST /api/projects` — `api_project_create`.
 fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
-    #[derive(Deserialize)]
-    struct Body {
-        name: String,
-        #[serde(default)]
-        description: String,
-        color_hex: Option<String>,
-        #[serde(default)]
-        project_tags: Vec<String>,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: ProjectCreateBody = ctx.parse_body()?;
     let name = b.name.trim().to_string();
     if name.is_empty() {
         return Err(ApiError::new(400, "name cannot be blank"));
@@ -179,19 +188,22 @@ fn get_one(state: &AppState, id: &str) -> Result<Value, ApiError> {
     })
 }
 
+/// `PATCH /api/projects/{id}` request body.
+#[derive(Deserialize, ts_rs::TS)]
+#[ts(optional_fields = nullable)]
+pub struct ProjectUpdateBody {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub color_hex: Option<String>,
+    pub status: Option<String>,
+    pub project_tags: Option<Vec<String>>,
+}
+
 /// `PATCH /api/projects/{id}` — `api_project_patch`. Partial update; color cleared
 /// only when the `color_hex` key is present in the body.
 fn patch(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let pid = path_i64(id)?;
-    #[derive(Deserialize)]
-    struct Body {
-        name: Option<String>,
-        description: Option<String>,
-        color_hex: Option<String>,
-        status: Option<String>,
-        project_tags: Option<Vec<String>>,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: ProjectUpdateBody = ctx.parse_body()?;
 
     // Core owns the parse and the message; the 400 is kept so the frontend's
     // handling of this response is unchanged (Validation would otherwise be 422).
@@ -249,28 +261,32 @@ fn delete(state: &AppState, id: &str) -> Result<Value, ApiError> {
     crate::route::to_value(&OkReceipt { ok: true })
 }
 
+/// `POST /api/projects/{id}/papers` request body.
+#[derive(Deserialize, ts_rs::TS)]
+pub struct ProjectAddPaperBody {
+    pub source_id: String,
+}
+
 /// `POST /api/projects/{id}/papers` — `api_project_add_paper`. Core's shared
 /// receipt; `?` keeps app.py's statuses (PaperNotFound → 404 with the paper id,
 /// ProjectNotFound → 404, ProjectDeleted → 400).
 fn add_paper(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let pid = path_i64(id)?;
-    #[derive(Deserialize)]
-    struct Body {
-        source_id: String,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: ProjectAddPaperBody = ctx.parse_body()?;
     let receipt = state.with_conn(|conn| project::add_paper(conn, pid, &b.source_id))?;
     crate::route::to_value(&receipt)
+}
+
+/// `POST /api/projects/{id}/papers/bulk` request body.
+#[derive(Deserialize, ts_rs::TS)]
+pub struct ProjectAddPapersBulkBody {
+    pub source_ids: Vec<String>,
 }
 
 /// `POST /api/projects/{id}/papers/bulk` — `api_project_add_papers`. Partial success.
 fn add_papers_bulk(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let pid = path_i64(id)?;
-    #[derive(Deserialize)]
-    struct Body {
-        source_ids: Vec<String>,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: ProjectAddPapersBulkBody = ctx.parse_body()?;
     let failed = state.with_conn(|conn| project::add_papers(conn, pid, &b.source_ids))?;
     crate::route::to_value(&BulkAddReceipt {
         ok: failed.is_empty(),

@@ -1,9 +1,12 @@
 import { libraryFetch } from "../stores/backend.ts";
 import type {
+  AnnotationCreateBody,
   AnnotationListResponse,
   CreatedAnnotation,
   OkReceipt,
 } from "../types/api";
+
+export type { AnnotationCreateBody };
 
 export async function getAnnotations(
   sourceId: string,
@@ -21,13 +24,6 @@ export async function getAnnotations(
   return libraryFetch<AnnotationListResponse>(
     `/api/annotations?${params.toString()}`
   );
-}
-
-export interface AnnotationCreateBody {
-  source_id: string;
-  anchor: string;
-  comment?: string;
-  project_id?: number | null;
 }
 
 export async function createAnnotation(

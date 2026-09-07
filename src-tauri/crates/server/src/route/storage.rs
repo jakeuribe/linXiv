@@ -21,14 +21,16 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
     }
 }
 
+/// `POST /api/storage/backup` request body.
+#[derive(Deserialize, ts_rs::TS)]
+pub struct StorageBackupBody {
+    pub dest_path: PathBuf,
+}
+
 /// `POST /api/storage/backup` `{dest_path}` → `{path, bytes}`. Vacuums to a
 /// temp file, then renames over dest. Temp path includes process ID for collision safety.
 fn backup(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
-    #[derive(Deserialize)]
-    struct Body {
-        dest_path: PathBuf,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: StorageBackupBody = ctx.parse_body()?;
     db_admin::reject_live_db(&b.dest_path, "dest_path", "destination")?;
     let temp_path = {
         let mut path = b.dest_path.clone();
@@ -58,16 +60,18 @@ fn backup(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
         .map_err(|e| ApiError::new(500, format!("could not serialize backup result: {e}")))
 }
 
+/// `POST /api/storage/restore` request body.
+#[derive(Deserialize, ts_rs::TS)]
+pub struct StorageRestoreBody {
+    pub src_path: PathBuf,
+}
+
 /// `POST /api/storage/restore` `{src_path}` → `{ok}`. `db_admin::restore_in_place`
 /// owns the park/swap/reopen sequence (shared with the MCP tool); the state mutex is
 /// held throughout. The UI still tells the user to restart: in-flight frontend state
 /// is not rewound by the swap.
 fn restore(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
-    #[derive(Deserialize)]
-    struct Body {
-        src_path: PathBuf,
-    }
-    let b: Body = ctx.parse_body()?;
+    let b: StorageRestoreBody = ctx.parse_body()?;
     db_admin::reject_live_db(&b.src_path, "src_path", "source")?;
     // Validate the backup source early, before parking the live connection.
     db_admin::validate_backup_source(&b.src_path)?;
