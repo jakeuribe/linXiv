@@ -10,6 +10,15 @@ use crate::models::PaperMetadata;
 use crate::storage::queries::author::fill_orcid_if_null;
 pub use crate::storage::queries::author::{orcid_backfill_candidates, OrcidCandidate};
 
+/// `POST /api/orcid/backfill` envelope: one backfill pass's report.
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+pub struct OrcidBackfillResponse {
+    pub checked: usize,
+    pub updated: Vec<OrcidCandidate>,
+    /// DOIs where a source request failed (not just "no ORCID found").
+    pub errored: i64,
+}
+
 /// Case-insensitive (ASCII, matching `AUTHOR_FULL_NAME COLLATE NOCASE`) name
 /// lookup against a fetched record's index-aligned `author_orcids`.
 fn match_orcid<'a>(meta: &'a PaperMetadata, name: &str) -> Option<&'a str> {

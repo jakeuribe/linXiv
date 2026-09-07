@@ -178,6 +178,19 @@ pub(crate) fn render() -> String {
     out.push_str(&decl::<crate::service::annotation::CreatedAnnotation>());
     out.push_str(&decl::<crate::service::reading_list::ReadingStatusesResponse>());
     out.push_str(&decl::<crate::service::reading_list::ReadingStatusReceipt>());
+    // small-route envelopes: editor / search / versions / feed / orcid / trash
+    out.push_str(&decl::<
+        crate::service::editor_project::EditorProjectsResponse,
+    >());
+    out.push_str(&decl::<crate::service::search_state::SearchHistoryResponse>());
+    out.push_str(&decl::<crate::service::version_monitor::VersionCheckResponse>());
+    out.push_str(&decl::<crate::service::version_monitor::NewVersionsResponse>());
+    out.push_str(&decl::<crate::service::feed::FeedRulesResponse>());
+    out.push_str(&decl::<crate::service::feed::CreatedFeedRule>());
+    out.push_str(&decl::<crate::service::orcid_backfill::OrcidBackfillResponse>());
+    out.push_str(&decl::<crate::service::trash::HardDeletedPaper>());
+    out.push_str(&decl::<crate::service::trash::RestoredProject>());
+    out.push_str(&decl::<crate::service::trash::HardDeletedProject>());
     out
 }
 

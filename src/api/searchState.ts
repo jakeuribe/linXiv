@@ -1,5 +1,5 @@
 import { libraryFetch } from "../stores/backend.ts";
-import type { Clause, SearchResult } from "../types/api";
+import type { Clause, SearchHistoryResponse, SearchResult } from "../types/api";
 
 // Diverged from core's `service::search_state::SavedSearch`: core stores
 // clauses/results/sort_prefs as untyped JSON (`Vec<Value>`/`Map`) and has no
@@ -18,7 +18,7 @@ export interface SearchState {
 
 export async function getSearchHistory(prefix: string, limit = 10): Promise<string[]> {
   const params = new URLSearchParams({ prefix, limit: String(limit) });
-  const data = await libraryFetch<{ suggestions: string[] }>(`/api/search/history?${params}`);
+  const data = await libraryFetch<SearchHistoryResponse>(`/api/search/history?${params}`);
   return data.suggestions;
 }
 

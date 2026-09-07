@@ -21,7 +21,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use linxiv_core::error::CoreError;
 use linxiv_core::service::paper as svc_paper;
@@ -252,7 +252,7 @@ fn stats(state: &AppState) -> Result<Value, ApiError> {
 /// the envelope is the divergence the router must honor).
 fn categories(state: &AppState) -> Result<Value, ApiError> {
     let cats = state.with_conn(|conn| svc_paper::get_categories(conn))?;
-    Ok(json!({ "categories": cats }))
+    to_value(&svc_paper::CategoriesResponse { categories: cats })
 }
 
 // ── path/query helpers ──────────────────────────────────────────────────────
@@ -358,6 +358,7 @@ pub(crate) mod testutil {
 mod tests {
     use super::testutil::state;
     use super::*;
+    use serde_json::json;
 
     async fn get(st: &AppState, path: &str) -> Result<Value, ApiError> {
         route(

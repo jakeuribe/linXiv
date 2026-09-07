@@ -8,13 +8,16 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use linxiv_core::config::UserSettings;
+use linxiv_core::models::OkReceipt;
 use linxiv_core::service::feed as svc_feed;
-use linxiv_core::service::feed::{FilterAction, FilterField};
+use linxiv_core::service::feed::{
+    CreatedFeedRule, FeedResponse, FeedRulesResponse, FilterAction, FilterField,
+};
 
-use crate::route::{ApiError, ReqCtx};
+use crate::route::{to_value, ApiError, ReqCtx};
 use crate::state::AppState;
 
 const CACHE_TTL: Duration = Duration::from_secs(300);
@@ -74,11 +77,11 @@ async fn get_feed(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError>
             return Err(e);
         }
     }
-    Ok(json!({
-        "title": title,
-        "entries": page.entries,
-        "saved_arxiv_ids": page.saved_arxiv_ids,
-    }))
+    to_value(&FeedResponse {
+        title,
+        entries: page.entries,
+        saved_arxiv_ids: page.saved_arxiv_ids,
+    })
 }
 
 /// One fetch-and-persist pass for `url`: prune, fetch, merge into the DB
@@ -111,13 +114,13 @@ fn dismiss(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     }
     let b: Body = ctx.parse_body()?;
     state.with_conn(|conn| svc_feed::dismiss(conn, &b.arxiv_id, b.version, b.permanent))?;
-    Ok(json!({ "ok": true }))
+    to_value(&OkReceipt { ok: true })
 }
 
 /// `GET /api/feed/rules` — list auto-filter rules.
 fn list_rules(state: &AppState) -> Result<Value, ApiError> {
     let rules = state.with_conn(|conn| svc_feed::list_rules(conn))?;
-    Ok(json!({ "rules": rules }))
+    to_value(&FeedRulesResponse { rules })
 }
 
 /// `POST /api/feed/rules` — create an auto-filter rule.
@@ -135,14 +138,14 @@ fn create_rule(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let b: Body = ctx.parse_body()?;
     let rule_id =
         state.with_conn(|conn| svc_feed::create_rule(conn, b.field, &b.keywords, b.action))?;
-    Ok(json!({ "rule_id": rule_id }))
+    to_value(&CreatedFeedRule { rule_id })
 }
 
 /// `DELETE /api/feed/rules/{id}` — remove an auto-filter rule. 404 when unset.
 fn delete_rule(state: &AppState, id: &str) -> Result<Value, ApiError> {
     let rule_id = crate::route::path_i64(id)?;
     state.with_conn(|conn| svc_feed::delete_rule(conn, rule_id))?;
-    Ok(json!({ "ok": true }))
+    to_value(&OkReceipt { ok: true })
 }
 
 #[cfg(test)]

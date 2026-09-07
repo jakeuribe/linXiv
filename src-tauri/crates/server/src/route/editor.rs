@@ -5,13 +5,13 @@
 //! the same `vault_dir()/note_<id>` mapping the binary layer owns.
 
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use linxiv_core::error::CoreError;
-use linxiv_core::service::editor_project;
+use linxiv_core::service::editor_project::{self, EditorProjectsResponse};
 use linxiv_core::service::vault::{self, FsOp};
 
-use crate::route::{path_i64, ApiError, ReqCtx};
+use crate::route::{path_i64, to_value, ApiError, ReqCtx};
 use crate::state::AppState;
 
 pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<Value, ApiError>> {
@@ -28,7 +28,7 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
 fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let project_id = ctx.q_i64("project_id");
     let projects = state.with_conn(|conn| editor_project::list_projects(conn, project_id))?;
-    Ok(json!({ "projects": projects }))
+    to_value(&EditorProjectsResponse { projects })
 }
 
 /// `POST /api/editor/projects` — `api_editor_project_create`. ValueError → 400 is
@@ -98,6 +98,7 @@ mod tests {
     use super::*;
     use crate::route::{route, ApiRequest};
     use linxiv_core::storage;
+    use serde_json::json;
 
     fn state() -> AppState {
         let conn = storage::open_in_memory().unwrap();

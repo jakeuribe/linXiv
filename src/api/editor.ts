@@ -4,7 +4,7 @@
 // so ApiFsResponder (src/lib/editorFsResponder.ts) is a thin wrapper over vaultFsOp.
 
 import { libraryFetch } from "../stores/backend.ts";
-import type { EditorProjectSummary } from "../types/api";
+import type { EditorProjectSummary, EditorProjectsResponse } from "../types/api";
 import type { FsOp, FsResult } from "../lib/editorBridgeTypes";
 import type { DocOpenPayload } from "../lib/editorBridge";
 
@@ -16,7 +16,7 @@ export async function listEditorProjects(
   projectId?: number | null
 ): Promise<EditorProjectSummary[]> {
   const q = projectId != null ? `?project_id=${projectId}` : "";
-  const res = await libraryFetch<{ projects: EditorProjectSummary[] }>(
+  const res = await libraryFetch<EditorProjectsResponse>(
     `/api/editor/projects${q}`
   );
   return res.projects;
