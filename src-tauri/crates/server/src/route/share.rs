@@ -31,7 +31,7 @@ use linxiv_share::{
 };
 
 use crate::p2p_config::{self, RelaySetting};
-use crate::route::{parse_query, path_i64, split_segments, ApiError, ApiRequest, ReqCtx};
+use crate::route::{parse_query, path_i64, split_segments, to_value, ApiError, ApiRequest, ReqCtx};
 use crate::share_sync;
 use crate::state::AppState;
 
@@ -214,6 +214,206 @@ impl From<ShareError> for ApiError {
     }
 }
 
+// ── typed envelopes ──────────────────────────────────────────────────────────
+// Share data has no linxiv-core home (it lives in the quarantined linxiv-share
+// crate), so core's ts_bindings generator cannot render these; the TS twins
+// stay hand-written in src/api/share.ts. Serialize field order IS the wire key
+// order (serde_json preserve_order) — do not reorder fields.
+
+/// One row of `GET /api/share/projects` / `GET /api/share/received`
+/// (`SharedSummary` in src/api/share.ts). The optional tail fields are
+/// annotations: `e2ee` + `member_count` on hosted e2ee shares, `pending` on
+/// placeholder mirrors, `role` from the live query in the role-stamped
+/// received listing.
+#[derive(Debug, Serialize)]
+struct SummaryRow {
+    share_id: String,
+    name: String,
+    paper_count: usize,
+    note_count: usize,
+    tag_count: usize,
+    synced_at: Option<String>,
+    paused: bool,
+    project_fk: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    e2ee: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    member_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pending: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    role: Option<&'static str>,
+}
+
+/// `GET /api/share/projects` envelope.
+#[derive(Debug, Serialize)]
+struct SharedProjectsListing {
+    shared_projects: Vec<SummaryRow>,
+}
+
+/// `GET /api/share/received` envelope (`list_received_with_role` stamps
+/// `role` on the rows first).
+#[derive(Debug, Serialize)]
+struct ReceivedListing {
+    received: Vec<SummaryRow>,
+}
+
+/// `POST /api/share/received/{id}/import` envelope.
+#[derive(Debug, Serialize)]
+struct ImportedReceipt {
+    project_fk: i64,
+}
+
+/// `POST /api/share/{id}/unpublish` envelope (`e2ee` only on e2ee docs).
+#[derive(Debug, Serialize)]
+struct UnpublishedReceipt {
+    unpublished: bool,
+    share_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    e2ee: Option<bool>,
+}
+
+/// `POST /api/share/received/{id}/leave` envelope.
+#[derive(Debug, Serialize)]
+struct LeftReceipt {
+    left: bool,
+    forgotten: bool,
+}
+
+/// `POST /api/share/received/{id}/unlink` envelope.
+#[derive(Debug, Serialize)]
+struct UnlinkedReceipt {
+    unlinked: bool,
+}
+
+/// `GET /api/share/received/{id}` envelope — one mirror's full subgraph.
+/// `papers` rows come from `SharedPaper::to_summary_value` (linxiv-share).
+#[derive(Debug, Serialize)]
+struct ReceivedDetail {
+    share_id: String,
+    name: String,
+    description: String,
+    color: Option<i64>,
+    tags: Vec<String>,
+    papers: Vec<Value>,
+    notes: Vec<ReceivedNote>,
+}
+
+/// One note row in [`ReceivedDetail`] (`id` = the CRDT note uuid).
+#[derive(Debug, Serialize)]
+struct ReceivedNote {
+    id: String,
+    title: String,
+    body: String,
+    created_at: Option<String>,
+    updated_at: Option<String>,
+}
+
+/// `POST /api/share/project/{id}/publish` and `/publish_secure` envelope
+/// (`e2ee` only on the secure arm).
+#[derive(Debug, Serialize)]
+struct PublishedReceipt {
+    share_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    e2ee: Option<bool>,
+}
+
+/// `POST /api/share/project/{id}/ticket` envelope.
+#[derive(Debug, Serialize)]
+struct TicketMinted {
+    ticket: String,
+    share_id: String,
+}
+
+/// `POST /api/share/join` envelope — the joined mirror's counts (`e2ee` only
+/// via the invite fall-through).
+#[derive(Debug, Serialize)]
+struct JoinedSummary {
+    share_id: String,
+    name: String,
+    paper_count: usize,
+    note_count: usize,
+    tag_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    e2ee: Option<bool>,
+}
+
+/// `POST /api/share/join` envelope when an e2ee invite adopted with no
+/// content yet (host unreachable, or no key for our epoch).
+#[derive(Debug, Serialize)]
+struct JoinPending {
+    share_id: String,
+    e2ee: bool,
+    pending: bool,
+    reason: &'static str,
+}
+
+/// `GET /api/share/member_code` envelope.
+#[derive(Debug, Serialize)]
+struct MemberCode {
+    code: String,
+}
+
+/// `POST /api/share/{id}/invite` envelope.
+#[derive(Debug, Serialize)]
+struct InviteMinted {
+    invite: String,
+}
+
+/// `GET /api/share/{id}/members` envelope.
+#[derive(Debug, Serialize)]
+struct MembersListing {
+    members: Vec<MemberRow>,
+}
+
+/// One member in [`MembersListing`] (`ShareMember` in src/api/share.ts).
+#[derive(Debug, Serialize)]
+struct MemberRow {
+    member_id: String,
+    name: Option<String>,
+    role: String,
+    invited_at: String,
+    revoked: bool,
+    verified: bool,
+    /// Re-sendable while the grant stands; `None` once revoked.
+    invite: Option<String>,
+}
+
+/// `POST /api/share/{id}/member/{mid}/role` envelope.
+#[derive(Debug, Serialize)]
+struct RoleChanged {
+    member_id: String,
+    role: String,
+}
+
+/// `POST /api/share/{id}/revoke` envelope.
+#[derive(Debug, Serialize)]
+struct RevokedReceipt {
+    revoked: bool,
+}
+
+/// `POST /api/share/{id}/rekey` envelope.
+#[derive(Debug, Serialize)]
+struct RekeyedReceipt {
+    rekeyed: bool,
+    members: usize,
+}
+
+/// `POST /api/share/{id}/member/{mid}/remove` envelope.
+#[derive(Debug, Serialize)]
+struct RemovedReceipt {
+    removed: bool,
+    member_id: String,
+}
+
+/// `POST /api/share/{id}/pdf` envelope — where the decrypted PDF was saved.
+#[derive(Debug, Serialize)]
+struct SharedPdfSaved {
+    source_id: String,
+    version: i64,
+    path: String,
+}
+
 /// Tauri-free `/api/share/*` dispatcher: the app's `share_api` command and the
 /// headless bin both route through here. `spawn_sync` starts the background
 /// interval-sync loop when the relay-reconnect arm brings the first node up —
@@ -252,7 +452,7 @@ pub async fn dispatch(
             }
             let _lock = share.lock_writes(id).await;
             return share_sync::import_received(state, share.share_dir(), id)
-                .map(|fk| json!({ "project_fk": fk }));
+                .and_then(|fk| to_value(&ImportedReceipt { project_fk: fk }));
         }
         ("POST", ["api", "share", "received", id, "leave"]) => return leave(share, id).await,
         ("POST", ["api", "share", "received", id, "unlink"]) => {
@@ -317,23 +517,33 @@ pub(crate) fn handle(
 }
 
 /// Doc-file mtime = the last local save/fetch of the CRDT doc, as ISO 8601.
-fn synced_at(doc: &Path) -> Value {
-    match std::fs::metadata(doc).and_then(|m| m.modified()) {
-        Ok(t) => json!(chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339()),
-        Err(_) => Value::Null,
-    }
+fn synced_at(doc: &Path) -> Option<String> {
+    std::fs::metadata(doc)
+        .and_then(|m| m.modified())
+        .ok()
+        .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339())
 }
 
-fn summary_json(s: &linxiv_share::SharedSummary, doc: &Path, share_dir: &Path) -> Value {
-    json!({
-        "share_id": s.share_id,
-        "name": s.name,
-        "paper_count": s.paper_count,
-        "note_count": s.note_count,
-        "tag_count": s.tag_count,
-        "synced_at": synced_at(doc),
-        "paused": share_sync::load_settings(share_dir, &s.share_id).paused,
-    })
+fn summary_row(
+    s: &linxiv_share::SharedSummary,
+    doc: &Path,
+    share_dir: &Path,
+    project_fk: Option<i64>,
+) -> SummaryRow {
+    SummaryRow {
+        share_id: s.share_id.clone(),
+        name: s.name.clone(),
+        paper_count: s.paper_count,
+        note_count: s.note_count,
+        tag_count: s.tag_count,
+        synced_at: synced_at(doc),
+        paused: share_sync::load_settings(share_dir, &s.share_id).paused,
+        project_fk,
+        e2ee: None,
+        member_count: None,
+        pending: None,
+        role: None,
+    }
 }
 
 /// `GET /api/share/projects` — summaries of every published shared project.
@@ -342,73 +552,73 @@ pub fn list_shared(state: &AppState, share: &ShareState) -> Result<Value, ApiErr
     let dir = share.store.share_dir();
     let mut out = Vec::new();
     for s in share.store.list_shared()? {
-        let mut v = summary_json(&s, &doc_path(dir, &s.share_id), dir);
         let fk = state.with_conn(|c| project_svc::find_by_share_id(c, &s.share_id))?;
-        v["project_fk"] = json!(fk);
-        out.push(v);
+        out.push(summary_row(&s, &doc_path(dir, &s.share_id), dir, fk));
     }
     for s in ShareNode::list_e2ee(dir)? {
-        let mut v = summary_json(&s, &doc_path(&e2ee_dir(dir), &s.share_id), dir);
         let fk = state.with_conn(|c| project_svc::find_by_share_id(c, &s.share_id))?;
-        v["project_fk"] = json!(fk);
-        v["e2ee"] = json!(true);
-        v["member_count"] = json!(live_member_count(dir, &s.share_id));
-        out.push(v);
+        let mut row = summary_row(&s, &doc_path(&e2ee_dir(dir), &s.share_id), dir, fk);
+        row.e2ee = Some(true);
+        row.member_count = Some(live_member_count(dir, &s.share_id));
+        out.push(row);
     }
-    Ok(json!({ "shared_projects": out }))
+    to_value(&SharedProjectsListing {
+        shared_projects: out,
+    })
 }
 
-/// `GET /api/share/received` — summaries of every mirror materialized by `join`,
-/// each carrying the `project_fk` of the linked local project (null pre-import).
-/// `pub` so the headless bin's status aggregate reuses it (no role queries).
-pub fn list_received(state: &AppState, share: &ShareState) -> Result<Value, ApiError> {
+/// The `received` rows: every mirror materialized by `join`, each carrying the
+/// `project_fk` of the linked local project (null pre-import), plus the
+/// pending placeholders.
+fn received_rows(state: &AppState, share: &ShareState) -> Result<Vec<SummaryRow>, ApiError> {
     let dir = share.store.share_dir();
     let rec = received_dir(dir);
     let mut out = Vec::new();
     for s in linxiv_share::ShareNode::list_received(dir)? {
-        let mut v = summary_json(&s, &doc_path(&rec, &s.share_id), dir);
         let fk = state.with_conn(|c| project_svc::find_by_share_id(c, &s.share_id))?;
-        v["project_fk"] = json!(fk);
-        out.push(v);
+        out.push(summary_row(&s, &doc_path(&rec, &s.share_id), dir, fk));
     }
     for s in ShareNode::list_e2ee_received(dir)? {
-        let mut v = summary_json(&s, &doc_path(&e2ee_received_dir(dir), &s.share_id), dir);
         let fk = state.with_conn(|c| project_svc::find_by_share_id(c, &s.share_id))?;
-        v["project_fk"] = json!(fk);
-        v["e2ee"] = json!(true);
-        out.push(v);
+        let mut row = summary_row(&s, &doc_path(&e2ee_received_dir(dir), &s.share_id), dir, fk);
+        row.e2ee = Some(true);
+        out.push(row);
     }
-    out.extend(pending_received(dir, &out));
-    Ok(json!({ "received": out }))
+    let pending = pending_received(dir, &out);
+    out.extend(pending);
+    Ok(out)
+}
+
+/// `GET /api/share/received` — summaries of every mirror materialized by `join`.
+/// `pub` so the headless bin's status aggregate reuses it (no role queries).
+pub fn list_received(state: &AppState, share: &ShareState) -> Result<Value, ApiError> {
+    to_value(&ReceivedListing {
+        received: received_rows(state, share)?,
+    })
 }
 
 /// Mirrors under `e2ee/received` whose doc holds no content yet: `accept_invite`
 /// writes an empty placeholder when the host is unreachable, and an empty doc
 /// never hydrates, so the listing above drops it and the join vanishes from the
 /// UI. Surfaced as `pending` so a user can retry the sync (or leave) by hand.
-fn pending_received(dir: &Path, listed: &[Value]) -> Vec<Value> {
-    let synced: Vec<&str> = listed
-        .iter()
-        .filter_map(|v| v["share_id"].as_str())
-        .collect();
+fn pending_received(dir: &Path, listed: &[SummaryRow]) -> Vec<SummaryRow> {
     share_sync::doc_ids(&e2ee_received_dir(dir))
         .into_iter()
-        .filter(|id| !synced.contains(&id.as_str()))
-        .map(|id| {
-            let paused = share_sync::load_settings(dir, &id).paused;
-            json!({
-                "share_id": id,
-                "name": "",
-                "paper_count": 0,
-                "note_count": 0,
-                "tag_count": 0,
-                // The placeholder's mtime is the join, not a sync — report none.
-                "synced_at": Value::Null,
-                "paused": paused,
-                "project_fk": Value::Null,
-                "e2ee": true,
-                "pending": true,
-            })
+        .filter(|id| !listed.iter().any(|r| r.share_id == *id))
+        .map(|id| SummaryRow {
+            paused: share_sync::load_settings(dir, &id).paused,
+            share_id: id,
+            name: String::new(),
+            paper_count: 0,
+            note_count: 0,
+            tag_count: 0,
+            // The placeholder's mtime is the join, not a sync — report none.
+            synced_at: None,
+            project_fk: None,
+            e2ee: Some(true),
+            member_count: None,
+            pending: Some(true),
+            role: None,
         })
         .collect()
 }
@@ -419,44 +629,40 @@ fn pending_received(dir: &Path, listed: &[Value]) -> Vec<Value> {
 /// mirrors — the GUI treats an unknown role as editable (no regression);
 /// enforcement is server+crypto, this field is UX only.
 async fn list_received_with_role(state: &AppState, share: &ShareState) -> Result<Value, ApiError> {
-    let mut v = list_received(state, share)?;
-    let Some(node) = share.node().await else {
-        return Ok(v);
-    };
-    let Ok(me) = node.self_member_id() else {
-        return Ok(v);
-    };
-    let Some(list) = v.get_mut("received").and_then(Value::as_array_mut) else {
-        return Ok(v);
-    };
-    // Pending mirrors are skipped: there is no content for a role to gate, and
-    // one unanswered query per pending share would stall the whole listing.
-    let targets: Vec<(usize, String)> = list
-        .iter()
-        .enumerate()
-        .filter(|(_, e)| e["e2ee"] == json!(true) && e["pending"] != json!(true))
-        .filter_map(|(i, e)| e["share_id"].as_str().map(|s| (i, s.to_string())))
-        .collect();
-    // Queries run concurrently: each keeps its own timeout budget, but a slow
-    // relay no longer stalls the listing by (entries × budget).
-    let roles = futures_util::future::join_all(
-        targets
-            .iter()
-            .map(|(_, sid)| e2ee_timeout(node.query_role(sid, me), "role query")),
-    )
-    .await;
-    for ((i, _), res) in targets.iter().zip(roles) {
-        // A failed or empty query leaves `role` unset (degrades editable).
-        if let Ok(Some(role)) = res {
-            list[*i]["role"] = match role {
-                Role::Read => json!("viewer"),
-                Role::Edit => json!("editor"),
-                Role::Admin => json!("hoster"),
-                Role::Relay => continue,
-            };
+    let mut rows = received_rows(state, share)?;
+    if let Some(node) = share.node().await {
+        if let Ok(me) = node.self_member_id() {
+            // Pending mirrors are skipped: there is no content for a role to
+            // gate, and one unanswered query per pending share would stall the
+            // whole listing.
+            let targets: Vec<usize> = rows
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| r.e2ee == Some(true) && r.pending != Some(true))
+                .map(|(i, _)| i)
+                .collect();
+            // Queries run concurrently: each keeps its own timeout budget, but
+            // a slow relay no longer stalls the listing by (entries × budget).
+            let roles = futures_util::future::join_all(
+                targets
+                    .iter()
+                    .map(|&i| e2ee_timeout(node.query_role(&rows[i].share_id, me), "role query")),
+            )
+            .await;
+            for (&i, res) in targets.iter().zip(roles) {
+                // A failed or empty query leaves `role` unset (degrades editable).
+                if let Ok(Some(role)) = res {
+                    rows[i].role = match role {
+                        Role::Read => Some("viewer"),
+                        Role::Edit => Some("editor"),
+                        Role::Admin => Some("hoster"),
+                        Role::Relay => continue,
+                    };
+                }
+            }
         }
     }
-    Ok(v)
+    to_value(&ReceivedListing { received: rows })
 }
 
 /// A doc file for `id` in any role (plain/e2ee, hosted/received).
@@ -610,7 +816,11 @@ async fn unpublish(share: &ShareState, id: &str) -> Result<Value, ApiError> {
         std::fs::rename(&doc, unpublished_path(&doc))
             .map_err(|e| ApiError::new(500, format!("could not unpublish: {e}")))?;
         let _ = std::fs::remove_file(share_sync::settings_path(dir, id));
-        return Ok(json!({ "unpublished": true, "share_id": id }));
+        return to_value(&UnpublishedReceipt {
+            unpublished: true,
+            share_id: id.into(),
+            e2ee: None,
+        });
     }
     let e2ee_doc = doc_path(&e2ee_dir(dir), id);
     if !e2ee_doc.is_file() {
@@ -655,7 +865,11 @@ async fn unpublish(share: &ShareState, id: &str) -> Result<Value, ApiError> {
         .map_err(|e| ApiError::new(500, format!("could not unpublish: {e}")))?;
     let _ = std::fs::remove_file(share_sync::settings_path(dir, id));
     let _ = std::fs::remove_file(members_path(dir, id));
-    Ok(json!({ "unpublished": true, "share_id": id, "e2ee": true }))
+    to_value(&UnpublishedReceipt {
+        unpublished: true,
+        share_id: id.into(),
+        e2ee: Some(true),
+    })
 }
 
 /// `POST /api/share/received/{id}/leave` — delete the mirror + ticket +
@@ -696,7 +910,10 @@ async fn leave(share: &ShareState, id: &str) -> Result<Value, ApiError> {
         .map_err(|e| ApiError::new(500, format!("could not leave share: {e}")))?;
     let _ = std::fs::remove_file(share_sync::ticket_path(dir, id));
     let _ = std::fs::remove_file(share_sync::settings_path(dir, id));
-    Ok(json!({ "left": true, "forgotten": forgotten }))
+    to_value(&LeftReceipt {
+        left: true,
+        forgotten,
+    })
 }
 
 /// `POST /api/share/received/{id}/unlink` — detach the linked local project
@@ -720,7 +937,7 @@ async fn unlink(state: &AppState, share: &ShareState, id: &str) -> Result<Value,
     }
     let _lock = share.lock_writes(id).await;
     let unlinked = state.with_conn(|c| project_svc::release_share_id(c, id))?;
-    Ok(json!({ "unlinked": unlinked }))
+    to_value(&UnlinkedReceipt { unlinked })
 }
 
 /// `GET /api/share/received/{id}` — the full subgraph of one received mirror
@@ -731,21 +948,25 @@ fn get_received(share: &ShareState, id: &str) -> Result<Value, ApiError> {
         Err(ShareError::NotFound(_)) => linxiv_share::ShareNode::e2ee_received(dir, id)?,
         other => other?,
     };
-    Ok(json!({
-        "share_id": sp.share_id,
-        "name": sp.name,
-        "description": sp.description,
-        "color": sp.color,
-        "tags": sp.tags,
-        "papers": sp.papers.iter().map(|p| p.to_summary_value()).collect::<Vec<_>>(),
-        "notes": sp.notes.iter().map(|n| json!({
-            "id": n.uuid,
-            "title": n.title,
-            "body": n.body,
-            "created_at": n.created_at,
-            "updated_at": n.updated_at,
-        })).collect::<Vec<_>>(),
-    }))
+    to_value(&ReceivedDetail {
+        share_id: sp.share_id,
+        name: sp.name,
+        description: sp.description,
+        color: sp.color,
+        tags: sp.tags,
+        papers: sp.papers.iter().map(|p| p.to_summary_value()).collect(),
+        notes: sp
+            .notes
+            .into_iter()
+            .map(|n| ReceivedNote {
+                id: n.uuid,
+                title: n.title,
+                body: n.body,
+                created_at: n.created_at,
+                updated_at: n.updated_at,
+            })
+            .collect(),
+    })
 }
 
 /// `POST /api/share/project/{id}/publish` — snapshot a canonical project into the
@@ -755,7 +976,10 @@ async fn publish(state: &AppState, share: &ShareState, id: &str) -> Result<Value
     if let Some(node) = share.node().await {
         node.register_doc(&sp.share_id, doc)?;
     }
-    Ok(json!({ "share_id": sp.share_id }))
+    to_value(&PublishedReceipt {
+        share_id: sp.share_id,
+        e2ee: None,
+    })
 }
 
 /// Snapshot the project, refuse ids owned by a received or e2ee share, and save
@@ -811,7 +1035,10 @@ async fn ticket(state: &AppState, share: &ShareState, id: &str) -> Result<Value,
     let ticket = tokio::time::timeout(SHARE_NET_TIMEOUT, node.ticket(&sp.share_id))
         .await
         .map_err(|_| ApiError::new(504, "share ticket timed out"))??;
-    Ok(json!({ "ticket": ticket.to_string(), "share_id": sp.share_id }))
+    to_value(&TicketMinted {
+        ticket: ticket.to_string(),
+        share_id: sp.share_id,
+    })
 }
 
 /// `POST /api/share/join` — dial the ticket's sender, fetch the CRDT doc, and
@@ -845,13 +1072,14 @@ async fn join(share: &ShareState, body: Option<&Value>) -> Result<Value, ApiErro
     if let Err(e) = std::fs::write(&tmp, raw).and_then(|_| std::fs::rename(&tmp, &tpath)) {
         eprintln!("share join: could not persist ticket sidecar: {e}");
     }
-    Ok(json!({
-        "share_id": sp.share_id,
-        "name": sp.name,
-        "paper_count": sp.papers.len(),
-        "note_count": sp.notes.len(),
-        "tag_count": sp.tags.len(),
-    }))
+    to_value(&JoinedSummary {
+        share_id: sp.share_id,
+        name: sp.name,
+        paper_count: sp.papers.len(),
+        note_count: sp.notes.len(),
+        tag_count: sp.tags.len(),
+        e2ee: None,
+    })
 }
 
 /// `join` fall-through for e2ee invites: accept the invite (adopts + one sync +
@@ -890,12 +1118,12 @@ async fn join_invite(
     // this is a success with nothing to summarize yet — no mirror to hydrate
     // (it is an empty placeholder) and no counts to report.
     if accepted.pending {
-        return Ok(json!({
-            "share_id": accepted.share_id,
-            "e2ee": true,
-            "pending": true,
-            "reason": "host unreachable; the invite is saved and will finish syncing when the host is online",
-        }));
+        return to_value(&JoinPending {
+            share_id: accepted.share_id,
+            e2ee: true,
+            pending: true,
+            reason: "host unreachable; the invite is saved and will finish syncing when the host is online",
+        });
     }
     let share_id = accepted.share_id;
     let sp = match ShareNode::e2ee_received(share.share_dir(), &share_id) {
@@ -903,23 +1131,23 @@ async fn join_invite(
         // Dialled the host, but nothing decrypted into the mirror yet (no key
         // for our epoch). Same shape as the asleep-host case: adopted, pending.
         Err(ShareError::NotFound(_)) => {
-            return Ok(json!({
-                "share_id": share_id,
-                "e2ee": true,
-                "pending": true,
-                "reason": "joined, but no content has decrypted yet; it will finish syncing shortly",
-            }))
+            return to_value(&JoinPending {
+                share_id,
+                e2ee: true,
+                pending: true,
+                reason: "joined, but no content has decrypted yet; it will finish syncing shortly",
+            })
         }
         Err(e) => return Err(e.into()),
     };
-    Ok(json!({
-        "share_id": sp.share_id,
-        "name": sp.name,
-        "paper_count": sp.papers.len(),
-        "note_count": sp.notes.len(),
-        "tag_count": sp.tags.len(),
-        "e2ee": true,
-    }))
+    to_value(&JoinedSummary {
+        share_id: sp.share_id,
+        name: sp.name,
+        paper_count: sp.papers.len(),
+        note_count: sp.notes.len(),
+        tag_count: sp.tags.len(),
+        e2ee: Some(true),
+    })
 }
 
 /// Map a `fetch` failure to a status: a refused/unknown capability is a 404 (the
@@ -951,7 +1179,7 @@ async fn e2ee_timeout<T>(
 async fn member_code(share: &ShareState) -> Result<Value, ApiError> {
     let node = live_node(share).await?;
     let code = e2ee_timeout(node.member_code(), "member code").await?;
-    Ok(json!({ "code": code }))
+    to_value(&MemberCode { code })
 }
 
 /// `POST /api/share/relay/reconnect` — rebind the p2p node against whatever
@@ -1050,7 +1278,10 @@ async fn publish_secure(state: &AppState, share: &ShareState, id: &str) -> Resul
             );
         }
     }
-    Ok(json!({ "share_id": sp.share_id, "e2ee": true }))
+    to_value(&PublishedReceipt {
+        share_id: sp.share_id,
+        e2ee: Some(true),
+    })
 }
 
 /// `POST /api/share/{id}/invite {member_code, role: "editor"|"viewer", name?}`
@@ -1133,7 +1364,7 @@ async fn invite(
             format!("could not persist members sidecar: {e}"),
         ));
     }
-    Ok(json!({ "invite": invite }))
+    to_value(&InviteMinted { invite })
 }
 
 /// `GET /api/share/{id}/members` — the sidecar list, with a live `query_role`
@@ -1173,18 +1404,17 @@ async fn members(share: &ShareState, id: &str) -> Result<Value, ApiError> {
             revoked = revoked_now;
             verified = true;
         }
-        out.push(json!({
-            "member_id": m.member_id_hex,
-            "name": m.name,
-            "role": m.role,
-            "invited_at": m.invited_at,
-            "revoked": revoked,
-            "verified": verified,
-            // Re-sendable while the grant stands; dropped once revoked.
-            "invite": if revoked { Value::Null } else { json!(m.invite) },
-        }));
+        out.push(MemberRow {
+            member_id: m.member_id_hex,
+            name: m.name,
+            role: m.role,
+            invited_at: m.invited_at,
+            revoked,
+            verified,
+            invite: if revoked { None } else { m.invite },
+        });
     }
-    Ok(json!({ "members": out }))
+    to_value(&MembersListing { members: out })
 }
 
 /// `POST /api/share/{id}/member/{mid}/role {role: "editor"|"viewer"}` — change
@@ -1262,7 +1492,10 @@ async fn set_member_role(
     if let Err(e) = save_members(&dir, id, &list) {
         eprintln!("share {id}: could not persist members sidecar: {e}");
     }
-    Ok(json!({ "member_id": canon_hex, "role": role_s }))
+    to_value(&RoleChanged {
+        member_id: canon_hex,
+        role: role_s.into(),
+    })
 }
 
 /// `POST /api/share/{id}/revoke {member_id}` — revoke a member (the project key
@@ -1300,7 +1533,7 @@ async fn revoke_member(
     if let Err(e) = save_members(&dir, id, &list) {
         eprintln!("share {id}: could not persist members sidecar: {e}");
     }
-    Ok(json!({ "revoked": true }))
+    to_value(&RevokedReceipt { revoked: true })
 }
 
 /// `POST /api/share/{id}/rekey` — re-encrypt a hosted e2ee share's history
@@ -1331,7 +1564,10 @@ async fn rekey(state: &AppState, share: &ShareState, id: &str) -> Result<Value, 
         sp.papers.len(),
         live_member_count(&dir, id),
     );
-    Ok(json!({ "rekeyed": true, "members": live_member_count(&dir, id) }))
+    to_value(&RekeyedReceipt {
+        rekeyed: true,
+        members: live_member_count(&dir, id),
+    })
 }
 
 /// `POST /api/share/{id}/member/{mid}/remove` — revoke, then drop the sidecar
@@ -1365,7 +1601,10 @@ async fn remove_member(share: &ShareState, id: &str, mid: &str) -> Result<Value,
     list.retain(|m| m.member_id_hex != canon_hex);
     save_members(&dir, id, &list)
         .map_err(|e| ApiError::new(500, format!("could not persist members sidecar: {e}")))?;
-    Ok(json!({ "removed": true, "member_id": canon_hex }))
+    to_value(&RemovedReceipt {
+        removed: true,
+        member_id: canon_hex,
+    })
 }
 
 /// `POST /api/share/{id}/pdf {source_id}` — fetch + decrypt a received e2ee
@@ -1418,7 +1657,11 @@ async fn shared_pdf(
         let path = dest.to_string_lossy().into_owned();
         // Re-registers a file left by a crash between rename and mark.
         state.with_conn(|c| paper_svc::mark_pdf_saved(c, &source_id, &path, version))?;
-        return Ok(json!({ "source_id": source_id, "version": version, "path": path }));
+        return to_value(&SharedPdfSaved {
+            source_id,
+            version,
+            path,
+        });
     }
     let node = live_node(share).await?;
     // Remaining pdf quota caps the transport fetch (413 past it).
@@ -1452,7 +1695,11 @@ async fn shared_pdf(
         }
         return Err(ApiError::new(500, e.to_string()));
     }
-    Ok(json!({ "source_id": source_id, "version": version, "path": path }))
+    to_value(&SharedPdfSaved {
+        source_id,
+        version,
+        path,
+    })
 }
 
 #[cfg(test)]
@@ -1534,6 +1781,48 @@ mod tests {
             body,
         };
         handle(state, share, &ctx).expect("share arm matched")
+    }
+
+    /// Wire-shape pin: SummaryRow's optional tail keys must appear in the
+    /// legacy insertion order and vanish (not null out) when unset.
+    #[test]
+    fn summary_row_wire_shape() {
+        let hosted = SummaryRow {
+            share_id: "s-1".into(),
+            name: "P".into(),
+            paper_count: 2,
+            note_count: 1,
+            tag_count: 3,
+            synced_at: None,
+            paused: false,
+            project_fk: Some(7),
+            e2ee: Some(true),
+            member_count: Some(1),
+            pending: None,
+            role: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&hosted).unwrap(),
+            r#"{"share_id":"s-1","name":"P","paper_count":2,"note_count":1,"tag_count":3,"synced_at":null,"paused":false,"project_fk":7,"e2ee":true,"member_count":1}"#
+        );
+        let pending = SummaryRow {
+            share_id: "s-2".into(),
+            name: String::new(),
+            paper_count: 0,
+            note_count: 0,
+            tag_count: 0,
+            synced_at: None,
+            paused: true,
+            project_fk: None,
+            e2ee: Some(true),
+            member_count: None,
+            pending: Some(true),
+            role: Some("viewer"),
+        };
+        assert_eq!(
+            serde_json::to_string(&pending).unwrap(),
+            r#"{"share_id":"s-2","name":"","paper_count":0,"note_count":0,"tag_count":0,"synced_at":null,"paused":true,"project_fk":null,"e2ee":true,"pending":true,"role":"viewer"}"#
+        );
     }
 
     #[tokio::test]
