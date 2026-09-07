@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use linxiv_core::config;
 use linxiv_core::error::CoreError;
@@ -94,7 +94,7 @@ fn attach_pdf(state: &AppState, source_id: &str, ctx: &ReqCtx<'_>) -> Result<Val
             linxiv_core::service::files::remove_pdf_counted(&dest);
             return Err(ApiError::new(500, e.to_string()));
         }
-        Ok(json!({ "ok": true }))
+        crate::route::to_value(&linxiv_core::models::OkReceipt { ok: true })
     })
 }
 
@@ -148,7 +148,7 @@ async fn import_pdf(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
             resolved,
         )
     })?;
-    Ok(json!({ "source_id": result.source_id, "title": result.title }))
+    crate::route::to_value(&result)
 }
 
 /// `POST /api/papers/import/bibtex` — `api_import_bibtex`. `service::paper_import`
@@ -177,14 +177,7 @@ fn import_preview(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let res = export_import::preview_import(&tmp);
     std::fs::remove_file(&tmp).ok();
     let p = res.map_err(|e| ApiError::new(400, e.to_string()))?;
-    Ok(json!({
-        "project_name": p.project_name,
-        "description": p.description,
-        "paper_count": p.paper_count,
-        "note_count": p.note_count,
-        "has_pdfs": p.has_pdfs,
-        "format_version": p.format_version,
-    }))
+    crate::route::to_value(&export_import::ImportPreviewResponse::from(p))
 }
 
 /// `POST /api/projects/import/commit` — `api_import_commit`. `on_conflict` defaults
@@ -217,7 +210,9 @@ fn import_commit(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> 
         CoreError::ProjectImport(m) => ApiError::new(422, m),
         other => ApiError::new(400, other.to_string()),
     })?;
-    Ok(json!({ "project_id": project_fk }))
+    crate::route::to_value(&export_import::ImportedProject {
+        project_id: project_fk,
+    })
 }
 
 /// Spill upload bytes to a temp `.lxproj`. Created O_EXCL (`create_new`) so a
@@ -264,6 +259,7 @@ mod tests {
     use crate::route::{route, ApiRequest};
     use linxiv_core::models::PaperMetadata;
     use linxiv_core::storage;
+    use serde_json::json;
 
     fn state() -> AppState {
         let conn = storage::open_in_memory().unwrap();

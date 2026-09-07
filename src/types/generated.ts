@@ -503,3 +503,71 @@ export type MergeCandidates = {
    */
   name_candidates: Array<BasicAuthorDetails>,
 };
+
+export type PapersListing = {
+  papers: Array<PaperDetails>,
+};
+
+export type PaperVersionMeta = {
+  version: number,
+  published: string | null,
+  updated: string | null,
+  has_pdf: boolean,
+};
+
+export type PaperVersionsResponse = {
+  source_id: string,
+  latest_version: number,
+  versions: Array<PaperVersionMeta>,
+};
+
+export type DoiCandidates = {
+  candidates: Array<DoiVersionCandidate>,
+};
+
+export type FullTextPending = {
+  pending: number,
+};
+
+export type SavedSourceIds = {
+  saved_source_ids: Array<string>,
+};
+
+export type DeletedPaperReceipt = {
+  deleted: string,
+};
+
+export type RemovedFromProjects = {
+  ok: boolean,
+  removed_from_projects: Array<number>,
+};
+
+export type OkReceipt = {
+  ok: boolean,
+};
+
+export type PaperImportResult = {
+  source_id: string,
+  title: string,
+};
+
+export type ImportPreviewResponse = {
+  project_name: string,
+  description: string,
+  paper_count: number,
+  note_count: number,
+  has_pdfs: boolean,
+  format_version: number,
+};
+
+export type ImportedProject = {
+  project_id: number,
+};
+
+export type SavedPdfListing = {
+  pdfs: Array<SavedPdf>,
+};
+
+export type DeletedPdf = {
+  deleted: boolean,
+};

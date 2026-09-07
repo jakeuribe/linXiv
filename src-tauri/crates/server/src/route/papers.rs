@@ -7,7 +7,7 @@
 //! `POST {source_id}/full-text` is the one 4-segment arm this group owns.
 
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use linxiv_core::config;
 use linxiv_core::error::CoreError;
@@ -68,30 +68,14 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let papers = state.with_conn(|conn| {
         svc_paper::list_papers_sorted(conn, true, Some(limit), offset, None, project, sort, desc)
     })?;
-    Ok(json!({ "papers": papers }))
+    to_value(&svc_paper::PapersListing { papers })
 }
 
 /// `GET /api/papers/sfk/{fk}/versions` — `api_get_paper_versions`.
 fn versions(state: &AppState, fk: &str) -> Result<Value, ApiError> {
     let source_fk = path_i64(fk)?;
-    let all = state.with_conn(|conn| svc_paper::list_version_meta(conn, &sfk_key(source_fk)))?;
-    let (source_id, rows) = all.ok_or(CoreError::PaperNotFound(source_fk.to_string()))?;
-    let versions: Vec<Value> = rows
-        .iter()
-        .map(|v| {
-            json!({
-                "version": v.version,
-                "published": v.published, // Option<NaiveDate> -> ISO string or null
-                "updated": v.updated,
-                "has_pdf": v.has_pdf,
-            })
-        })
-        .collect();
-    Ok(json!({
-        "source_id": source_id,
-        "latest_version": rows.last().expect("non-empty").version,
-        "versions": versions,
-    }))
+    let listing = state.with_conn(|conn| svc_paper::version_listing(conn, &sfk_key(source_fk)))?;
+    to_value(&listing.ok_or(CoreError::PaperNotFound(source_fk.to_string()))?)
 }
 
 /// `GET /api/papers/sfk/{fk}/doi-candidates` — other paper roots sharing this
@@ -104,7 +88,7 @@ fn doi_candidates(state: &AppState, fk: &str) -> Result<Value, ApiError> {
         }
         Ok(svc_paper::find_doi_version_candidates(conn, source_fk)?)
     })?;
-    Ok(json!({ "candidates": candidates }))
+    to_value(&svc_paper::DoiCandidates { candidates })
 }
 
 /// `GET /api/papers/sfk/{fk}?version=` — `api_get_paper_by_sfk`. Bare `to_dict()`.
@@ -143,7 +127,7 @@ fn search(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     }
     let limit = ctx.q_i64("limit").unwrap_or(50).clamp(1, 100);
     let papers = state.with_conn(|conn| svc_paper::search_library(conn, &q, limit))?;
-    Ok(json!({ "papers": papers }))
+    to_value(&svc_paper::PapersListing { papers })
 }
 
 /// `POST /api/papers/{source_id}/full-text?force=` — the write half of `search`
@@ -174,7 +158,7 @@ async fn fetch_full_text(
 /// TeX source yet, i.e. how much work `full_text_worker` still has.
 fn full_text_pending(state: &AppState) -> Result<Value, ApiError> {
     let pending = state.with_conn(|conn| svc_paper::full_text_backfill_count(conn))?;
-    Ok(json!({ "pending": pending }))
+    to_value(&svc_paper::FullTextPending { pending })
 }
 
 /// Download + extract + store one paper's TeX (`service::paper`'s two-phase
@@ -199,7 +183,9 @@ fn saved(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     }
     let b: Body = ctx.parse_body()?;
     let ids = state.with_conn(|conn| svc_paper::existing_source_ids(conn, &b.source_ids))?;
-    Ok(json!({ "saved_source_ids": ids }))
+    to_value(&svc_paper::SavedSourceIds {
+        saved_source_ids: ids,
+    })
 }
 
 /// `GET /api/papers/{source_id}` — `api_get_paper`. Bare `to_dict()`.
@@ -218,7 +204,9 @@ fn delete(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
         svc_paper::delete(conn, &sid_key(source_id))?;
         Ok(())
     })?;
-    Ok(json!({ "deleted": source_id }))
+    to_value(&svc_paper::DeletedPaperReceipt {
+        deleted: source_id.to_string(),
+    })
 }
 
 /// `PUT /api/papers/sfk/{fk}` — `api_repair_paper`. Rebuilds metadata from the
@@ -272,7 +260,10 @@ fn remove_from_projects(state: &AppState, fk: &str) -> Result<Value, ApiError> {
     let source_fk = path_i64(fk)?;
     let removed =
         state.with_conn(|conn| svc_project::remove_paper_from_all_projects(conn, source_fk))?;
-    Ok(json!({ "ok": true, "removed_from_projects": removed }))
+    to_value(&svc_project::RemovedFromProjects {
+        ok: true,
+        removed_from_projects: removed,
+    })
 }
 
 fn sfk_key(source_fk: i64) -> PaperRef {
@@ -291,6 +282,7 @@ mod tests {
     use crate::route::{route, ApiRequest};
     use linxiv_core::models::PaperMetadata;
     use linxiv_core::storage;
+    use serde_json::json;
 
     fn state() -> AppState {
         let conn = storage::open_in_memory().unwrap();

@@ -143,6 +143,21 @@ pub(crate) fn render() -> String {
     out.push_str(&decl::<crate::service::editor_project::EditorProjectSummary>());
     out.push_str(&decl::<crate::service::files::SavedPdf>());
     out.push_str(&decl::<crate::service::author::MergeCandidates>());
+    // papers / uploads / pdfs route group
+    out.push_str(&decl::<crate::service::paper::PapersListing>());
+    out.push_str(&decl::<crate::storage::queries::paper::PaperVersionMeta>());
+    out.push_str(&decl::<crate::service::paper::PaperVersionsResponse>());
+    out.push_str(&decl::<crate::service::paper::DoiCandidates>());
+    out.push_str(&decl::<crate::service::paper::FullTextPending>());
+    out.push_str(&decl::<crate::service::paper::SavedSourceIds>());
+    out.push_str(&decl::<crate::service::paper::DeletedPaperReceipt>());
+    out.push_str(&decl::<crate::service::project::RemovedFromProjects>());
+    out.push_str(&decl::<OkReceipt>());
+    out.push_str(&decl::<crate::service::paper_import::PaperImportResult>());
+    out.push_str(&decl::<crate::service::export_import::ImportPreviewResponse>());
+    out.push_str(&decl::<crate::service::export_import::ImportedProject>());
+    out.push_str(&decl::<crate::service::files::SavedPdfListing>());
+    out.push_str(&decl::<crate::service::files::DeletedPdf>());
     out
 }
 

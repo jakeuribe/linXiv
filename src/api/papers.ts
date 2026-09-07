@@ -2,10 +2,16 @@ import { BASE_URL, isTauri } from "./client.ts";
 import { libraryFetch } from "../stores/backend.ts";
 import type {
   Paper,
+  PapersListing,
   PaperVersionsResponse,
+  DoiCandidates,
   DoiVersionCandidate,
+  FullTextPending,
   FullTextReceipt,
   MergeReceipt,
+  SavedSourceIds,
+  DeletedPaperReceipt,
+  RemovedFromProjects,
 } from "../types/api";
 
 // The in-process app serves PDF bytes over the `linxiv://` custom scheme (the
@@ -35,10 +41,10 @@ export async function listPapers(
   offset = 0,
   sort?: PaperSort,
   project?: number
-): Promise<{ papers: Paper[] }> {
+): Promise<PapersListing> {
   const order = sort ? `&sort=${sort.split("_")[0]}&dir=${sort.split("_")[1]}` : "";
   const proj = project !== undefined ? `&project=${project}` : "";
-  return libraryFetch<{ papers: Paper[] }>(
+  return libraryFetch<PapersListing>(
     `/api/papers?limit=${limit}&offset=${offset}${order}${proj}`
   );
 }
@@ -50,7 +56,7 @@ export async function listPapers(
 export const PAPER_LIMIT_MAX = 5000;
 
 /** All papers linked to a project, filtered server-side (no client window). */
-export function listProjectPapers(projectId: number): Promise<{ papers: Paper[] }> {
+export function listProjectPapers(projectId: number): Promise<PapersListing> {
   return listPapers(PAPER_LIMIT_MAX, 0, undefined, projectId);
 }
 
@@ -61,7 +67,7 @@ export function listProjectPapers(projectId: number): Promise<{ papers: Paper[] 
  */
 export async function getSavedSourceIds(entryIds: string[]): Promise<string[]> {
   if (entryIds.length === 0) return [];
-  const data = await libraryFetch<{ saved_source_ids: string[] }>(
+  const data = await libraryFetch<SavedSourceIds>(
     "/api/papers/saved",
     { method: "POST", body: JSON.stringify({ source_ids: entryIds }) }
   );
@@ -82,7 +88,7 @@ export async function getPaperVersions(sfk: number): Promise<PaperVersionsRespon
 }
 
 export async function getDoiVersionCandidates(sfk: number): Promise<DoiVersionCandidate[]> {
-  const data = await libraryFetch<{ candidates: DoiVersionCandidate[] }>(
+  const data = await libraryFetch<DoiCandidates>(
     `/api/papers/sfk/${sfk}/doi-candidates`
   );
   return data.candidates;
@@ -102,8 +108,8 @@ export async function mergePapers(
   });
 }
 
-export async function deletePaper(sourceId: string): Promise<{ deleted: string }> {
-  return libraryFetch<{ deleted: string }>(
+export async function deletePaper(sourceId: string): Promise<DeletedPaperReceipt> {
+  return libraryFetch<DeletedPaperReceipt>(
     `/api/papers/${encodeURIComponent(sourceId)}`,
     { method: "DELETE" }
   );
@@ -120,7 +126,7 @@ export interface PaperRepairBody {
   tags?: string[] | null;
 }
 
-export async function removeFromAllProjects(sfk: number): Promise<{ ok: boolean; removed_from_projects: number[] }> {
+export async function removeFromAllProjects(sfk: number): Promise<RemovedFromProjects> {
   return libraryFetch(`/api/papers/sfk/${sfk}/projects`, { method: "DELETE" });
 }
 
@@ -134,8 +140,8 @@ export async function repairPaper(sfk: number, body: PaperRepairBody): Promise<P
 export async function searchLibrary(
   q: string,
   limit = 50
-): Promise<{ papers: Paper[] }> {
-  return libraryFetch<{ papers: Paper[] }>(
+): Promise<PapersListing> {
+  return libraryFetch<PapersListing>(
     `/api/papers/search?q=${encodeURIComponent(q)}&limit=${limit}`
   );
 }
@@ -162,8 +168,8 @@ export async function fetchFullText(
  * How many stored arXiv papers still have no indexed TeX source — the backlog
  * the background full-text worker is working through.
  */
-export async function fullTextPending(): Promise<{ pending: number }> {
-  return libraryFetch<{ pending: number }>("/api/papers/full-text-pending");
+export async function fullTextPending(): Promise<FullTextPending> {
+  return libraryFetch<FullTextPending>("/api/papers/full-text-pending");
 }
 
 /**

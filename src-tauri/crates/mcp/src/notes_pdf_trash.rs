@@ -321,7 +321,7 @@ impl Server {
             .map_err(core_err)?;
         let mut pdfs = svc_files::saved_pdf_sizes(&pdf_dir, papers);
         pdfs.truncate(SAVED_PDF_LIST_CAP);
-        json_ok(&json!({ "pdfs": pdfs }))
+        json_ok(&svc_files::SavedPdfListing { pdfs })
     }
 
     #[tool(

@@ -266,7 +266,7 @@ impl Server {
             Ok(Ok(()))
         })
         .map_err(core_err)??;
-        json_ok(&serde_json::json!({ "deleted": paper_id }))
+        json_ok(&svc_paper::DeletedPaperReceipt { deleted: paper_id })
     }
 
     #[tool(description = "Get all stored versions of a paper.")]
@@ -508,10 +508,10 @@ impl Server {
             .map_err(core_err)?
             .ok_or_else(|| crate::util::guard_err(CoreError::PaperNotFound(paper_id.clone())))?;
         // One envelope across route/CLI/MCP; the caller already knows the id.
-        json_ok(&serde_json::json!({
-            "ok": true,
-            "removed_from_projects": removed,
-        }))
+        json_ok(&svc_project::RemovedFromProjects {
+            ok: true,
+            removed_from_projects: removed,
+        })
     }
 }
 

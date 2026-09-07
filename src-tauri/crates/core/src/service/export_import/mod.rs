@@ -33,7 +33,7 @@ mod import;
 mod share_id;
 
 pub use archive::preview_import;
-pub use dto::{ImportPreview, OnConflict};
+pub use dto::{ImportPreview, ImportPreviewResponse, ImportedProject, OnConflict};
 pub use export::export_project;
 pub use import::commit_import;
 pub use share_id::valid_share_id;

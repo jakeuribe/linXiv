@@ -219,6 +219,13 @@ pub struct OpenAlexSearchResponse {
     pub saved_source_ids: Vec<String>,
 }
 
+/// `{"ok": true}` — the bare acknowledgement for writes with nothing else to
+/// report (e.g. `PUT /api/papers/{id}/pdf`).
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct OkReceipt {
+    pub ok: bool,
+}
+
 // ---------------------------------------------------------------------------
 // SERIALIZER 2 — PaperDetails (service/models/paper.py PaperDetails.to_dict)
 // ---------------------------------------------------------------------------

@@ -212,7 +212,7 @@ impl Server {
         let fk = self
             .with_conn(|conn| svc_ei::commit_import(conn, &path, on_conflict, &pdf_dir))
             .map_err(map_core)?;
-        json_ok(&json!({ "project_id": fk }))
+        json_ok(&svc_ei::ImportedProject { project_id: fk })
     }
 
     #[tool(description = "Export a project's papers to a BibTeX (.bib) file.")]

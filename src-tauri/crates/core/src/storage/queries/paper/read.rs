@@ -381,7 +381,7 @@ pub fn get_all_versions(conn: &Connection, source_id: &str) -> Result<Vec<PaperD
 }
 
 /// One `version_meta` row: the four scalars the versions listing needs.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct PaperVersionMeta {
     pub version: i64,
     pub published: Option<NaiveDate>,

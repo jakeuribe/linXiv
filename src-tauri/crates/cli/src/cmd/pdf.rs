@@ -139,7 +139,9 @@ pub async fn run(cmd: PdfCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         // largest first. Uncapped — the route's 200-row cap is for the UI list.
         PdfCmd::List => {
             let papers = svc_paper::list_pdf_papers(&ctx.conn)?;
-            output(&json!({ "pdfs": svc_files::saved_pdf_sizes(&ctx.pdf_dir, papers) }));
+            output(&svc_files::SavedPdfListing {
+                pdfs: svc_files::saved_pdf_sizes(&ctx.pdf_dir, papers),
+            });
         }
 
         // DELETE /api/pdfs/{source_id}: drop every version's local file, keeping

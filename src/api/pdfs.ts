@@ -2,18 +2,18 @@ import { invoke } from "@tauri-apps/api/core";
 // Settings -> Storage manages the LOCAL disk (saved-PDF files and their
 // linxiv:// links), so these never follow a remote default backend.
 import { apiFetch } from "./client";
-import type { SavedPdf } from "../types/api";
+import type { SavedPdf, SavedPdfListing, DeletedPdf } from "../types/api";
 
 export type { SavedPdf };
 
-export async function listSavedPdfs(): Promise<{ pdfs: SavedPdf[] }> {
-  return apiFetch<{ pdfs: SavedPdf[] }>("/api/pdfs");
+export async function listSavedPdfs(): Promise<SavedPdfListing> {
+  return apiFetch<SavedPdfListing>("/api/pdfs");
 }
 
 export async function deleteSavedPdf(
   sourceId: string,
-): Promise<{ deleted: boolean }> {
-  return apiFetch<{ deleted: boolean }>(
+): Promise<DeletedPdf> {
+  return apiFetch<DeletedPdf>(
     `/api/pdfs/${encodeURIComponent(sourceId)}`,
     { method: "DELETE" },
   );

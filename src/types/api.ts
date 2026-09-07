@@ -45,6 +45,20 @@ export type {
   NewVersion,
   OrcidCandidate,
   ImportPreview,
+  ImportPreviewResponse,
+  ImportedProject,
+  PaperImportResult,
+  PapersListing,
+  PaperVersionMeta,
+  PaperVersionsResponse,
+  DoiCandidates,
+  FullTextPending,
+  SavedSourceIds,
+  DeletedPaperReceipt,
+  RemovedFromProjects,
+  OkReceipt,
+  SavedPdfListing,
+  DeletedPdf,
   BackupInfo,
   DeletedPaperDetails,
   TrashedProjectRow,
@@ -118,21 +132,6 @@ export interface FeedResponse {
   title: string;
   entries: FeedEntry[];
   saved_arxiv_ids: string[];
-}
-
-// `GET /api/papers/sfk/{fk}/versions` projects PaperDetailsAll into an inline
-// `json!` in route/papers.rs — an ADR-0010 reach-past, not a serializer.
-export interface PaperVersionSummary {
-  version: number;
-  published: string | null;
-  updated: string | null;
-  has_pdf: boolean;
-}
-
-export interface PaperVersionsResponse {
-  source_id: string;
-  latest_version: number;
-  versions: PaperVersionSummary[];
 }
 
 // Request-side only: the search form's clause rows. route/search.rs takes them
