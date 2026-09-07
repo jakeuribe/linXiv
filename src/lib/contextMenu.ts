@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { CheckMenuItem, Menu } from "@tauri-apps/api/menu";
 import { LogicalPosition } from "@tauri-apps/api/dpi";
 import { isTauri } from "../api/client";
@@ -44,9 +45,16 @@ export function showContextMenu(
   armMenuSweeper();
   // Captured before the async hop: the menu pops where the mouse actually
   // clicked (webview-logical coords), not wherever the OS last showed one.
-  const at = new LogicalPosition(e.clientX, e.clientY);
+  const clickX = e.clientX;
+  const clickY = e.clientY;
   const gen = ++generation;
   (async () => {
+    // Popups anchor to the toplevel window, whose origin on Linux (CSD)
+    // includes titlebar/shadow chrome outside the webview — Rust measures
+    // that per popup (it changes on maximize). (0,0) on other platforms.
+    const offset = invoke<[number, number]>("menu_popup_offset").catch(
+      () => [0, 0] as [number, number]
+    );
     const menu = await Menu.new({
       items: await Promise.all(
         items.map((item) =>
@@ -71,7 +79,8 @@ export function showContextMenu(
     const prev = lastMenu;
     lastMenu = menu;
     await prev?.close().catch(() => {});
-    await menu.popup(at);
+    const [dx, dy] = await offset;
+    await menu.popup(new LogicalPosition(clickX + dx, clickY + dy));
   })().catch((err) => {
     // A newer click closing this menu mid-flight is expected; anything else
     // (menu API systematically failing) must not fail silent — right-click

@@ -37,6 +37,31 @@ fn open_pdf_in_system(app: tauri::AppHandle, path: String) -> Result<(), String>
         .map_err(|e| format!("System viewer could not open the PDF: {e}"))
 }
 
+/// Where the webview's (0,0) sits inside the toplevel window, in logical px.
+///
+/// Native menu popups anchor to the toplevel GdkWindow, but on Linux (CSD) that
+/// origin includes the titlebar and shadow margins the webview's clientX/Y
+/// know nothing about, so raw client coords land the menu up-left of the
+/// cursor. Measured per popup: the shadow margins vanish when maximized. Must
+/// stay a sync command — those run on the GTK main thread, which gtk requires.
+#[cfg(target_os = "linux")]
+#[tauri::command]
+fn menu_popup_offset(window: tauri::Window) -> (i32, i32) {
+    use gtk::prelude::*;
+    window
+        .gtk_window()
+        .ok()
+        .and_then(|w| w.child()?.translate_coordinates(&w, 0, 0))
+        .unwrap_or((0, 0))
+}
+
+/// Elsewhere popup positions are already client-area-relative.
+#[cfg(not(target_os = "linux"))]
+#[tauri::command]
+fn menu_popup_offset() -> (i32, i32) {
+    (0, 0)
+}
+
 fn main() {
     tauri::Builder::default()
         // Prevent a second linXiv process from opening shared resources such as
@@ -126,6 +151,7 @@ fn main() {
             remote_backend::remote_pdf,
             remote_backend::remote_member_code,
             open_pdf_in_system,
+            menu_popup_offset,
             integrations::is_cli_installed,
             integrations::install_cli,
             integrations::uninstall_cli,
