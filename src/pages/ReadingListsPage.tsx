@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { BookMarked } from "lucide-react";
-import { listProjects, createProject, archiveProject } from "../api/projects";
+import { listProjects, createProject, archiveProject, deleteProject } from "../api/projects";
 import type { Paper, Project } from "../types/api";
 import { showContextMenu } from "../lib/contextMenu";
 import { listProjectPapers } from "../api/papers";
@@ -131,13 +131,34 @@ export default function ReadingListsPage() {
     }
   }
 
+  // Same delete call ProjectDetailPage's ··· menu makes.
+  async function handleDelete(project: Project) {
+    setActionError(null);
+    try {
+      await deleteProject(project.id);
+      await invalidateProjectMutationQueries(queryClient);
+    } catch (err) {
+      setActionError(errText(err, "Failed to delete reading list"));
+    }
+  }
+
   function handleListContextMenu(e: React.MouseEvent, project: Project) {
-    // §7 viewer read-only: no Archive on a viewer-role shared list — same
-    // gating as ProjectDetailPage's edit affordances.
+    // §7 viewer read-only: no Archive/Delete on a viewer-role shared list —
+    // same gating as ProjectDetailPage's edit affordances.
     const viewer = receivedShareRole(project, receivedShares) === "viewer";
     showContextMenu(e, [
       { text: "Open", action: () => navigate(`/projects/${project.id}`) },
-      ...(viewer ? [] : [{ text: "Archive", action: () => void handleArchive(project) }]),
+      ...(viewer
+        ? []
+        : [
+            { text: "Archive", action: () => void handleArchive(project) },
+            "separator" as const,
+            {
+              text: "Delete",
+              confirm: "⚠ Confirm delete?",
+              action: () => void handleDelete(project),
+            },
+          ]),
     ]);
   }
 

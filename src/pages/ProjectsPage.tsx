@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { listProjects, createProject, archiveProject, restoreProject } from "../api/projects";
+import { listProjects, createProject, archiveProject, restoreProject, deleteProject } from "../api/projects";
 import type { Project } from "../types/api";
 import { showContextMenu } from "../lib/contextMenu";
 import { ProjectGrid } from "../components/projects/ProjectGrid";
@@ -176,6 +176,17 @@ export default function ProjectsPage() {
     }
   }
 
+  // Same delete call ProjectDetailPage's ··· menu makes.
+  async function handleDelete(project: Project) {
+    setActionError(null);
+    try {
+      await deleteProject(project.id);
+      await invalidateProjectMutationQueries(queryClient);
+    } catch (err) {
+      setActionError(errText(err, "Failed to delete project"));
+    }
+  }
+
   function handleProjectContextMenu(e: React.MouseEvent, project: Project) {
     // §7 viewer read-only: same gating as ProjectDetailPage's overflow menu —
     // a viewer-role shared project gets no edit affordances, only Open.
@@ -188,6 +199,12 @@ export default function ProjectsPage() {
             project.status === "archived"
               ? { text: "Restore", action: () => void setProjectStatus(project, "restore") }
               : { text: "Archive", action: () => void setProjectStatus(project, "archive") },
+            "separator" as const,
+            {
+              text: "Delete",
+              confirm: "⚠ Confirm delete?",
+              action: () => void handleDelete(project),
+            },
           ]),
     ]);
   }

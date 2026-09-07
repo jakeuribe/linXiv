@@ -7,7 +7,10 @@ import { useUiStore } from "../stores/ui";
 export type ContextMenuItem =
   | "separator"
   // `checked` present (even false) makes it a native check item.
-  | { text: string; action: () => void; enabled?: boolean; checked?: boolean };
+  // `confirm` makes it two-click: the first click re-pops the menu in place
+  // with this item flipped to the confirm text; only the second runs `action`.
+  // Dismissing the menu resets it. Ignored on check items.
+  | { text: string; action: () => void; enabled?: boolean; checked?: boolean; confirm?: string };
 
 // Every menu command is serialized through this chain. popup() holds tauri's
 // resources-table mutex until the menu is DISMISSED, while close() is a sync
@@ -101,13 +104,22 @@ export function showContextMenu(
   if (!isTauri) return;
   e.preventDefault();
   e.stopPropagation();
-  armMenuSweeper();
   // Captured before the async hop: the menu pops where the mouse actually
   // clicked, not wherever the OS last showed one. clientX/Y are in zoomed CSS
   // px (interface zoom is webview-native zoom); window-logical px = client × zoom.
   const zoom = useUiStore.getState().zoom;
-  const clickX = e.clientX * zoom;
-  const clickY = e.clientY * zoom;
+  showMenuAt(e.clientX * zoom, e.clientY * zoom, items);
+}
+
+// `armedIndex` marks a confirm item whose first click already happened; its
+// re-pop lands here with the same coordinates so the menu appears to stay put.
+function showMenuAt(
+  clickX: number,
+  clickY: number,
+  items: ContextMenuItem[],
+  armedIndex = -1
+): void {
+  armMenuSweeper();
   const gen = ++generation;
   enqueue(async () => {
     if (gen !== generation) return; // superseded while queued
@@ -128,7 +140,7 @@ export function showContextMenu(
       const menuItems: Array<
         CheckMenuItem | { item: "Separator" } | { text: string; action: () => void; enabled: boolean }
       > = [];
-      for (const item of items) {
+      for (const [i, item] of items.entries()) {
         if (item === "separator") {
           menuItems.push({ item: "Separator" });
         } else if (item.checked !== undefined) {
@@ -140,8 +152,21 @@ export function showContextMenu(
           });
           extras.push(check);
           menuItems.push(check);
+        } else if (item.confirm !== undefined && i !== armedIndex) {
+          // Native menus dismiss on click, so "staying open" is a re-pop at
+          // the same spot with this item armed. Queues behind this popup's
+          // dismissal on the chain, so no mutex overlap.
+          menuItems.push({
+            text: item.text,
+            action: () => showMenuAt(clickX, clickY, items, i),
+            enabled: item.enabled ?? true,
+          });
         } else {
-          menuItems.push({ text: item.text, action: item.action, enabled: item.enabled ?? true });
+          menuItems.push({
+            text: i === armedIndex && item.confirm !== undefined ? item.confirm : item.text,
+            action: item.action,
+            enabled: item.enabled ?? true,
+          });
         }
       }
       menu = await Menu.new({ items: menuItems });
