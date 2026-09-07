@@ -15,16 +15,14 @@ use crate::error::Result;
 use crate::models::{PaperDetails, ProjectOut, Status, TagDetails, TagIn, TagWithCount};
 use crate::storage::queries::tag as q;
 
-/// `GET /api/tags` envelope (route/tags.rs).
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct TagsResponse {
     pub tags: Vec<TagWithCount>,
 }
 
-/// `GET /api/tags/{label}` envelope (route/tags.rs) — see [`detail`].
+/// `GET /api/tags/{label}` envelope (route/tags.rs) — see [`detail`]; `label` is the canonical stored casing, or the raw query label when unknown.
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct TagDetail {
-    /// Canonical stored casing; the raw query label when the tag is unknown.
     pub label: String,
     pub papers: Vec<PaperDetails>,
     pub projects: Vec<ProjectOut>,
@@ -43,8 +41,7 @@ pub struct DeletedTag {
     pub deleted_tag_id: i64,
 }
 
-/// A paper's tag list after a tag mutation — `POST`/`DELETE
-/// /api/papers/{id}/tags` and `linxiv tag add/remove/list`.
+/// A paper's tag list after a tag mutation — `POST`/`DELETE /api/papers/{id}/tags`.
 #[derive(Debug, Clone, Serialize)]
 pub struct PaperTags {
     pub source_id: String,
@@ -163,9 +160,7 @@ pub fn list_tags_with_count(conn: &Connection) -> Result<Vec<TagWithCount>> {
     q::list_tags_with_count(conn)
 }
 
-/// The tag-detail composite (`api_tag_detail`): canonical label via [`get`]
-/// (raw label if the tag is unknown), papers via `get_papers_by_tag`, projects
-/// via a NOCASE PROJECT_TO_TAG lookup narrowing `get_many` to the tagged fks.
+/// `GET /api/tags/{label}` composite: canonical label, tagged papers, active tagged projects.
 pub fn detail(conn: &Connection, label: &str) -> Result<TagDetail> {
     let canonical = get(
         conn,

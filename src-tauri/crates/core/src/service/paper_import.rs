@@ -35,9 +35,7 @@ use std::sync::Mutex;
 /// Python's `threading.Lock`.
 pub(crate) static IMPORT_ROOT_LOCK: Mutex<()> = Mutex::new(());
 
-/// Result of a successful `import_pdf` (Python `PaperImportResult`, defined in
-/// `service/paper.py` — a service result, not a storage model). The
-/// `POST /api/papers/import/pdf` envelope, emitted verbatim by MCP too.
+/// `POST /api/papers/import/pdf` envelope — a successful `import_pdf` result, emitted verbatim by MCP too.
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct PaperImportResult {
     pub source_id: String,

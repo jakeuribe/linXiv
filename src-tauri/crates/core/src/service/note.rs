@@ -59,13 +59,11 @@ pub struct DeletedNote {
     pub deleted_note_id: i64,
 }
 
-/// `GET /api/notes` envelope (route/notes.rs). Unknown paper → empty list.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 pub struct NoteListResponse {
     pub notes: Vec<NoteDetails>,
 }
 
-/// `GET /api/notes/{id}` envelope (route/notes.rs).
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 pub struct NoteGetResponse {
     pub note: NoteDetails,

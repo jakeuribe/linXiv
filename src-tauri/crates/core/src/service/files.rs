@@ -186,8 +186,7 @@ pub fn pdf_storage_mb(pdf_dir: &Path) -> f64 {
     pdf_storage_bytes(pdf_dir) as f64 / (1024.0 * 1024.0)
 }
 
-/// `GET /api/pdfs` envelope — CLI `pdf list` and MCP `list_pdfs` emit the same
-/// shape (the route and MCP cap the rows at 200, the CLI lists everything).
+/// `GET /api/pdfs` envelope — CLI `pdf list` and MCP `list_pdfs` emit the same shape.
 #[derive(Debug, serde::Serialize, ts_rs::TS)]
 pub struct SavedPdfListing {
     pub pdfs: Vec<SavedPdf>,

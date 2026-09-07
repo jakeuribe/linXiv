@@ -23,7 +23,6 @@ pub struct SavedSearch {
     pub sort_prefs: Option<Map<String, Value>>,
 }
 
-/// `GET /api/search/history` envelope.
 #[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
 pub struct SearchHistoryResponse {
     pub suggestions: Vec<String>,

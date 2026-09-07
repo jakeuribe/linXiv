@@ -293,7 +293,6 @@ pub fn parse_published(s: &str) -> Result<NaiveDate> {
 }
 
 /// `PUT /api/papers/sfk/{fk}` (paper repair) request body.
-///
 /// The user-editable Paper Repair fields, shared by all three front doors:
 /// the route PUT body (mirrors `PaperRepairBody` in `src/api/papers.ts`),
 /// the CLI flags, and the MCP tool params. `published` stays a `String` so
@@ -565,8 +564,7 @@ pub fn get_categories(conn: &Connection) -> Result<Vec<String>> {
     store::get_categories(conn)
 }
 
-/// `GET /api/categories` envelope. The CLI `categories` command emits the bare
-/// array; the wrapping is the API's divergence, so it lives beside the source.
+/// `GET /api/categories` envelope; the CLI `categories` command emits the bare array.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct CategoriesResponse {
     pub categories: Vec<String>,
@@ -877,13 +875,11 @@ pub fn full_text_backfill_count(conn: &Connection) -> Result<i64> {
 
 // ── route envelopes ──────────────────────────────────────────────────────────
 
-/// `GET /api/papers` and `GET /api/papers/search` envelope (route/papers.rs).
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct PapersListing {
     pub papers: Vec<PaperDetails>,
 }
 
-/// `GET /api/papers/sfk/{fk}/versions` envelope (route/papers.rs).
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct PaperVersionsResponse {
     pub source_id: String,
@@ -891,8 +887,7 @@ pub struct PaperVersionsResponse {
     pub versions: Vec<store::PaperVersionMeta>,
 }
 
-/// [`list_version_meta`] assembled into the versions envelope; same `None`
-/// (unresolved or version-less root) semantics.
+/// [`list_version_meta`] assembled into [`PaperVersionsResponse`]; same `None` semantics.
 pub fn version_listing(
     conn: &Connection,
     paper: &PaperRef,
@@ -906,19 +901,16 @@ pub fn version_listing(
     )
 }
 
-/// `GET /api/papers/sfk/{fk}/doi-candidates` envelope (route/papers.rs).
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct DoiCandidates {
     pub candidates: Vec<store::DoiVersionCandidate>,
 }
 
-/// `GET /api/papers/full-text-pending` envelope (route/papers.rs).
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct FullTextPending {
     pub pending: i64,
 }
 
-/// `POST /api/papers/saved` envelope (route/papers.rs).
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct SavedSourceIds {
     pub saved_source_ids: Vec<String>,

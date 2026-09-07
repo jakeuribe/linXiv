@@ -1,4 +1,4 @@
-//! `/api/search/{history,state}` — `api/app.py` 763–801. Autocomplete suggestions
+//! `/api/search/{history,state}` — autocomplete suggestions
 //! plus the single saved search-page state. `service::search_state` owns the
 //! history side-effect and the settings gate; this module is query/body parsing.
 
@@ -48,12 +48,7 @@ fn get_state(state: &AppState) -> Result<Value, ApiError> {
     to_value(&SearchStateResponse { state: st })
 }
 
-/// `POST /api/search/state` request body.
-///
-/// `SearchStateBody` (app.py 769-775) — typed so a wrong field type 422s like
-/// pydantic (rather than being silently coerced to a default). `clauses`,
-/// `results` and `sort_prefs` are untyped JSON passthrough (serde_json values),
-/// so no ts-rs derive: the crate's ts-rs lacks the `serde-json-impl` feature.
+/// `POST /api/search/state` request body; `clauses`/`results`/`sort_prefs` stay untyped JSON, so no ts-rs derive.
 #[derive(Deserialize)]
 pub struct SearchStateBody {
     #[serde(default)]

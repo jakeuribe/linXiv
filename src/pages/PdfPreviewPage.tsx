@@ -9,7 +9,7 @@ import { libraryFetch } from "../stores/backend";
 import { getPdfProxyUrl } from "../api/papers";
 import { Button } from "../components/ui/button";
 import { Spinner } from "../components/ui/spinner";
-import type { SearchResult } from "../types/api";
+import type { SearchResult, UploadPdfBody } from "../types/api";
 import { isArxivId } from "../lib/papers";
 import { MathText } from "../lib/tex";
 import { invalidatePaperMutationQueries } from "../lib/paperMutations";
@@ -20,8 +20,15 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url,
 ).toString();
 
+/** The subset of a search result this page actually consumes. Search/Home pass
+ * a full SearchResult; StorageSection's saved-PDF rows only have these fields. */
+export type PdfPreviewResult = Pick<
+  SearchResult,
+  "source_id" | "title" | "version" | "paper_url"
+>;
+
 interface PdfPreviewState {
-  result: SearchResult;
+  result: PdfPreviewResult;
   isSaved: boolean;
 }
 
@@ -69,7 +76,7 @@ export default function PdfPreviewPage() {
           const bytes = await pdfDocRef.current.getData();
           const path = `/api/papers/${encodeURIComponent(sourceId)}/pdf`;
           if (isTauri) {
-            await libraryFetch(path, { method: "PUT", body: JSON.stringify({ file_b64: bytesToBase64(bytes) }) });
+            await libraryFetch(path, { method: "PUT", body: JSON.stringify({ file_b64: bytesToBase64(bytes) } satisfies UploadPdfBody) });
           } else {
             const form = new FormData();
             form.append("file", new Blob([bytes.slice()], { type: "application/pdf" }), `${sourceId}.pdf`);

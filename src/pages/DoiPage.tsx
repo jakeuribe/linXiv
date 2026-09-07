@@ -6,25 +6,7 @@ import { invalidatePaperMutationQueries } from "../lib/paperMutations";
 import { Input } from "../components/ui/input";
 import { Spinner } from "../components/ui/spinner";
 import { resolveDoi, saveDoi } from "../api/search";
-
-// The wire type is the generated PaperMetadata; cast to this looser shape
-// for display purposes (tolerates absent/renamed keys across sources).
-interface DisplayMetadata {
-  title?: string;
-  authors?: string | string[];
-  abstract?: string;
-  doi?: string;
-  published?: string;
-  source?: string;
-  [key: string]: unknown;
-}
-
-function getAuthorsText(meta: DisplayMetadata): string {
-  const a = meta.authors;
-  if (!a) return "";
-  if (Array.isArray(a)) return a.join(", ");
-  return String(a);
-}
+import type { PaperMetadata } from "../types/api";
 
 export default function DoiPage() {
   const queryClient = useQueryClient();
@@ -32,14 +14,14 @@ export default function DoiPage() {
   // Capture the exact DOI string that was resolved, so Save always uses it
   // even if the user edits the input field afterwards.
   const [resolvedDoi, setResolvedDoi] = useState("");
-  const [metadata, setMetadata] = useState<DisplayMetadata | null>(null);
+  const [metadata, setMetadata] = useState<PaperMetadata | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
 
   // Resolve mutation
   const resolveMutation = useMutation({
     mutationFn: (d: string) => resolveDoi(d),
     onSuccess: (data, variables) => {
-      setMetadata(data.metadata as DisplayMetadata);
+      setMetadata(data.metadata);
       setResolvedDoi(variables);
       setSaveSuccess(false);
     },
@@ -131,14 +113,14 @@ export default function DoiPage() {
             )}
 
             {/* Authors */}
-            {metadata.authors && (
+            {metadata.authors.length > 0 && (
               <p className="text-sm text-[var(--color-muted)] mb-3">
-                {getAuthorsText(metadata)}
+                {metadata.authors.join(", ")}
               </p>
             )}
 
-            {/* Abstract */}
-            {metadata.abstract && (
+            {/* Abstract (the wire field is `summary`) */}
+            {metadata.summary && (
               <p
                 className="text-sm text-[var(--color-muted)] leading-relaxed mb-4"
                 style={{
@@ -148,7 +130,7 @@ export default function DoiPage() {
                   overflow: "hidden",
                 }}
               >
-                {metadata.abstract}
+                {metadata.summary}
               </p>
             )}
 
@@ -169,7 +151,7 @@ export default function DoiPage() {
               {metadata.published && (
                 <span>
                   <span className="text-[var(--color-text)]">Published:</span>{" "}
-                  {String(metadata.published).slice(0, 10)}
+                  {metadata.published.slice(0, 10)}
                 </span>
               )}
             </div>

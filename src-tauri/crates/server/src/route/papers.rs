@@ -172,7 +172,6 @@ pub(crate) async fn ingest_full_text(
     Ok(state.with_conn(|conn| fetched.commit(conn))?)
 }
 
-/// `POST /api/papers/saved` request body.
 #[derive(Deserialize, ts_rs::TS)]
 pub struct PaperSavedBody {
     pub source_ids: Vec<String>,
@@ -231,7 +230,6 @@ fn repair(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     })
 }
 
-/// `POST /api/papers/sfk/{fk}/merge` request body.
 #[derive(Deserialize, ts_rs::TS)]
 pub struct PaperMergeBody {
     pub loser_source_fk: i64,

@@ -18,9 +18,9 @@ import { SHARE_SYNC_MUTATION_KEY } from "../../lib/syncPill";
 import { Button } from "../ui/button";
 import { Spinner } from "../ui/spinner";
 
-export type ShareRole = "Hoster" | "Reader";
+export type ShareRoleLabel = "Hoster" | "Reader";
 
-function RolePill({ role }: { role: ShareRole }) {
+function RolePill({ role }: { role: ShareRoleLabel }) {
   const hosted = role === "Hoster";
   return (
     <span
@@ -123,7 +123,7 @@ export function ShareCard({
   onSettings,
 }: {
   share: SharedSummary;
-  role: ShareRole;
+  role: ShareRoleLabel;
   onSettings: () => void;
 }) {
   const hosted = role === "Hoster";

@@ -10,6 +10,8 @@ import type {
   FullTextPending,
   FullTextReceipt,
   MergeReceipt,
+  PaperMergeBody,
+  PaperSavedBody,
   SavedSourceIds,
   DeletedPaperReceipt,
   RemovedFromProjects,
@@ -68,9 +70,10 @@ export function listProjectPapers(projectId: number): Promise<PapersListing> {
  */
 export async function getSavedSourceIds(entryIds: string[]): Promise<string[]> {
   if (entryIds.length === 0) return [];
+  const body: PaperSavedBody = { source_ids: entryIds };
   const data = await libraryFetch<SavedSourceIds>(
     "/api/papers/saved",
-    { method: "POST", body: JSON.stringify({ source_ids: entryIds }) }
+    { method: "POST", body: JSON.stringify(body) }
   );
   return data.saved_source_ids;
 }
@@ -103,9 +106,10 @@ export async function mergePapers(
   winnerSfk: number,
   loserSfk: number
 ): Promise<MergeReceipt> {
+  const body: PaperMergeBody = { loser_source_fk: loserSfk };
   return libraryFetch<MergeReceipt>(`/api/papers/sfk/${winnerSfk}/merge`, {
     method: "POST",
-    body: JSON.stringify({ loser_source_fk: loserSfk }),
+    body: JSON.stringify(body),
   });
 }
 

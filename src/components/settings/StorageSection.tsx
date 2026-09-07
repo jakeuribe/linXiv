@@ -7,6 +7,7 @@ import { isTauri } from "../../api/client";
 import { listSavedPdfs, deleteSavedPdf } from "../../api/pdfs";
 import type { SavedPdf } from "../../api/pdfs";
 import { getPaperPdfUrl } from "../../api/papers";
+import type { PdfPreviewResult } from "../../pages/PdfPreviewPage";
 import { useConfirmWithTimeout } from "../../hooks/useConfirmWithTimeout";
 import { invalidatePaperMutationQueries } from "../../lib/paperMutations";
 import { Button } from "../ui/button";
@@ -103,17 +104,13 @@ export function StorageSection() {
   }, [qc]);
 
   function viewPdf(pdf: SavedPdf) {
-    navigate("/pdf-preview", {
-      state: {
-        result: {
-          source_id: pdf.source_id,
-          title: pdf.title,
-          version: pdf.version,
-          paper_url: getPaperPdfUrl(pdf.source_id, pdf.version),
-        },
-        isSaved: true,
-      },
-    });
+    const result: PdfPreviewResult = {
+      source_id: pdf.source_id,
+      title: pdf.title,
+      version: pdf.version,
+      paper_url: getPaperPdfUrl(pdf.source_id, pdf.version),
+    };
+    navigate("/pdf-preview", { state: { result, isSaved: true } });
   }
 
   return (

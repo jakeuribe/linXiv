@@ -2,6 +2,7 @@ import { libraryFetch } from "../stores/backend.ts";
 import type {
   AnnotationCreateBody,
   AnnotationListResponse,
+  AnnotationUpdateBody,
   CreatedAnnotation,
   OkReceipt,
 } from "../types/api";
@@ -39,9 +40,10 @@ export async function updateAnnotation(
   id: number,
   comment: string
 ): Promise<OkReceipt> {
+  const body: AnnotationUpdateBody = { comment };
   return libraryFetch(`/api/annotations/${id}`, {
     method: "PATCH",
-    body: JSON.stringify({ comment }),
+    body: JSON.stringify(body),
   });
 }
 

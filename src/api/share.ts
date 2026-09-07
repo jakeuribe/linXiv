@@ -1,4 +1,28 @@
 import { ApiError, isTauri } from "./client";
+import type {
+  SummaryRow as SharedSummary,
+  MemberRow as ShareMember,
+  ShareSettings,
+  SyncDirection as ShareDirection,
+  SharedProjectsListing,
+  ReceivedListing,
+  MembersListing,
+  TicketMinted,
+  ImportedReceipt,
+  UnlinkedReceipt,
+  LeftReceipt,
+  UnpublishedReceipt,
+  PublishedReceipt,
+  RoleChanged,
+  RekeyedReceipt,
+  RemovedReceipt,
+  RevokedReceipt,
+  SharedPdfSaved,
+  MemberCode,
+  InviteMinted,
+} from "../types/api";
+
+export type { SharedSummary, ShareMember, ShareSettings, ShareDirection };
 
 /** Deliberately narrower than lib/errText: only ApiError messages surface in
  * the sharing UI — any other exception falls back to the generic string
@@ -29,56 +53,12 @@ async function shareApi<T>(
 
 export const sharingAvailable = isTauri;
 
-// The envelope types in this file stay hand-written: the Rust structs live in
-// the server crate beside `route/share.rs` (share data has no linxiv-core
-// home), and the core ts_bindings generator only renders core types.
+// Most envelope types are generated from the Rust structs in
+// crates/server/src/route/share.rs (aliased above); only shapes with no exact
+// Rust twin (JoinResult, syncShare's json! envelope, ReceivedPaper) stay
+// hand-written below.
 
 export type MemberRole = "hoster" | "editor" | "viewer";
-
-// Diverged from `crates/share::model::SharedSummary` (not Serialize, no
-// synced_at/paused/project_fk/e2ee/member_count/role/pending; extra
-// annotation_count) — and linxiv-core's generator can't see that crate anyway.
-export interface SharedSummary {
-  share_id: string;
-  name: string;
-  paper_count: number;
-  note_count: number;
-  tag_count: number;
-  /** Doc-file mtime (last local save/fetch) as ISO 8601; null if unreadable. */
-  synced_at: string | null;
-  paused: boolean;
-  /** Linked local project id; null when no live local project carries this
-   * SHARE_ID (received shares before first import, or linked project deleted/trashed). */
-  project_fk?: number | null;
-  /** True on end-to-end encrypted shares; absent on plain ones. */
-  e2ee?: boolean;
-  /** Members-sidecar length; only on hoster-owned e2ee shares. */
-  member_count?: number;
-  /** The reader's own capability on a received e2ee share (live query_role at
-   * list time). Absent offline / on plain mirrors → treated as editable; the
-   * write boundary is enforced server+crypto side, this drives UX only. */
-  role?: MemberRole;
-  /** Joined, but no content has arrived yet (host was unreachable, or its key
-   * has not been received). Name and counts are empty until the first sync. */
-  pending?: boolean;
-}
-
-export interface ShareMember {
-  /** Hex member id — the only handle for revoke. May be "" for the hoster
-   * entry if keyhive was unavailable at publish. */
-  member_id: string;
-  name: string | null;
-  role: MemberRole;
-  invited_at: string;
-  revoked: boolean;
-  /** Per-member truth check against keyhive (the sidecar is names-only). */
-  verified: boolean;
-  /** The invite string last minted for them, kept so it can be re-sent. Null
-   * once revoked, after a role change, or on pre-upgrade member sidecars. */
-  invite: string | null;
-}
-
-export type ShareDirection = "two_way" | "shared_to_local" | "local_to_shared";
 
 export type SyncReason =
   | "paused"
@@ -93,14 +73,9 @@ export type SyncReason =
 
 export type ShareRole = "hoster" | "reader";
 
-export interface ShareSettings {
-  paused: boolean;
-  direction: ShareDirection;
-}
-
 /** Summaries of every project published (shared out) from this library. */
 export async function listShared(): Promise<SharedSummary[]> {
-  const res = await shareApi<{ shared_projects: SharedSummary[] }>(
+  const res = await shareApi<SharedProjectsListing>(
     "GET",
     "/api/share/projects"
   );
@@ -110,7 +85,7 @@ export async function listShared(): Promise<SharedSummary[]> {
 /** Publish the project (if needed) and mint a one-time, pasteable ticket
  *  carrying this node's address + an unguessable capability. */
 export async function createShareTicket(projectId: number): Promise<string> {
-  const res = await shareApi<{ ticket: string }>(
+  const res = await shareApi<TicketMinted>(
     "POST",
     `/api/share/project/${projectId}/ticket`
   );
@@ -142,27 +117,20 @@ export async function joinShare(ticket: string): Promise<JoinResult> {
 
 /** Summaries of every shared project received via {@link joinShare}. */
 export async function listReceived(): Promise<SharedSummary[]> {
-  const res = await shareApi<{ received: SharedSummary[] }>(
-    "GET",
-    "/api/share/received"
-  );
+  const res = await shareApi<ReceivedListing>("GET", "/api/share/received");
   return res.received;
 }
 
 /** Merge a received mirror into the canonical library (additive + update).
  *  Creates the linked local project on first import. */
-export async function importReceived(
-  shareId: string
-): Promise<{ project_fk: number }> {
+export async function importReceived(shareId: string): Promise<ImportedReceipt> {
   return shareApi("POST", `/api/share/received/${shareId}/import`);
 }
 
 /** Detach the linked local project from a received share. Membership, mirror,
  *  and the local project all stay; interval sync keeps the mirror fresh but
  *  stops importing until {@link importReceived} creates a new link. */
-export async function unlinkShare(
-  shareId: string
-): Promise<{ unlinked: boolean }> {
+export async function unlinkShare(shareId: string): Promise<UnlinkedReceipt> {
   return shareApi("POST", `/api/share/received/${shareId}/unlink`);
 }
 
@@ -197,9 +165,7 @@ export async function syncShare(
  *  the old document. The linked local project, if imported, stays untouched.
  *  `forgotten: false` means the node was offline and the registration
  *  survived — a rejoin would reuse the old doc. */
-export async function leaveShare(
-  shareId: string
-): Promise<{ left: boolean; forgotten: boolean }> {
+export async function leaveShare(shareId: string): Promise<LeftReceipt> {
   return shareApi("POST", `/api/share/received/${shareId}/leave`);
 }
 
@@ -207,7 +173,7 @@ export async function leaveShare(
  *  on the project so a republish reuses the same identity). */
 export async function unpublishShare(
   shareId: string
-): Promise<{ unpublished: boolean; share_id: string }> {
+): Promise<UnpublishedReceipt> {
   return shareApi("POST", `/api/share/${shareId}/unpublish`);
 }
 
@@ -221,7 +187,7 @@ export async function reconnectRelay(): Promise<void> {
 /** This device's pasteable membership code — sent to a host to be invited
  *  to an encrypted share. */
 export async function memberCode(): Promise<string> {
-  const res = await shareApi<{ code: string }>("GET", "/api/share/member_code");
+  const res = await shareApi<MemberCode>("GET", "/api/share/member_code");
   return res.code;
 }
 
@@ -229,7 +195,7 @@ export async function memberCode(): Promise<string> {
  *  is granted per-device via {@link inviteMember}. */
 export async function publishSecure(
   projectId: number
-): Promise<{ share_id: string }> {
+): Promise<PublishedReceipt> {
   return shareApi("POST", `/api/share/project/${projectId}/publish_secure`);
 }
 
@@ -239,7 +205,7 @@ export async function inviteMember(
   shareId: string,
   opts: { memberCode: string; role: Exclude<MemberRole, "hoster">; name?: string }
 ): Promise<string> {
-  const res = await shareApi<{ invite: string }>(
+  const res = await shareApi<InviteMinted>(
     "POST",
     `/api/share/${shareId}/invite`,
     { member_code: opts.memberCode, role: opts.role, name: opts.name }
@@ -249,7 +215,7 @@ export async function inviteMember(
 
 /** Members of a hoster-owned e2ee share (the hoster entry is this device). */
 export async function listMembers(shareId: string): Promise<ShareMember[]> {
-  const res = await shareApi<{ members: ShareMember[] }>(
+  const res = await shareApi<MembersListing>(
     "GET",
     `/api/share/${shareId}/members`
   );
@@ -262,7 +228,7 @@ export async function setMemberRole(
   shareId: string,
   memberId: string,
   role: Exclude<MemberRole, "hoster">
-): Promise<{ member_id: string; role: string }> {
+): Promise<RoleChanged> {
   return shareApi("POST", `/api/share/${shareId}/member/${memberId}/role`, {
     role,
   });
@@ -272,9 +238,7 @@ export async function setMemberRole(
  *  under the current key, then republish. Repairs members who joined after the
  *  content was already encrypted and so can decrypt none of it — the symptom is
  *  their sync reporting `no_key > 0` with `applied` stuck at 0. */
-export async function rekeyShare(
-  shareId: string
-): Promise<{ rekeyed: boolean; members: number }> {
+export async function rekeyShare(shareId: string): Promise<RekeyedReceipt> {
   return shareApi("POST", `/api/share/${shareId}/rekey`);
 }
 
@@ -284,7 +248,7 @@ export async function rekeyShare(
 export async function removeMember(
   shareId: string,
   memberId: string
-): Promise<{ removed: boolean; member_id: string }> {
+): Promise<RemovedReceipt> {
   return shareApi("POST", `/api/share/${shareId}/member/${memberId}/remove`);
 }
 
@@ -293,7 +257,7 @@ export async function removeMember(
 export async function revokeMember(
   shareId: string,
   memberId: string
-): Promise<{ revoked: boolean }> {
+): Promise<RevokedReceipt> {
   return shareApi("POST", `/api/share/${shareId}/revoke`, {
     member_id: memberId,
   });
@@ -321,7 +285,7 @@ export async function listReceivedPapers(
 export async function downloadSharedPdf(
   shareId: string,
   sourceId: string
-): Promise<{ source_id: string; version: number; path: string }> {
+): Promise<SharedPdfSaved> {
   return shareApi("POST", `/api/share/${shareId}/pdf`, {
     source_id: sourceId,
   });

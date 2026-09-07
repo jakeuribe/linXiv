@@ -238,8 +238,7 @@ pub struct ImportPreview {
     pub format_version: i64,
 }
 
-/// `POST /api/projects/import/preview` envelope (route/uploads.rs) —
-/// [`ImportPreview`] minus `annotation_count`, which the route never exposed.
+/// `POST /api/projects/import/preview` envelope (route/uploads.rs) — [`ImportPreview`] minus `annotation_count`.
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct ImportPreviewResponse {
     pub project_name: String,
@@ -263,8 +262,7 @@ impl From<ImportPreview> for ImportPreviewResponse {
     }
 }
 
-/// `POST /api/projects/import/commit` envelope — the created/merged project id.
-/// MCP `import_project` emits the same shape.
+/// `POST /api/projects/import/commit` and MCP `import_project` envelope — the created/merged project id.
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct ImportedProject {
     pub project_id: i64,

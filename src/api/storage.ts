@@ -1,6 +1,10 @@
 import { save, open } from "@tauri-apps/plugin-dialog";
 import { apiFetch } from "./client";
-import type { BackupInfo } from "../types/api";
+import type {
+  BackupInfo,
+  StorageBackupBody,
+  StorageRestoreBody,
+} from "../types/api";
 
 export type { BackupInfo };
 
@@ -15,9 +19,10 @@ export async function backupDatabase(): Promise<BackupInfo | null> {
     filters: [{ name: "SQLite database", extensions: ["db"] }],
   });
   if (!destPath) return null;
+  const body: StorageBackupBody = { dest_path: destPath };
   return apiFetch<BackupInfo>("/api/storage/backup", {
     method: "POST",
-    body: JSON.stringify({ dest_path: destPath }),
+    body: JSON.stringify(body),
   });
 }
 
@@ -29,9 +34,10 @@ export async function restoreDatabase(): Promise<true | null> {
     filters: [{ name: "SQLite database", extensions: ["db"] }],
   });
   if (!srcPath) return null;
+  const body: StorageRestoreBody = { src_path: srcPath };
   await apiFetch("/api/storage/restore", {
     method: "POST",
-    body: JSON.stringify({ src_path: srcPath }),
+    body: JSON.stringify(body),
   });
   return true;
 }

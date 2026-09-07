@@ -60,7 +60,6 @@ fn get(state: &AppState, id: &str) -> Result<Value, ApiError> {
     })
 }
 
-/// `POST /api/notes` request body.
 #[derive(Deserialize, ts_rs::TS)]
 #[ts(optional_fields = nullable)]
 pub struct NoteCreateBody {
@@ -100,7 +99,6 @@ fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     })
 }
 
-/// `PATCH /api/notes/{id}` request body.
 #[derive(Deserialize, ts_rs::TS)]
 #[ts(optional_fields = nullable)]
 pub struct NoteUpdateBody {

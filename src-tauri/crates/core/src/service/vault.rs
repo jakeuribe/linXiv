@@ -31,12 +31,15 @@ fn io(e: std::io::Error) -> CoreError {
     CoreError::Internal(e.to_string())
 }
 
-// ── wire types (vendored from editorBridgeTypes.ts FsOp/FsResult) ───────────────
+// ── wire types (canonical for editorBridgeTypes.ts FsOp/FsResult) ───────────────
 // Tagged by `kind`; camelCase matches the wire ("readFile"/"writeFile"/"mkdir").
 // An unknown kind fails at deserialize time (-> the binary layer maps the serde
 // error to BadRequest), which is why `run_fs_op` needs no unknown-kind arm.
+// `path`/`data` carry serde(default) as server-side leniency only; the client
+// contract keeps them required, so they are NOT ts(optional).
 
-#[derive(Debug, Clone, Deserialize)]
+/// One vault FS RPC op — the request body of `POST /api/editor/vault/{note_id}/fs`.
+#[derive(Debug, Clone, Deserialize, ts_rs::TS)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum FsOp {
     List {
@@ -53,6 +56,7 @@ pub enum FsOp {
         #[serde(default)]
         data: String,
         #[serde(default)]
+        #[ts(as = "Option<bool>", optional)]
         binary: bool,
     },
     Mkdir {
@@ -63,18 +67,21 @@ pub enum FsOp {
         #[serde(default)]
         path: String,
         #[serde(default)]
+        #[ts(as = "Option<bool>", optional)]
         recursive: bool,
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, ts_rs::TS)]
 pub struct DirEntry {
     pub name: String,
     /// "directory" | "file" (the guest re-joins each basename to the parent).
+    #[ts(type = "\"file\" | \"directory\"")]
     pub kind: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+/// `POST /api/editor/vault/{note_id}/fs` response, keyed by the producing [`FsOp`]'s `kind` tag.
+#[derive(Debug, Clone, PartialEq, Serialize, ts_rs::TS)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum FsResult {
     List { entries: Vec<DirEntry> },

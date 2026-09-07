@@ -39,7 +39,6 @@ fn default_limit() -> i64 {
     20
 }
 
-/// `POST /api/orcid/backfill` request body.
 #[derive(Deserialize, ts_rs::TS)]
 pub struct OrcidBackfillBody {
     #[serde(default = "default_limit")]

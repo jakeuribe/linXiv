@@ -40,7 +40,6 @@ fn default_limit() -> i64 {
     20
 }
 
-/// `POST /api/versions/check` request body.
 #[derive(Deserialize, ts_rs::TS)]
 pub struct VersionsCheckBody {
     #[serde(default = "default_limit")]
@@ -89,7 +88,6 @@ fn list_new(state: &AppState) -> Result<Value, ApiError> {
     to_value(&NewVersionsResponse { new_versions: list })
 }
 
-/// `POST /api/versions/ack` request body.
 #[derive(Deserialize, ts_rs::TS)]
 pub struct VersionsAckBody {
     pub source_fk: i64,

@@ -36,14 +36,12 @@ fn list(state: &AppState) -> Result<Value, ApiError> {
     crate::route::to_value(&svc_tag::TagsResponse { tags })
 }
 
-/// `GET /api/tags/{label}` — `api_tag_detail`. The composite lives in core
-/// (`svc_tag::detail` → `TagDetail`): canonical label, papers, active projects.
+/// `GET /api/tags/{label}` — `api_tag_detail`. Canonical label via `tag::get`
 fn detail(state: &AppState, label: &str) -> Result<Value, ApiError> {
     let d = state.with_conn(|conn| svc_tag::detail(conn, label))?;
     crate::route::to_value(&d)
 }
 
-/// `POST /api/tags` request body.
 #[derive(Deserialize, ts_rs::TS)]
 pub struct TagCreateBody {
     pub label: String,

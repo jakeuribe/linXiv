@@ -114,7 +114,6 @@ pub struct EditorProjectSummary {
     pub updated_at: Option<String>,
 }
 
-/// `GET /api/editor/projects` envelope.
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct EditorProjectsResponse {
     pub projects: Vec<EditorProjectSummary>,

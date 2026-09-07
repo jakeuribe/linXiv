@@ -1,29 +1,10 @@
-//! TypeScript bindings for the wire types (test-only).
-//!
-//! `src/types/generated.ts` is a **checked-in artifact** — the frontend builds
-//! from a clean clone with no cargo step. This module is the generator and the
-//! drift check in one: [`tests::bindings_are_current`] renders every
-//! `#[derive(TS)]` serializer and asserts the checked-in file matches.
-//!
-//! Regenerate: `npm run types:gen` (`UPDATE_BINDINGS=1 cargo test -p
-//! linxiv-server ts_bindings`). Verify: `npm run types:check`.
-//!
-//! Lives in linxiv-server (moved from linxiv-core) because this crate tops the
-//! dependency graph: one `render()` reaches core's models/services, the share
-//! crate, AND this crate's own route request structs. The app crate above us
-//! keeps its one hand-synced type (`RemoteBackend` in src/api/client.ts) —
-//! rendering it would drag the Tauri build into `types:gen`.
-//!
-//! Only types with ONE canonical serializer belong here (CONTEXT.md
-//! § Serializer Convention). The wire shapes still assembled by inline `json!`
-//! in a route handler have no struct to generate from and stay hand-written in
-//! `src/types/api.ts`, each with a comment saying why.
+//! Generator and drift check (test-only) for the checked-in artifact
+//! `src/types/generated.ts` — regenerate with `npm run types:gen`.
+//! Lives in linxiv-server because this crate tops the dep graph.
 
 use ts_rs::{Config, TS};
 
-/// `i64` → `number`, not ts-rs's default `bigint`: the wire is JSON and
-/// `JSON.parse` already hands the frontend a `number` for every id. (SQLite
-/// rowids in a desktop library never approach 2^53.)
+/// `i64` → `number`, not ts-rs's default `bigint` (the wire is JSON; ids stay below 2^53).
 fn cfg() -> Config {
     Config::new().with_large_int("number")
 }
@@ -40,16 +21,9 @@ fn decl<T: TS + ?Sized>() -> String {
     format!("\nexport {}\n", pretty(T::decl(&cfg())))
 }
 
-/// ts-rs emits a declaration on one line. Break the object body to one member
-/// per line so a drifted field is a one-line diff instead of a rewritten
-/// paragraph. Splits on top-level commas only, so `Array<A, B>` stays intact;
-/// anything that isn't a `{ … }` body (a union like `Status`) passes through.
-/// ts-rs's `format` feature would do this too, at the cost of 45 crates.
-///
-/// A comma inside a JSDoc block is prose, not a member separator: ts-rs carries
-/// the Rust doc comment through verbatim, so splitting on those commas chopped
-/// a doc sentence across lines mid-clause and indented each fragment as its own
-/// member. Track the `/* … */` span and only split outside it.
+/// Break ts-rs's one-line object body to one member per line so a drifted
+/// field is a one-line diff. Splits on top-level commas only; a comma inside a
+/// JSDoc `/* … */` block is prose, not a member separator, and never splits.
 fn pretty(decl: String) -> String {
     let (Some(open), Some(close)) = (decl.find("{ "), decl.rfind(" }")) else {
         return decl;
@@ -265,6 +239,34 @@ pub(crate) fn render() -> String {
     out.push_str(&decl::<crate::route::projects::ProjectAddPaperBody>());
     out.push_str(&decl::<crate::route::projects::ProjectAddPapersBulkBody>());
     out.push_str(&decl::<crate::route::projects::ProjectExportBody>());
+    // Editor vault filesystem RPC (route/editor.rs) — request op + response.
+    out.push_str(&decl::<linxiv_core::service::vault::FsOp>());
+    out.push_str(&decl::<linxiv_core::service::vault::DirEntry>());
+    out.push_str(&decl::<linxiv_core::service::vault::FsResult>());
+    // Share dispatcher response envelopes (route/share.rs + share_sync.rs) —
+    // reachable since the generator moved to this crate. ReceivedDetail,
+    // JoinedSummary/JoinPending and the syncShare envelope stay hand-written
+    // (untyped `Vec<Value>` papers / literal-typed union / inline json!).
+    out.push_str(&decl::<crate::route::share::SummaryRow>());
+    out.push_str(&decl::<crate::route::share::SharedProjectsListing>());
+    out.push_str(&decl::<crate::route::share::ReceivedListing>());
+    out.push_str(&decl::<crate::route::share::ImportedReceipt>());
+    out.push_str(&decl::<crate::route::share::UnpublishedReceipt>());
+    out.push_str(&decl::<crate::route::share::LeftReceipt>());
+    out.push_str(&decl::<crate::route::share::UnlinkedReceipt>());
+    out.push_str(&decl::<crate::route::share::PublishedReceipt>());
+    out.push_str(&decl::<crate::route::share::TicketMinted>());
+    out.push_str(&decl::<crate::route::share::MemberCode>());
+    out.push_str(&decl::<crate::route::share::InviteMinted>());
+    out.push_str(&decl::<crate::route::share::MemberRow>());
+    out.push_str(&decl::<crate::route::share::MembersListing>());
+    out.push_str(&decl::<crate::route::share::RoleChanged>());
+    out.push_str(&decl::<crate::route::share::RevokedReceipt>());
+    out.push_str(&decl::<crate::route::share::RekeyedReceipt>());
+    out.push_str(&decl::<crate::route::share::RemovedReceipt>());
+    out.push_str(&decl::<crate::route::share::SharedPdfSaved>());
+    out.push_str(&decl::<crate::share_sync::SyncDirection>());
+    out.push_str(&decl::<crate::share_sync::ShareSettings>());
     out
 }
 
