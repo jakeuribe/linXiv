@@ -250,7 +250,8 @@ pub struct DoiSaveResponse {
 }
 
 /// `{"ok": true}` — the bare acknowledgement for writes with nothing else to
-/// report (e.g. `PUT /api/papers/{id}/pdf`).
+/// report (e.g. `PUT /api/papers/{id}/pdf`, `PATCH /api/settings`,
+/// `POST /api/versions/ack`, `POST /api/feed/dismiss`).
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct OkReceipt {
     pub ok: bool,

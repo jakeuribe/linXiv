@@ -3,11 +3,14 @@
 //! history side-effect and the settings gate; this module is query/body parsing.
 
 use serde::Deserialize;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value};
 
-use linxiv_core::service::search_state::{self as svc_search, SavedSearch};
+use linxiv_core::models::OkReceipt;
+use linxiv_core::service::search_state::{
+    self as svc_search, SavedSearch, SearchHistoryResponse, SearchStateResponse,
+};
 
-use crate::route::{ApiError, ReqCtx};
+use crate::route::{to_value, ApiError, ReqCtx};
 use crate::state::AppState;
 
 pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<Value, ApiError>> {
@@ -36,13 +39,13 @@ fn history(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
         },
     };
     let suggestions = state.with_conn(|conn| svc_search::suggestions(conn, prefix, limit))?;
-    Ok(json!({ "suggestions": suggestions }))
+    to_value(&SearchHistoryResponse { suggestions })
 }
 
 /// `GET /api/search/state` — `api_search_state_get`. `{state: null|obj}`.
 fn get_state(state: &AppState) -> Result<Value, ApiError> {
     let st = state.with_conn(|conn| svc_search::load(conn))?;
-    Ok(json!({ "state": st.unwrap_or(Value::Null) }))
+    to_value(&SearchStateResponse { state: st })
 }
 
 /// `SearchStateBody` (app.py 769-775) — typed so a wrong field type 422s like
@@ -82,7 +85,7 @@ fn save(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
         sort_prefs: body.sort_prefs,
     };
     state.with_conn(|conn| svc_search::save(conn, &saved))?;
-    Ok(json!({ "ok": true }))
+    to_value(&OkReceipt { ok: true })
 }
 
 #[cfg(test)]
@@ -90,6 +93,7 @@ mod tests {
     use super::*;
     use crate::route::{route, ApiRequest};
     use linxiv_core::storage;
+    use serde_json::json;
 
     fn st() -> AppState {
         let conn = storage::open_in_memory().unwrap();

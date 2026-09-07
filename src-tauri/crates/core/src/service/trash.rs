@@ -61,21 +61,21 @@ pub struct RestoredPaper {
 }
 
 /// Receipt for a paper hard-delete.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct HardDeletedPaper {
     pub ok: bool,
     pub hard_deleted: String,
 }
 
 /// Receipt for a project restore.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct RestoredProject {
     pub ok: bool,
     pub restored_project_id: i64,
 }
 
 /// Receipt for a project hard-delete.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct HardDeletedProject {
     pub ok: bool,
     pub hard_deleted_project_id: i64,

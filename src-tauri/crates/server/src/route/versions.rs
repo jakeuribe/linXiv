@@ -7,11 +7,14 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 
-use linxiv_core::service::version_monitor as svc;
+use linxiv_core::models::OkReceipt;
+use linxiv_core::service::version_monitor::{
+    self as svc, NewVersionsResponse, VersionCheckResponse,
+};
 
-use crate::route::{ApiError, ReqCtx};
+use crate::route::{to_value, ApiError, ReqCtx};
 use crate::state::AppState;
 
 static CHECK_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
@@ -63,18 +66,24 @@ async fn check(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
 
     let candidates = state.with_conn(|conn| svc::stale_candidates(conn, limit))?;
     if candidates.is_empty() {
-        return Ok(json!({ "checked": 0, "new_versions": [] }));
+        return to_value(&VersionCheckResponse {
+            checked: 0,
+            new_versions: vec![],
+        });
     }
     let ids: Vec<String> = candidates.iter().map(|c| c.source_id.clone()).collect();
     let fetched = svc::fetch_latest(&ids).await?;
     let found = state.with_conn(|conn| svc::apply_results(conn, &candidates, &fetched))?;
-    Ok(json!({ "checked": candidates.len(), "new_versions": found }))
+    to_value(&VersionCheckResponse {
+        checked: candidates.len(),
+        new_versions: found,
+    })
 }
 
 /// `GET /api/versions/new` — papers with an un-acknowledged new version.
 fn list_new(state: &AppState) -> Result<Value, ApiError> {
     let list = state.with_conn(|conn| svc::list_new_versions(conn))?;
-    Ok(json!({ "new_versions": list }))
+    to_value(&NewVersionsResponse { new_versions: list })
 }
 
 /// `POST /api/versions/ack` — clear the flag for one paper. 404 when unset.
@@ -88,13 +97,14 @@ fn ack(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     if !cleared {
         return Err(ApiError::new(404, "no new version flagged for this paper"));
     }
-    Ok(json!({ "ok": true }))
+    to_value(&OkReceipt { ok: true })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::route::testutil::{req, state};
+    use serde_json::json;
     use tokio::sync::Mutex;
 
     // Serialize access to CHECK_IN_PROGRESS across all tests to prevent race

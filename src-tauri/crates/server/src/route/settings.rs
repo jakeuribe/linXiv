@@ -4,11 +4,12 @@
 //! binding mirrors `mcp/src/io_authors_misc.rs::{get_settings, update_setting}`.
 
 use serde::Deserialize;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value};
 
 use linxiv_core::config::UserSettings;
+use linxiv_core::models::OkReceipt;
 
-use crate::route::{ApiError, ReqCtx};
+use crate::route::{to_value, ApiError, ReqCtx};
 use crate::state::AppState;
 
 /// `_SETTINGS_ENV_KEYS` (app.py 1048-1049): env values merged into the GET body.
@@ -58,7 +59,7 @@ fn env_patch(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     }
     std::env::set_var(&b.key, &b.value);
     UserSettings::load()?.set(b.key, Value::String(b.value))?;
-    Ok(json!({ "ok": true }))
+    to_value(&OkReceipt { ok: true })
 }
 
 /// `GET /api/settings` — `api_settings_get`. Settings first, then each env key
@@ -83,7 +84,7 @@ fn patch(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     for (key, value) in b.updates {
         settings.set(key, value)?;
     }
-    Ok(json!({ "ok": true }))
+    to_value(&OkReceipt { ok: true })
 }
 
 /// Remove `SECRET_ENV_KEYS` from the settings map.
@@ -115,6 +116,7 @@ mod tests {
     // rule forbids redirecting the data dir, so GET has no isolated test; the
     // redact/overlay helpers — the only nontrivial parts — are pinned below.
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn overlay_appends_present_env_keys_in_order_after_settings() {

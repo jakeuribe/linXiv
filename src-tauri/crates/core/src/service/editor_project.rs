@@ -114,6 +114,12 @@ pub struct EditorProjectSummary {
     pub updated_at: Option<String>,
 }
 
+/// `GET /api/editor/projects` envelope.
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+pub struct EditorProjectsResponse {
+    pub projects: Vec<EditorProjectSummary>,
+}
+
 fn to_summary(note: &NoteDetails, meta: &HashMap<String, String>) -> EditorProjectSummary {
     // Mirrors Python's `a or b or c` falsy-on-"".
     let project_name = meta

@@ -82,6 +82,15 @@ export type {
   CreatedAnnotation,
   ReadingStatusesResponse,
   ReadingStatusReceipt,
+  EditorProjectsResponse,
+  SearchHistoryResponse,
+  VersionCheckResponse,
+  NewVersionsResponse,
+  FeedRulesResponse,
+  OrcidBackfillResponse,
+  HardDeletedPaper,
+  RestoredProject,
+  HardDeletedProject,
 } from "./generated";
 
 // Frontend names for the generated serializers. The Rust name is the model,
@@ -133,9 +142,10 @@ export interface Settings {
 // they are GENERATED (`GraphView` and friends in ./generated.ts) and the
 // drift check is `npm run types:check` rather than a bespoke assets test.
 
-// sources/feed.rs::FeedEntry has a matching Rust struct, but the response is
-// assembled inline in route/feed.rs (`title` + entries + saved ids), so only
-// half of this pair could be generated.
+// Core's `service::feed::FeedResponse` carries `entries` as untyped JSON blobs
+// (the cached feed entries round-trip through the DB as stored JSON), so the
+// generated type would say `JsonValue` where the app relies on this shape —
+// hand-written until core types the cached entries.
 export interface FeedEntry {
   title: string;
   link: string;

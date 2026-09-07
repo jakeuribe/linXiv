@@ -1,5 +1,5 @@
 import { libraryFetch } from "../stores/backend.ts";
-import type { FeedFilterRule, FeedResponse } from "../types/api";
+import type { FeedFilterRule, FeedResponse, FeedRulesResponse } from "../types/api";
 
 export async function getFeed(url: string): Promise<FeedResponse> {
   return libraryFetch<FeedResponse>(`/api/feed?url=${encodeURIComponent(url)}`);
@@ -17,7 +17,7 @@ export async function dismissFeedEntry(
 }
 
 export async function listFeedRules(): Promise<FeedFilterRule[]> {
-  const res = await libraryFetch<{ rules: FeedFilterRule[] }>("/api/feed/rules");
+  const res = await libraryFetch<FeedRulesResponse>("/api/feed/rules");
   return res.rules;
 }
 

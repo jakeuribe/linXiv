@@ -561,6 +561,13 @@ pub fn get_categories(conn: &Connection) -> Result<Vec<String>> {
     store::get_categories(conn)
 }
 
+/// `GET /api/categories` envelope. The CLI `categories` command emits the bare
+/// array; the wrapping is the API's divergence, so it lives beside the source.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CategoriesResponse {
+    pub categories: Vec<String>,
+}
+
 /// Latest papers whose JSON tags include `label`, case-insensitively
 /// (`db.get_papers_by_json_tag`). Order: published DESC (undated last), then
 /// paper_id DESC so same-published-date papers are deterministic.

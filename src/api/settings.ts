@@ -3,7 +3,7 @@
 import { apiFetch } from "./client";
 import { libraryFetch } from "../stores/backend.ts";
 import { queryClient } from "../lib/queryClient";
-import type { Settings, Stats } from "../types/api";
+import type { OkReceipt, Settings, Stats } from "../types/api";
 
 export async function getSettings(): Promise<Settings> {
   return apiFetch<Settings>("/api/settings");
@@ -15,8 +15,8 @@ export async function getSettings(): Promise<Settings> {
 // until a page reload.
 export async function updateSettings(
   updates: Partial<Settings>
-): Promise<{ ok: boolean }> {
-  const result = await apiFetch<{ ok: boolean }>("/api/settings", {
+): Promise<OkReceipt> {
+  const result = await apiFetch<OkReceipt>("/api/settings", {
     method: "PATCH",
     body: JSON.stringify({ updates }),
   });
@@ -27,8 +27,8 @@ export async function updateSettings(
 export async function updateEnv(
   key: string,
   value: string
-): Promise<{ ok: boolean }> {
-  const result = await apiFetch<{ ok: boolean }>("/api/env", {
+): Promise<OkReceipt> {
+  const result = await apiFetch<OkReceipt>("/api/env", {
     method: "PATCH",
     body: JSON.stringify({ key, value }),
   });

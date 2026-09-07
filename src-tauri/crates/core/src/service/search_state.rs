@@ -23,6 +23,18 @@ pub struct SavedSearch {
     pub sort_prefs: Option<Map<String, Value>>,
 }
 
+/// `GET /api/search/history` envelope.
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+pub struct SearchHistoryResponse {
+    pub suggestions: Vec<String>,
+}
+
+/// `GET /api/search/state` envelope — the saved blob (untyped JSON) or `null`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SearchStateResponse {
+    pub state: Option<Value>,
+}
+
 /// Past search terms starting with `prefix`, newest first.
 pub fn suggestions(conn: &Connection, prefix: &str, limit: i64) -> Result<Vec<String>> {
     search_history::get_suggestions(conn, prefix, limit)

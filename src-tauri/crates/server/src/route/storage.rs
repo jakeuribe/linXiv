@@ -5,11 +5,12 @@
 use std::path::PathBuf;
 
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 
+use linxiv_core::models::OkReceipt;
 use linxiv_core::service::db_admin;
 
-use crate::route::{ApiError, ReqCtx};
+use crate::route::{to_value, ApiError, ReqCtx};
 use crate::state::AppState;
 
 pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<Value, ApiError>> {
@@ -71,7 +72,7 @@ fn restore(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     // Validate the backup source early, before parking the live connection.
     db_admin::validate_backup_source(&b.src_path)?;
     state.with_conn(|conn| db_admin::restore_in_place(conn, &b.src_path))?;
-    Ok(json!({ "ok": true }))
+    to_value(&OkReceipt { ok: true })
 }
 
 #[cfg(test)]

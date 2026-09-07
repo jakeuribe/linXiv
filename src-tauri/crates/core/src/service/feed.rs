@@ -35,6 +35,28 @@ pub struct FeedPage {
     pub window_was_empty: bool,
 }
 
+/// `GET /api/feed` envelope: channel title + the filtered page. `entries` are
+/// the cached entry blobs (untyped JSON), so this stays hand-written in
+/// `src/types/api.ts` rather than TS-generated.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct FeedResponse {
+    pub title: String,
+    pub entries: Vec<Value>,
+    pub saved_arxiv_ids: Vec<String>,
+}
+
+/// `GET /api/feed/rules` envelope.
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+pub struct FeedRulesResponse {
+    pub rules: Vec<FilterRule>,
+}
+
+/// `POST /api/feed/rules` envelope: the created rule's id.
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+pub struct CreatedFeedRule {
+    pub rule_id: i64,
+}
+
 /// Parse a feed entry's `published` string (RSS is RFC 822, Atom is RFC 3339).
 /// `None` if neither parses -- caller then falls back to `FETCHED_AT`.
 fn parse_published(s: &str) -> Option<NaiveDateTime> {

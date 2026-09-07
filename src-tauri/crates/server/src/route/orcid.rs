@@ -5,16 +5,17 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use linxiv_core::models::PaperMetadata;
+use linxiv_core::service::orcid_backfill::OrcidBackfillResponse;
 use linxiv_core::service::{orcid_backfill as svc, source as svc_source};
 
 /// Pause between distinct DOIs so a backfill pass never bursts CrossRef/
 /// OpenAlex — neither is rate-limited by `sources::http` the way arXiv is.
 const INTER_DOI_DELAY: std::time::Duration = std::time::Duration::from_millis(200);
 
-use crate::route::{ApiError, ReqCtx};
+use crate::route::{to_value, ApiError, ReqCtx};
 use crate::state::AppState;
 
 static BACKFILL_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
@@ -64,7 +65,11 @@ async fn backfill(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError>
 
     let candidates = state.with_conn(|conn| svc::orcid_backfill_candidates(conn, limit))?;
     if candidates.is_empty() {
-        return Ok(json!({ "checked": 0, "updated": [], "errored": 0 }));
+        return to_value(&OrcidBackfillResponse {
+            checked: 0,
+            updated: vec![],
+            errored: 0,
+        });
     }
 
     let mut dois: Vec<&str> = candidates.iter().map(|c| c.doi.as_str()).collect();
@@ -86,13 +91,18 @@ async fn backfill(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError>
     }
 
     let updated = state.with_conn(|conn| svc::apply_results(conn, &candidates, &fetched))?;
-    Ok(json!({ "checked": candidates.len(), "updated": updated, "errored": errored }))
+    to_value(&OrcidBackfillResponse {
+        checked: candidates.len(),
+        updated,
+        errored,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::route::testutil::{req, state};
+    use serde_json::json;
     use tokio::sync::Mutex;
 
     // Serialize access to BACKFILL_IN_PROGRESS across all tests to prevent
