@@ -571,3 +571,174 @@ export type SavedPdfListing = {
 export type DeletedPdf = {
   deleted: boolean,
 };
+
+export type ProjectsResponse = {
+  projects: Array<ProjectOut>,
+};
+
+export type CreatedProject = {
+  project: { id: number, name: string, },
+};
+
+export type BulkAddReceipt = {
+  ok: boolean,
+  failed: Array<string>,
+};
+
+export type TagsResponse = {
+  tags: Array<TagWithCount>,
+};
+
+export type TagDetail = {
+  /**
+   * Canonical stored casing; the raw query label when the tag is unknown.
+   */
+  label: string,
+  papers: Array<PaperDetails>,
+  projects: Array<ProjectOut>,
+};
+
+export type AuthorsResponse = {
+  authors: Array<AuthorWithCount>,
+};
+
+export type AuthorMergeResponse = {
+  merged_ids: Array<number>,
+  paper_count: number,
+  papers: Array<AuthorPaperPreview>,
+  author_id: number,
+  orcid: string | null,
+  full_name: string | null,
+  first_name: string | null,
+  last_name: string | null,
+};
+
+export type PaperMetadata = {
+  /**
+   * Namespaced ID, e.g. "arxiv:2204.12985", "openalex:W31...", "local:{hash}".
+   */
+  source_id: string,
+  /**
+   * Defaults to 1 for non-arxiv sources.
+   */
+  version: number,
+  title: string,
+  authors: Array<string>,
+  published: string,
+  updated: string | null,
+  summary: string,
+  category: string | null,
+  categories: Array<string> | null,
+  doi: string | null,
+  journal_ref: string | null,
+  comment: string | null,
+  url: string | null,
+  tags: Array<string> | null,
+  /**
+   * Backend that produced this record (must equal that source's `source_name`).
+   */
+  source: string | null,
+  /**
+   * Index-aligned with `authors` (same length when present); `None` per-author
+   * where the source didn't carry one. Only crossref/openalex populate this.
+   */
+  author_orcids: Array<string | null> | null,
+};
+
+export type OpenAlexSaveResponse = {
+  saved: boolean,
+  /**
+   * Stripped id of the stored paper.
+   */
+  source_id: string,
+};
+
+export type DoiResolveResponse = {
+  metadata: PaperMetadata,
+};
+
+export type DoiSaveResponse = {
+  metadata: PaperMetadata,
+  saved: boolean,
+};
+
+export type NoteListResponse = {
+  notes: Array<NoteDetails>,
+};
+
+export type NoteGetResponse = {
+  note: NoteDetails,
+};
+
+export type DeletedNote = {
+  deleted_note_id: number,
+};
+
+export type AnnotationListResponse = {
+  annotations: Array<AnnotationDetails>,
+};
+
+export type CreatedAnnotation = {
+  id: number,
+};
+
+export type ReadingStatusesResponse = {
+  /**
+   * Sparse `SOURCE_ID → status` map: unread papers are absent.
+   */
+  statuses: Record<string, "reading" | "read">,
+};
+
+export type ReadingStatusReceipt = {
+  ok: boolean,
+  applied: number,
+};
+
+export type EditorProjectsResponse = {
+  projects: Array<EditorProjectSummary>,
+};
+
+export type SearchHistoryResponse = {
+  suggestions: Array<string>,
+};
+
+export type VersionCheckResponse = {
+  checked: number,
+  new_versions: Array<NewVersion>,
+};
+
+export type NewVersionsResponse = {
+  new_versions: Array<NewVersion>,
+};
+
+export type FeedRulesResponse = {
+  rules: Array<FilterRule>,
+};
+
+export type CreatedFeedRule = {
+  rule_id: number,
+};
+
+export type OrcidBackfillResponse = {
+  checked: number,
+  updated: Array<OrcidCandidate>,
+  /**
+   * DOIs where a source request failed (not just "no ORCID found").
+   */
+  errored: number,
+};
+
+export type HardDeletedPaper = {
+  ok: boolean,
+  hard_deleted: string,
+};
+
+export type RestoredProject = {
+  ok: boolean,
+  restored_project_id: number,
+};
+
+export type HardDeletedProject = {
+  ok: boolean,
+  hard_deleted_project_id: number,
+};

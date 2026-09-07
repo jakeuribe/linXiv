@@ -1216,7 +1216,7 @@ async fn reconnect_relay(
     if share.mark_sync_started() {
         spawn_sync();
     }
-    Ok(json!({ "ok": true }))
+    to_value(&linxiv_core::models::OkReceipt { ok: true })
 }
 
 /// `POST /api/share/project/{id}/publish_secure` — snapshot a canonical project
