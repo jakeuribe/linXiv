@@ -2,7 +2,7 @@ import { useState, useRef, useMemo, useDeferredValue, useCallback } from "react"
 import { useNavigate } from "react-router";
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Upload, FileText, SearchX, FilterX } from "lucide-react";
+import { Upload, FileText, History, SearchX, FilterX } from "lucide-react";
 import { listPapers, deletePaper, searchLibrary } from "../api/papers";
 import type { PaperSort } from "../api/papers";
 import { listProjects } from "../api/projects";
@@ -24,6 +24,7 @@ import { Dialog } from "../components/ui/dialog";
 import { PaperCard } from "../components/papers/PaperCard";
 import { SelectionBar } from "../components/papers/SelectionBar";
 import { ImportDialog } from "../components/import/ImportDialog";
+import { HistoryDialog } from "../components/history/HistoryDialog";
 import { EmptyState } from "../components/ui/empty-state";
 import { errText } from "../lib/errText";
 import { copyItem, showContextMenu } from "../lib/contextMenu";
@@ -77,6 +78,7 @@ export default function LibraryPage() {
   const [projectPickerError, setProjectPickerError] = useState<string | null>(null);
   const [newProjectName, setNewProjectName] = useState("");
   const [importOpen, setImportOpen] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [pendingDeleteIds, setPendingDeleteIds] = useState<string[]>([]);
   // Context-menu "Add to Project…" targets: kept separate from selectedIds so
   // right-clicking an unselected paper never disturbs an unrelated selection
@@ -382,6 +384,9 @@ export default function LibraryPage() {
             onChange={(e) => setSearch(e.target.value)}
             className="max-w-xs"
           />
+          <Button variant="muted" size="sm" onClick={() => setHistoryOpen(true)}>
+            <History size={13} className="mr-1" />History
+          </Button>
           <Button variant="primary" size="sm" onClick={() => setImportOpen(true)}>
             <Upload size={13} className="mr-1" />Import
           </Button>
@@ -542,6 +547,12 @@ export default function LibraryPage() {
             navigate(`/projects/${newProjectIds[0]}`);
           }
         }}
+      />
+      <HistoryDialog
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        scope={{ kind: "library" }}
+        title="Library history"
       />
 
       {/* Add to project dialog */}

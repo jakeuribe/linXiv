@@ -151,6 +151,18 @@ export type {
 // always called it PaperRepairBody.
 export type { RepairFields as PaperRepairBody } from "./generated";
 
+// History (`/api/history`): change log, per-change diff, restore.
+export type {
+  ChangeRow,
+  Timeline,
+  PaperChange,
+  EntryChange,
+  FieldChange,
+  HistoryDiff,
+  RestoredToChange,
+  RestoreBody,
+} from "./generated";
+
 // Frontend names for the generated serializers. The Rust name is the model,
 // the alias is what the UI has always called it.
 export type Paper = PaperDetails;

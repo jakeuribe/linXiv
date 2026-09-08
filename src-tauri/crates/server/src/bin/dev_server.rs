@@ -21,6 +21,7 @@ const ADDR: &str = "127.0.0.1:8000";
 #[tokio::main]
 async fn main() {
     let state = Arc::new(AppState::new().expect("init app state"));
+    linxiv_server::journal::spawn_journal_loop(state.clone());
     let app = Router::new().fallback(any(dispatch)).with_state(state);
     let listener = tokio::net::TcpListener::bind(ADDR)
         .await

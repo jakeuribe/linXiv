@@ -394,6 +394,22 @@ pub async fn dispatch(
     spawn_sync: &(dyn Fn() + Sync),
     req: ApiRequest,
 ) -> Result<Value, ApiError> {
+    let mutates = req.method != "GET";
+    let res = dispatch_inner(state, share, spawn_sync, req).await;
+    // Share mutations change journaled content (a received-import creates a
+    // whole project) — poke the debounced loops like `route()` does.
+    if mutates && res.is_ok() {
+        crate::share_sync::nudge();
+    }
+    res
+}
+
+async fn dispatch_inner(
+    state: &AppState,
+    share: &ShareState,
+    spawn_sync: &(dyn Fn() + Sync),
+    req: ApiRequest,
+) -> Result<Value, ApiError> {
     let (raw_path, raw_query) = req.path.split_once('?').unwrap_or((req.path.as_str(), ""));
     let segs = split_segments(raw_path);
     let query = parse_query(raw_query);
@@ -876,6 +892,13 @@ async fn leave(share: &ShareState, id: &str) -> Result<Value, ApiError> {
         .map_err(|e| ApiError::new(500, format!("could not leave share: {e}")))?;
     let _ = std::fs::remove_file(share_sync::ticket_path(dir, id));
     let _ = std::fs::remove_file(share_sync::settings_path(dir, id));
+    // Deletion-propagation baselines must not outlive the mirror: a stale one
+    // would seed bogus local deletions on a later rejoin.
+    let _ = std::fs::remove_file(doc_path(&share_sync::applied_dir(&received_dir(dir)), id));
+    let _ = std::fs::remove_file(doc_path(
+        &share_sync::applied_dir(&e2ee_received_dir(dir)),
+        id,
+    ));
     to_value(&LeftReceipt {
         left: true,
         forgotten,

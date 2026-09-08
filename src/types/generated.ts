@@ -1059,3 +1059,69 @@ export type ShareSettings = {
   paused: boolean,
   direction: SyncDirection,
 };
+
+export type ChangeRow = {
+  hash: string,
+  actor: string,
+  /**
+   * Unix seconds; 0 on changes written before timestamps landed.
+   */
+  time: number,
+  message: string | null,
+  /**
+   * Written by this device (its pinned actor id).
+   */
+  mine: boolean,
+};
+
+export type Timeline = {
+  changes: Array<ChangeRow>,
+  device_actor: string | null,
+};
+
+export type PaperChange = {
+  source_id: string,
+  title: string,
+};
+
+export type EntryChange = {
+  uuid: string,
+  title: string,
+  from: string | null,
+  to: string | null,
+};
+
+export type FieldChange = {
+  field: string,
+  from: string,
+  to: string,
+};
+
+export type HistoryDiff = {
+  papers_added: Array<PaperChange>,
+  papers_removed: Array<PaperChange>,
+  tags_added: Array<string>,
+  tags_removed: Array<string>,
+  notes_added: Array<EntryChange>,
+  notes_removed: Array<EntryChange>,
+  notes_changed: Array<EntryChange>,
+  annotations_added: Array<EntryChange>,
+  annotations_removed: Array<EntryChange>,
+  annotations_changed: Array<EntryChange>,
+  meta: Array<FieldChange>,
+};
+
+export type RestoredToChange = {
+  ok: boolean,
+  removed_papers: number,
+  removed_notes: number,
+  removed_annotations: number,
+  removed_tags: number,
+};
+
+export type RestoreBody = {
+  /**
+   * Change hash to restore to (state as of that change, inclusive).
+   */
+  to: string,
+};

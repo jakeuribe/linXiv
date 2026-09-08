@@ -21,6 +21,10 @@ impl AppState {
     /// byte-matches Tauri's `app_data_dir()` for `com.linxiv.app` (D24).
     pub fn new() -> anyhow::Result<Self> {
         config::init_data_dir()?;
+        // Pin the persistent device actor so every CRDT change is attributable.
+        if let Err(e) = linxiv_share::init_device_actor(&config::data_dir()) {
+            eprintln!("device actor init failed (history will be per-run): {e}");
+        }
         let conn = storage::open(&config::db_path())?;
         storage::init_db(&conn)?;
         Ok(Self {

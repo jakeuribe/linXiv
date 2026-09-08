@@ -52,11 +52,45 @@ struct Ctx {
     transfers: Arc<Mutex<TransferLog>>,
 }
 
+/// Seed `p2p_relay_url` / `p2p_relay_auth_token` from `LINXIV_P2P_RELAY_URL` /
+/// `LINXIV_P2P_RELAY_TOKEN` when the settings are blank — a fresh (or `--rm`)
+/// container has no settings file, and without a relay URL the node can't mint
+/// a Node Address. Env seeds first boot; `PATCH /api/settings` wins afterward.
+fn seed_relay_from_env() {
+    let url = std::env::var("LINXIV_P2P_RELAY_URL").unwrap_or_default();
+    if url.is_empty() {
+        return;
+    }
+    let Ok(mut settings) = linxiv_core::config::UserSettings::load() else {
+        eprintln!("warning: settings unreadable; LINXIV_P2P_RELAY_URL not applied");
+        return;
+    };
+    let blank = |s: &linxiv_core::config::UserSettings, k: &str| {
+        s.get(k).and_then(|v| v.as_str()).is_none_or(str::is_empty)
+    };
+    if !blank(&settings, "p2p_relay_url") {
+        return;
+    }
+    let mut apply = || -> linxiv_core::error::Result<()> {
+        settings.set("p2p_relay_url", url.clone().into())?;
+        let token = std::env::var("LINXIV_P2P_RELAY_TOKEN").unwrap_or_default();
+        if !token.is_empty() && blank(&settings, "p2p_relay_auth_token") {
+            settings.set("p2p_relay_auth_token", token.into())?;
+        }
+        Ok(())
+    };
+    match apply() {
+        Ok(()) => eprintln!("linxiv headless: relay seeded from env: {url}"),
+        Err(e) => eprintln!("warning: seeding relay from env failed: {e}"),
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let started = Instant::now();
     let data_dir = linxiv_core::config::init_data_dir().expect("init data dir");
     eprintln!("linxiv headless: data dir {}", data_dir.display());
+    seed_relay_from_env();
     let state = Arc::new(AppState::new().expect("init app state"));
     // Keychain access is sync (and absent in containers, where the
     // LINXIV_P2P_PASSPHRASE fallback applies) — keep it off the async runtime.
@@ -97,6 +131,8 @@ async fn main() {
     if node_bound && ctx.share.mark_sync_started() {
         spawn_interval_sync(&ctx);
     }
+    // Unconditional: history/undo must journal even with the p2p node unbound.
+    linxiv_server::journal::spawn_journal_loop(ctx.state.clone());
     install_remote_query(&ctx).await;
     // Idles until `full_text_worker_enabled` is switched on, same as the app.
     full_text_worker::spawn_headless(ctx.state.clone());

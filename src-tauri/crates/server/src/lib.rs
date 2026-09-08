@@ -2,6 +2,7 @@
 //! Consumed by the Tauri app, the dev-only HTTP shim (D32), and the headless node.
 
 pub mod full_text_worker;
+pub mod journal;
 pub mod p2p_config;
 pub mod remote_query;
 pub mod route;

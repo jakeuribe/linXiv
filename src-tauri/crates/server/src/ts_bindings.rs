@@ -266,6 +266,14 @@ pub(crate) fn render() -> String {
     out.push_str(&decl::<crate::route::share::SharedPdfSaved>());
     out.push_str(&decl::<crate::share_sync::SyncDirection>());
     out.push_str(&decl::<crate::share_sync::ShareSettings>());
+    out.push_str(&decl::<crate::route::history::ChangeRow>());
+    out.push_str(&decl::<crate::route::history::Timeline>());
+    out.push_str(&decl::<crate::route::history::PaperChange>());
+    out.push_str(&decl::<crate::route::history::EntryChange>());
+    out.push_str(&decl::<crate::route::history::FieldChange>());
+    out.push_str(&decl::<crate::route::history::HistoryDiff>());
+    out.push_str(&decl::<crate::route::history::RestoredToChange>());
+    out.push_str(&decl::<crate::route::history::RestoreBody>());
     out
 }
 

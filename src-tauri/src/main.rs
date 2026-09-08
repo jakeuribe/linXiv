@@ -107,6 +107,9 @@ fn main() {
                 // Background share sync: one pass now, then every 5 min.
                 commands::spawn_interval_sync(app.handle().clone());
             }
+            // Journal loop is unconditional — history/undo must not depend on
+            // the p2p node binding.
+            commands::spawn_journal_loop(app.handle().clone());
             // Point the pdfium loader at the libpdfium bundled under the app
             // resources (tauri.conf.json `bundle.resources` maps it into pdfium/).
             if std::env::var_os("LINXIV_PDFIUM_LIB").is_none() {
