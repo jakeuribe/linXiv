@@ -1,5 +1,3 @@
-//! Group `pdf` — cmd_pdf_* in `linxiv_cli.py`.
-
 use std::path::PathBuf;
 
 use clap::Subcommand;
@@ -48,14 +46,12 @@ pub enum PdfCmd {
     },
 }
 
-/// `cmd_pdf_storage` output dict.
 #[derive(Serialize)]
 struct StorageInfo {
     storage_mb: f64,
     pdf_dir: PathBuf,
 }
 
-/// `cmd_pdf_import` output dict.
 #[derive(Serialize)]
 struct ImportedPdf {
     source_id: String,
@@ -86,7 +82,7 @@ pub async fn run(cmd: PdfCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         PdfCmd::Path { source_id, version } => {
             let source_id = as_source_id(&ctx.conn, &source_id);
             let paper = super::paper::resolve_paper_or_exit(ctx, &source_id);
-            // Python `args.version if args.version else paper.version` — 0/None fall back.
+            // 0/absent --version falls back to the paper's current version.
             let version = version.filter(|&v| v != 0).unwrap_or(paper.version);
             let path = svc_files::pdf_path(
                 &ctx.pdf_dir,
@@ -157,8 +153,7 @@ pub async fn run(cmd: PdfCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
         PdfCmd::Storage => {
             let mb = svc_files::pdf_storage_mb(&ctx.pdf_dir);
             output(&StorageInfo {
-                // Python `round(mb, 3)` is banker's rounding (half-to-even); this is
-                // half-away-from-zero. Diverges only on exact 4th-decimal .5 ties.
+                // Round to 3 decimals (half-away-from-zero).
                 storage_mb: (mb * 1000.0).round() / 1000.0,
                 pdf_dir: ctx.pdf_dir.clone(),
             });

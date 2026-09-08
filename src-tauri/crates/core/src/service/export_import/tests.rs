@@ -496,7 +496,7 @@ fn commit_rolls_back_project_when_a_paper_cannot_be_linked() {
         commit_from_manifest(&mut conn, &manifest, &[], OnConflict::Merge, tmp.path()).unwrap_err();
     assert!(matches!(err, CoreError::ProjectImport(_)));
 
-    // The project must NOT survive as active — it was trashed (Python `_project.delete`).
+    // The project must NOT survive as active — it was trashed.
     let active = project::get_many(
         &conn,
         &project::Projects {

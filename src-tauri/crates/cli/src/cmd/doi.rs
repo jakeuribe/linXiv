@@ -1,5 +1,3 @@
-//! Group `doi` — cmd_doi_* in `linxiv_cli.py`.
-
 use clap::Subcommand;
 
 use linxiv_core::models::DoiSaveResponse;
@@ -18,7 +16,7 @@ pub enum DoiCmd {
 
 pub async fn run(cmd: DoiCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
     let (DoiCmd::Resolve { doi } | DoiCmd::Save { doi }) = &cmd;
-    // The `[doi] {e}` prefix line + error JSON mirror Python's two-line stderr on failure.
+    // Two-line stderr on failure: `[doi] {e}` prefix line, then the error JSON.
     let meta = svc_source::resolve_doi(doi).await.unwrap_or_else(|e| {
         eprintln!("[doi] {e}");
         fail(e)

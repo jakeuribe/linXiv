@@ -1,7 +1,5 @@
-//! Dev-only HTTP shim (D32): serves `/api/*` over HTTP by dispatching into the
-//! SAME in-process router the Tauri app uses, so the browser dev loop (Vite
-//! proxies `/api` → here on :8000) works with no Python. NOT shipped — this is a
-//! `npm run dev` convenience only.
+//! Dev-only HTTP shim (D32): serves `/api/*` by dispatching into the SAME
+//! in-process router the Tauri app uses (Vite proxies `/api` → :8000). NOT shipped.
 
 use std::sync::Arc;
 
@@ -27,7 +25,7 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(ADDR)
         .await
         .expect("bind dev shim");
-    eprintln!("linxiv dev shim on http://{ADDR} — Vite proxies /api here (no Python).");
+    eprintln!("linxiv dev shim on http://{ADDR} — Vite proxies /api here.");
     axum::serve(listener, app).await.expect("dev shim serve");
 }
 

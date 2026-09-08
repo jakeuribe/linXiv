@@ -1,7 +1,5 @@
-//! `/api/authors` routes — `api/app.py` 1011–1045. The reference resource group:
-//! a `handle` that owns its path subtree, path-param extraction, 404/409 mapping,
-//! body deserialization, and composite serialization. Every other group module
-//! copies this shape. Core binding mirrors `mcp/src/io_authors_misc.rs`.
+//! `/api/authors` routes — the reference resource group (every other group module
+//! copies this shape): path subtree, 404/409 mapping, composite serialization.
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -29,7 +27,7 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
     }
 }
 
-/// `GET /api/authors?exclude_single=` — `api_authors_list`.
+/// `GET /api/authors?exclude_single=`.
 fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     // Floor of 1, not 0: paperless AUTHOR rows exist by design (trash-linked
     // papers keep their links for restore; ADR-0009 leaves hard-delete orphans)
@@ -39,7 +37,7 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     crate::route::to_value(&AuthorsResponse { authors })
 }
 
-/// `GET /api/authors/{id}` — `api_author_get` → `_author_detail_response`.
+/// `GET /api/authors/{id}`.
 fn detail(state: &AppState, id: &str) -> Result<Value, ApiError> {
     detail_response(state, path_i64(id)?)
 }
@@ -131,8 +129,8 @@ pub struct AuthorUpdateBody {
     pub orcid: Option<String>,
 }
 
-/// `PATCH /api/authors/{id}` — `api_author_update`. Forwards the (all-optional)
-/// fields to `update_fields`, then returns the same detail shape as GET.
+/// `PATCH /api/authors/{id}` — forwards the (all-optional) fields to
+/// `update_fields`, then returns the same detail shape as GET.
 fn update(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let author_id = path_i64(id)?;
     let b: AuthorUpdateBody = ctx.parse_body()?;
@@ -173,8 +171,8 @@ fn merge(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError
     })
 }
 
-/// `DELETE /api/authors/{id}` — `api_author_delete`. 404 if absent, 409 if still
-/// linked to papers; both guards live in `svc_author::delete`.
+/// `DELETE /api/authors/{id}` — 404 if absent, 409 if still linked to papers;
+/// both guards live in `svc_author::delete`.
 fn delete(state: &AppState, id: &str) -> Result<Value, ApiError> {
     let author_id = path_i64(id)?;
     state.with_conn(|conn| svc_author::delete(conn, &author_ref(author_id)))?;

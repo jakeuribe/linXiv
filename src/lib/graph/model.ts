@@ -1,10 +1,6 @@
-// Shared vocabulary for the Knowledge Graph page.
-//
-// The wire types are GENERATED from the Rust structs in
-// `src-tauri/crates/core/src/graph.rs` (see src/types/generated.ts) — the graph
-// is the one surface in the app whose payload used to be assembled by an inline
-// `json!` and consumed by an unbundled browser script, so nothing type-checked
-// the join between them. Everything here is derived from those types.
+// Shared vocabulary for the Knowledge Graph page. The wire types are GENERATED
+// from the Rust structs in `src-tauri/crates/core/src/graph.rs` (see
+// src/types/generated.ts); everything here is derived from those types.
 
 import type {
   GraphAuthor,
@@ -39,14 +35,9 @@ export interface GraphNodeData {
   paper_count?: number;
 }
 
-/**
- * The lookups the filter and the canvas both need, built once per payload.
- *
- * The old iframe rebuilt every one of these on each load by walking the edge
- * list in JavaScript; the parts that are facts about the LIBRARY (a paper's
- * author names, a tag's canonical spelling, a node's degree) now ride on the
- * payload, so this is only the id-space bookkeeping that is genuinely local.
- */
+/** The lookups the filter and the canvas both need, built once per payload —
+ *  local id-space bookkeeping only; library facts (author names, canonical tag
+ *  spelling, degree) already ride on the payload. */
 export interface GraphIndex {
   paperById: Map<string, GraphPaper>;
   authorById: Map<string, GraphAuthor>;

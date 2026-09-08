@@ -1,5 +1,5 @@
-//! `/api/orcid` routes — no Python ancestor. Mirrors `route::versions`'
-//! on-demand-pass shape (candidates → single-flight guard → network → apply).
+//! `/api/orcid` routes: on-demand backfill pass
+//! (candidates → single-flight guard → network → apply).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};

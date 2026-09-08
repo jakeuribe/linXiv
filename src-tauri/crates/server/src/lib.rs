@@ -1,9 +1,5 @@
-//! Tauri-free shared backend: the HTTP-shaped router over `linxiv-core` plus
-//! app state, share sync, the full-text worker, and the remote-query node
-//! half. Consumed by three front doors — the Tauri app (`linxiv-app`, which
-//! layers its command wrappers and the `linxiv://` protocol on top), the
-//! dev-only HTTP shim (`src/bin/dev_server.rs`, D32), and the headless node
-//! (`src/bin/headless.rs`).
+//! Tauri-free shared backend: the HTTP-shaped router over `linxiv-core`.
+//! Consumed by the Tauri app, the dev-only HTTP shim (D32), and the headless node.
 
 pub mod full_text_worker;
 pub mod p2p_config;

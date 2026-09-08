@@ -1,5 +1,5 @@
-//! Output + error parity helpers. Byte-for-byte mirrors of `linxiv_cli.py`'s
-//! `_output` / error-exit / `_validate_arxiv_id` / `_as_source_id` / `_render_paper`.
+//! Output + error helpers: byte-stable JSON on stdout/stderr, id validation,
+//! paper rendering.
 use std::fmt::Display;
 use std::io::Write;
 
@@ -12,7 +12,7 @@ use linxiv_core::models::PaperMetadata;
 /// other sources fall back to a JSON dump (see `render_paper`).
 const ARXIV_TEMPLATE: &str = include_str!("../assets/arxiv_paper.md");
 
-/// `_output`: pretty JSON (2-space indent, matching Python `indent=2`) + trailing "\n".
+/// Pretty JSON (2-space indent) to stdout + trailing "\n".
 pub fn output<T: Serialize>(v: &T) {
     let mut stdout = std::io::stdout();
     serde_json::to_writer_pretty(&mut stdout, v).expect("serialize value to stdout");
@@ -20,9 +20,9 @@ pub fn output<T: Serialize>(v: &T) {
 }
 
 /// Print `{"error": MSG}` to stderr and `exit(1)`. Built by hand (not the compact
-/// `serde_json` form) so the `": "` separator byte-matches Python `json.dumps`.
+/// `serde_json` form) to keep the `": "` separator in the byte-stable error format.
 pub fn fail(msg: impl Display) -> ! {
-    // serde_json escapes the message string exactly like json.dumps would.
+    // serde_json handles the message-string escaping.
     let body = serde_json::to_string(&msg.to_string()).unwrap_or_else(|_| "\"\"".to_string());
     eprintln!("{{\"error\": {}}}", body);
     std::process::exit(1);
@@ -30,16 +30,15 @@ pub fn fail(msg: impl Display) -> ! {
 
 pub use linxiv_core::formats::pyrepr;
 
-/// `_validate_arxiv_id`: on miss, fail with the `!r`-quoted id (Python single-quote repr).
+/// On an invalid arXiv id, fail with the single-quote-repr'd id (`pyrepr`).
 pub fn validate_arxiv_id(source_id: &str) {
     if !is_arxiv_id(source_id) {
         fail(format!("Invalid arXiv ID format: {}", pyrepr(source_id)));
     }
 }
 
-/// Replaces `_as_source_id`, which prefixed every bare id with `arxiv:` and so made
-/// DOI- and BibTeX-imported papers unaddressable from the CLI. Core matches the id
-/// verbatim first, then under each provider namespace.
+/// Canonicalize a bare CLI id: matched verbatim first, then under each provider
+/// namespace, so DOI- and BibTeX-imported papers stay addressable.
 pub fn as_source_id(conn: &rusqlite::Connection, raw: &str) -> String {
     linxiv_core::service::paper::canonical_source_id(conn, raw)
 }
@@ -56,9 +55,8 @@ pub fn resolve_source_fk(
     })
 }
 
-/// `_render_paper`: only `arxiv` has a template; non-arxiv sources return `None`
-/// (caller then JSON-dumps the metadata). Optional fields render as Python's
-/// `str(None)` -> "None", matching `format_map` over `model_dump(mode="json")`.
+/// Only `arxiv` has a template; other sources return `None` (caller then dumps the
+/// metadata as JSON). Absent optional fields render as the literal string "None".
 pub fn render_paper(meta: &PaperMetadata) -> Option<String> {
     if meta.source.as_deref() != Some("arxiv") {
         return None;

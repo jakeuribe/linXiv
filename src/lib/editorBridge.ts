@@ -60,13 +60,9 @@ export function pushThemeToEditor(
 // FS-adapter RPC responder.
 // -------------------------------------------------------------------------
 
-/**
- * The host-side handler for FS-adapter RPC. A later /api-backed adapter (mapping
- * ops onto linXiv's /api/notes CRUD, or a real on-disk vault) will implement this;
- * the signatures mirror the HostFsAdapter / FsDirHandle method surface the editor
- * consumes. Each method returns the matching FsResult variant (or throws — the
- * client serializes the error into a `texbrain:fs:result { ok: false }`).
- */
+/** Host-side handler for FS-adapter RPC, mirroring the HostFsAdapter/FsDirHandle
+ *  surface the editor consumes. Each method returns its matching FsResult variant
+ *  (or throws — serialized into a `texbrain:fs:result { ok: false }`). */
 export interface FsResponder {
   /** values() — list immediate children of a directory. */
   list(path: string): Promise<Extract<FsResult, { kind: "list" }>>;
@@ -184,20 +180,8 @@ export interface EditorBridgeHandlers {
   onReady?: (protocol?: number) => void;
 }
 
-/**
- * Owns the host<->guest postMessage channel for one embedded TeXbrain iframe.
- *
- * Usage:
- *   const client = new EditorBridgeClient(iframe.contentWindow, EDITOR_ORIGIN, {
- *     getThemeState: () => useThemeStore.getState(),
- *     getInitialDoc: () => ({ mainFile, files, projectName }),
- *     fs: new ApiFsResponder(...),
- *     onCompiled: (status, log, pdf) => { ... },
- *   });
- *   // later, on host theme change:  client.pushTheme();
- *   // ...                            client.sendCompile();
- *   client.destroy(); // on unmount
- */
+/** Owns the host<->guest postMessage channel for one embedded TeXbrain iframe.
+ *  Construct with handlers; call pushTheme() on host theme changes, destroy() on unmount. */
 export class EditorBridgeClient {
   private readonly guest: Window | null;
   private readonly targetOrigin: string;

@@ -1,14 +1,11 @@
 //! db-admin service — connection bootstrap and the backup/restore front door.
 //!
 //! ADR 0010: consumers must not open connections or call `storage::` themselves.
-//! Route, CLI and MCP all need the same three things, and two of them were
-//! hand-rolling the same fragile in-place restore sequence:
 //!
 //! * `open_app_db` — open `config::db_path()` and bring the schema forward.
 //! * `backup` / `validate_backup_source` — pass-throughs so nobody reaches past.
-//! * `restore_in_place` — park the caller's live handle, swap the file, reopen.
-//!   Core's `restore` refuses while any handle is open, so the parking dance is
-//!   mandatory, not optional; having it written twice was a latent divergence.
+//! * `restore_in_place` — park the caller's live handle, swap the file, reopen;
+//!   core's `restore` refuses while any handle is open, so the parking dance is mandatory.
 
 use std::path::{Path, PathBuf};
 

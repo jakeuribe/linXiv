@@ -1,6 +1,5 @@
-//! Subprocess integration tests for `paper fetch-source`, exercising the real
-//! clap dispatch (resolve_paper_or_exit, output::fail) end to end. Both cases
-//! resolve before any network await, so neither needs a live connection.
+//! Subprocess integration tests for `paper fetch-source` via the real clap dispatch.
+//! Both cases resolve before any network await, so neither needs a live connection.
 
 use std::process::Command;
 

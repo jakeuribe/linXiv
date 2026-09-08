@@ -1,6 +1,5 @@
-//! Library stats — one receipt shared by route, CLI and MCP (SERIALIZER
-//! convention: core owns the operation and the wire shape). Route shape wins:
-//! the CLI/MCP envelopes gained `recent_papers` when this moved into core.
+//! Library stats — one receipt shared by route, CLI and MCP; core owns the
+//! operation and the wire shape.
 
 use crate::error::Result;
 use crate::models::PaperDetails;

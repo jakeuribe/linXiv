@@ -38,11 +38,9 @@ pub async fn fetch_latest(source_ids: &[String]) -> Result<Vec<PaperMetadata>> {
     crate::sources::arxiv::fetch_by_ids(source_ids, &config::data_dir()).await
 }
 
-/// Process one candidate: check root status. For roots that are active and
-/// resolvable, save any newer version and record the check (with the new version
-/// if found, or None if not). Errors are caught and logged by apply_results,
-/// allowing the candidate to rotate out instead of blocking future checks.
-/// Skips both save and record for deleted or inactive roots.
+/// Process one candidate: for active, resolvable roots save any newer version and
+/// record the check (new version or None). Errors are caught/logged by apply_results
+/// so the candidate rotates out; deleted/inactive roots skip both save and record.
 fn process_candidate(
     conn: &mut Connection,
     cand: &Candidate,
@@ -79,9 +77,8 @@ fn process_candidate(
 }
 
 /// Apply one pass's fetched metadata: for every candidate with an active root,
-/// capture a newer-than-known version and record the check (with or without the
-/// new version). Candidates with missing/inactive roots are skipped entirely.
-/// Per-candidate errors are logged and swallowed so the pass continues.
+/// capture a newer-than-known version and record the check. Missing/inactive roots
+/// are skipped; per-candidate errors are logged and swallowed so the pass continues.
 pub fn apply_results(
     conn: &mut Connection,
     candidates: &[Candidate],

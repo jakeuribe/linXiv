@@ -3,18 +3,18 @@
 use linxiv_core::error::CoreError;
 use rmcp::ErrorData;
 
-/// `ValueError` → MCP invalid-params, preserving the Python message verbatim.
+/// Guard-failure message → MCP invalid-params, message preserved verbatim.
 pub(crate) fn invalid(msg: impl Into<String>) -> ErrorData {
     ErrorData::invalid_params(msg.into(), None)
 }
 
-/// Unexpected core failure (not one of the explicit `ValueError` paths).
+/// Unexpected core failure (not an explicit guard path) → MCP internal error.
 pub(crate) fn core_err(e: CoreError) -> ErrorData {
     ErrorData::internal_error(e.to_string(), None)
 }
 
 /// Service-layer guard failures (absent row, still-linked conflict, empty patch)
-/// are the Python `ValueError`s → invalid-params; DB/FS failures stay internal.
+/// → invalid-params; DB/FS failures stay internal.
 pub(crate) fn guard_err(e: CoreError) -> ErrorData {
     match e {
         CoreError::Internal(m) => ErrorData::internal_error(m, None),

@@ -5,14 +5,13 @@ use crate::error::Result;
 use crate::models::NoteDetails;
 use crate::storage::db::{timestamp_from_sql, timestamp_to_sql};
 
-/// Column list matching `Note.from_row` — the named SELECT for every note reader
-/// (Python's `_fetch_*`/`get_notes` use `SELECT *`; we spell it out so the
-/// decltype converters line up with the model).
+/// The named SELECT for every note reader, spelled out so the column-type
+/// converters line up with the model.
 const NOTE_COLS: &str =
     "NOTE_SK, NOTE_UUID, SOURCE_FK, PAPER_ID_FK, PROJECT_FK, TITLE, NOTE, CREATED_AT, UPDATED_AT";
 
-/// `Note.from_row().to_details()` — TITLE nullable, NOTE is a BLOB holding text,
-/// both coalesce to "" (Python `or ""`); TIMESTAMP cols are NOT NULL.
+/// TITLE is nullable and NOTE is a BLOB holding text — both coalesce to "";
+/// TIMESTAMP cols are NOT NULL.
 fn note_from_row(row: &Row) -> rusqlite::Result<NoteDetails> {
     let created: String = row.get("CREATED_AT")?;
     let updated: String = row.get("UPDATED_AT")?;
@@ -37,14 +36,11 @@ fn note_from_row(row: &Row) -> rusqlite::Result<NoteDetails> {
     })
 }
 
-/// `storage/notes.py::get_notes` — notes for a paper, 3-way scoped:
-///   * `all_projects` true   → SOURCE_FK only (every note: library + all projects)
+/// Notes for a paper, 3-way scoped:
+///   * `all_projects` true    → SOURCE_FK only (library + all projects)
 ///   * `project_id` Some(id)  → `PROJECT_FK = id`
 ///   * `project_id` None      → `PROJECT_FK IS NULL` (library notes only)
-///
-/// `all_projects` is a DISTINCT branch, not the same as `project_id = None` — MCP
-/// `get_notes_for_paper` passes `all_projects = project_id.is_none()`, the opposite
-/// of the None branch. Ordered CREATED_AT ASC.
+/// `all_projects` is a DISTINCT branch, not `project_id = None`. CREATED_AT ASC.
 pub fn get_notes(
     conn: &Connection,
     source_fk: i64,
@@ -75,7 +71,7 @@ pub fn get_notes(
     )
 }
 
-/// `storage/notes.py::get_note` — single note by NOTE_SK, None if absent.
+/// Single note by NOTE_SK, `None` if absent.
 pub fn get_note(conn: &Connection, note_id: i64) -> Result<Option<NoteDetails>> {
     Ok(conn
         .query_row(
@@ -87,8 +83,7 @@ pub fn get_note(conn: &Connection, note_id: i64) -> Result<Option<NoteDetails>> 
 }
 
 /// Just one note's content — for frontmatter checks that never need the hydrated
-/// row. `None` if the note is absent; NULL content coalesces to "" like
-/// `note_from_row`.
+/// row. `None` if the note is absent; NULL content coalesces to "".
 pub fn get_note_content(conn: &Connection, note_id: i64) -> Result<Option<String>> {
     Ok(conn
         .query_row("SELECT NOTE FROM NOTE WHERE NOTE_SK = ?1", [note_id], |r| {
@@ -98,10 +93,8 @@ pub fn get_note_content(conn: &Connection, note_id: i64) -> Result<Option<String
         .map(Option::unwrap_or_default))
 }
 
-/// `storage/notes.py::create_note` — INSERT a note, RETURNING the created row
-/// (saves the re-SELECT every surface did for the canonical create envelope).
-/// CREATED_AT/UPDATED_AT both stamped now (Python `datetime.now(utc)`).
-/// `uuid` None generates a fresh v4; Some preserves an imported identity.
+/// INSERT a note, RETURNING the created row (no re-SELECT); CREATED_AT/UPDATED_AT
+/// both stamped now. `uuid` None generates a fresh v4; Some preserves an imported identity.
 pub fn create_note(
     conn: &Connection,
     source_fk: i64,
@@ -125,9 +118,8 @@ pub fn create_note(
     )?)
 }
 
-/// `storage/notes.py::patch_note` — partial update via COALESCE: a None arg
-/// leaves the column unchanged. RETURNING the updated row; None if no row
-/// matched NOTE_SK.
+/// Partial update via COALESCE: a None arg leaves the column unchanged.
+/// RETURNING the updated row; None if no row matched NOTE_SK.
 pub fn patch_note(
     conn: &Connection,
     note_id: i64,
@@ -147,14 +139,13 @@ pub fn patch_note(
         .optional()?)
 }
 
-/// `storage/notes.py::delete_note` — hard-delete one note row; false if absent.
+/// Hard-delete one note row; false if absent.
 pub fn delete_note(conn: &Connection, note_id: i64) -> Result<bool> {
     let n = conn.execute("DELETE FROM NOTE WHERE NOTE_SK = ?1", [note_id])?;
     Ok(n > 0)
 }
 
-/// `storage/notes.py::count_paper_notes` (`config.queries.count_notes`) — count
-/// notes on a paper, optionally narrowed to a project.
+/// Count notes on a paper, optionally narrowed to a project.
 pub fn count_notes(conn: &Connection, source_fk: i64, project_id: Option<i64>) -> Result<i64> {
     Ok(conn.query_row(
         "SELECT COUNT(*) FROM NOTE WHERE SOURCE_FK = ?1 AND (?2 IS NULL OR PROJECT_FK = ?2)",
@@ -182,7 +173,7 @@ fn query_notes(conn: &Connection, sql: &str, params: &[i64]) -> Result<Vec<NoteD
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-/// `storage/notes.py::list_all_notes` — every note, CREATED_AT ASC.
+/// Every note, CREATED_AT ASC.
 pub fn list_all_notes(conn: &Connection) -> Result<Vec<NoteDetails>> {
     query_notes(
         conn,
@@ -191,12 +182,9 @@ pub fn list_all_notes(conn: &Connection) -> Result<Vec<NoteDetails>> {
     )
 }
 
-/// Notes whose body contains `needle`, optionally scoped to a project,
-/// CREATED_AT ASC. A prefilter for flag-in-content scans (editor projects):
-/// callers must still verify the match exactly — `instr` finds the needle
-/// anywhere in the body, not just where the caller means it. `instr` (not
-/// LIKE) because NOTE has BLOB affinity: it byte-searches blob rows and
-/// char-searches text rows alike.
+/// Notes whose body contains `needle` (optionally project-scoped), CREATED_AT ASC.
+/// A prefilter — callers must still verify the match exactly. `instr`, not LIKE:
+/// NOTE has BLOB affinity, and instr searches blob and text rows alike.
 pub fn list_notes_containing(
     conn: &Connection,
     needle: &str,
@@ -211,8 +199,7 @@ pub fn list_notes_containing(
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-/// `storage/notes.py::get_notes_by_paper_id` — notes pinned to a specific paper
-/// version (PAPER_ID_FK), CREATED_AT ASC.
+/// Notes pinned to a specific paper version (PAPER_ID_FK), CREATED_AT ASC.
 pub fn get_notes_by_paper_id(conn: &Connection, paper_id: i64) -> Result<Vec<NoteDetails>> {
     query_notes(
         conn,
@@ -221,8 +208,7 @@ pub fn get_notes_by_paper_id(conn: &Connection, paper_id: i64) -> Result<Vec<Not
     )
 }
 
-/// `storage/notes.py::get_project_notes` — all notes in a project,
-/// SOURCE_FK ASC then CREATED_AT ASC.
+/// All notes in a project, SOURCE_FK ASC then CREATED_AT ASC.
 pub fn get_project_notes(conn: &Connection, project_id: i64) -> Result<Vec<NoteDetails>> {
     query_notes(
         conn,
@@ -234,9 +220,8 @@ pub fn get_project_notes(conn: &Connection, project_id: i64) -> Result<Vec<NoteD
     )
 }
 
-/// `storage/notes.py::note_counts_by_paper_for_project` — (SOURCE_FK, count) for
-/// each active paper in the project; papers with no notes get 0. Returns a Vec in
-/// PROJECT_TO_PAPER_FK order (Python returns an ordered dict).
+/// (SOURCE_FK, count) for each active paper in the project; papers with no
+/// notes get 0, in PROJECT_TO_PAPER_FK order.
 pub fn note_counts_by_paper_for_project(
     conn: &Connection,
     project_id: i64,
@@ -261,16 +246,16 @@ pub fn note_counts_by_paper_for_project(
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-/// Escape LIKE wildcards so a literal query matches literally (`\` is the ESCAPE
-/// char). Mirrors `storage/notes.py::_escape_like`.
+/// Escape LIKE wildcards so a literal query matches literally
+/// (`\` is the ESCAPE char).
 fn escape_like(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_")
 }
 
-/// `storage/notes.py::search_notes_source_fks` — distinct SOURCE_FKs of active
-/// papers whose note title or body contains `query`, most-recently-updated first.
+/// Distinct SOURCE_FKs of active papers whose note title or body contains
+/// `query`, most-recently-updated first.
 pub fn search_notes_source_fks(conn: &Connection, query: &str, limit: i64) -> Result<Vec<i64>> {
     let pattern = format!("%{}%", escape_like(query));
     let mut stmt = conn.prepare(

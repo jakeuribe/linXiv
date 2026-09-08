@@ -1,11 +1,5 @@
-//! Dumps the exact schema a fresh install produces at this commit: every
-//! table/index/view/trigger definition from `sqlite_master`, sorted for a
-//! deterministic diff. Used by scripts/snapshot_schema.sh to archive the real
-//! per-release schema (built from this commit's actual init_db, not a
-//! hand-typed reconstruction) into the private docs repo -- see that script
-//! and TODO.md for why it's kept out of the public repo.
-//!
-//! Run directly with `cargo run -p linxiv-core --example snapshot_schema`.
+//! Dumps the fresh-install schema from `sqlite_master`, sorted for deterministic
+//! diffs; scripts/snapshot_schema.sh archives it per release into the private docs repo.
 
 fn main() {
     let conn = linxiv_core::storage::open_in_memory().expect("open in-memory db");

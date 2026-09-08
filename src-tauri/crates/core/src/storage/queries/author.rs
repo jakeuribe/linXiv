@@ -1,9 +1,6 @@
-//! Author reads + writes. Rust port of `storage/authors.py` (+ the get-or-create
-//! `_author_fk_for_name` from `storage/db.py`). Plan §5.3.
-//!
-//! No transaction wrappers here: every write is a single statement (matching the
-//! Python, which relies on `with _connect()` autocommit). The get-or-create is a
-//! SELECT-then-conditional-INSERT — no partial-inconsistent state to roll back.
+//! Author reads + writes. Plan §5.3. No transaction wrappers: every write is a
+//! single statement, and the get-or-create is a SELECT-then-conditional-INSERT
+//! with no partial-inconsistent state to roll back.
 
 use std::collections::HashSet;
 
@@ -27,7 +24,7 @@ fn row_to_basic(row: &Row) -> rusqlite::Result<BasicAuthorDetails> {
 
 // ── reads ─────────────────────────────────────────────────────────────────
 
-/// `authors.py::get_author` — one author by FK, or None.
+/// One author by FK, or None.
 pub fn get_author(conn: &Connection, author_id: i64) -> Result<Option<BasicAuthorDetails>> {
     Ok(conn
         .query_row(
@@ -39,7 +36,7 @@ pub fn get_author(conn: &Connection, author_id: i64) -> Result<Option<BasicAutho
         .optional()?)
 }
 
-/// `authors.py::list_authors` (non-paper path). `name` Some -> exact match under
+/// `name` Some -> exact match under
 /// COLLATE NOCASE; None -> every author ordered by full name.
 pub fn get_many(conn: &Connection, name: Option<&str>) -> Result<Vec<BasicAuthorDetails>> {
     let (sql, p): (&str, Vec<Value>) = match name {
@@ -73,8 +70,7 @@ pub fn get_author_by_orcid(conn: &Connection, orcid: &str) -> Result<Option<Basi
         .optional()?)
 }
 
-/// `authors.py::list_authors(paper_id=...)` via `_LIST_AUTHORS_FROM_PAPER_SQL` —
-/// authors of one paper, ordered by their stored AUTHOR_INDEX.
+/// Authors of one paper, ordered by their stored AUTHOR_INDEX.
 pub fn get_paper_authors(conn: &Connection, paper_id: i64) -> Result<Vec<BasicAuthorDetails>> {
     let mut stmt = conn.prepare(
         "SELECT a.AUTHOR_FK, a.AUTHOR_ORCID, a.AUTHOR_FULL_NAME, a.AUTHOR_FIRST, a.AUTHOR_LAST \
@@ -87,11 +83,9 @@ pub fn get_paper_authors(conn: &Connection, paper_id: i64) -> Result<Vec<BasicAu
         .map_err(Into::into)
 }
 
-/// Each paper's author ORCIDs (AUTHOR_INDEX order, so index-aligned with the
-/// paper's authors list), keyed by PAPER_ID. The batched sibling of
-/// `get_paper_authors` for snapshot builders that would otherwise query once
-/// per paper. Papers with no author links are absent from the map. Chunked to
-/// stay under SQLite's bound-variable limit.
+/// Each paper's author ORCIDs (AUTHOR_INDEX order, index-aligned with the
+/// authors list), keyed by PAPER_ID — the batched sibling of `get_paper_authors`.
+/// Link-less papers are absent; chunked under SQLite's bound-variable limit.
 pub fn paper_author_orcids(
     conn: &Connection,
     paper_ids: &[i64],
@@ -119,7 +113,7 @@ pub fn paper_author_orcids(
     Ok(by_paper)
 }
 
-/// `authors.py::list_authors_with_paper_count` — authors with their distinct
+/// Authors with their distinct
 /// active-paper count (from the `author_paper_counts` view), `>= min_papers`,
 /// ordered last-then-first with NULLs last.
 pub fn list_with_paper_count(conn: &Connection, min_papers: i64) -> Result<Vec<AuthorWithCount>> {
@@ -142,7 +136,7 @@ pub fn list_with_paper_count(conn: &Connection, min_papers: i64) -> Result<Vec<A
         .map_err(Into::into)
 }
 
-/// `authors.py::get_author_paper_previews` — latest-version active papers linked
+/// Latest-version active papers linked
 /// to an author, resolved via PAPER_ROOTS so a stale PAPER_TO_AUTHOR version does
 /// not hide a newer version. Ordered by title with NULLs last.
 pub fn get_paper_previews(conn: &Connection, author_id: i64) -> Result<Vec<AuthorPaperPreview>> {
@@ -169,8 +163,7 @@ pub fn get_paper_previews(conn: &Connection, author_id: i64) -> Result<Vec<Autho
         .map_err(Into::into)
 }
 
-/// `authors.py::count_author_paper_links` — distinct paper roots linked to this
-/// author, regardless of paper status.
+/// Distinct paper roots linked to this author, regardless of paper status.
 pub fn count_paper_links(conn: &Connection, author_id: i64) -> Result<i64> {
     Ok(conn.query_row(
         "SELECT COUNT(DISTINCT p.SOURCE_FK) \
@@ -253,8 +246,8 @@ pub fn fill_orcid_if_null(conn: &Connection, author_id: i64, orcid: &str) -> Res
 
 // ── writes ────────────────────────────────────────────────────────────────
 
-/// `authors.py::create_author` — plain INSERT (no dedup; the full-name index is
-/// non-unique by design). Returns the new AUTHOR_FK.
+/// Plain INSERT (no dedup; the full-name index is non-unique by design).
+/// Returns the new AUTHOR_FK.
 pub fn create_author(
     conn: &Connection,
     full_name: &str,
@@ -270,9 +263,8 @@ pub fn create_author(
     Ok(conn.last_insert_rowid())
 }
 
-/// `authors.py::update_author` — set only the provided fields. Python uses a
-/// truthy check (`if full_name:`), so an empty string is treated as "not given"
-/// and skipped; no provided field -> no-op.
+/// Set only the provided fields; an empty string is treated as "not given" and
+/// skipped. No provided field -> no-op.
 pub fn update_author(
     conn: &Connection,
     author_id: i64,
@@ -310,7 +302,7 @@ pub fn update_author(
     Ok(())
 }
 
-/// `authors.py::delete_author` — delete the AUTHOR row by FK. Fails on the FK
+/// Delete the AUTHOR row by FK. Fails on the FK
 /// constraint if the author is still linked via PAPER_TO_AUTHOR; callers must
 /// unlink first (see `unlink_author_from_paper`), so a merge can't silently
 /// drop paper links it didn't mean to touch.
@@ -319,7 +311,7 @@ pub fn delete_author(conn: &Connection, author_id: i64) -> Result<()> {
     Ok(())
 }
 
-/// `authors.py::link_author_to_paper` — INSERT OR IGNORE the PAPER_TO_AUTHOR row
+/// INSERT OR IGNORE the PAPER_TO_AUTHOR row
 /// with an optional author_index (ordering within the paper's author list).
 pub fn link_author_to_paper(
     conn: &Connection,
@@ -335,7 +327,7 @@ pub fn link_author_to_paper(
     Ok(())
 }
 
-/// `authors.py::unlink_author_from_paper` — delete the author's link rows for
+/// Delete the author's link rows for
 /// every stored version of the paper's root (link rows are per-version, the
 /// caller addresses any one version's id). Returns `false` when `paper_id`
 /// doesn't resolve to an active paper, so the route can 404.
@@ -358,12 +350,10 @@ pub fn unlink_author_from_paper(conn: &Connection, author_fk: i64, paper_id: i64
     Ok(true)
 }
 
-/// Merge `dup_ids` into `canonical_id`: resync PAPER_META.AUTHORS on every paper
-/// touched by a duplicate, re-point every PAPER_TO_AUTHOR row off a duplicate onto
-/// the canonical author, collapse the resulting double-links (no UNIQUE index
-/// enforces one link per paper), then delete the duplicate AUTHOR rows that still
-/// exist. All in one transaction. `canonical_id` itself is skipped if listed.
-/// Returns the subset of `dup_ids` that actually existed and were merged.
+/// Merge `dup_ids` into `canonical_id` in one transaction: resync
+/// PAPER_META.AUTHORS, re-point PAPER_TO_AUTHOR rows, collapse double-links (no
+/// UNIQUE index enforces one link per paper), then delete the duplicates.
+/// `canonical_id` is skipped if listed; returns the dup_ids actually merged.
 pub fn merge_authors(
     conn: &mut Connection,
     canonical_id: i64,

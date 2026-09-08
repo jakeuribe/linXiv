@@ -1,9 +1,5 @@
-//! Integration tests for the `service::source` dispatch — the ones
-//! `sources/openalex.rs`, `sources/crossref.rs` and the late `sources/fetch.rs`
-//! each promised.
-//!
-//! No live network: the paths exercised here refuse input *before* any request
-//! goes out.
+//! Integration tests for the `service::source` dispatch. No live network: the
+//! paths exercised here refuse input *before* any request goes out.
 
 use linxiv_core::error::CoreError;
 use linxiv_core::service::source as svc_source;

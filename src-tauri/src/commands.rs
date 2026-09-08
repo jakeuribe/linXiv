@@ -1,7 +1,5 @@
-//! The Tauri layer over `linxiv-server`: the `api`/`share_api` invoke commands
-//! and the AppHandle-resolving spawners for the background tasks. Everything
-//! here is a thin wrapper — the logic lives in the server crate so the
-//! headless/dev-server bins build without Tauri.
+//! The `api`/`share_api` invoke commands and background-task spawners; thin
+//! wrappers — the logic lives in `linxiv-server` so the headless bins build without Tauri.
 
 use serde_json::Value;
 use tauri::Manager;

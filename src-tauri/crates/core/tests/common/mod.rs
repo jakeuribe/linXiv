@@ -1,11 +1,7 @@
-//! Shared fixtures for `linxiv-core`'s integration tests.
-//!
-//! One schema-initialised in-memory DB, so a test does not hand-roll its own.
-//!
-//! Deliberately a copy of `src/test_support.rs`'s `db()`: that module is
-//! `#[cfg(test)]`, and `tests/` is a separate compilation unit that can only
-//! see `linxiv_core`'s public API. Four lines, so it stays duplicated rather
-//! than exposing a test-only module from the crate's public surface.
+//! Shared fixtures for `linxiv-core`'s integration tests: one schema-initialised
+//! in-memory DB. Deliberately a copy of `src/test_support.rs::db()` — that module
+//! is `#[cfg(test)]` and `tests/` only sees the public API; four lines stay
+//! duplicated rather than exposing a test-only module publicly.
 
 use linxiv_core::storage;
 use rusqlite::Connection;

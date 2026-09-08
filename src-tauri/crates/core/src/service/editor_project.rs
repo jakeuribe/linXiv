@@ -1,4 +1,4 @@
-//! editor_project service — Rust port of `service/editor_project.py`.
+//! editor_project service.
 //!
 //! An *editor project* is a NOTE whose `content` carries a small frontmatter block
 //! declaring it owns an on-disk LaTeX vault:
@@ -12,15 +12,10 @@
 //! <optional body>
 //! ```
 //!
-//! Note access goes through the sibling note service (Python's `import service.note`);
-//! vault FS access through `service::vault` (its `safe_path`/`write_file`/`list_files`
-//! already carry the trust-boundary guard). Standalone projects (no real paper) attach
-//! to the sentinel root `texbrain:local`.
-//!
-//! DI: DB-touching fns take `conn` first; FS-touching fns take `vault_dir: &Path`
-//! (= `config::vault_dir()`, resolved by the binary layer) — never read config here.
-//! This module maps note_id -> `vault_dir/note_<id>` since the id is only known after
-//! the note is inserted.
+//! Note access goes through the sibling note service; vault FS access through
+//! `service::vault` (its `safe_path`/`write_file`/`list_files` carry the
+//! trust-boundary guard). Standalone projects attach to the sentinel root
+//! `texbrain:local`. Vault roots map note_id -> `vault_dir/note_<id>`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -58,8 +53,7 @@ Hello, world!
 // ── frontmatter parse / build ───────────────────────────────────────────────────
 
 /// Parse a note body's frontmatter map. A note with no leading `---` block (or an
-/// unterminated one) yields an empty map. Mirrors `parse_frontmatter`, minus the
-/// body split: no production caller reads the body, so it is never materialized.
+/// unterminated one) yields an empty map; the body is never materialized.
 pub fn parse_frontmatter(content: &str) -> HashMap<String, String> {
     let mut lines = content.lines();
     if lines.next().map(str::trim) != Some("---") {
@@ -78,16 +72,14 @@ pub fn parse_frontmatter(content: &str) -> HashMap<String, String> {
     HashMap::new()
 }
 
-/// Collapse CR/LF to spaces and trim. Frontmatter is line-oriented, so a newline in a
-/// value would terminate/forge the block — never let one through. Mirrors
-/// `_sanitize_line`.
+/// Collapse CR/LF to spaces and trim. Frontmatter is line-oriented, so a newline
+/// in a value would terminate/forge the block — never let one through.
 fn sanitize_line(s: &str) -> String {
     s.replace(['\r', '\n'], " ").trim().to_string()
 }
 
-/// Serialize the frontmatter fence + optional body. Sanitizes again here (defense in
-/// depth) so a stray newline can never break or inject into the fence. Mirrors
-/// `build_content`.
+/// Serialize the frontmatter fence + optional body. Sanitizes again here (defense
+/// in depth) so a stray newline can never break or inject into the fence.
 pub fn build_content(project_name: &str, main_file: &str, body: &str) -> String {
     format!(
         "---\n{VAULT_FLAG}: true\nprojectName: {}\nmainFile: {}\n---\n{body}",
@@ -102,7 +94,7 @@ fn is_editor_project(meta: &HashMap<String, String>) -> bool {
         .unwrap_or(false)
 }
 
-/// Wire shape of `_to_summary` (camelCase keys to match the FastAPI dicts).
+/// One editor project's listing summary (camelCase wire keys).
 #[derive(Debug, Clone, Serialize, PartialEq, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 pub struct EditorProjectSummary {
@@ -120,7 +112,7 @@ pub struct EditorProjectsResponse {
 }
 
 fn to_summary(note: &NoteDetails, meta: &HashMap<String, String>) -> EditorProjectSummary {
-    // Mirrors Python's `a or b or c` falsy-on-"".
+    // Fallback chain treats "" as unset.
     let project_name = meta
         .get("projectName")
         .filter(|s| !s.is_empty())
@@ -161,8 +153,8 @@ fn vault_root(vault_dir: &Path, note_id: i64) -> PathBuf {
 
 // ── operations used by the /api/editor routes ────────────────────────────────────
 
-/// Editor-project notes (frontmatter-flagged), newest first, optionally scoped to a
-/// linXiv project. Port of `list_projects`.
+/// Editor-project notes (frontmatter-flagged), newest first, optionally scoped
+/// to a linXiv project.
 pub fn list_projects(
     conn: &rusqlite::Connection,
     project_id: Option<i64>,
@@ -178,12 +170,12 @@ pub fn list_projects(
         }
         out.push(to_summary(&note, &meta));
     }
-    // Newest first; None updatedAt sorts last (Python's `or ""`, then reverse).
+    // Newest first; None updatedAt sorts last.
     out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     Ok(out)
 }
 
-/// Result of `create_project` (Python returns the 3-key dict, not a full summary).
+/// Result of `create_project` — the 3-key wire shape, not a full summary.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CreatedProject {
@@ -192,8 +184,8 @@ pub struct CreatedProject {
     pub main_file: String,
 }
 
-/// Create an editor-project note + scaffold its vault with a starter main file. Port
-/// of `create_project`. `main_file` defaults to "main.tex" at the binary layer.
+/// Create an editor-project note + scaffold its vault with a starter main file.
+/// `main_file` defaults to "main.tex" at the binary layer.
 pub fn create_project(
     conn: &mut rusqlite::Connection,
     vault_dir: &Path,
@@ -210,10 +202,10 @@ pub fn create_project(
         .unwrap_or_else(|| "main.tex".to_string());
     // Validate the main file is a safe, contained relative path BEFORE creating the
     // note, so a bad name fails clean rather than orphaning a note with no vault.
-    // (Python validates against note 0's root; the relpath shape is what matters.)
+    // (Validated against note 0's root; the relpath shape is what matters.)
     vault::safe_path(&vault_root(vault_dir, 0), &main)?;
 
-    // `(source_id or STANDALONE).strip()` — only "" (not whitespace) is falsy.
+    // Only "" (not whitespace) falls back to the standalone sentinel.
     let source_id = source_id
         .filter(|s| !s.is_empty())
         .unwrap_or(STANDALONE_SOURCE_ID);
@@ -251,8 +243,8 @@ pub fn create_project(
     })
 }
 
-/// `(note, frontmatter)` for an editor-project note, or `None` if the note is missing
-/// or is not an editor project. Port of `get_meta`.
+/// `(note, frontmatter)` for an editor-project note, or `None` if the note is
+/// missing or is not an editor project.
 pub fn get_meta(
     conn: &rusqlite::Connection,
     note_id: i64,
@@ -282,8 +274,8 @@ pub fn is_editor_project_note(conn: &rusqlite::Connection, note_id: i64) -> Resu
 }
 
 /// Assemble the DocOpenPayload for the editor, or `None` if not an editor project.
-/// The recorded main file may be stale; fall back to a present `.tex` so the project
-/// never opens empty. Port of `get_doc`.
+/// The recorded main file may be stale; fall back to a present `.tex` so the
+/// project never opens empty.
 pub fn get_doc(
     conn: &rusqlite::Connection,
     vault_dir: &Path,

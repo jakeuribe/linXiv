@@ -1,10 +1,6 @@
-//! Connection + decltype converters. Rust port of `storage/db.py::_connect`
-//! and its `register_adapter`/`register_converter` pairs. Plan §5.3 + D4/D5.
-//!
-//! rusqlite has NO `register_converter` equivalent — Python's PARSE_DECLTYPES
-//! turned a declared column type (LIST/DATE/TIMESTAMP/BOOL) into an automatic
-//! Python value. Here the conversion is explicit at the row-mapping site via the
-//! helper fns below; the named queries (mod.rs) call them when shaping models.
+//! Connection + column-type converters. Plan §5.3 + D4/D5. LIST/DATE/TIMESTAMP/
+//! BOOL conversion is explicit at the row-mapping site via the helper fns below;
+//! the named queries call them when shaping models.
 
 use std::path::Path;
 
@@ -14,22 +10,12 @@ use rusqlite::{Connection, Transaction};
 use crate::error::{CoreError, Result};
 
 /// Open a connection with `PRAGMA foreign_keys = ON`.
-///
-/// NON-NEGOTIABLE: this PRAGMA is per-connection and SQLite defaults it OFF.
-/// Without it every `ON DELETE CASCADE` in the schema silently no-ops, orphaning
-/// rows on delete. It must run on EVERY connection — never factor it out of here.
-///
-/// `busy_timeout` waits for a writer in another process (the app, the CLI and
-/// the MCP server all open the same file) instead of failing the call outright
-/// with "database is locked".
-///
-/// WAL is best-effort (`let _`), not an open failure: entering WAL can return
-/// SQLITE_BUSY while another process is mid-write, and `backup.rs`'s
-/// `ensure_no_live_connections` relies on `open` failing ONLY for unopenable
-/// files. The mode is sticky per DB file, so any successful open sets it for
-/// good; a busy fallback just stays on the current mode for this connection.
-/// Durability is unchanged (synchronous stays FULL) — WAL buys readers that
-/// don't block on the writer, which is the whole multi-process story above.
+/// NON-NEGOTIABLE: the PRAGMA is per-connection and defaults OFF — without it
+/// every `ON DELETE CASCADE` silently no-ops. It must run on EVERY connection.
+/// `busy_timeout` waits for a writer in another process (app/CLI/MCP share the
+/// file). WAL is best-effort (`let _`): entering it can be SQLITE_BUSY, and
+/// `backup.rs::ensure_no_live_connections` relies on `open` failing ONLY for
+/// unopenable files; the mode is sticky per DB file, synchronous stays FULL.
 pub fn open(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
     conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")?;
@@ -44,15 +30,10 @@ pub fn open_in_memory() -> Result<Connection> {
     Ok(conn)
 }
 
-/// Run `f` inside a transaction, committing on `Ok` and rolling back on `Err`.
-/// Mirrors Python's `with _connect() as conn:` (commit on clean exit, rollback
-/// on exception) — the rusqlite `Transaction` rolls back on drop if not committed.
-///
-/// IMMEDIATE, not the rusqlite default DEFERRED: a deferred transaction takes a
-/// read lock first and promotes on the first write, and SQLite does NOT invoke
-/// the busy handler for that promotion — it returns SQLITE_BUSY at once. Taking
-/// the write lock up front is what lets `busy_timeout` cover a writer in another
-/// process (the app, the CLI and the MCP server all open the same file).
+/// Run `f` inside a transaction, committing on `Ok`, rolling back on `Err`/drop.
+/// IMMEDIATE, not DEFERRED: SQLite does not invoke the busy handler for a
+/// read→write promotion (instant SQLITE_BUSY); taking the write lock up front
+/// lets `busy_timeout` cover a writer in another process (app/CLI/MCP).
 pub fn transaction<T>(
     conn: &mut Connection,
     f: impl FnOnce(&Transaction) -> Result<T>,
@@ -65,7 +46,7 @@ pub fn transaction<T>(
 
 // ── decltype converters (explicit; no register_converter in rusqlite) ─────────
 
-/// LIST column ⇄ Vec<String>, stored as a JSON array TEXT (Python `json.dumps`).
+/// LIST column ⇄ Vec<String>, stored as a JSON array TEXT.
 /// to_sql never fails for a string vec; defaults to `[]` rather than panicking.
 pub fn list_to_sql(v: &[String]) -> String {
     serde_json::to_string(v).unwrap_or_else(|_| "[]".to_string())
@@ -75,7 +56,7 @@ pub fn list_from_sql(s: &str) -> Result<Vec<String>> {
     serde_json::from_str(s).map_err(|e| CoreError::Internal(e.to_string()))
 }
 
-/// DATE column ⇄ NaiveDate as ISO-8601 `YYYY-MM-DD` (Python `date.isoformat`).
+/// DATE column ⇄ NaiveDate as ISO-8601 `YYYY-MM-DD`.
 pub fn date_to_sql(d: NaiveDate) -> String {
     d.format("%Y-%m-%d").to_string()
 }
@@ -96,8 +77,8 @@ pub fn timestamp_from_sql(s: &str) -> Result<NaiveDateTime> {
     let t = s.trim();
     let norm = t.replacen('T', " ", 1);
     NaiveDateTime::parse_from_str(&norm, "%Y-%m-%d %H:%M:%S%.f")
-        // Legacy rows from the Python backend used datetime.isoformat() with a UTC
-        // offset (e.g. "2026-06-04T03:10:47.041006+00:00"); RFC3339-parse those and
+        // Legacy rows carry microseconds + a UTC offset (e.g.
+        // "2026-06-04T03:10:47.041006+00:00"); RFC3339-parse those and
         // normalize to naive UTC so the offset isn't trailing input.
         .or_else(|_| DateTime::parse_from_rfc3339(t).map(|dt| dt.naive_utc()))
         .map_err(|e| CoreError::Internal(format!("bad TIMESTAMP {s:?}: {e}")))
@@ -147,7 +128,7 @@ mod tests {
 
     #[test]
     fn timestamp_from_sql_accepts_python_isoformat_offset() {
-        // Legacy Python row: microseconds + a UTC offset that used to be "trailing input".
+        // Legacy row: microseconds + a UTC offset that used to be "trailing input".
         let utc = NaiveDate::from_ymd_opt(2026, 6, 4)
             .unwrap()
             .and_hms_micro_opt(3, 10, 47, 41006)

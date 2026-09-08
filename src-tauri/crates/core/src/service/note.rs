@@ -1,25 +1,20 @@
-//! note service — Rust port of `service/note.py`.
-//!
-//! Thin delegation over `storage::queries::note`. DB-touching fns take
-//! `conn: &Connection` as their first param (DI seam — never open from config).
-//! The `Note`/`Notes` query objects below are the ONE lookup seam (D17); the
-//! redundant 1-line named wrappers Python kept are dropped.
+//! note service — thin delegation over `storage::queries::note`; `conn` first.
+//! The `Note`/`Notes` query objects below are the ONE lookup seam (D17).
 
 use crate::error::{CoreError, Result};
 use crate::models::{NoteDetails, NoteIn, NoteUpdateIn};
 use crate::storage::queries::note as q;
 use rusqlite::Connection;
 
-/// `service/note.py::Note` — single-note lookup key (NOTE_SK). `None` short-circuits
-/// to a None/false result, matching Python's `if note.note_id is None`.
+/// Single-note lookup key (NOTE_SK); an unset id short-circuits to a None/false result.
 #[derive(Debug, Clone, Default)]
 pub struct Note {
     pub note_id: Option<i64>,
 }
 
-/// `service/note.py::Notes` — multi-note filter. Valid combos: `source_fk`
-/// (+ optional `project_fk`/`all_projects`), `paper_id` alone, or `project_fk`
-/// alone. Priority order (source_fk > paper_id > project_fk) is load-bearing.
+/// Multi-note filter. Valid combos: `source_fk` (+ optional `project_fk`/
+/// `all_projects`), `paper_id` alone, or `project_fk` alone. Priority order
+/// (source_fk > paper_id > project_fk) is load-bearing.
 #[derive(Debug, Clone, Default)]
 pub struct Notes {
     pub source_fk: Option<i64>,
@@ -74,8 +69,8 @@ pub fn list_all(conn: &Connection) -> Result<Vec<NoteDetails>> {
     q::list_all_notes(conn)
 }
 
-/// Fetch notes by filter. Invalid combinations raise `Validation` (Python's
-/// `ValueError`). Use `list_all` to fetch every note unfiltered.
+/// Fetch notes by filter. Invalid combinations are `Validation` errors.
+/// Use `list_all` to fetch every note unfiltered.
 pub fn get_many(conn: &Connection, notes: &Notes) -> Result<Vec<NoteDetails>> {
     if notes.paper_id.is_some() && (notes.source_fk.is_some() || notes.project_fk.is_some()) {
         return Err(CoreError::Validation(
@@ -150,7 +145,6 @@ pub fn create(conn: &Connection, note: &NoteIn) -> Result<NoteDetails> {
     )
 }
 
-/// Whether a note with this uuid already exists.
 pub fn uuid_taken(conn: &Connection, uuid: &str) -> Result<bool> {
     q::uuid_taken(conn, uuid)
 }
@@ -164,9 +158,8 @@ pub fn delete(conn: &Connection, note: &Note) -> Result<bool> {
 }
 
 /// Partial update via COALESCE (a `None` field leaves its column unchanged).
-/// Returns the updated row from the UPDATE's RETURNING; `None` if no row
-/// matched. Enforces "at least one of title/content provided" (Python
-/// `NoteUpdateIn.__post_init__`).
+/// Returns the updated row from the UPDATE's RETURNING; `None` if no row matched.
+/// Enforces "at least one of title/content provided".
 pub fn update(conn: &Connection, note: &NoteUpdateIn) -> Result<Option<NoteDetails>> {
     if note.title.is_none() && note.content.is_none() {
         return Err(CoreError::Validation(

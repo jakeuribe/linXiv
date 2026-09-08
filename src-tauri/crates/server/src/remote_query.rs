@@ -1,8 +1,7 @@
-//! Remote Query Mode, node half (CONTEXT.md: Remote Query Mode / Member /
-//! Node Address / Provider Access): the Member List with roles, the role
-//! gate enforced BEFORE `route()`, and the `linxiv-api/1` protocol handler
-//! mounted on the share node's endpoint. Only the headless bin wires this up
-//! (via `ShareState::install_api`); the desktop app never serves the ALPN.
+//! Remote Query Mode, node half (CONTEXT.md: Remote Query Mode / Member / Node
+//! Address / Provider Access): the Member List with roles, the role gate enforced
+//! BEFORE `route()`, and the `linxiv-api/1` handler on the share node's endpoint.
+//! Only the headless bin wires this up; the desktop app never serves the ALPN.
 //!
 //! The Member List governs two doors at once (a known coupling): presence on
 //! the list grants relay admission — any role, including `none` — while the
@@ -333,7 +332,7 @@ async fn pdf_lane(
     rate_bps: u64,
     active: &Arc<Mutex<HashMap<String, u64>>>,
 ) -> ApiResponse {
-    // FastAPI `Query(default=None, ge=1)` semantics, same as `pdf-path`.
+    // Same `?version=` contract as `pdf-path`: absent → latest; else int >= 1 or 422.
     let version = match route::parse_query(raw_query).get("version") {
         None => None,
         Some(v) => match v.parse::<i64>().ok().filter(|&n| n >= 1) {

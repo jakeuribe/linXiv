@@ -2,10 +2,8 @@
 //! `linxiv trash list`, and MCP `list_trash`.
 //!
 //! Rows carry the FULL data: papers are `DeletedPaperDetails` as-is, projects
-//! are the canonical `ProjectOut` plus an explicit `deleted_at`. The GUI
-//! renders a subset; CLI/MCP consumers get everything (`pdf_path`,
-//! `project_fks`, tags, …) — trimming here would drop functionality the
-//! frontend merely doesn't surface yet.
+//! the canonical `ProjectOut` plus an explicit `deleted_at`. CLI/MCP consumers
+//! get everything — do not trim to the subset the GUI renders.
 
 use chrono::NaiveDateTime;
 use rusqlite::Connection;
@@ -60,21 +58,18 @@ pub struct RestoredPaper {
     pub project_fks: Vec<i64>,
 }
 
-/// Receipt for a paper hard-delete.
 #[derive(Debug, Serialize, ts_rs::TS)]
 pub struct HardDeletedPaper {
     pub ok: bool,
     pub hard_deleted: String,
 }
 
-/// Receipt for a project restore.
 #[derive(Debug, Serialize, ts_rs::TS)]
 pub struct RestoredProject {
     pub ok: bool,
     pub restored_project_id: i64,
 }
 
-/// Receipt for a project hard-delete.
 #[derive(Debug, Serialize, ts_rs::TS)]
 pub struct HardDeletedProject {
     pub ok: bool,

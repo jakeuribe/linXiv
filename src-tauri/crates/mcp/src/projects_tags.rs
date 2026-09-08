@@ -1,11 +1,5 @@
-//! Projects + tags tools cluster. Owned by the `projects_tags` Fill agent.
-//!
-//! Bodies use `self.with_conn(|conn| ...)` and call `linxiv_core::service::project`
-//! and `::tag`. Replicate the Python dict shapes EXACTLY (field names + order),
-//! e.g. delete returns `{"deleted": project_id}`; add/remove_paper_to_project
-//! emit core's `PaperMembershipReceipt`. Map Python `ValueError` paths to
-//! `Err(ErrorData::invalid_params(msg, None))` with the exact message string
-//! Misses word themselves via the typed `CoreError` variants; status uses `{status:?}`.
+//! Projects + tags tools cluster. User-facing refusals map to `invalid_params`
+//! with the exact message; misses word themselves via the typed `CoreError` variants.
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_router, ErrorData};
@@ -22,7 +16,7 @@ use linxiv_core::service::tag::{self, Tag};
 use crate::util::{core_err, guard_err};
 use crate::Server;
 
-/// Python `_SvcStatus(status)` — core owns the three-string parse and its message.
+/// Core owns the three-string status parse and its error message.
 fn parse_status(s: &str) -> Result<Status, ErrorData> {
     s.parse::<Status>().map_err(guard_err)
 }
@@ -244,7 +238,7 @@ impl Server {
         } = _params.0;
         self.with_conn(|conn| {
             ensure_project(conn, project_id)?;
-            // color: outer None = unchanged (Python UNSET); Some(hex) = set the parsed value.
+            // color: outer None = unchanged; Some(hex) = set the parsed value.
             let color = color
                 .map(|hex| project::color_from_hex(&hex).map(Some))
                 .transpose()
@@ -441,7 +435,7 @@ impl Server {
     ) -> Result<String, ErrorData> {
         let paper_id = _params.0.paper_id;
         self.with_conn(|conn| {
-            // Python `get_paper_tags` returns [] for an absent paper (no error).
+            // An absent paper yields [] (no error).
             let tags = paper::get(conn, &PaperRef::source(paper_id.clone()))
                 .map_err(core_err)?
                 .map(|p| p.tags)
@@ -542,8 +536,7 @@ mod tests {
 
     use super::*;
 
-    /// Mirrors `papers.rs`'s test `server()`: an in-memory DB, tool methods
-    /// called directly rather than dispatched through `tool_router`.
+    /// In-memory DB; tool methods called directly, not dispatched through `tool_router`.
     fn server() -> Server {
         let conn = storage::open_in_memory().unwrap();
         storage::init_db(&conn).unwrap();

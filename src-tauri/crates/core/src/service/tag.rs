@@ -1,11 +1,5 @@
-//! tag service — Phase 2 port of `service/tag.py`.
-//!
-//! Lookup seam (D17): the `Tag` / `Tags` query objects are the ONE lookup form.
-//! Python's redundant `get_tag_details` (a 1-line forward to `get`) is dropped.
-//!
-//! These query structs live in `service/tag.py` itself (not `service/models/`),
-//! so they stay local here too. All DB access delegates to
-//! `storage::queries::tag`; the service issues no raw SQL.
+//! tag service — lookup seam (D17): the `Tag` / `Tags` query objects are the ONE
+//! lookup form. All DB access delegates to `storage::queries::tag`; no raw SQL here.
 
 use rusqlite::Connection;
 use serde::Serialize;
@@ -48,14 +42,14 @@ pub struct PaperTags {
     pub tags: Vec<String>,
 }
 
-/// `service/tag.py::Tag` — single-tag lookup. Resolution order: tag_id -> label.
+/// Single-tag lookup. Resolution order: tag_id -> label.
 #[derive(Debug, Default, Clone)]
 pub struct Tag {
     pub tag_id: Option<i64>,
     pub label: Option<String>,
 }
 
-/// `service/tag.py::Tags` — multi-tag filter (any combination of fields).
+/// Multi-tag filter (any combination of fields).
 #[derive(Debug, Default, Clone)]
 pub struct Tags {
     pub paper_id: Option<i64>,
@@ -63,16 +57,14 @@ pub struct Tags {
     pub label: Option<String>,
 }
 
-/// `service/tag.py::get` — resolve a single tag. tag_id wins; else a
-/// case-insensitive label match returns a sentinel `tag_id = -1` row (Python
-/// has no TAG_FK for the label-only path). `None` when nothing matches.
+/// Resolve a single tag. tag_id wins; else a case-insensitive label match
+/// returns a sentinel `tag_id = -1` row. `None` when nothing matches.
 pub fn get(conn: &Connection, tag: &Tag) -> Result<Option<TagDetails>> {
     if let Some(id) = tag.tag_id {
         return q::get_tag(conn, id);
     }
     if let Some(label) = &tag.label {
-        // NOCASE is ASCII in sqlite default collation — the same fold the old
-        // in-Rust eq_ignore_ascii_case scan over list_all_tags used.
+        // NOCASE is ASCII in sqlite default collation — same fold as eq_ignore_ascii_case.
         return Ok(
             q::canonical_tag_label(conn, label)?.map(|existing| TagDetails {
                 tag_id: -1,
@@ -83,18 +75,11 @@ pub fn get(conn: &Connection, tag: &Tag) -> Result<Option<TagDetails>> {
     Ok(None)
 }
 
-/// `service/tag.py::get_tags` — tags matching the `Tags` filter.
-///
-/// Currently unwired above the service layer — kept as the pending
-/// paper/project-scoped tag-filter seam (see `get_many`).
-///
-/// Mirrors Python `storage.tags.list_tags`'s priority: `paper_id` wins (the real
-/// tags linked to that paper, via PAPER_TO_TAG), else `project_id`/`label` narrow
-/// the full set in-service (keeping real TAG_FKs).
+/// Tags matching the `Tags` filter. Priority: `paper_id` wins (the real tags
+/// linked via PAPER_TO_TAG), else `project_id`/`label` narrow the full set in-service.
 pub fn get_tags(conn: &Connection, tags: &Tags) -> Result<Vec<TagDetails>> {
     if let Some(pid) = tags.paper_id {
-        // Python list_tags(paper_id) -> list_tags_by_paper: the paper's actual
-        // tags (PAPER_TO_TAG join), and paper_id takes priority over the rest.
+        // paper_id takes priority over the other filters.
         return q::list_tags_by_paper(conn, pid);
     }
     let mut rows = q::list_tags(conn)?;
@@ -116,24 +101,18 @@ pub fn get_tags(conn: &Connection, tags: &Tags) -> Result<Vec<TagDetails>> {
     Ok(rows)
 }
 
-/// `service/tag.py::get_many` — filtered tags.
-///
-/// Python falls back to synthesising `tag_id = -1` rows when storage returns
-/// nothing, but that path is unreachable once `storage::list_tags` is the
-/// authoritative TAG-table read (same table the fallback scans).
+/// Filtered tags — alias of [`get_tags`].
 pub fn get_many(conn: &Connection, tags: &Tags) -> Result<Vec<TagDetails>> {
     get_tags(conn, tags)
 }
 
-/// `service/tag.py::upsert` — case-insensitive get-or-create. Returns the TAG_FK.
-/// `storage::tag::create_tag` already does the NOCASE get-or-create (UNIQUE
-/// NOCASE index, select+insert in one tx), so the Python manual scan collapses
-/// to a direct delegation.
+/// Case-insensitive get-or-create; returns the TAG_FK. `storage::tag::create_tag`
+/// does the NOCASE get-or-create (UNIQUE NOCASE index, select+insert in one tx).
 pub fn upsert(conn: &mut Connection, tag: &TagIn) -> Result<i64> {
     q::create_tag(conn, &tag.label)
 }
 
-/// `service/tag.py::delete` — delete by tag_id; no-op when tag_id is absent.
+/// Delete by tag_id; no-op when tag_id is absent.
 pub fn delete(conn: &mut Connection, tag: &Tag) -> Result<()> {
     if let Some(id) = tag.tag_id {
         q::delete_tag(conn, id)?;
@@ -141,8 +120,7 @@ pub fn delete(conn: &mut Connection, tag: &Tag) -> Result<()> {
     Ok(())
 }
 
-/// `service/tag.py::list_all_tags` — every tag label, ordered by label
-/// (storage orders the rows). Null labels are dropped.
+/// Every tag label, ordered by label. Null labels are dropped.
 pub fn list_all_tags(conn: &Connection) -> Result<Vec<String>> {
     Ok(q::list_tags(conn)?
         .into_iter()
@@ -174,11 +152,10 @@ pub fn detail(conn: &Connection, label: &str) -> Result<TagDetail> {
 
     let papers = crate::service::paper::get_papers_by_tag(conn, label)?;
 
-    // Status::Active filter matches Python's `_LIST_PROJECTS_BY_TAG_SQL`
-    // (`AND pr.STATUS = 'active'`): PROJECT_TO_TAG rows survive soft-delete, so
-    // an unfiltered lookup would leak archived/deleted projects the API excludes.
-    // Empty fks must short-circuit: get_many treats an empty project_fks
-    // filter as "no filter" and would return every active project.
+    // Active-only: PROJECT_TO_TAG rows survive soft-delete, so an unfiltered
+    // lookup would leak archived/deleted projects the API excludes. Empty fks
+    // must short-circuit: get_many treats an empty project_fks filter as
+    // "no filter" and would return every active project.
     let fks = project_fks_by_label(conn, label)?;
     let tagged = if fks.is_empty() {
         Vec::new()
@@ -362,7 +339,7 @@ mod tests {
         // no filter -> all tags (get_many delegates here)
         assert_eq!(get_many(&conn, &Tags::default()).unwrap().len(), 3);
 
-        // paper_id filter -> the paper's REAL tags via PAPER_TO_TAG (Python parity).
+        // paper_id filter -> the paper's REAL tags via PAPER_TO_TAG.
         conn.execute("INSERT INTO PAPER_ROOTS (SOURCE_ID) VALUES ('arxiv:1')", [])
             .unwrap();
         let src_fk = conn.last_insert_rowid();

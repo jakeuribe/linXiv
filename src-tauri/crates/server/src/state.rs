@@ -1,8 +1,5 @@
-//! In-process backend state. Holds the single SQLite connection (guarded by a
-//! `Mutex`, opened once at startup) plus the managed PDF/vault roots — the app's
-//! analogue of `linxiv-mcp`'s `Server` and `linxiv-cli`'s `Ctx`. Every router arm
-//! reaches the DB through `with_conn`. Replaces the deprecated HTTP hop to the
-//! Python sidecar.
+//! In-process backend state: the single SQLite connection behind a `Mutex` plus
+//! the managed PDF/vault roots. Every router arm reaches the DB via `with_conn`.
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -20,10 +17,8 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Resolve + create the data dir, open the DB, and run schema init. Mirrors
-    /// `Ctx::open()` / `Server::new()`. `config`'s data dir byte-matches Tauri's
-    /// `app_data_dir()` for `com.linxiv.app` (D24), so this lands on the same
-    /// `papers.db` the packaged app uses.
+    /// Resolve + create the data dir, open the DB, run schema init. The data dir
+    /// byte-matches Tauri's `app_data_dir()` for `com.linxiv.app` (D24).
     pub fn new() -> anyhow::Result<Self> {
         config::init_data_dir()?;
         let conn = storage::open(&config::db_path())?;
@@ -35,9 +30,7 @@ impl AppState {
         })
     }
 
-    /// Build from already-resolved parts. The DI seam for tests: pass an
-    /// `open_in_memory()` connection and tempdirs instead of touching the real
-    /// data dir (mirrors how the core/cli/mcp tests isolate). Not `cfg(test)`
+    /// Build from already-resolved parts — the DI seam for tests. Not `cfg(test)`
     /// because downstream crates' tests (linxiv-app) build through it too.
     pub fn from_parts(conn: Connection, pdf_dir: PathBuf, vault_root: PathBuf) -> Self {
         Self {
@@ -47,19 +40,13 @@ impl AppState {
         }
     }
 
-    /// The one accessor every router arm uses to reach the DB. Locks the shared
-    /// connection for the duration of `f`. Never hold the guard across an `.await`:
-    /// `f` runs to completion and releases the lock before the caller awaits.
+    /// Locks the shared connection for the duration of `f`. Never hold the guard
+    /// across an `.await`: `f` runs to completion and releases the lock first.
+    /// A poisoned mutex is recovered, not propagated — a `Connection` has no broken
+    /// invariant to protect, and refusing the lock forever would take every
+    /// DB-touching route down for the rest of the process.
     ///
-    /// A poisoned mutex is recovered rather than propagated. Poisoning means some
-    /// other arm panicked while holding the connection; a `Connection` has no
-    /// broken invariant to protect (an unfinished transaction rolls back when its
-    /// guard drops), and refusing the lock forever would take every DB-touching
-    /// route and the background indexer down with it for the rest of the process.
-    ///
-    /// TODO: Revisit how this should work for HUB (not concretely defined) roles
-    /// Maybe simultaneous reads, classified as such, are ran parralel, writes are
-    /// serial
+    /// TODO: Revisit for HUB roles — maybe parallel reads, serial writes.
     pub fn with_conn<T>(&self, f: impl FnOnce(&mut Connection) -> T) -> T {
         let mut guard = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         f(&mut guard)

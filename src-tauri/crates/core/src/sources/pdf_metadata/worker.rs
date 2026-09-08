@@ -62,9 +62,7 @@ pub fn extract_pdf_metadata_json(bytes: &[u8]) -> String {
 }
 
 /// Locate the worker (the CLI, which links this crate): `LINXIV_PDF_WORKER` env,
-/// else a CLI binary next to the current exe — `linxiv-cli` in the cargo target
-/// dir (dev), `linxiv` bundled-sidecar-adjacent (release). Every candidate takes
-/// the same `is_file` check, so a broken path degrades to the in-process path.
+/// else `linxiv-cli`/`linxiv` next to the current exe; a broken path degrades to in-process.
 fn pdf_worker_path() -> Option<std::path::PathBuf> {
     let env_var = std::env::var_os("LINXIV_PDF_WORKER");
     let env_set = env_var.is_some();

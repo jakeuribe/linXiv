@@ -1,5 +1,3 @@
-//! Group `note` — cmd_note_* in `linxiv_cli.py`.
-
 use clap::Subcommand;
 
 use linxiv_core::config;
@@ -57,7 +55,7 @@ pub async fn run(cmd: NoteCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             title,
             project_id,
         } => {
-            // Project existence is validated before paper resolution (Python order).
+            // Project existence is validated before paper resolution.
             if let Some(pid) = project_id {
                 svc_project::require(conn, pid).unwrap_or_else(|e| fail(e));
             }

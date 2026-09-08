@@ -1,14 +1,9 @@
-//! arxiv — port of `sources/arxiv_source.py`.
+//! arXiv provider: quick-xml Atom parse of export.arxiv.org, normalized into
+//! `models::PaperMetadata`. Plan §5.4.
 //!
-//! The Python source delegates HTTP + Atom parsing to the `arxiv` PyPI client;
-//! there is no Rust equivalent, so the Atom parse (the highest-risk piece) is
-//! reimplemented here with quick-xml against export.arxiv.org's Atom feed and
-//! the result is normalized into `models::PaperMetadata` exactly as
-//! `_result_to_metadata` does. Plan §5.4.
-//!
-//! Field mapping (mirrors `_result_to_metadata`):
+//! Field mapping:
 //!   <id>                       -> source_id/version via `parse_arxiv_id`
-//!   <title>                    -> title (whitespace-collapsed, as the lib does)
+//!   <title>                    -> title (whitespace-collapsed)
 //!   <author><name>             -> authors
 //!   <published>/<updated>      -> published / updated (date only)
 //!   <summary>                  -> summary
@@ -17,7 +12,7 @@
 //!   <arxiv:doi> | link@doi     -> doi        (bare arxiv:doi preferred)
 //!   <arxiv:journal_ref>        -> journal_ref
 //!   <arxiv:comment>            -> comment
-//!   <link title="pdf">         -> url        (== arxiv.Result.pdf_url)
+//!   <link title="pdf">         -> url
 
 use std::path::Path;
 
@@ -30,13 +25,11 @@ use crate::service::version_monitor::MAX_VERSION_CHECK_BATCH;
 use tracing::warn;
 
 // ---------------------------------------------------------------------------
-// _parse_arxiv_id
+// parse_arxiv_id
 // ---------------------------------------------------------------------------
 
-/// Split `"http://arxiv.org/abs/2204.12985v4"` -> `("arxiv:2204.12985", 4)`.
-/// Also handles old-style ids: `"http://arxiv.org/abs/hep-th/9901001v1"` -> `("arxiv:hep-th/9901001", 1)`.
-/// Port of `_parse_arxiv_id`'s `^(.+?)(?:v(\d+))?$` over the raw id (extracted by stripping URL):
-/// a trailing `v<digits>` is the version (default 1), the rest is the bare id.
+/// Split `".../abs/2204.12985v4"` -> `("arxiv:2204.12985", 4)`; old-style
+/// `hep-th/9901001v1` too. A trailing `v<digits>` is the version (default 1).
 pub fn parse_arxiv_id(entry_id: &str) -> (String, i64) {
     // Strip URL prefix by finding the last /abs/ or /pdf/ and taking everything after.
     // If neither is present, fall back to the current rsplit behavior for bare ids.
@@ -251,7 +244,7 @@ pub fn parse_atom(xml: &[u8]) -> Result<Vec<PaperMetadata>> {
 
 const QUERY_URL: &str = "http://export.arxiv.org/api/query";
 
-/// (sortBy, sortOrder) for the public sort keys — port of `_SORT_MAP`.
+/// (sortBy, sortOrder) for the public sort keys.
 fn sort_params(sort: &str) -> Result<(&'static str, &'static str)> {
     Ok(match sort {
         "relevance" => ("relevance", "descending"),
@@ -268,7 +261,7 @@ async fn body(resp: reqwest::Response) -> Result<String> {
         .map_err(|e| CoreError::Upstream(format!("arXiv read body: {e}")))
 }
 
-/// `ArxivSource.search` — query export.arxiv.org and parse the Atom feed.
+/// Query export.arxiv.org and parse the Atom feed.
 pub async fn search(
     query: &str,
     max_results: u32,
@@ -287,8 +280,7 @@ pub async fn search(
     parse_atom(body(resp).await?.as_bytes())
 }
 
-/// `ArxivSource.fetch_by_id` — strip the `arxiv:` prefix, fetch by id_list,
-/// raise `ArxivNotFound` on an empty feed.
+/// Strip the `arxiv:` prefix, fetch by id_list; `ArxivNotFound` on an empty feed.
 pub async fn fetch_by_id(source_id: &str, data_dir: &Path) -> Result<PaperMetadata> {
     let bare = strip_namespace(source_id);
     if bare.is_empty() {
@@ -305,9 +297,8 @@ pub async fn fetch_by_id(source_id: &str, data_dir: &Path) -> Result<PaperMetada
         .ok_or_else(|| CoreError::ArxivNotFound(format!("Paper '{source_id}' not found on arXiv.")))
 }
 
-/// Prepare the id_list parameter for a batch query: strip namespaces, filter
-/// empty ids, join with commas. Returns None if all ids are empty after stripping.
-/// Cap processing to 100 ids.
+/// id_list for a batch query: strip namespaces, drop empties, join with commas,
+/// cap at `MAX_VERSION_CHECK_BATCH`. `None` when nothing survives.
 fn prepare_id_list(source_ids: &[String]) -> Option<(String, usize)> {
     let bare: Vec<String> = source_ids
         .iter()
@@ -323,9 +314,8 @@ fn prepare_id_list(source_ids: &[String]) -> Option<(String, usize)> {
     }
 }
 
-/// Fetch metadata for many ids in ONE rate-limited request (arXiv `id_list` is
-/// comma-separated). Ids that arXiv doesn't recognize are simply absent from the
-/// returned feed — the caller matches results back by `source_id`.
+/// Fetch metadata for many ids in ONE rate-limited request. Ids arXiv doesn't
+/// recognize are simply absent — the caller matches results back by `source_id`.
 pub async fn fetch_by_ids(source_ids: &[String], data_dir: &Path) -> Result<Vec<PaperMetadata>> {
     let (id_list, count) = match prepare_id_list(source_ids) {
         Some(pair) => pair,
@@ -341,8 +331,6 @@ pub async fn fetch_by_ids(source_ids: &[String], data_dir: &Path) -> Result<Vec<
 
 // ---------------------------------------------------------------------------
 // Tests — parser against a representative recorded arXiv Atom feed.
-// (The Python suite mocks `arxiv.Result`; the real wire format the `arxiv`
-// client consumes is the Atom feed below, with every mapped field present.)
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -408,7 +396,7 @@ mod tests {
         // id -> source_id + version
         assert_eq!(p.source_id, "arxiv:2204.12985");
         assert_eq!(p.version, 4);
-        // title whitespace collapsed (the arxiv client does re.sub(r"\s+"," "))
+        // title whitespace collapsed
         assert_eq!(p.title, "Attention Is All You Need Again");
         // authors in order
         assert_eq!(p.authors, vec!["Alice Smith", "Bob Jones"]);
@@ -433,7 +421,7 @@ mod tests {
         assert_eq!(p.comment.as_deref(), Some("15 pages, 3 figures"));
         // bare arxiv:doi preferred over the doi.org link form
         assert_eq!(p.doi.as_deref(), Some("10.1234/test.2022.12985"));
-        // url == pdf link href (arxiv.Result.pdf_url)
+        // url == pdf link href
         assert_eq!(p.url.as_deref(), Some("http://arxiv.org/pdf/2204.12985v4"));
         // source tag
         assert_eq!(p.source.as_deref(), Some("arxiv"));

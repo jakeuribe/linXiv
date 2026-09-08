@@ -1,7 +1,5 @@
-//! `GET /api/feed?url=…` — fetch the user's home RSS/Atom feed into a rolling
-//! `RSS_CACHE_ENTRY` window, throttled per `CACHE_TTL`, dismissed/rule-filtered before response.
-//! Thin handlers over `service::feed`; only the in-process fetch throttle
-//! (GUI polling concern, useless to one-shot CLI runs) lives here.
+//! `/api/feed` routes — home RSS/Atom feed via a rolling `RSS_CACHE_ENTRY` window.
+//! Thin handlers over `service::feed`; only the in-process fetch throttle lives here.
 
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
@@ -84,9 +82,8 @@ async fn get_feed(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError>
     })
 }
 
-/// One fetch-and-persist pass for `url`: prune, fetch, merge into the DB
-/// window, record the throttle entry. Shared by `get_feed` and the headless
-/// bin's poll loop. Returns the channel title.
+/// One fetch-and-persist pass for `url`: prune, fetch, merge into the DB window,
+/// record the throttle entry. Shared with the headless bin's poll loop; returns the title.
 pub async fn refresh(state: &AppState, url: &str, retention_days: i64) -> Result<String, ApiError> {
     // Cleanup before fetching, non-fatal (shouldn't fail the pass).
     if let Err(e) = state.with_conn(|conn| svc_feed::prune_dismissed(conn, retention_days)) {
@@ -203,9 +200,8 @@ mod tests {
         .await
     }
 
-    /// Invalid field/action values die at body deserialization: 422 (same
-    /// status the old service-side validation returned) with a detail naming
-    /// the offending value and the valid variants.
+    /// Invalid field/action values die at body deserialization: 422 with a
+    /// detail naming the offending value and the valid variants.
     #[tokio::test]
     async fn create_rule_invalid_field_or_action_is_422_naming_the_value() {
         let st = state();

@@ -74,19 +74,11 @@ export interface GraphMatch {
 }
 
 /**
- * The node ids the force layout runs over. An excluded node is PINNED rather
- * than removed from the simulation, so this is the membership the charge, the
- * collision radius, the link set and the drag release all have to agree on —
- * every one of them reads it from here.
- *
- * The Visibility checkboxes take a type out of the layout along with the
- * attribute filters: a node drawn at opacity 0 is one the user cannot see, and
- * an invisible node must not shape the layout of the ones they can. (That is a
- * reversal — hidden types used to stay in the physics so that hiding Papers,
- * which every edge touches, would not drop the whole link set. It does now:
- * with Papers off the authors and tags hold position only by their pins and,
- * once nudged, the balance of repulsion against centring — an honest picture,
- * since no visible relationship exists to pull them together.)
+ * The node ids the force layout runs over — the single source the charge, the
+ * collision radius, the link set and the drag release must all agree on (an
+ * excluded node is PINNED, not removed from the simulation). The Visibility
+ * checkboxes remove a type from the layout along with the attribute filters:
+ * an invisible node must not shape the layout of the ones the user can see.
  */
 export function layoutIds(m: GraphMatch): Set<string> {
   const ids = new Set<string>();

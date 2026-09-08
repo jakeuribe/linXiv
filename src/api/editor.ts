@@ -1,7 +1,7 @@
-// Host API client for the embedded TeXbrain editor: editor projects (the note-link)
-// and the on-disk vault filesystem RPC. Mirrors the backend routes in api/app.py
-// (/api/editor/...). The vault FS op forwards a single FsOp and returns its FsResult,
-// so ApiFsResponder (src/lib/editorFsResponder.ts) is a thin wrapper over vaultFsOp.
+// Host API client for the embedded TeXbrain editor (/api/editor/... routes):
+// editor projects (the note-link) and the on-disk vault filesystem RPC. The vault
+// FS op forwards a single FsOp and returns its FsResult, so ApiFsResponder
+// (src/lib/editorFsResponder.ts) is a thin wrapper over vaultFsOp.
 
 import { libraryFetch } from "../stores/backend.ts";
 import type {

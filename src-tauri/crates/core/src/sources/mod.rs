@@ -1,4 +1,4 @@
-//! sources — upstream metadata/PDF providers (Rust port of `sources/`). Phase 3.
+//! sources — upstream metadata/PDF providers.
 
 pub mod arxiv;
 pub mod arxiv_downloads;

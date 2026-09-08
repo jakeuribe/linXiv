@@ -1,4 +1,4 @@
-//! Service layer — Phase 2 ports of `service/*.py`.
+//! Service layer — orchestration between the surfaces and storage.
 pub mod annotation;
 pub mod author;
 pub mod db_admin;

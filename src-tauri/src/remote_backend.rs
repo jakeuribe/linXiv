@@ -1,13 +1,9 @@
 //! Remote Query Mode, client half (CONTEXT.md: Library Backend / Remote
-//! Query Mode / Node Address): the persistent registry of remote backends,
-//! the `api_remote` command that speaks `linxiv-api/1` to one of them, and
-//! the byte-lane PDF fetch with a local cache.
-//!
-//! Every request names its backend explicitly — the backend is a parameter
-//! of the request context, never a global read inside transport code; the
-//! PoC "default backend" lives in the UI layer only. Outbound dials reuse
-//! the app's existing share endpoint ([`ShareState`]) — one endpoint, never
-//! a second bind.
+//! Query Mode / Node Address): the backend registry, the `api_remote` command
+//! speaking `linxiv-api/1`, and the byte-lane PDF fetch with a local cache.
+//! Every request names its backend explicitly — never a global read inside
+//! transport code. Outbound dials reuse the share endpoint ([`ShareState`]) —
+//! one endpoint, never a second bind.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -32,10 +28,9 @@ const SETTINGS_KEY: &str = "remote_backends";
 const UNREACHABLE: &str =
     "can't reach this node — it may be offline, or this device isn't admitted yet";
 
-/// One registered remote Library Backend. `node_address` is the pasted
-/// `linxivnode…` locator string (a locator, not a capability — the node's
-/// Member List decides access). `id` is app-generated (`b<N>`), never
-/// derived from remote input, and doubles as the PDF-cache path segment.
+/// One registered remote Library Backend. `node_address` is a locator, not a
+/// capability (the node's Member List decides access); `id` is app-generated
+/// (`b<N>`), never from remote input, and doubles as the PDF-cache path segment.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Backend {
     pub id: String,
@@ -301,9 +296,8 @@ async fn resolve(
 }
 
 /// The remote twin of the `api` command: same `ApiRequest`, addressed to a
-/// registered backend, returning the envelope's `body`. Remote mode is
-/// online-only; `pdf-path` is denied by the node (403) — remote PDFs go
-/// through [`remote_pdf`].
+/// registered backend, returning the envelope's `body`. Online-only; `pdf-path`
+/// is denied by the node (403) — remote PDFs go through [`remote_pdf`].
 #[tauri::command]
 pub async fn api_remote(
     share: tauri::State<'_, ShareState>,
@@ -333,10 +327,8 @@ fn pct_encode(s: &str) -> String {
     out
 }
 
-/// Byte-lane read deadline from the header's own `eta_seconds` (a paced
-/// transfer legitimately takes that long), doubled plus slack so a slow link
-/// never trips it — but a hostile/hung node can't pin the UI forever. A
-/// missing or absurd eta gets one generous flat ceiling instead.
+/// Byte-lane read deadline: the header's `eta_seconds` doubled plus slack, so a
+/// hung node can't pin the UI forever; a missing or absurd eta gets a flat ceiling.
 fn read_deadline(header: &Value) -> std::time::Duration {
     match header.get("eta_seconds").and_then(Value::as_f64) {
         Some(eta) if eta.is_finite() && (0.0..86_400.0).contains(&eta) => {
@@ -421,10 +413,9 @@ pub async fn remote_pdf(
     Ok(path.to_string_lossy().into_owned())
 }
 
-/// This device's member code — the iroh endpoint id an operator adds to
-/// their node's Member List. NOTE: distinct from `GET /api/share/member_code`
-/// (the keyhive e2ee member id); Remote Query admission keys on the
-/// transport endpoint id.
+/// This device's member code — the iroh endpoint id an operator adds to their
+/// node's Member List. NOTE: distinct from `GET /api/share/member_code` (the
+/// keyhive e2ee member id); Remote Query admission keys on the transport endpoint id.
 #[tauri::command]
 pub async fn remote_member_code(
     share: tauri::State<'_, ShareState>,
@@ -530,8 +521,7 @@ mod tests {
 }
 
 /// In-process integration: this module's client core against the node half's
-/// `linxiv-api/1` handler over the real transport — the same pairing the
-/// desktop app and a headless node run.
+/// `linxiv-api/1` handler over the real transport.
 #[cfg(test)]
 mod proto_tests {
     use super::*;

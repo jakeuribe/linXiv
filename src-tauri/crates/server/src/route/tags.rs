@@ -1,8 +1,5 @@
-//! `/api/tags` routes (plus the paper-tag mutations under `/api/papers/{id}/tags`,
-//! which are 4-segment paths no other group claims) — `api/app.py` 474–509.
-//! Copies the `authors.rs` shape:
-//! a `handle` that owns the path subtree, returning `Some(result)` for routes it
-//! owns and `None` to pass. Core binding mirrors `mcp/src/projects_tags.rs`.
+//! `/api/tags` routes, plus the paper-tag mutations under `/api/papers/{id}/tags`
+//! (4-segment paths no other group claims).
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -29,14 +26,14 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
     }
 }
 
-/// `GET /api/tags` — `api_tags`. Each tag carries its active-paper count so the
-/// index can render a table sortable by name or by count.
+/// `GET /api/tags` — each tag carries its active-paper count so the index can
+/// render a table sortable by name or by count.
 fn list(state: &AppState) -> Result<Value, ApiError> {
     let tags = state.with_conn(|conn| svc_tag::list_tags_with_count(conn))?;
     crate::route::to_value(&svc_tag::TagsResponse { tags })
 }
 
-/// `GET /api/tags/{label}` — `api_tag_detail`. Canonical label via `tag::get`
+/// `GET /api/tags/{label}` — canonical label via `tag::get`.
 fn detail(state: &AppState, label: &str) -> Result<Value, ApiError> {
     let d = state.with_conn(|conn| svc_tag::detail(conn, label))?;
     crate::route::to_value(&d)

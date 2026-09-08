@@ -22,8 +22,8 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
     }
 }
 
-/// `GET /api/search/history?prefix=&limit=` — `api_search_history`. `limit` is
-/// `Query(default=10, ge=1, le=50)`: out-of-range or non-integer is a 422.
+/// `GET /api/search/history?prefix=&limit=` — `limit` defaults to 10, range
+/// 1–50: out-of-range or non-integer is a 422.
 fn history(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let prefix = ctx.q("prefix").unwrap_or("");
     let limit = match ctx.q("limit") {
@@ -42,7 +42,7 @@ fn history(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     to_value(&SearchHistoryResponse { suggestions })
 }
 
-/// `GET /api/search/state` — `api_search_state_get`. `{state: null|obj}`.
+/// `GET /api/search/state` — `{state: null|obj}`.
 fn get_state(state: &AppState) -> Result<Value, ApiError> {
     let st = state.with_conn(|conn| svc_search::load(conn))?;
     to_value(&SearchStateResponse { state: st })
@@ -71,8 +71,8 @@ fn default_max_results() -> i64 {
     25
 }
 
-/// `POST /api/search/state` — `api_search_state_save`. The history recording and
-/// its settings gate live in `service::search_state::save`.
+/// `POST /api/search/state` — the history recording and its settings gate live
+/// in `service::search_state::save`.
 fn save(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let body: SearchStateBody = ctx.parse_body()?;
     let saved = SavedSearch {

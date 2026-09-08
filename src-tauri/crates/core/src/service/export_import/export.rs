@@ -42,7 +42,7 @@ pub fn build_manifest(
     } else {
         Vec::new()
     };
-    // Python: `color_to_hex(details.color) if details.color else None` — 0 is falsy.
+    // color 0 is treated as unset.
     let color_hex = details.color.filter(|&c| c != 0).map(project::color_to_hex);
 
     let manifest = Manifest {
@@ -85,7 +85,7 @@ fn collect_note_entries(conn: &Connection, project_fk: i64) -> Result<Vec<NoteEn
     let mut note_entries = Vec::new();
     for n in &notes {
         let Some(source_id) = source_ids.get(&n.source_fk) else {
-            continue; // Python skips notes whose source_id no longer resolves.
+            continue; // skip notes whose source_id no longer resolves.
         };
         let version = match n.paper_id_fk {
             Some(pid) => match versions.entry(pid) {

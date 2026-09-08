@@ -1,16 +1,12 @@
-//! project service — Rust port of `service/project.py`.
-//!
-//! Thin orchestration over `storage::queries::{project,tag,note,paper}`. DB-touching
-//! fns take `conn` first (DI seam — never open from config). The `Project`/`Projects`
-//! query objects live in `service/project.py` itself, so they stay
-//! local here too; `ProjectIn`/`ProjectUpdateIn` are the shared *In DTOs (models.rs).
+//! project service — thin orchestration over `storage::queries::{project,tag,note,paper}`.
+//! DB-touching fns take `conn` first.
 //!
 //! Two write contracts that are deliberately opposite (do NOT unify):
 //!   * `create` is ATOMIC — insert + membership in ONE transaction; a mid-membership
-//!     failure rolls the PROJECT row back too (Python `Project.save()` on insert).
+//!     failure rolls the PROJECT row back too.
 //!   * `update` is intentionally NON-atomic — tag sync and the field UPDATE are
 //!     separate transactions, so a failure between them leaves tags changed and
-//!     fields not (Python's documented three-transaction partial-failure semantics).
+//!     fields not.
 
 use std::collections::HashSet;
 
@@ -23,21 +19,20 @@ use crate::storage::db::transaction;
 use crate::storage::queries::{paper as paperq, project as pq, tag as tq};
 use crate::storage::query::{self, Q};
 
-/// `service/project.py::Project` — single-project lookup key. `None` short-circuits
-/// to a None/no-op result, matching Python's `if project.project_fk is None`.
+/// Single-project lookup key; an unset `project_fk` short-circuits to a None/no-op result.
 #[derive(Debug, Clone, Default)]
 pub struct Project {
     pub project_fk: Option<i64>,
 }
 
-/// `service/project.py::Projects` — multi-project filter (any combination).
+/// Multi-project filter (any combination of fields).
 #[derive(Debug, Clone, Default)]
 pub struct Projects {
     pub project_fks: Option<Vec<i64>>,
     pub status: Option<Status>,
 }
 
-// ── Tag helpers (shared by create/update) — Python `_normalize_tags`/`_sync_tags`. ──
+// ── Tag helpers (shared by create/update) ────────────────────────────────────
 
 /// Strip + case-insensitive dedup, case-preserving, dropping blanks.
 fn normalize_tags(tags: &[String]) -> Vec<String> {
@@ -53,7 +48,7 @@ fn normalize_tags(tags: &[String]) -> Vec<String> {
 }
 
 /// Diff-based tag sync: remove dropped, add new. Each storage call is its own
-/// transaction (Python parity — a failure between them is partial).
+/// transaction — a failure between them is partial.
 fn sync_tags(conn: &mut Connection, project_id: i64, new_tags: &[String]) -> Result<()> {
     let normalized = normalize_tags(new_tags);
     let current = tq::get_project_tags(conn, project_id)?;
@@ -78,8 +73,8 @@ fn sync_tags(conn: &mut Connection, project_id: i64, new_tags: &[String]) -> Res
     Ok(())
 }
 
-/// `service/project.py::_to_details` — storage row → details, filling `project_tags`
-/// (the storage read leaves them empty; `source_fks` are already populated).
+/// Storage row → details, filling `project_tags` (the storage read leaves them
+/// empty; `source_fks` are already populated).
 fn fill_tags(conn: &Connection, mut p: ProjectDetails) -> Result<ProjectDetails> {
     if let Some(id) = p.id {
         p.project_tags = tq::get_project_tags(conn, id)?;
@@ -102,8 +97,8 @@ fn fill_tags_bulk(conn: &Connection, projects: &mut [ProjectDetails]) -> Result<
 
 // ── Reads ─────────────────────────────────────────────────────────────────────
 
-/// `service/project.py::get` — single project by project_fk (with tags). `None`
-/// when project_fk is unset or no row matches.
+/// Single project by project_fk (with tags). `None` when project_fk is unset
+/// or no row matches.
 pub fn get(conn: &Connection, project: &Project) -> Result<Option<ProjectDetails>> {
     let Some(fk) = project.project_fk else {
         return Ok(None);
@@ -113,9 +108,8 @@ pub fn get(conn: &Connection, project: &Project) -> Result<Option<ProjectDetails
         .transpose()
 }
 
-/// `get` by bare project_fk where absence is an error: the one place the
-/// not-found contract comes from (`CoreError::ProjectNotFound` — route 404,
-/// CLI exit 1, MCP tool error all word it identically).
+/// `get` by bare project_fk where absence is `CoreError::ProjectNotFound` —
+/// route 404, CLI exit 1, MCP tool error all word it identically.
 pub fn get_required(conn: &Connection, project_fk: i64) -> Result<ProjectDetails> {
     get(
         conn,
@@ -127,8 +121,7 @@ pub fn get_required(conn: &Connection, project_fk: i64) -> Result<ProjectDetails
 }
 
 /// Existence-only [`get_required`] (same any-status semantics and
-/// `ProjectNotFound` wording) for guard sites that discard the row: one
-/// SELECT instead of the row + membership + tags triple.
+/// `ProjectNotFound` wording) for guard sites that discard the row.
 pub fn require(conn: &Connection, project_fk: i64) -> Result<()> {
     if pq::project_exists(conn, project_fk)? {
         Ok(())
@@ -159,18 +152,16 @@ pub fn remove_project_tags(
     tq::remove_project_tags(conn, project_fk, tags)
 }
 
-/// The single mapping point to the canonical wire shape (`models::ProjectOut`,
-/// SERIALIZER 3): resolves `source_fks` to namespaced source ids and renders
-/// `color` as `#rrggbb`. All three surfaces serialize projects through here.
+/// The single mapping point to the canonical wire shape (`models::ProjectOut`):
+/// resolves `source_fks` to source ids, renders `color` as `#rrggbb`. All three surfaces use it.
 pub fn to_out(conn: &Connection, p: ProjectDetails) -> Result<ProjectOut> {
     let mut out = to_out_many(conn, vec![p])?;
     out.pop()
         .ok_or_else(|| CoreError::Internal("to_out_many dropped its input".into()))
 }
 
-/// Batched [`to_out`] for list paths: resolves every project's `source_fks` in
-/// one chunked lookup instead of one query per project. Order and per-project
-/// semantics (input-order source_ids, dropped unknown fks) match `to_out`.
+/// Batched [`to_out`] for list paths: one chunked lookup for all `source_fks`.
+/// Order and per-project semantics (input-order source_ids, dropped unknown fks) match `to_out`.
 pub fn to_out_many(conn: &Connection, projects: Vec<ProjectDetails>) -> Result<Vec<ProjectOut>> {
     let mut seen = HashSet::new();
     let all_fks: Vec<i64> = projects
@@ -207,8 +198,7 @@ pub fn to_out_many(conn: &Connection, projects: Vec<ProjectDetails>) -> Result<V
         .collect()
 }
 
-/// `service/project.py::get_many` — projects matching any combination of the
-/// `Projects` filter fields (with tags).
+/// Projects matching any combination of the `Projects` filter fields (with tags).
 pub fn get_many(conn: &Connection, projects: &Projects) -> Result<Vec<ProjectDetails>> {
     let condition = [
         projects
@@ -267,12 +257,9 @@ pub fn adopt_share_id(conn: &Connection, project_fk: i64, share_id: &str) -> Res
 
 // ── Create (ATOMIC insert + membership) ─────────────────────────────────────────
 
-/// `service/project.py::create` — insert a new project and its membership in ONE
-/// transaction, then link tags (separate, like Python `save()` then `add_project_tags`).
-///
-/// Atomicity is load-bearing: `insert_project` and `save_source_fks` run in the same
-/// `storage::db::transaction`, so a mid-membership failure (e.g. a SOURCE_FK with no
-/// PAPER_ROOTS parent) rolls the PROJECT row back too — no orphan project.
+/// Insert a new project and its membership in ONE transaction, then link tags
+/// (separate). Atomicity is load-bearing: a mid-membership failure rolls the
+/// PROJECT row back too — no orphan project.
 pub fn create(conn: &mut Connection, project: &ProjectIn) -> Result<i64> {
     let name = project.name.trim();
     if name.is_empty() {
@@ -290,7 +277,7 @@ pub fn create(conn: &mut Connection, project: &ProjectIn) -> Result<i64> {
         pq::save_source_fks(tx, id, &project.source_fks)?;
         Ok(id)
     })?;
-    // Tags after the insert tx — Python adds them once the project has an id.
+    // Tags after the insert tx — the project needs an id first.
     if !project.tags.is_empty() {
         tq::add_project_tags(conn, id, &project.tags)?;
     }
@@ -299,14 +286,11 @@ pub fn create(conn: &mut Connection, project: &ProjectIn) -> Result<i64> {
 
 // ── Update (partial; UNSET colour sentinel; NON-atomic by design) ───────────────
 
-/// `service/project.py::update` — partial update. `color` is the D16 UNSET sentinel
-/// (`Option<Option<i32>>`): outer `None` = unchanged, `Some(None)` = clear, `Some(Some(v))`
-/// = set. Returns `ProjectNotFound` if absent, `ProjectDeleted` if soft-deleted and the
-/// update is not a restore (status=Active).
-///
-/// Three-transaction partial-failure semantics (intentional, do NOT make atomic): tag
-/// sync and the field UPDATE are separate transactions, so a failure between them leaves
-/// tags changed and fields not.
+/// Partial update. `color` is the D16 UNSET sentinel (`Option<Option<i32>>`): outer
+/// `None` = unchanged, `Some(None)` = clear, `Some(Some(v))` = set. `ProjectNotFound`
+/// if absent, `ProjectDeleted` if soft-deleted and the update is not a restore.
+/// Intentionally NON-atomic (do NOT make atomic): tag sync and the field UPDATE are
+/// separate transactions, so a failure between them leaves tags changed and fields not.
 pub fn update(conn: &mut Connection, upd: &ProjectUpdateIn) -> Result<()> {
     let mut p = pq::get_project(conn, upd.project_fk, false)?
         .ok_or(CoreError::ProjectNotFound(upd.project_fk))?;
@@ -371,7 +355,7 @@ pub fn update(conn: &mut Connection, upd: &ProjectUpdateIn) -> Result<()> {
     Ok(())
 }
 
-/// Fields-only save preserving the loaded status/archived_at (Python `p.save()`).
+/// Fields-only save preserving the loaded status/archived_at.
 fn save_fields(conn: &Connection, p: &ProjectDetails) -> Result<()> {
     let fk =
         p.id.ok_or_else(|| CoreError::Internal("Project has no id".into()))?;
@@ -387,10 +371,10 @@ fn save_fields(conn: &Connection, p: &ProjectDetails) -> Result<()> {
     Ok(())
 }
 
-// ── Membership seam (Python `add_papers`/`remove_papers`/`link_imported`) ───────
+// ── Membership seam ─────────────────────────────────────────────────────────────
 
-/// `service/project.py::ensure_membership_writable` — guards only (existence +
-/// not-deleted), no write. Import flows call this before mutating the library.
+/// Guards only (existence + not-deleted), no write. Import flows call this
+/// before mutating the library.
 pub fn ensure_membership_writable(conn: &Connection, project_fk: i64) -> Result<()> {
     match pq::get_project(conn, project_fk, false)? {
         None => Err(CoreError::ProjectNotFound(project_fk)),
@@ -401,10 +385,8 @@ pub fn ensure_membership_writable(conn: &Connection, project_fk: i64) -> Result<
     }
 }
 
-/// `service/project.py::_resolve_source_ids` — paper ids → SOURCE_FKs. Ids are
-/// stripped and deduped (keyed on the stripped form, reported once). Returns
-/// (fks in first-seen order, unresolved ids verbatim). Trashed papers resolve —
-/// `source_fks_by_id` has no status filter, matching `get_paper_root`.
+/// Paper ids → SOURCE_FKs. Ids are stripped and deduped. Returns (fks in
+/// first-seen order, unresolved ids verbatim); trashed papers resolve.
 fn resolve_source_ids(conn: &Connection, source_ids: &[String]) -> Result<(Vec<i64>, Vec<String>)> {
     let mut seen = HashSet::new();
     let deduped: Vec<(&str, &String)> = source_ids
@@ -427,9 +409,8 @@ fn resolve_source_ids(conn: &Connection, source_ids: &[String]) -> Result<(Vec<i
     Ok((fks, failed))
 }
 
-/// `service/project.py::add_papers` — add by paper id (per-row inserts; never a full
-/// rewrite). Unresolved ids are returned verbatim while the rest are still added.
-/// Raises ProjectNotFound/ProjectDeleted per the membership guards.
+/// Add by paper id (per-row inserts; never a full rewrite). Unresolved ids are
+/// returned verbatim while the rest are still added; membership guards apply.
 pub fn add_papers(
     conn: &Connection,
     project_fk: i64,
@@ -443,7 +424,7 @@ pub fn add_papers(
     Ok(failed)
 }
 
-/// `service/project.py::remove_papers` — same contract as `add_papers`, per-row deletes.
+/// Same contract as `add_papers`, per-row deletes.
 pub fn remove_papers(
     conn: &Connection,
     project_fk: i64,
@@ -458,9 +439,7 @@ pub fn remove_papers(
 }
 
 /// A project's papers for the text exporters, resolved ONE way for every
-/// surface: the project's latest-version rows in library order (the shipped
-/// GUI contract — app.py's `[p for p in list_paper_details(latest) if id in
-/// ids]`), filtered in SQL rather than scanning the whole library.
+/// surface: latest-version rows in library order, filtered in SQL.
 pub fn export_papers(conn: &Connection, source_fks: &[i64]) -> Result<Vec<PaperDetails>> {
     crate::service::paper::get_by_source_fks(conn, source_fks)
 }
@@ -521,8 +500,8 @@ fn membership_receipt(
     })
 }
 
-/// `service/project.py::link_imported` — same write path as `add_papers`, but ids come
-/// from the import (not a user), so an unresolved id is logged, not returned.
+/// Same write path as `add_papers`, but ids come from the import (not a user),
+/// so an unresolved id is logged, not returned.
 pub fn link_imported(conn: &Connection, project_fk: i64, source_ids: &[String]) -> Result<()> {
     let failed = add_papers(conn, project_fk, source_ids)?;
     if !failed.is_empty() {
@@ -537,8 +516,8 @@ pub fn link_imported(conn: &Connection, project_fk: i64, source_ids: &[String]) 
     Ok(())
 }
 
-/// `service/project.py::remove_paper_from_all_projects` — delete this paper's membership
-/// rows across all projects (single transaction). Returns the PROJECT_FKs it was in.
+/// Delete this paper's membership rows across all projects (single transaction).
+/// Returns the PROJECT_FKs it was in.
 pub use crate::storage::queries::project::remove_paper_from_all_projects;
 
 /// `DELETE /api/papers/sfk/{fk}/projects` receipt; MCP emits the same shape.
@@ -548,8 +527,8 @@ pub struct RemovedFromProjects {
     pub removed_from_projects: Vec<i64>,
 }
 
-/// `service/project.py::remove_paper_from_all_projects_by_id` — resolve a paper id
-/// (stripped) then delete its membership everywhere. `None` if the id is unknown.
+/// Resolve a paper id (stripped) then delete its membership everywhere.
+/// `None` if the id is unknown.
 pub fn remove_paper_from_all_projects_by_id(
     conn: &mut Connection,
     source_id: &str,
@@ -561,8 +540,8 @@ pub fn remove_paper_from_all_projects_by_id(
 
 // ── Status transitions / trash ──────────────────────────────────────────────────
 
-/// Load fields and write the target status (+archived_at). No-op if the project is
-/// absent or project_fk is unset — Python's delete/restore/archive silently return.
+/// Load fields and write the target status (+archived_at). Silent no-op if the
+/// project is absent or project_fk is unset.
 fn set_status(conn: &Connection, project: &Project, target: Status) -> Result<()> {
     let Some(fk) = project.project_fk else {
         return Ok(());
@@ -586,24 +565,22 @@ fn set_status(conn: &Connection, project: &Project, target: Status) -> Result<()
     Ok(())
 }
 
-/// `service/project.py::delete` — soft-delete (trash).
+/// Soft-delete (trash).
 pub fn delete(conn: &Connection, project: &Project) -> Result<()> {
     set_status(conn, project, Status::Deleted)
 }
 
-/// `service/project.py::restore` — un-trash / un-archive.
+/// Un-trash / un-archive.
 pub fn restore(conn: &Connection, project: &Project) -> Result<()> {
     set_status(conn, project, Status::Active)
 }
 
-/// `service/project.py::archive`.
 pub fn archive(conn: &Connection, project: &Project) -> Result<()> {
     set_status(conn, project, Status::Archived)
 }
 
-/// Guard for trash-only operations (restore-from-trash, hard delete): the project
-/// must exist and be soft-deleted. `restore`/`hard_delete` themselves stay
-/// unguarded — `restore` also serves un-archive, which starts from `Archived`.
+/// Guard for trash-only operations: the project must exist and be soft-deleted.
+/// `restore`/`hard_delete` stay unguarded — `restore` also serves un-archive.
 pub fn require_trashed(conn: &Connection, project_fk: i64) -> Result<()> {
     let Some(d) = get(
         conn,
@@ -622,8 +599,8 @@ pub fn require_trashed(conn: &Connection, project_fk: i64) -> Result<()> {
     Ok(())
 }
 
-/// `service/project.py::hard_delete` — permanent removal (+ associations). No-op if
-/// project_fk is unset; the storage fn no-ops cleanly on an absent project.
+/// Permanent removal (+ associations). No-op if project_fk is unset; the
+/// storage fn no-ops cleanly on an absent project.
 pub fn hard_delete(conn: &mut Connection, project: &Project) -> Result<()> {
     if let Some(fk) = project.project_fk {
         pq::hard_delete_project(conn, fk)?;
@@ -631,8 +608,8 @@ pub fn hard_delete(conn: &mut Connection, project: &Project) -> Result<()> {
     Ok(())
 }
 
-/// `service/project.py::list_deleted` — soft-deleted projects, newest-trashed first
-/// (archived_at desc; rows with no timestamp sort last, matching `datetime.min`).
+/// Soft-deleted projects, newest-trashed first (archived_at desc; rows with no
+/// timestamp sort last).
 pub fn list_deleted(conn: &Connection) -> Result<Vec<ProjectDetails>> {
     let mut projects = pq::list_projects(conn, Some(Q::new("STATUS = ?", "deleted")), true)?;
     projects.sort_by_key(|p| std::cmp::Reverse(p.archived_at));
@@ -640,8 +617,7 @@ pub fn list_deleted(conn: &Connection) -> Result<Vec<ProjectDetails>> {
     Ok(projects)
 }
 
-/// `service/project.py::purge_old` — hard-delete projects trashed more than `days`
-/// days ago. Returns the count purged.
+/// Hard-delete projects trashed more than `days` days ago. Returns the count purged.
 pub fn purge_old(conn: &mut Connection, days: i64) -> Result<usize> {
     let cutoff = Utc::now().naive_utc() - Duration::days(days);
     let deleted = pq::list_projects(conn, Some(Q::new("STATUS = ?", "deleted")), false)?;
@@ -656,7 +632,7 @@ pub fn purge_old(conn: &mut Connection, days: i64) -> Result<usize> {
     Ok(old.len())
 }
 
-// ── Colour helpers — Python `projects.py::color_to_hex`/`color_from_hex`. ──────
+// ── Colour helpers ──────────────────────────────────────────────────────────────
 
 pub fn color_to_hex(color: i32) -> String {
     format!("#{color:06x}")

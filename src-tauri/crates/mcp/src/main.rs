@@ -1,8 +1,5 @@
-//! linXiv MCP server — exposes the linXiv library tools over stdio JSON-RPC.
-//! Rust port of `linxiv_mcp.py`. The 75 tools are split across five cluster
-//! modules (`papers`, `projects_tags`, `notes_pdf_trash`, `annotations`,
-//! `io_authors_misc`), each contributing one `#[tool_router]` impl block that is
-//! merged here.
+//! linXiv MCP server — the library tools over stdio JSON-RPC. The 75 tools are
+//! split across five cluster modules, each a `#[tool_router]` impl merged here.
 
 mod annotations;
 mod io_authors_misc;
@@ -24,9 +21,8 @@ use tracing_subscriber::EnvFilter;
 use linxiv_core::config;
 use linxiv_core::service::db_admin;
 
-/// Shared MCP server state. Holds the single SQLite connection (guarded by a
-/// `Mutex`, opened once at startup) plus the managed PDF root, and the
-/// merged tool router built from the five cluster impls.
+/// Shared MCP server state: the single SQLite connection (opened once, behind a
+/// `Mutex`), the managed PDF root, and the merged tool router.
 #[derive(Clone)]
 pub struct Server {
     conn: Arc<Mutex<Connection>>,
@@ -52,18 +48,15 @@ impl Server {
         })
     }
 
-    /// The one accessor every tool body uses to reach the DB. Locks the shared
-    /// connection for the duration of `f`. Panics only if the lock is poisoned
-    /// (a previous tool body panicked while holding it).
+    /// Locks the shared connection for the duration of `f`. Panics only if the
+    /// lock is poisoned (a previous tool body panicked while holding it).
     pub fn with_conn<T>(&self, f: impl FnOnce(&mut Connection) -> T) -> T {
         let mut guard = self.conn.lock().expect("db connection mutex poisoned");
         f(&mut guard)
     }
 
-    /// The shared handle, for work that must run off the async runtime. `with_conn`
-    /// blocks a tokio worker for as long as `f` runs, which is fine for millisecond
-    /// statements and not for whole-database file I/O — those go through
-    /// `spawn_blocking` with this.
+    /// The shared handle for work that must run off the async runtime: `with_conn`
+    /// blocks a tokio worker, fine for fast statements but not whole-DB file I/O.
     pub fn conn_handle(&self) -> Arc<Mutex<Connection>> {
         Arc::clone(&self.conn)
     }

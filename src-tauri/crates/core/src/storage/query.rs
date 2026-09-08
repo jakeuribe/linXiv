@@ -1,5 +1,4 @@
-//! Composable WHERE-clause builder. Rust port of `storage/config/queries.py::Q`
-//! (`&` → `and`). Plan §5.3.
+//! Composable WHERE-clause builder. Plan §5.3.
 
 use rusqlite::types::ToSql;
 
@@ -18,7 +17,7 @@ impl Q {
         }
     }
 
-    /// `(self AND other)` — Python `__and__`.
+    /// `(self AND other)`.
     pub fn and(mut self, mut other: Q) -> Q {
         self.sql = format!("({} AND {})", self.sql, other.sql);
         self.params.append(&mut other.params);
@@ -31,7 +30,7 @@ impl Q {
     }
 }
 
-/// `col IN (?, ?, …)` — Python `_in`. Caller ensures `vals` is non-empty.
+/// `col IN (?, ?, …)`. Caller ensures `vals` is non-empty.
 pub fn _in<T: ToSql + 'static>(col: &str, vals: impl IntoIterator<Item = T>) -> Q {
     let params: Vec<Box<dyn ToSql>> = vals
         .into_iter()

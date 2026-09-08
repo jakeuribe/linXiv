@@ -1,10 +1,6 @@
-//! download — SSRF-safe PDF downloader. Rust port of `service/files.py::download_pdf`
-//! (scheme allowlist, host-resolves-to-public, redirect re-check per hop, content-type +
-//! size cap, atomic tmp→dest rename). Plan §5.4.
-//!
-//! DI: the caller (`service::files::download_pdf`) computes the managed dest path under the
-//! injected `pdf_dir` and passes it in — this module never reads config. Tests pass a
-//! `tempfile::tempdir()` dest.
+//! download — SSRF-safe PDF downloader: scheme allowlist, host-resolves-to-public,
+//! redirect re-check per hop, content-type + size cap, atomic tmp→dest rename.
+//! Plan §5.4. DI: the caller passes the managed dest path — nothing reads config.
 
 use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, ToSocketAddrs};
@@ -16,8 +12,8 @@ use reqwest::Url;
 
 use crate::error::{CoreError, Result};
 
-/// Deletes its path on drop unless disarmed (`guard.0 = None`) — so any error after the temp
-/// file is created removes it (mirrors Python's `tmp.unlink(missing_ok=True)` on failure).
+/// Deletes its path on drop unless disarmed (`guard.0 = None`) — so any error
+/// after the temp file is created removes it.
 struct TmpGuard(Option<PathBuf>);
 impl Drop for TmpGuard {
     fn drop(&mut self) {
@@ -27,23 +23,16 @@ impl Drop for TmpGuard {
     }
 }
 
-/// Matches Python `_MAX_PDF_BYTES = 200 * 1024 * 1024` (the spec's "~100MB" cap; the live
-/// value is 200 MB — port the real number).
+/// Fixed SSRF/memory ceiling on one download.
 const MAX_PDF_BYTES: u64 = 200 * 1024 * 1024;
-/// Python `_ALLOWED_CONTENT_TYPES`. An empty/absent Content-Type is allowed (Python only
-/// rejects a *present* type that isn't one of these).
+/// An empty/absent Content-Type is allowed; only a present type outside this list is rejected.
 const ALLOWED_CONTENT_TYPES: &[&str] = &["application/pdf", "application/octet-stream"];
 const MAX_REDIRECTS: u32 = 10;
 
-/// Download `url` into `dest` (which already encodes the DI'd managed pdf_dir). Returns the
-/// dest path. Idempotent: if `dest` already exists it is returned without a network call
-/// (mirrors Python's `if dest.exists(): return str(dest)`).
-///
-/// `configured_max_bytes` is the caller-resolved allowance for THIS download — for the
-/// `pdf_save_limit_mb` total-storage cap that's what existing PDFs leave of the quota, computed
-/// by `service::files::download_pdf` (DI'd — this module never reads config or walks pdf_dir).
-/// It layers on top of the fixed `MAX_PDF_BYTES` SSRF/memory ceiling rather than replacing it:
-/// the effective cap is whichever of the two is smaller.
+/// Download `url` into `dest` (already encodes the DI'd managed pdf_dir); returns the dest
+/// path. Idempotent: an existing `dest` is returned without a network call.
+/// `configured_max_bytes` is the caller-resolved remaining allowance for THIS download;
+/// the effective cap is the smaller of it and the fixed `MAX_PDF_BYTES` ceiling.
 pub async fn download_pdf(dest: &Path, url: &str, configured_max_bytes: u64) -> Result<PathBuf> {
     if dest.exists() {
         return Ok(dest.to_path_buf());
@@ -69,10 +58,9 @@ fn build_client() -> Result<reqwest::Client> {
         .map_err(|e| CoreError::Internal(format!("http client build failed: {e}")))
 }
 
-/// Core fetch: enforce scheme + `host_ok` on the initial URL and every redirect hop, then
-/// stream the final body to `dest` under `max_bytes` with an atomic rename. `host_ok` and
-/// `max_bytes` are injected so tests can drive a 127.0.0.1 mock (which the real public-IP
-/// guard would reject) and exercise the size cap without a 200 MB body.
+/// Core fetch: enforce scheme + `host_ok` on the initial URL and every redirect hop,
+/// then stream the final body to `dest` under `max_bytes` with an atomic rename.
+/// `host_ok`/`max_bytes` are injected so tests can drive a loopback mock and a tiny cap.
 async fn fetch_to_dest(
     client: &reqwest::Client,
     url: &str,
@@ -123,8 +111,8 @@ async fn fetch_to_dest(
         break resp;
     };
 
-    // Non-2xx is an error, not a body: Python urllib raises HTTPError on any non-2xx, so a 4xx/5xx
-    // error page served with a pdf/octet content-type must not be saved as a corrupt "PDF".
+    // Non-2xx is an error, not a body: a 4xx/5xx error page served with a
+    // pdf/octet content-type must not be saved as a corrupt "PDF".
     if !resp.status().is_success() {
         return Err(CoreError::Upstream(format!(
             "download failed: HTTP {}",
@@ -161,8 +149,8 @@ async fn fetch_to_dest(
         }
     }
 
-    // Stream into a sibling temp file under dest's dir, then atomically rename. Any error
-    // after creation drops the guard → temp removed (Python's tmp.unlink on failure).
+    // Stream into a sibling temp file under dest's dir, then atomically rename.
+    // Any error after creation drops the guard → temp removed.
     let parent = dest
         .parent()
         .ok_or_else(|| CoreError::Internal("dest has no parent dir".into()))?;
@@ -208,10 +196,9 @@ fn tmp_name() -> String {
 }
 
 /// True iff `url`'s host resolves *only* to public addresses. IP-literal hosts are checked
-/// directly (no DNS); domain hosts resolve via blocking `getaddrinfo` and ALL results must be
-/// public (any private/loopback/etc → reject), matching Python's `_is_safe_host`.
-// DNS-rebind between check and connect is the same known residual gap the Python
-// version documents.
+/// directly (no DNS); domain hosts resolve via blocking `getaddrinfo` and ALL results must
+/// be public (any private/loopback/etc → reject).
+// DNS-rebind between check and connect is a known residual gap.
 fn host_is_public(url: &Url) -> bool {
     let Some(host) = url.host_str() else {
         return false;
@@ -235,7 +222,7 @@ fn host_is_public(url: &Url) -> bool {
 }
 
 /// SECURITY CORE: reject any non-public address (private, loopback, link-local, unique-local,
-/// multicast, unspecified, CGNAT-shared, 0.0.0.0/8). Mirrors Python's `ipaddress` is_* checks.
+/// multicast, unspecified, CGNAT-shared, 0.0.0.0/8).
 /// The one SSRF classifier in the crate — the feed guard reuses it too.
 pub(crate) fn is_public_addr(ip: IpAddr) -> bool {
     match ip {
@@ -252,7 +239,7 @@ pub(crate) fn is_public_addr(ip: IpAddr) -> bool {
             let seg0 = s[0];
             let unique_local = (seg0 & 0xfe00) == 0xfc00; // fc00::/7
             let link_local = (seg0 & 0xffc0) == 0xfe80; // fe80::/10
-                                                        // Reserved ranges Python rejects via addr.is_reserved.
+                                                        // Additional reserved ranges.
             let documentation = seg0 == 0x2001 && s[1] == 0x0db8; // 2001:db8::/32
             let discard = seg0 == 0x0100 && s[1] == 0 && s[2] == 0 && s[3] == 0; // 100::/64
             let nat64 = seg0 == 0x0064
@@ -269,7 +256,7 @@ pub(crate) fn is_public_addr(ip: IpAddr) -> bool {
 fn is_public_v4(v4: Ipv4Addr) -> bool {
     let o = v4.octets();
     let shared = o[0] == 100 && (o[1] & 0xc0) == 0x40; // 100.64.0.0/10 CGNAT
-                                                       // Reserved ranges Python rejects via addr.is_reserved that the std is_* checks miss.
+                                                       // Reserved ranges the std is_* checks miss.
     let reserved = o[0] >= 240 // 240.0.0.0/4 (reserved/future)
         || (o[0] == 198 && (o[1] & 0xfe) == 18) // 198.18.0.0/15 (benchmarking)
         || (o[0] == 192 && o[1] == 0 && o[2] == 0); // 192.0.0.0/24 (IETF protocol assignments)
@@ -457,14 +444,8 @@ mod tests {
         assert!(!dest.exists());
     }
 
-    /// `download_pdf`'s effective cap is the REMAINING `pdf_save_limit_mb` total-storage
-    /// allowance (quota minus PDFs already in pdf_dir, computed by `service::files::
-    /// download_pdf`), clamped under the fixed SSRF/memory ceiling. Seeds a 95-byte PDF,
-    /// derives `remaining` from `quota`, and drives it through `fetch_to_dest` directly —
-    /// same workaround the other tests here use, since the SSRF guard rejects a wiremock
-    /// host on the public `download_pdf` entry point (see
-    /// `download_pdf_refuses_ssrf_and_leaves_no_file` in `service::files`; the
-    /// zero-remaining early reject is tested there too).
+    /// Pins that the effective cap is the REMAINING total-storage allowance (quota minus
+    /// seeded PDFs), driven through `fetch_to_dest` since the SSRF guard rejects wiremock.
     async fn remaining_allowance_case(quota: u64, body_len: usize, expect_ok: bool) {
         let server = MockServer::start().await;
         let body = vec![0u8; body_len];

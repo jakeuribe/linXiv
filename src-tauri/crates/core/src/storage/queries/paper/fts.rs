@@ -7,21 +7,15 @@ use crate::error::Result;
 use crate::models::{ARXIV_ID_PREFIX, ARXIV_PDF_MARKER};
 use crate::storage::db::transaction;
 
-// ── Writes (storage/db.py) ────────────────────────────────────────────────────
+// ── Writes ───────────────────────────────────────────────────────────────────
 //
-// papers_fts.paper_id holds the SOURCE_ID *string*, not the int PAPER_ID. The
-// schema always creates papers_fts (init_db), so the Python `sqlite_master`
-// existence guard is dropped — a DELETE/INSERT against it cannot miss.
+// papers_fts.paper_id holds the SOURCE_ID *string*, not the int PAPER_ID.
+// init_db always creates papers_fts, so a DELETE/INSERT against it cannot miss.
 
 /// Rows the backfill works on: latest-version active papers with no TeX source
-/// yet that `service::paper::source_fetch_url` would accept — an `arxiv:`
-/// source_id carrying a `/pdf/` link to derive the tarball URL from. Rows it
-/// would reject never leave the list, so listing them makes the backlog readout
-/// plateau above zero and puts them in front of the worker on every rebuild.
-///
-/// Both patterns are built from the constants `source_fetch_url` matches on, so
-/// the two rules cannot drift apart. GLOB, not LIKE: LIKE is ASCII-case-
-/// insensitive in SQLite, while the Rust-side rule is case-sensitive.
+/// that `service::paper::source_fetch_url` would accept (an `arxiv:` id with a
+/// `/pdf/` link). Both patterns are built from the constants that fn matches on,
+/// so the rules can't drift; GLOB, not LIKE — LIKE is ASCII-case-insensitive.
 fn backfill_where() -> String {
     format!(
         "FROM latest_papers WHERE COALESCE(downloaded_source, 0) = 0 \
@@ -52,14 +46,10 @@ pub fn full_text_backfill_count(conn: &Connection) -> Result<i64> {
     )
 }
 
-/// Re-derive a paper's FTS row from `paper_index_text`, dropping it when the view
-/// yields nothing (no version holds text, or the root is soft-deleted). Byte-for-
-/// byte the same two statements the PAPER_META triggers run — same view, so the
-/// hand-called path and the automatic one cannot disagree about what is indexed.
-///
-/// Only for the writes the triggers cannot see: a SOURCE_ID rename (the index key
-/// itself moves) and an undelete. Writers of FULL_TEXT need not call this — the
-/// trigger has already run by the time their UPDATE returns.
+/// Re-derive a paper's FTS row from `paper_index_text` (dropped when the view
+/// yields nothing) — the same two statements the PAPER_META triggers run, so the
+/// paths can't disagree. Only for writes the triggers cannot see: a SOURCE_ID
+/// rename and an undelete; FULL_TEXT writers are already covered by trigger.
 pub(super) fn refresh_fts(tx: &Transaction, source_id: &str) -> Result<()> {
     tx.execute("DELETE FROM papers_fts WHERE paper_id = ?", [source_id])?;
     tx.execute(
@@ -70,14 +60,9 @@ pub(super) fn refresh_fts(tx: &Transaction, source_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// `set_full_text` — store extracted TeX and mark DOWNLOADED_SOURCE. No-op if the
-/// version does not exist. The FTS index follows by trigger, not from here.
-///
-/// Empty text marks the version fetched without taking the paper out of search:
-/// `paper_index_text` falls back to whatever older version still holds a body. A
-/// version bump whose tarball extracts empty (PDF-only or corrupt) is the common
-/// way this happens, and the clobber guard (`has_full_text`) cannot see it — it
-/// is handed one version.
+/// Store extracted TeX and mark DOWNLOADED_SOURCE; no-op if the version doesn't
+/// exist. FTS follows by trigger. Empty text marks the version fetched without
+/// leaving search: `paper_index_text` falls back to an older version's body.
 pub fn set_full_text(
     conn: &mut Connection,
     source_id: &str,

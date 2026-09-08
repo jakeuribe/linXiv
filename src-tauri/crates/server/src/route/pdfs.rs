@@ -1,7 +1,5 @@
 //! `/api/papers/{id}/pdf-path` plus the `/api/pdfs` subtree (list saved PDFs,
-//! delete all versions' PDFs). Path resolution goes through
-//! `service::files::pdf_path` (stored custom path first, then the managed
-//! location). Shape mirrors `mcp/src/notes_pdf_trash.rs::get_pdf_path`.
+//! delete all versions' PDFs). Resolution: stored custom path first, then managed.
 
 use serde_json::Value;
 
@@ -23,8 +21,8 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
     }
 }
 
-/// `GET /api/pdfs` — `api_list_saved_pdfs`. Latest-version papers whose PDF is on
-/// disk, with file sizes, largest first, capped at 200.
+/// `GET /api/pdfs` — latest-version papers whose PDF is on disk, with file
+/// sizes, largest first, capped at 200.
 fn list_saved(state: &AppState) -> Result<Value, ApiError> {
     // Pull the rows under the lock; stat the files outside it.
     let papers = state.with_conn(|conn| svc_paper::list_pdf_papers(conn))?;
@@ -33,8 +31,8 @@ fn list_saved(state: &AppState) -> Result<Value, ApiError> {
     crate::route::to_value(&files::SavedPdfListing { pdfs })
 }
 
-/// `DELETE /api/pdfs/{source_id}` — `api_delete_saved_pdf`. Drops every version's
-/// local PDF (409 if a file is outside the managed dir), keeping the paper record.
+/// `DELETE /api/pdfs/{source_id}` — drops every version's local PDF (409 if a
+/// file is outside the managed dir), keeping the paper record.
 fn delete_saved(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
     let pdf_dir = state.pdf_dir.clone();
     state.with_conn(|conn| -> Result<(), ApiError> {
@@ -46,9 +44,9 @@ fn delete_saved(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
     crate::route::to_value(&files::DeletedPdf { deleted: true })
 }
 
-/// `GET /api/papers/{source_id:path}/pdf-path?version=` — `api_paper_pdf_path`.
+/// `GET /api/papers/{source_id:path}/pdf-path?version=`.
 fn pdf_path(state: &AppState, source_id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
-    // Query(default=None, ge=1): absent → latest; present must be a positive int.
+    // version: absent → latest; present must be a positive int (else 422).
     let version = crate::route::q_version(ctx)?;
     let (sid, ver, path) = resolve_pdf(state, source_id, version)?;
     // Canonical location envelope (path is always Some here — missing is 404).
@@ -59,10 +57,8 @@ fn pdf_path(state: &AppState, source_id: &str, ctx: &ReqCtx<'_>) -> Result<Value
     })
 }
 
-/// Resolve a paper's on-disk PDF (stored custom path first, then the managed
-/// location): `(canonical source_id, version, path)`. Shared by the
-/// `pdf-path` arm above and `remote_query`'s byte lane, so both surfaces
-/// resolve — and 404 — identically.
+/// Resolve a paper's on-disk PDF to `(canonical source_id, version, path)`.
+/// Shared with `remote_query`'s byte lane, so both surfaces resolve — and 404 — identically.
 pub(crate) fn resolve_pdf(
     state: &AppState,
     source_id: &str,

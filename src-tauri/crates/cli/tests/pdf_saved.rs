@@ -1,6 +1,5 @@
-//! Subprocess integration tests for `pdf list` / `pdf delete`, exercising the
-//! real clap dispatch. Both files are written into the managed pdf dir, so the
-//! path-escape guard in `files::delete_pdf` accepts them; no network is used.
+//! Subprocess integration tests for `pdf list` / `pdf delete` via the real clap
+//! dispatch. Files live in the managed pdf dir, so `files::delete_pdf`'s path-escape guard accepts them.
 
 use std::process::Command;
 

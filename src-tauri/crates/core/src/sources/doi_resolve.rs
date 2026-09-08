@@ -1,18 +1,9 @@
-//! doi_resolve — port of `sources/doi_resolve.py`.
-//!
-//! Resolve a DOI to `models::PaperMetadata` via three strategies, in order:
+//! doi_resolve — resolve a DOI to `models::PaperMetadata`. Plan §5.4. In order:
 //!   1. arXiv-issued DOI (`10.48550/arXiv.<id>`) -> fetch the arXiv record
 //!   2. Semantic Scholar  -> any DOI; uses the arXiv id when S2 exposes one
 //!   3. CrossRef          -> last resort (reuses `crossref::parse_doi_body`)
-//!
-//! The load-bearing, fixture-tested pieces are the PURE parsers: the arXiv-DOI
-//! matcher (`arxiv_doi_id`), the Semantic Scholar field mapper (`parse_s2`,
-//! incl. its publicationDate/year/today date ladder) and `strip_doi_url`. The
-//! async wrappers route fetches through `sources::http` + `sources::arxiv`.
-//!
-//! NON-NEGOTIABLE (ported exactly): an arXiv 429 hit while resolving an arXiv
-//! DOI (strategy 1, or strategy 2's arXiv-id branch) is RE-RAISED as a
-//! user-facing error, never swallowed into the fallback chain. Plan §5.4.
+//! NON-NEGOTIABLE: an arXiv 429 hit in strategy 1 or 2's arXiv-id branch is
+//! RE-RAISED as a user-facing error, never swallowed into the fallback chain.
 
 use chrono::{NaiveDate, Utc};
 use reqwest::StatusCode;
@@ -24,7 +15,7 @@ use super::{arxiv, crossref, http};
 use crate::error::{CoreError, Result};
 use crate::models::{doi_source_id, PaperMetadata};
 
-/// Fields requested from the Semantic Scholar graph API (`_S2_FIELDS`).
+/// Fields requested from the Semantic Scholar graph API.
 const S2_FIELDS: &str = "title,authors,year,abstract,externalIds,venue,publicationDate,url";
 const S2_BASE: &str = "https://api.semanticscholar.org/graph/v1/paper/DOI:";
 /// Semantic Scholar is reached over exactly one host; the http guard enforces it.
@@ -35,8 +26,7 @@ const RATELIMIT_MSG: &str = "arXiv rate limit reached. Please wait ~60 s and try
 // Pure helpers (sync, fixture-tested).
 // ---------------------------------------------------------------------------
 
-/// Strip a leading `http(s)://(dx.)doi.org/` and surrounding whitespace,
-/// mirroring `re.sub(r"^https?://(dx\.)?doi\.org/", "", doi.strip())`.
+/// Strip a leading `http(s)://(dx.)doi.org/` and surrounding whitespace.
 pub fn strip_doi_url(doi: &str) -> String {
     let t = doi.trim();
     [
@@ -51,16 +41,15 @@ pub fn strip_doi_url(doi: &str) -> String {
     .to_string()
 }
 
-/// An arXiv error is a rate-limit iff its message mentions `429`, matching
-/// Python's `"429" in str(e)`. `http::arxiv_get` surfaces a 429 as exactly that.
+/// An arXiv error is a rate-limit iff its message mentions `429`;
+/// `http::arxiv_get` surfaces a 429 as exactly that.
 fn is_ratelimited(e: &CoreError) -> bool {
     e.to_string().contains("429")
 }
 
 /// If `doi` contains an arXiv-issued DOI (`10.48550/arXiv.<id>`, case-insensitive)
-/// return the bare arXiv id; else `None`. Hand-port of `_ARXIV_DOI_RE`'s
-/// `(\d{4}\.\d{4,5}|[a-z\-]+/\d+)` id alternatives (new-style id, then old-style
-/// `category/number`), with the same first-alternative-wins ordering.
+/// return the bare arXiv id (new-style `\d{4}\.\d{4,5}` tried first, else
+/// old-style `category/number`); else `None`.
 fn arxiv_doi_id(doi: &str) -> Option<String> {
     let prefix = "10.48550/arxiv.";
     let pos = doi.to_ascii_lowercase().find(prefix)?;
@@ -99,9 +88,8 @@ fn arxiv_doi_id(doi: &str) -> Option<String> {
     Some(rest[..cat + 1 + digits].to_string())
 }
 
-/// Pick the published date from a Semantic Scholar record: a valid ISO
-/// `publicationDate` wins, else `year` -> Jan 1, else today. Mirrors the Python
-/// date ladder (incl. the invalid-`publicationDate` -> year fallback).
+/// Published date from a Semantic Scholar record: a valid ISO `publicationDate`
+/// wins (an invalid one falls to `year`), else `year` -> Jan 1, else today.
 fn s2_published(data: &Value) -> NaiveDate {
     let today = Utc::now().date_naive();
     let year_jan1 = || {
@@ -118,9 +106,8 @@ fn s2_published(data: &Value) -> NaiveDate {
     }
 }
 
-/// Build `PaperMetadata` from Semantic Scholar's own fields (the non-arXiv path).
-/// `None` when the record has no `title` (the Python `"title" not in data` gate).
-/// The arXiv-id branch is handled by `try_semantic_scholar`, not here.
+/// Build `PaperMetadata` from Semantic Scholar's own fields (the non-arXiv path);
+/// `None` when the record has no `title`. The arXiv-id branch lives in `try_semantic_scholar`.
 fn parse_s2(data: &Value, doi: &str) -> Option<PaperMetadata> {
     let title = data.get("title").and_then(Value::as_str)?;
 
@@ -195,7 +182,7 @@ async fn try_arxiv_doi(doi: &str, data_dir: &Path) -> Result<Option<PaperMetadat
 
 /// Strategy 2: look the DOI up on Semantic Scholar. If S2 exposes an arXiv id,
 /// fetch the full arXiv record (re-raising a 429); otherwise build from S2's own
-/// fields. Any fetch/parse failure resolves to `Ok(None)` (Python swallows them).
+/// fields. Any fetch/parse failure resolves to `Ok(None)`.
 async fn try_semantic_scholar(doi: &str, data_dir: &Path) -> Result<Option<PaperMetadata>> {
     let url = format!("{S2_BASE}{doi}?fields={S2_FIELDS}");
     let resp = match http::get_guarded(&url, S2_HOSTS).await {
@@ -226,11 +213,9 @@ async fn try_semantic_scholar(doi: &str, data_dir: &Path) -> Result<Option<Paper
     Ok(parse_s2(&data, doi))
 }
 
-/// Resolve a DOI to `PaperMetadata`, trying arXiv -> Semantic Scholar ->
-/// CrossRef in order. `data_dir` (DI) feeds the arXiv rate-limit cool-down and
-/// `mailto` (DI) the CrossRef polite pool.
-/// Errors are user-facing: empty input, a propagated arXiv 429, or "could not
-/// resolve" when every strategy comes up empty.
+/// Resolve a DOI, trying arXiv -> Semantic Scholar -> CrossRef. `data_dir` (DI)
+/// feeds the arXiv cool-down, `mailto` (DI) the CrossRef polite pool. Errors are
+/// user-facing: empty input, a propagated arXiv 429, or "could not resolve".
 pub async fn resolve_doi(doi: &str, data_dir: &Path, mailto: &str) -> Result<PaperMetadata> {
     let doi = strip_doi_url(doi);
     if doi.is_empty() {
@@ -257,8 +242,7 @@ pub async fn resolve_doi(doi: &str, data_dir: &Path, mailto: &str) -> Result<Pap
 }
 
 // ---------------------------------------------------------------------------
-// Tests — pure parsers against the recorded S2/CrossRef shapes lifted from
-// tests/test_doi_resolve.py (the `s2_data`/`cr_data` dicts), plus the network-
+// Tests — pure parsers against recorded S2/CrossRef shapes, plus the network-
 // free orchestration guards (empty / strips-to-empty DOI). No live network.
 // ---------------------------------------------------------------------------
 
@@ -323,7 +307,6 @@ mod tests {
     // ---- parse_s2 ----
     #[test]
     fn s2_builds_metadata_without_arxiv_id() {
-        // Lifted from test_doi_resolve.py::test_builds_metadata_from_s2_without_arxiv_id
         let data: Value = serde_json::json!({
             "title": "A Test Paper",
             "authors": [{"name": "Jane Doe"}, {"name": ""}],

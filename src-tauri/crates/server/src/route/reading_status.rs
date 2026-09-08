@@ -1,11 +1,5 @@
-//! `/api/reading-status` routes — the wire surface for the PAPER_TO_READING
-//! table. The frontend keys reading status globally per paper (one pill per
-//! paper, identical in every list), so this group speaks that shape and
-//! `service::reading_list` maps it onto the per-(project, paper) rows — see the
-//! keying note there.
-//!
-//! No Python ancestor: this group is new (the feature previously persisted to
-//! localStorage only), so the envelopes below are the contract.
+//! `/api/reading-status` — the wire surface for PAPER_TO_READING. Keyed globally
+//! per paper; `service::reading_list` maps onto the per-(project, paper) rows.
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -35,13 +29,11 @@ pub struct ReadingStatusPutBody {
     pub status: String,
 }
 
-/// `PUT /api/reading-status/{source_id}` — set the paper's status in every
-/// reading list it belongs to; `"unread"` clears it. `applied` is the number of
-/// lists written (0 when the paper is on no reading list — a no-op, not an
-/// error, so the client's localStorage migration can push blindly).
+/// `PUT /api/reading-status/{source_id}` — set the status in every reading list
+/// the paper is on; `"unread"` clears. `applied` = lists written (0 is a no-op, not an error).
 fn put(state: &AppState, sid: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let b: ReadingStatusPutBody = ctx.parse_body()?;
-    // CoreError::Validation → 422, matching FastAPI enum-body coercion.
+    // CoreError::Validation → 422 (invalid status value).
     let status = b.status.parse::<reading_list::ReadingStatus>()?;
     let applied = state.with_conn(|conn| reading_list::set_for_paper(conn, sid, status))?;
     to_value(&reading_list::ReadingStatusReceipt { ok: true, applied })

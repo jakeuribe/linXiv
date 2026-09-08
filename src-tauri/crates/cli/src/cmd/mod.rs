@@ -1,6 +1,5 @@
-//! Per-group command modules. Each defines its `Subcommand` enum + an async
-//! `run(cmd, ctx)`. `library` owns search/fetch/list; `misc` owns
-//! stats/categories/settings; the rest map 1:1 to a top-level group.
+//! Per-group command modules, each a `Subcommand` enum + async `run(cmd, ctx)`.
+//! `library` owns search/fetch/list; `misc` owns stats/categories/settings.
 
 pub mod annotation;
 pub mod author;

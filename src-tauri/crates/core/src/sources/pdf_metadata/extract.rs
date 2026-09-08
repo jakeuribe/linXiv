@@ -10,7 +10,7 @@ use super::scan::{
 };
 
 // ---------------------------------------------------------------------------
-// Raw extraction result (mirrors the Python dict; `abstract` is always None).
+// Raw extraction result (`abstract` is always None).
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Default, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -27,11 +27,10 @@ pub(crate) struct Extracted {
 // pdfium binding + Info dict + first-page text
 // ---------------------------------------------------------------------------
 
-/// Resolve the libpdfium path ONCE (cheap; reused for each per-call bind). Order:
-/// `LINXIV_PDFIUM_LIB` env → a `pdfium/` dir next to the executable (the bundled
-/// location) → (debug builds only) the dev vendor dir (`scripts/fetch_pdfium.sh`).
-/// `None` → fall back to the system library at bind time. The build-host vendor
-/// path is `cfg(debug_assertions)`-gated so it can't be baked into a shipped binary.
+/// Resolve the libpdfium path ONCE. Order: `LINXIV_PDFIUM_LIB` env → `pdfium/`
+/// next to the executable → (debug builds only) the dev vendor dir; `None` → the
+/// system library at bind time. The vendor path is `cfg(debug_assertions)`-gated
+/// so it can't be baked into a shipped binary.
 pub(crate) fn pdfium_lib_path() -> Option<&'static std::path::Path> {
     static LIB: OnceLock<Option<std::path::PathBuf>> = OnceLock::new();
     LIB.get_or_init(|| {
@@ -61,9 +60,8 @@ pub(crate) fn pdfium_lib_path() -> Option<&'static std::path::Path> {
     .as_deref()
 }
 
-/// Bind libpdfium for a SINGLE extraction; the caller drops it immediately after.
-/// Per-call bind+drop releases the process-global lock on each invocation (see
-/// concurrent_extractions_do_not_deadlock for the empirical check).
+/// Bind libpdfium for a SINGLE extraction; per-call bind+drop releases the
+/// process-global lock each time (see concurrent_extractions_do_not_deadlock).
 fn bind_pdfium() -> Option<Pdfium> {
     let bindings = match pdfium_lib_path() {
         Some(p) => Pdfium::bind_to_library(p).ok(),
@@ -84,7 +82,7 @@ fn bind_pdfium() -> Option<Pdfium> {
     }
 }
 
-/// Non-empty Info-dict value for `tag`, else None (mirrors `meta.get(k) or None`).
+/// Non-empty Info-dict value for `tag`, else None; capped at 300 chars.
 fn meta_get(md: &PdfMetadata, tag: PdfDocumentMetadataTagType) -> Option<String> {
     let v = md.get(tag)?.value().to_string();
     let capped: String = v.chars().take(300).collect();
@@ -131,9 +129,9 @@ fn extract_from_doc(doc: &PdfDocument) -> Extracted {
         authors = None;
     }
 
-    // First-page text — Python reads pages[0]. pdfium emits proper newlines, so
-    // the title heuristic sees one logical line per visual line; joined output is
-    // capped at 300 chars in extract_title_from_text.
+    // First-page text only. pdfium emits proper newlines, so the title heuristic
+    // sees one logical line per visual line; joined output is capped at 300 chars
+    // in extract_title_from_text.
     let first_page = doc
         .pages()
         .first()
@@ -241,7 +239,7 @@ mod tests {
     // Non-arXiv PDF (no arXiv-id/DOI to enrich from): the text-title heuristic is
     // the ONLY metadata, so a regression here is silent — guards that the title
     // doesn't swallow the page (pdfium's proper newlines keep it one line per
-    // visual line). Asserts byte-parity with the Python/pypdf baseline for paper.pdf.
+    // visual line).
     #[test]
     fn non_arxiv_text_title_is_bounded() {
         let Some(bytes) = load_spike_pdf("paper.pdf") else {

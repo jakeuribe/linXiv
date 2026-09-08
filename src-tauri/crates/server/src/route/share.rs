@@ -1,10 +1,6 @@
-//! `/api/share` routes — Phase-0 quarantined CRDT "shared projects". A second
-//! front door beside `api`: `share_api` resolves `ShareState` alongside the
-//! canonical `AppState`. Publishing only READS `papers.db` (through linxiv-share's
-//! read-only `publish`); the CRDT docs live under the injected share directory.
-//!
-//! `route()` and its callers (the dev_server bin, the linxiv:// protocol handler)
-//! are unchanged — this dispatcher is invoked only via the `share_api` command.
+//! `/api/share` routes — quarantined CRDT "shared projects", dispatched only via
+//! the `share_api` command (a second front door beside `api`). Publishing only
+//! READS `papers.db`; the CRDT docs live under the injected share directory.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -35,11 +31,9 @@ use crate::route::{parse_query, path_i64, split_segments, to_value, ApiError, Ap
 use crate::share_sync;
 use crate::state::AppState;
 
-/// Managed beside `AppState` (never a field of it). Owns the injected
-/// `ShareStore` over the share directory (production `config::data_dir()/share`,
-/// a tempdir in tests) and, in the packaged app, the iroh `ShareNode` that serves
-/// and fetches over the network. `node` is `None` in the store-only Phase-0 unit
-/// tests (no socket); the network arms then return 503.
+/// Managed beside `AppState` (never a field of it). Owns the injected `ShareStore`
+/// over the share directory and, in the packaged app, the iroh `ShareNode`.
+/// `node` is `None` in store-only tests; the network arms then return 503.
 pub struct ShareState {
     store: ShareStore,
     // `Option` so store-only tests skip the async bind; `Mutex<Arc>` so a network
@@ -120,22 +114,17 @@ impl ShareState {
         Ok(())
     }
 
-    /// Marks the background interval-sync loop as started. Returns `true`
-    /// only for the caller that flips it, so exactly one loop ever runs
-    /// regardless of whether the node came up at startup or via a later
-    /// [`Self::rebind`].
+    /// Marks the background interval-sync loop as started. Returns `true` only
+    /// for the caller that flips it, so exactly one loop ever runs.
     pub fn mark_sync_started(&self) -> bool {
         self.sync_started
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
     }
 
-    /// Tears the current node down (if any) and binds a fresh one with
-    /// `relay`, swapping it into place — the "Save & Reconnect" relay flow,
-    /// so a relay change doesn't need a full app restart. A bind failure
-    /// leaves the node unbound (sharing disabled) rather than retrying the
-    /// old config: silently keeping the previous relay after the user asked
-    /// to switch would be its own kind of unwanted fallback.
+    /// Tears the current node down (if any) and binds a fresh one with `relay` —
+    /// the "Save & Reconnect" flow. A bind failure leaves the node unbound
+    /// (sharing disabled) rather than silently keeping the previous relay.
     pub async fn rebind(
         &self,
         p2p_dir: &Path,
@@ -164,12 +153,10 @@ impl ShareState {
     }
 }
 
-/// Resolve relay settings + bind the startup share node — shared by the
-/// packaged app's setup and the headless bin. A bind failure or a
-/// required-but-missing relay degrades to a store-only state (sharing
-/// disabled) with a warning instead of failing startup. `dek` is resolved by
-/// the caller: keychain access is sync and must not run inside an async
-/// context. Returns `(state, node_bound)`.
+/// Resolve relay settings + bind the startup share node — shared by the app and
+/// the headless bin. Bind failure or a required-but-missing relay degrades to a
+/// store-only state (sharing disabled) with a warning. `dek` is resolved by the
+/// caller (keychain access is sync). Returns `(state, node_bound)`.
 pub async fn startup_share_state(dek: Option<[u8; 32]>) -> std::io::Result<(ShareState, bool)> {
     let share_dir = config::data_dir().join("share");
     std::fs::create_dir_all(&share_dir)?;
@@ -399,9 +386,8 @@ pub struct SharedPdfSaved {
 }
 
 /// Tauri-free `/api/share/*` dispatcher: the app's `share_api` command and the
-/// headless bin both route through here. `spawn_sync` starts the background
-/// interval-sync loop when the relay-reconnect arm brings the first node up —
-/// each caller owns how that task is spawned.
+/// headless bin both route through here. `spawn_sync` starts the interval-sync
+/// loop when the relay-reconnect arm brings the first node up.
 pub async fn dispatch(
     state: &AppState,
     share: &ShareState,
@@ -482,9 +468,8 @@ pub async fn dispatch(
     handle(state, share, &ctx).unwrap_or_else(|| Err(ApiError::not_routed()))
 }
 
-/// Match a synchronous (no-await) `/api/share/*` request. Returns `None` (no
-/// arm) so the command can surface the same not-routed sentinel `route()` uses.
-/// The async network arms (ticket/join/sync) are matched in `share_api` instead.
+/// Match a synchronous (no-await) `/api/share/*` request; `None` = no arm.
+/// The async network arms are matched in `dispatch` instead.
 pub(crate) fn handle(
     state: &AppState,
     share: &ShareState,

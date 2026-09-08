@@ -10,13 +10,10 @@ use tauri_plugin_opener::OpenerExt;
 
 /// Open a locally-stored PDF in the OS default viewer.
 ///
-/// The path comes from our own backend's `pdf-path` route, but this command is
-/// reachable over IPC, so we re-validate before handing the path to the OS: it
-/// must be an absolute path to an existing `.pdf` file. We open from Rust rather
-/// than the JS opener plugin on purpose — the plugin's `open_path` is scope-gated
-/// against a static capability glob, and the PDF lives under a per-OS data
-/// directory that's awkward to express as one. The Rust opener API is not
-/// scope-gated, so this resolves the "view in system viewer fails" bug.
+/// Reachable over IPC, so re-validate before handing the path to the OS: it
+/// must be an absolute path to an existing `.pdf` file. Opened via the Rust
+/// opener API (not scope-gated) — the per-OS PDF dir defeats the JS plugin's
+/// static capability glob.
 #[tauri::command]
 fn open_pdf_in_system(app: tauri::AppHandle, path: String) -> Result<(), String> {
     let candidate = std::path::Path::new(&path);
@@ -37,13 +34,10 @@ fn open_pdf_in_system(app: tauri::AppHandle, path: String) -> Result<(), String>
         .map_err(|e| format!("System viewer could not open the PDF: {e}"))
 }
 
-/// Where the webview's (0,0) sits inside the toplevel window, in logical px.
-///
-/// Native menu popups anchor to the toplevel GdkWindow, but on Linux (CSD) that
-/// origin includes the titlebar and shadow margins the webview's clientX/Y
-/// know nothing about, so raw client coords land the menu up-left of the
-/// cursor. Measured per popup: the shadow margins vanish when maximized. Must
-/// stay a sync command — those run on the GTK main thread, which gtk requires.
+/// Where the webview's (0,0) sits inside the toplevel window, in logical px —
+/// on Linux (CSD) the toplevel origin includes titlebar/shadow margins the
+/// webview's clientX/Y know nothing about. Measured per popup (margins vanish
+/// when maximized). Must stay a sync command — gtk requires the GTK main thread.
 #[cfg(target_os = "linux")]
 #[tauri::command]
 fn menu_popup_offset(window: tauri::Window) -> (i32, i32) {
@@ -87,7 +81,7 @@ fn main() {
         .setup(|app| {
             // In-process backend: open the DB once and manage it. The webview
             // reaches linxiv-core through the `api` invoke command + the linxiv://
-            // scheme — no Python sidecar, no HTTP hop, nothing to spawn or reap.
+            // scheme — no sidecar process, no HTTP hop, nothing to spawn or reap.
             app.manage(AppState::new().map_err(|e| e.to_string())?);
             // Background TeX full-text indexing, one paper at a time. Idles
             // unless `full_text_worker_enabled` is on (Settings → Library).

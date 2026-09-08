@@ -4,18 +4,17 @@ use crate::error::Result;
 use crate::models::{TagDetails, TagWithCount};
 use crate::storage::db;
 
-/// `_TAG_FK_BY_LABEL_SQL` — label match is COLLATE NOCASE, mirroring the UNIQUE
-/// index `idx_tag_label_unique`. Used by every get-or-create path below.
+/// Label match is COLLATE NOCASE, mirroring the UNIQUE index
+/// `idx_tag_label_unique`. Used by every get-or-create path below.
 const TAG_FK_BY_LABEL_SQL: &str = "SELECT TAG_FK FROM TAG WHERE TAG = ? COLLATE NOCASE LIMIT 1";
 
 /// Internal marker tag on projects that are reading lists (frontend
 /// `src/lib/readingStatus.ts::READING_LIST_TAG`). Hidden from index listings only.
 pub const READING_LIST_TAG: &str = "reading-list";
 
-/// `storage/tags.py::list_tags` (no paper/project/label filter) — every tag,
-/// ordered by label. TAG.TAG is UNIQUE NOCASE, so the rows are already distinct.
-/// TAG.TAG is nullable, so `label` maps to `Option<String>`.
-/// The internal `READING_LIST_TAG` marker is excluded (get/delete by id still work).
+/// Every tag, ordered by label. TAG.TAG is UNIQUE NOCASE (rows already distinct)
+/// and nullable (`label` is `Option`); the internal `READING_LIST_TAG` marker is
+/// excluded (get/delete by id still work).
 pub fn list_tags(conn: &Connection) -> Result<Vec<TagDetails>> {
     let mut stmt = conn.prepare(
         "SELECT TAG_FK, TAG FROM TAG \
@@ -56,8 +55,7 @@ pub fn list_tags_with_count(conn: &Connection) -> Result<Vec<TagWithCount>> {
         .map_err(Into::into)
 }
 
-/// `config/queries.py::list_tags_by_paper` — DISTINCT tags linked to a paper via
-/// PAPER_TO_TAG (on PAPER_ID), ordered by label. Mirrors `_TAGS_BY_PAPER_BASE_SQL`.
+/// DISTINCT tags linked to a paper via PAPER_TO_TAG (on PAPER_ID), ordered by label.
 pub fn list_tags_by_paper(conn: &Connection, paper_id: i64) -> Result<Vec<TagDetails>> {
     let mut stmt = conn.prepare(
         "SELECT DISTINCT t.TAG_FK, t.TAG FROM TAG t \
@@ -74,7 +72,7 @@ pub fn list_tags_by_paper(conn: &Connection, paper_id: i64) -> Result<Vec<TagDet
         .map_err(Into::into)
 }
 
-/// `storage/tags.py::get_tag` — single tag by id, or `None` if absent.
+/// Single tag by id, or `None` if absent.
 pub fn get_tag(conn: &Connection, tag_id: i64) -> Result<Option<TagDetails>> {
     conn.query_row(
         "SELECT TAG_FK, TAG FROM TAG WHERE TAG_FK = ?",
@@ -129,22 +127,16 @@ pub(crate) fn tag_fk_for_label(tx: &rusqlite::Transaction, label: &str) -> Resul
     Ok(tx.last_insert_rowid())
 }
 
-/// `storage/tags.py::create_tag` — get-or-create. Returns the existing TAG_FK on
-/// a COLLATE NOCASE label match (the UNIQUE index), else inserts and returns the
-/// new id. Select+insert run in one transaction so a concurrent insert can't slip
-/// a duplicate between the two statements.
+/// Get-or-create: the existing TAG_FK on a COLLATE NOCASE match, else a fresh
+/// insert — in one transaction so a concurrent insert can't slip a duplicate in.
 pub fn create_tag(conn: &mut Connection, label: &str) -> Result<i64> {
     db::transaction(conn, |tx| tag_fk_for_label(tx, label))
 }
 
-/// `storage/tags.py::delete_tag` — hard delete by id. No-op if absent.
-/// Unlinks first: PAPER_TO_TAG/PROJECT_TO_TAG declare TAG_FK with no ON DELETE, and
-/// `PRAGMA foreign_keys = ON`, so a bare row delete fails on any tag actually in use.
-///
-/// Paper tags live in two places — PAPER_TO_TAG and the denormalized
-/// `PAPER_META.TAGS` JSON — and both are cleared here, in one `db::transaction`
-/// (IMMEDIATE, so a writer in another process waits out `busy_timeout`).
-/// Project tags are only ever read from the join.
+/// Hard delete by id (no-op if absent). Unlinks first — the bridge tables have
+/// no ON DELETE, so a bare delete fails on a tag in use. Both halves of dual tag
+/// storage (PAPER_TO_TAG and the `PAPER_META.TAGS` JSON) are cleared, in one
+/// IMMEDIATE `db::transaction`.
 pub fn delete_tag(conn: &mut Connection, tag_id: i64) -> Result<()> {
     db::transaction(conn, |tx| {
         let label: Option<String> = tx
@@ -186,8 +178,7 @@ pub fn delete_tag(conn: &mut Connection, tag_id: i64) -> Result<()> {
     })
 }
 
-/// `storage/tags.py::get_project_tags` — labels of every tag linked to a project,
-/// ordered by label. Mirrors `_TAGS_BY_PROJECT_BASE_SQL` (DISTINCT join).
+/// Labels of every tag linked to a project (DISTINCT join), ordered by label.
 pub fn get_project_tags(conn: &Connection, project_id: i64) -> Result<Vec<String>> {
     Ok(project_tags_by_project(conn, &[project_id])?
         .remove(&project_id)
@@ -218,8 +209,8 @@ pub fn project_tags_by_project(
         })?;
         for row in rows {
             let (pfk, label) = row?;
-            // TAG is nullable; Python keeps None rows, but linked tags always carry
-            // a label in practice — drop nulls rather than surface a None label.
+            // TAG is nullable, but linked tags always carry a label in
+            // practice — drop nulls rather than surface a None label.
             if let Some(label) = label {
                 by_project.entry(pfk).or_default().push(label);
             }
@@ -228,9 +219,8 @@ pub fn project_tags_by_project(
     Ok(by_project)
 }
 
-/// `storage/tags.py::add_project_tags` — get-or-create each (trimmed, deduped
-/// case-insensitively) label, then link it to the project. Returns the project's
-/// tags after the write. All statements run in one transaction.
+/// Get-or-create each (trimmed, case-insensitively deduped) label, then link it
+/// to the project; returns the project's tags after the write. One transaction.
 pub fn add_project_tags(
     conn: &mut Connection,
     project_id: i64,
@@ -263,9 +253,8 @@ pub fn add_project_tags(
     get_project_tags(conn, project_id)
 }
 
-/// `storage/tags.py::remove_project_tags` — unlink each given label (COLLATE
-/// NOCASE) from the project; the TAG row itself is left alone. Returns the
-/// project's remaining tags.
+/// Unlink each given label (COLLATE NOCASE) from the project; the TAG row
+/// itself is left alone. Returns the project's remaining tags.
 pub fn remove_project_tags(
     conn: &mut Connection,
     project_id: i64,

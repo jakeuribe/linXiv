@@ -1,8 +1,5 @@
-//! p2p node config resolved from the OS keychain + on-disk user settings:
-//! the at-rest DEK and the relay override (Settings → Sharing). Shared by
-//! `main.rs` (initial bind at startup) and `route::share`'s relay-reconnect
-//! command (rebinding without an app restart), so both paths agree on what
-//! "the configured relay" means.
+//! p2p node config from the OS keychain + on-disk user settings: the at-rest DEK
+//! and the relay override. Shared by `main.rs` startup and `route::share`'s relay-reconnect.
 
 use linxiv_core::config;
 
@@ -96,10 +93,9 @@ fn passphrase_dek() -> Option<[u8; 32]> {
     }
 }
 
-/// Resolved relay config from Settings → Sharing (`p2p_relay_url` /
-/// `p2p_relay_auth_token` / `p2p_relay_only`; TODO.md "Expose Node selection
-/// via gui"). `RequireCustomButMissing` must never resolve to n0's public
-/// relay — the caller refuses to bind the node instead.
+/// Relay config from Settings → Sharing (`p2p_relay_url` / `p2p_relay_auth_token`
+/// / `p2p_relay_only`). `RequireCustomButMissing` must never resolve to n0's
+/// public relay — the caller refuses to bind the node instead.
 pub enum RelaySetting {
     /// No custom relay configured (or "only" isn't set): n0 public defaults.
     Default,

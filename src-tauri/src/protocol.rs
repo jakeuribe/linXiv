@@ -1,9 +1,7 @@
-//! `linxiv://` custom URI scheme — serves PDF bytes to the webview in-process,
-//! replacing the HTTP `GET /api/papers/{id}/pdf` and `GET /api/pdf/proxy`
-//! endpoints. The `invoke()`-based `api` command returns JSON and cannot stream
-//! binary into react-pdf / an `<iframe src>`, so these two flows need a real URL.
+//! `linxiv://` custom URI scheme — serves PDF bytes to the webview in-process
+//! (`invoke()` can't stream binary into react-pdf / an `<iframe src>`).
 //!
-//! Webview URL form (Tauri docs): `linxiv://localhost/<path>` on Linux/macOS,
+//! Webview URL form: `linxiv://localhost/<path>` on Linux/macOS,
 //! `http://linxiv.localhost/<path>` on Windows — both reach `req.uri().path()`.
 //! Two routes (ids/urls travel as query params, never path segments, so an
 //! old-style `math-ph/0309136` id can't be mangled by URI slash normalization):
@@ -28,12 +26,11 @@ use crate::state::AppState;
 /// The scheme name registered on the Tauri builder.
 pub const SCHEME: &str = "linxiv";
 
-/// Total ceiling on a proxied fetch (connect + transfer), like Python's
-/// `_PDF_PROXY_TIMEOUT`. The shared core client only has connect/per-read timeouts.
+/// Total ceiling on a proxied fetch (connect + transfer); the shared core
+/// client only has connect/per-read timeouts.
 const PROXY_TIMEOUT: Duration = Duration::from_secs(30);
 /// Cap the buffered proxy body (the URI-scheme responder takes a complete
-/// `Response`, so we can't stream — bound the memory instead). Matches the
-/// upload limit `_MAX_PDF_BYTES`.
+/// `Response`, so we can't stream — bound the memory instead). Matches the upload limit.
 const MAX_PDF_BYTES: u64 = 100 * 1024 * 1024;
 
 /// Async protocol handler: hand the work to the runtime so the proxy route can
@@ -67,14 +64,13 @@ async fn serve<R: Runtime>(
     }
 }
 
-/// `/pdf?id=<source_id>&version=N` — the saved PDF on disk. Mirrors
-/// `_resolve_local_pdf`; 404 if there is no local file (the consumers only call
-/// this for `has_pdf` papers, so the remote-redirect branch isn't needed here).
+/// `/pdf?id=<source_id>&version=N` — the saved PDF on disk; 404 if there is no
+/// local file (consumers only call this for `has_pdf` papers, so no remote-redirect branch).
 fn serve_local_pdf<R: Runtime>(app: &AppHandle<R>, query: &str) -> Response<Cow<'static, [u8]>> {
     let Some(source_id) = query_get(query, "id") else {
         return empty(StatusCode::BAD_REQUEST);
     };
-    // Query(default=None, ge=1): a present-but-invalid version is a client error,
+    // A present-but-invalid version (non-numeric or < 1) is a client error,
     // not a silent fall-through to the latest version.
     let version = match query_get(query, "version") {
         None => None,
@@ -100,9 +96,8 @@ fn serve_local_pdf<R: Runtime>(app: &AppHandle<R>, query: &str) -> Response<Cow<
     }
 }
 
-/// `/pdf-proxy?url=<remote>` — `api_pdf_proxy`. Host-allowlisted + redirect-guarded
-/// fetch through core, under a total timeout; 400 host-not-allowed, 502 upstream,
-/// 504 timeout, 413 oversized.
+/// `/pdf-proxy?url=<remote>` — host-allowlisted, redirect-guarded fetch through
+/// core under a total timeout; 400 host-not-allowed, 502 upstream, 504 timeout, 413 oversized.
 async fn serve_proxy(query: &str) -> Response<Cow<'static, [u8]>> {
     let Some(url) = query_get(query, "url") else {
         return empty(StatusCode::BAD_REQUEST);
@@ -127,7 +122,7 @@ async fn fetch_proxy(url: &str) -> Response<Cow<'static, [u8]>> {
                 Err(_) => empty(StatusCode::BAD_GATEWAY),
             }
         }
-        Ok(_) => empty(StatusCode::BAD_GATEWAY), // raise_for_status() equivalent
+        Ok(_) => empty(StatusCode::BAD_GATEWAY), // upstream non-success status
         Err(CoreError::BadRequest(_)) => empty(StatusCode::BAD_REQUEST), // host not allowed
         Err(_) => empty(StatusCode::BAD_GATEWAY),
     }

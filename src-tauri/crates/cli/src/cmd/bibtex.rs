@@ -1,5 +1,4 @@
-//! Group `bibtex` — cmd_bibtex_* in `linxiv_cli.py`. The whole operation
-//! (guard, parse via `formats::bibtex_import`, save, link) lives in
+//! Group `bibtex`. The whole operation (guard, parse, save, link) lives in
 //! `service::paper_import::import_bibtex`; this is a thin call site.
 
 use clap::Subcommand;
@@ -27,8 +26,7 @@ pub async fn run(cmd: BibtexCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             let text = match std::fs::read_to_string(&file) {
                 Ok(t) => t,
                 Err(e) => {
-                    // Python parity: two-line stderr, `[bibtex-import] {e}` then
-                    // the error JSON.
+                    // Two-line stderr on failure: `[bibtex-import] {e}` then the error JSON.
                     eprintln!("[bibtex-import] {e}");
                     fail(e);
                 }

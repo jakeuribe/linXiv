@@ -1,11 +1,5 @@
 //! `GET /api/graph` — the Knowledge Graph payload, built by `linxiv_core::graph`.
-//!
-//! One request answers the whole page. It used to be four (`/api/graph`,
-//! `/api/graph/project-options`, `/api/categories`, `/api/tags`) because the
-//! graph was an iframe fetching for itself over the `linxiv://` scheme, and the
-//! canvas then re-derived from them what the database already knew. The page is
-//! React now and reaches this through the ordinary `invoke("api")` transport, so
-//! the custom-scheme `/api/*` bridge is gone with it (see `protocol`).
+//! One request answers the whole page.
 
 use serde_json::Value;
 
@@ -65,9 +59,8 @@ mod tests {
         );
     }
 
-    /// The endpoint the iframe used for its Projects / Project Tags dropdowns.
-    /// Its contents ride on `/api/graph` now, so the path must be gone rather
-    /// than silently answering something stale.
+    /// `/api/graph/project-options` rode into `/api/graph`; the old path must 404,
+    /// not answer something stale.
     #[tokio::test]
     async fn project_options_endpoint_is_retired() {
         let s = st();

@@ -1,14 +1,6 @@
-//! crossref — CrossRef REST API source (port of `sources/crossref_source.py`).
-//!
-//! The pure parser (`parse_work` + the JATS tag-stripper + date-parts handling)
-//! is the load-bearing piece and is fixture-tested below. `doi_resolve` reuses
-//! `parse_work`. The async fetch wrappers route through `sources::http` and are
-//! wiremock-tested below; the `service::source` dispatch over them is covered in
-//! `tests/paper_source.rs`.
-//!
-//! Plan §5.4. No auth required; `api.crossref.org` only. Every request carries
-//! the polite-pool `User-Agent` built by `http::polite_user_agent` from the
-//! `mailto` DI param (shared with OpenAlex — same header, same CR/LF stripping).
+//! crossref — CrossRef REST API source. Plan §5.4. `api.crossref.org` only, no
+//! auth; every request carries the polite-pool UA built from the `mailto` DI
+//! param (shared with OpenAlex). `doi_resolve` reuses `parse_work`.
 
 use chrono::NaiveDate;
 use serde_json::Value;
@@ -25,9 +17,8 @@ const ALLOW: &[&str] = &["api.crossref.org"];
 // Pure parsers (sync, fixture-tested) — reused by doi_resolve.
 // ---------------------------------------------------------------------------
 
-/// Strip well-formed `<...>` tags, matching Python's `re.sub(r"<[^>]+>", "", s)`:
-/// a tag needs `>` after at least one non-`>` char, so a bare `<>` or an unclosed
-/// `<` is left as a literal `<` (same as the regex not matching it).
+/// Strip well-formed `<...>` tags: a tag needs `>` after at least one non-`>`
+/// char, so a bare `<>` or an unclosed `<` is left as a literal `<`.
 pub fn strip_jats_tags(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
@@ -48,9 +39,8 @@ pub fn strip_jats_tags(s: &str) -> String {
     out
 }
 
-/// `date-parts: [[Y]]` / `[[Y, M]]` / `[[Y, M, D]]` -> a date, month/day default
-/// to 1. Returns `None` (caller falls back to today) when absent, empty, or any
-/// component is non-numeric — mirroring the Python try/except around `date(...)`.
+/// `date-parts: [[Y[, M[, D]]]]` -> a date, month/day defaulting to 1. `None`
+/// (caller falls back to today) when absent, empty, or any component is non-numeric.
 fn parse_published(msg: &Value) -> Option<NaiveDate> {
     let parts = msg
         .get("published")?
@@ -64,11 +54,8 @@ fn parse_published(msg: &Value) -> Option<NaiveDate> {
     NaiveDate::from_ymd_opt(y as i32, m as u32, d as u32)
 }
 
-/// Convert one CrossRef work message into normalized `PaperMetadata`.
-/// `doi` (when non-empty) wins over the message's own `DOI` field, matching the
-/// Python `doi or msg.get("DOI", "")`.
-/// Parses the `author` array into display names (pushed into `authors`) and
-/// their parallel ORCIDs, `None` unless at least one author was found.
+/// Parse the `author` array into display names (pushed into `authors`) and
+/// their parallel ORCIDs; `None` unless at least one author was found.
 fn compute_author_orcids(authors: &mut Vec<String>, msg: &Value) -> Option<Vec<Option<String>>> {
     let mut author_orcids = Vec::new();
     if let Some(arr) = msg.get("author").and_then(Value::as_array) {
@@ -90,6 +77,8 @@ fn compute_author_orcids(authors: &mut Vec<String>, msg: &Value) -> Option<Vec<O
     (!authors.is_empty()).then_some(author_orcids)
 }
 
+/// One CrossRef work message -> normalized `PaperMetadata`; a non-empty `doi`
+/// param wins over the message's own `DOI` field.
 pub fn parse_work(msg: &Value, doi: &str) -> PaperMetadata {
     let title = msg
         .get("title")
@@ -152,9 +141,8 @@ pub fn parse_work(msg: &Value, doi: &str) -> PaperMetadata {
     }
 }
 
-/// Parse a single-work response body (`{"message": {...}}`). `None` when the body
-/// is unparseable or the work has no title — same gate as Python's
-/// `if not msg.get("title"): return None`.
+/// Parse a single-work response body (`{"message": {...}}`). `None` when the
+/// body is unparseable or the work has no title.
 pub fn parse_doi_body(body: &[u8], doi: &str) -> Option<PaperMetadata> {
     let v: Value = serde_json::from_slice(body).ok()?;
     let msg = v.get("message")?;
@@ -165,8 +153,8 @@ pub fn parse_doi_body(body: &[u8], doi: &str) -> Option<PaperMetadata> {
     has_title.then(|| parse_work(msg, doi))
 }
 
-/// Parse a search response body (`{"message": {"items": [...]}}`). Items with no
-/// title or no DOI are skipped (Python `if item.get("title") and doi`).
+/// Parse a search response body (`{"message": {"items": [...]}}`). Items with
+/// no title or no DOI are skipped.
 pub fn parse_search_body(body: &[u8]) -> Vec<PaperMetadata> {
     let Ok(v) = serde_json::from_slice::<Value>(body) else {
         return Vec::new();
@@ -196,8 +184,7 @@ pub fn parse_search_body(body: &[u8]) -> Vec<PaperMetadata> {
 // ---------------------------------------------------------------------------
 
 /// Fetch CrossRef metadata for a DOI. `None` on any non-200 / network / parse
-/// error, matching the Python `except Exception: return None`.
-/// `mailto` selects CrossRef's polite pool (DI param, not env).
+/// error. `mailto` selects CrossRef's polite pool (DI param, not env).
 pub async fn fetch_by_doi(doi: &str, mailto: &str) -> Option<PaperMetadata> {
     fetch_by_doi_checked(doi, mailto).await.ok().flatten()
 }
@@ -242,9 +229,8 @@ async fn fetch_by_doi_checked_at(
     Ok(parse_doi_body(&body, doi))
 }
 
-/// `(sort, order)` query values for the public sort keys — CrossRef's `score` is
-/// its relevance metric. Unknown keys are refused rather than silently dropped
-/// (the Provider contract); `search_by_title` pins "relevance" itself.
+/// `(sort, order)` for the public sort keys (`score` = relevance). Unknown keys
+/// are refused rather than silently dropped (the Provider contract).
 fn sort_params(sort: &str) -> Result<(&'static str, &'static str)> {
     Ok(match sort {
         "relevance" => ("score", "desc"),
@@ -294,7 +280,6 @@ fn search_url(title: &str, limit: u32, sort: &str) -> Result<reqwest::Url> {
 
 /// `search_by_title` that reports transport/HTTP failures instead of folding them
 /// into an empty result, so a caller can tell "CrossRef is down" from "no matches".
-/// Same relationship to `search_by_title` as `fetch_by_doi_checked` has to `fetch_by_doi`.
 pub async fn search_by_title_checked(
     title: &str,
     limit: u32,
@@ -318,8 +303,7 @@ pub async fn search_by_title_checked(
 }
 
 // ---------------------------------------------------------------------------
-// Tests — recorded CrossRef wire shapes lifted from tests/test_crossref_source.py
-// (the `_make_msg` dict and the search/items fixtures), committed as fixtures.
+// Tests — recorded CrossRef wire shapes, committed as fixtures.
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -329,11 +313,9 @@ mod tests {
     // fixtures live in testdata/crossref/, whitespace inside is load-bearing —
     // never run a formatter over them.
     // The `{"message": {...}}` envelope api.crossref.org returns for one work.
-    // Lifted from test_crossref_source.py::_make_msg.
     const WORK_BODY: &[u8] = include_bytes!("testdata/crossref/work_body.json");
 
     // Search envelope with two items + one DOI-less item that must be skipped.
-    // Lifted from TestSearchByTitle fixtures.
     const SEARCH_BODY: &[u8] = include_bytes!("testdata/crossref/search_body.json");
 
     fn work() -> Value {

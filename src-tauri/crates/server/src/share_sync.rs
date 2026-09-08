@@ -1,6 +1,5 @@
-//! Two-way share sync glue: per-share settings sidecars, the received→canonical
-//! import entry point, the role-aware `sync_share` used by both the route arm
-//! and the 5-minute interval task spawned from `main.rs`.
+//! Two-way share sync glue: per-share settings sidecars, received→canonical
+//! import, and the role-aware `sync_share` shared by the route arm and the interval task.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -216,8 +215,7 @@ fn touch(p: &Path) {
 }
 
 /// One sync pass for one share, honoring role (hoster/reader, by which doc file
-/// exists) and settings (paused + direction). Used by the route arm and the
-/// interval task.
+/// exists) and settings (paused + direction). Route arm + interval task both call this.
 pub async fn sync_share(
     state: &AppState,
     share: &ShareState,
@@ -439,8 +437,7 @@ pub fn doc_ids(dir: &Path) -> Vec<String> {
 }
 
 /// One best-effort sync pass over every share, sequential, log-and-continue.
-/// Loop body of [`spawn_interval_sync`]; the headless bin runs its own loop
-/// over this (no `AppHandle` there).
+/// Loop body of the interval sync; the headless bin runs its own loop over this.
 pub async fn sync_all(state: &AppState, share: &ShareState) {
     let dir = share.share_dir().to_path_buf();
     // Dedupe ids; sync_share errors on a same-id doc in both dirs.
@@ -465,16 +462,14 @@ pub const NUDGE_DEBOUNCE: Duration = Duration::from_secs(3);
 
 static NUDGE: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
-/// Poke the background sync loop: a write that may have touched a shared
-/// project's mirrored content landed. Cheap and non-blocking; `route()` calls
-/// this on every successful non-GET request.
+/// Poke the background sync loop after a write that may have touched shared
+/// content. Cheap and non-blocking; `route()` calls this on successful non-GETs.
 pub fn nudge() {
     NUDGE.notify_one();
 }
 
 /// Sleep until the next sync pass is due: the fixed interval, or sooner when a
 /// mutation [`nudge`] arrives (plus [`NUDGE_DEBOUNCE`] so bursts coalesce).
-/// Both front doors' loops call this between [`sync_all`] passes.
 pub async fn next_sync_due() {
     next_sync_due_on(&NUDGE, INTERVAL_SYNC_PERIOD, NUDGE_DEBOUNCE).await
 }

@@ -7,8 +7,8 @@ use super::dto::{ImportPreview, Manifest};
 use super::import::preview_from_manifest;
 use crate::error::{CoreError, Result};
 
-/// Read + parse `manifest.json` from an open archive. Mirrors Python `_read_manifest`:
-/// a missing entry is a "not a valid .lxproj file" error.
+/// Read + parse `manifest.json` from an open archive; a missing entry is a
+/// "not a valid .lxproj file" error.
 pub(super) fn read_manifest<R: Read + Seek>(
     archive: &mut zip::ZipArchive<R>,
     label: &str,

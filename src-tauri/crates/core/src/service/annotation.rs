@@ -1,8 +1,6 @@
-//! annotation service — PDF highlight CRUD, mirroring `service::note`.
-//!
-//! Thin delegation over `storage::queries::annotation`. DB-touching fns take
-//! `conn: &Connection` first (DI seam — never open from config). The
-//! `Annotations` query object is the one lookup seam.
+//! annotation service — PDF highlight CRUD, mirroring `service::note`. Thin
+//! delegation over `storage::queries::annotation`; the `Annotations` query
+//! object is the one lookup seam.
 
 use crate::error::{CoreError, Result};
 use crate::models::{validate_anchor, AnnotationDetails, AnnotationIn, AnnotationUpdateIn};
@@ -105,7 +103,6 @@ pub fn create(conn: &Connection, ann: &AnnotationIn) -> Result<i64> {
     )
 }
 
-/// Whether an annotation with this uuid already exists.
 pub fn uuid_taken(conn: &Connection, uuid: &str) -> Result<bool> {
     q::uuid_taken(conn, uuid)
 }

@@ -1,5 +1,3 @@
-//! Group `project` — cmd_project_* (incl. export/import) in `linxiv_cli.py`.
-
 use std::path::Path;
 
 use clap::{Subcommand, ValueEnum};
@@ -13,9 +11,8 @@ use linxiv_core::service::{export_import, project};
 use crate::ctx::Ctx;
 use crate::output::{as_source_id, fail, output};
 
-/// clap's `--status` parser. Core's `Status: FromStr` is the one parse and the one
-/// message, so the CLI no longer carries its own copy of the three strings; clap
-/// still lists them in `--help` via `value_parser`'s possible values.
+/// clap's `--status` parser: core's `Status: FromStr` is the one parse and one
+/// error message; clap still lists the values in `--help`.
 fn status_arg(s: &str) -> anyhow::Result<Status> {
     s.parse::<Status>().map_err(Into::into)
 }
@@ -124,8 +121,8 @@ pub enum ProjectCmd {
     },
 }
 
-/// `_resolve_project_or_exit`: fetch by id or exit 1. The not-found wording is
-/// `CoreError::ProjectNotFound` — the same message the route and MCP emit.
+/// Fetch by id or exit 1. The not-found wording is `CoreError::ProjectNotFound` —
+/// the same message the route and MCP emit.
 fn resolve_or_exit(ctx: &Ctx, project_id: i64) -> linxiv_core::models::ProjectDetails {
     match project::get_required(&ctx.conn, project_id) {
         Ok(p) => p,
@@ -178,7 +175,7 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             color,
             tags,
         } => {
-            // Python `color_from_hex(args.color) if args.color else None`: empty string -> no color.
+            // Empty-string --color means no color.
             let color = match &color {
                 Some(hex) if !hex.is_empty() => Some(project::color_from_hex(hex)?),
                 _ => None,
@@ -204,7 +201,7 @@ pub async fn run(cmd: ProjectCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             tags,
             status,
         } => {
-            // Mirror `_resolve_project_or_exit` before mutating.
+            // Existence check before mutating.
             resolve_or_exit(ctx, project_id);
             let color = color
                 .map(|hex| project::color_from_hex(&hex).map(Some))

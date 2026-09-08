@@ -191,14 +191,9 @@ export interface Settings {
   [key: string]: unknown;
 }
 
-// The Knowledge Graph's wire shapes used to be hand-written here, because
-// `GET /api/graph` assembled its payload as an inline `serde_json::Value`
-// with no Rust struct to `#[derive(TS)]` from — so nothing but a test could
-// hold them to it, and they had already drifted: a paper node's `id` was
-// declared `string` where the payload emitted a bare integer, and eight of
-// its fields were missing altogether. `linxiv_core::graph` is typed now, so
-// they are GENERATED (`GraphView` and friends in ./generated.ts) and the
-// drift check is `npm run types:check` rather than a bespoke assets test.
+// The Knowledge Graph's wire shapes are GENERATED from `linxiv_core::graph`
+// (`GraphView` and friends in ./generated.ts); `npm run types:check` is the
+// drift check.
 
 // Core's `service::feed::FeedResponse` carries `entries` as untyped JSON blobs
 // (the cached feed entries round-trip through the DB as stored JSON), so the

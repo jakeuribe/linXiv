@@ -1,9 +1,6 @@
-/**
- * Persisted-state migrations for the theme and ui stores, kept out of the
- * zustand `persist` configs so they are plain data-in/data-out functions that
- * can be tested without a store, a DOM, or React. Behaviour is verbatim what
- * the inline `migrate()` bodies did — see migrations.test.ts.
- */
+/** Persisted-state migrations for the theme and ui stores, kept out of the
+ *  zustand `persist` configs so they are plain data-in/data-out functions
+ *  testable without a store, a DOM, or React. */
 import { DEFAULT_ZOOM } from "../lib/zoom.ts";
 import { DEFAULT_DENSITY, type Density } from "../lib/density.ts";
 

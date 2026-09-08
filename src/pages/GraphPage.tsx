@@ -41,31 +41,14 @@ import { EmptyState } from "../components/ui/empty-state";
 // cytoscape and d3-force are ~400kB of the bundle and are needed by exactly one
 // screen. AppShell imports this page eagerly (it is keep-alive, so it must exist
 // from boot), so a lazy PAGE would not help — the canvas is the boundary that
-// does: it is not rendered until the first visit to /graph, which is the same
-// point the old iframe used to be mounted at. Every user used to pay for those
-// two libraries only on opening the graph, and this is what keeps that true.
+// does: it is not rendered until the first visit to /graph, so the two
+// libraries are only ever paid for on opening the graph.
 const GraphCanvas = lazy(() => import("../components/graph/GraphCanvas"));
 
 const GRAPH_DIRTYING_KEYS = new Set([
   "stats", "papers", "paper", "projects", "project", "tags", "tag", "authors", "author",
 ]);
 
-/**
- * The Knowledge Graph.
- *
- * This page used to be a thin host around an `<iframe>` running a 2,400-line
- * unbundled browser script, and most of what it did was work around that frame:
- * a postMessage protocol in both directions, a `graph_loaded` reply carrying the
- * load state because the guest owned the canvas and the host owned the spinner,
- * an eight-second fallback for a reply that never came, a theme push on every
- * palette change, a `?api=` parameter naming which backend the guest should talk
- * to, and a hand-back channel for keyboard shortcuts — key events do not cross a
- * frame boundary, so every app-wide shortcut was dead on /graph alone.
- *
- * None of that survives the port. The canvas is a component, the load state is
- * react-query's, the theme is read from the store, and the shortcuts are the
- * window's own.
- */
 export default function GraphPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();

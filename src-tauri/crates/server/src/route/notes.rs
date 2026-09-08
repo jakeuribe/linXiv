@@ -1,6 +1,5 @@
-//! `/api/notes` routes — `api/app.py` 872–918. Notes are keyed to a paper's
-//! SOURCE_FK (resolved from the `source_id`), optionally scoped to a project.
-//! Core binding mirrors `mcp/src/notes_pdf_trash.rs`. Shape copies `authors.rs`.
+//! `/api/notes` routes. Notes are keyed to a paper's SOURCE_FK (resolved from
+//! `source_id`), optionally scoped to a project.
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -25,8 +24,8 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
     }
 }
 
-/// `GET /api/notes?source_id=&project_id=&all_projects=` — `api_notes`. Unknown
-/// paper → `{"notes": []}` (not 404).
+/// `GET /api/notes?source_id=&project_id=&all_projects=`. Unknown paper →
+/// `{"notes": []}` (not 404).
 fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let source_id = ctx
         .q("source_id")
@@ -74,11 +73,10 @@ pub struct NoteCreateBody {
     pub content: String,
 }
 
-/// `POST /api/notes` — `api_note_create`. 404 if the paper is not in the library.
+/// `POST /api/notes` — 404 if the paper is not in the library.
 fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let b: NoteCreateBody = ctx.parse_body()?;
-    // Pydantic NoteCreate.source_id is Field(min_length=1): an empty source_id is a
-    // 422 before the handler, not a 404. (Checked pre-trim, like pydantic.)
+    // An empty source_id is a 422, not a 404; checked pre-trim.
     if b.source_id.is_empty() {
         return Err(ApiError::new(422, "source_id must not be empty"));
     }
@@ -106,7 +104,7 @@ pub struct NoteUpdateBody {
     pub content: Option<String>,
 }
 
-/// `PATCH /api/notes/{id}` — `api_note_update`. 404 if no row matched.
+/// `PATCH /api/notes/{id}` — 404 if no row matched.
 fn update(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let note_id = path_i64(id)?;
     let b: NoteUpdateBody = ctx.parse_body()?;
@@ -126,7 +124,7 @@ fn update(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     })
 }
 
-/// `DELETE /api/notes/{id}` — `api_note_delete`. Row + vault tree drop together.
+/// `DELETE /api/notes/{id}` — row + vault tree drop together.
 fn delete(state: &AppState, id: &str) -> Result<Value, ApiError> {
     let note_id = path_i64(id)?;
     state.with_conn(|conn| {
