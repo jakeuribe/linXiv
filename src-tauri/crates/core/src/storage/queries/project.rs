@@ -60,13 +60,12 @@ pub(crate) fn status_to_sql(s: Status) -> &'static str {
 }
 
 /// Maps a row to ProjectDetails. `source_fks` is left empty for the caller to
-/// fill via `load_source_fks`; `project_tags` stays empty — Python's
-/// `Project.from_row` does not load tags either.
+/// fill via `load_source_fks`; `project_tags` stays empty too.
 fn to_model(raw: RawProject) -> Result<ProjectDetails> {
     Ok(ProjectDetails {
         id: Some(raw.id),
         name: raw.name,
-        description: raw.description.unwrap_or_default(), // Python: DESCRIPTION or ""
+        description: raw.description.unwrap_or_default(), // NULL DESCRIPTION -> ""
         color: raw.color.map(|c| c as i32),
         project_tags: Vec::new(),
         source_fks: Vec::new(),
@@ -146,8 +145,8 @@ pub fn release_share_id_from_deleted(conn: &Connection, share_id: &str) -> Resul
     )?)
 }
 
-/// `storage/projects.py::_load_source_fks` — active-paper membership in
-/// PROJECT_TO_PAPER_FK (insertion) order; soft-deleted roots are excluded.
+/// Active-paper membership in PROJECT_TO_PAPER_FK (insertion) order;
+/// soft-deleted roots are excluded.
 fn load_source_fks(conn: &Connection, project_fk: i64) -> Result<Vec<i64>> {
     Ok(source_fks_by_project(conn, &[project_fk])?
         .remove(&project_fk)
@@ -214,10 +213,8 @@ pub fn active_paper_count(conn: &Connection, project_fk: i64) -> Result<Option<u
         .map(|n| n as usize))
 }
 
-/// `storage/projects.py::get_project` — full project row. `load_sources` mirrors
-/// Python (default true): when false, `source_fks` stays empty and the caller
-/// fills counts via the bulk loader (port of `list_project_source_ids_bulk` in
-/// storage/config/queries.py, deferred to the service phase).
+/// Full project row. `load_sources = false` leaves `source_fks` empty for the
+/// caller to fill via the bulk loader.
 pub fn get_project(
     conn: &Connection,
     project_id: i64,
@@ -240,11 +237,8 @@ pub fn get_project(
     Ok(Some(proj))
 }
 
-/// `storage/projects.py::filter_projects` — list projects by optional predicate.
-/// `load_sources` mirrors Python (default true): false skips the per-row membership
-/// query — the list/graph paths pass false and fill counts via the bulk loader
-/// (port of `list_project_source_ids_bulk`, deferred to the service phase), which
-/// avoids the N+1.
+/// List projects by optional predicate. `load_sources = false` skips the
+/// membership load — list/graph paths fill counts via the bulk loader (no N+1).
 pub fn list_projects(
     conn: &Connection,
     condition: Option<Q>,
@@ -281,11 +275,10 @@ pub fn list_projects(
     Ok(out)
 }
 
-// ── Writes — Python `storage/projects.py`. ────────────────────────────────────
+// ── Writes ────────────────────────────────────────────────────────────────────
 
 /// Insert a new PROJECT row (CREATED_AT = UPDATED_AT = now). Returns PROJECT_FK.
-/// Membership is NOT written here — the caller composes `save_source_fks`
-/// (mirrors Python `save()` on insert, which calls `_save_source_fks` next).
+/// Membership is NOT written here — the caller composes `save_source_fks` next.
 pub fn insert_project(
     conn: &Connection,
     name: &str,
@@ -304,10 +297,9 @@ pub fn insert_project(
 }
 
 /// Fields-only UPDATE (NAME/DESCRIPTION/COLOR/STATUS/ARCHIVED_AT + UPDATED_AT).
-/// NON-NEGOTIABLE: membership is deliberately NOT rewritten — Python `save()` on
-/// update writes fields only, so a stale in-memory member list can't clobber rows
-/// other requests wrote. Returns false if no row matched. Covers delete/archive/
-/// restore (those just set STATUS/ARCHIVED_AT then call this).
+/// NON-NEGOTIABLE: membership is deliberately NOT rewritten, so a stale
+/// in-memory member list can't clobber rows other requests wrote. Returns false
+/// if no row matched. Covers delete/archive/restore.
 pub fn update_project_fields(
     conn: &Connection,
     project_fk: i64,
@@ -361,7 +353,7 @@ pub fn save_source_fks(tx: &Transaction, project_fk: i64, source_fks: &[i64]) ->
 }
 
 /// Incremental add — INSERT OR IGNORE per row (idx_project_to_paper_unique makes
-/// dupes a no-op). Python `Project.add_papers`.
+/// dupes a no-op).
 pub fn add_papers(conn: &Connection, project_fk: i64, source_fks: &[i64]) -> Result<()> {
     let mut stmt = conn.prepare(
         "INSERT OR IGNORE INTO PROJECT_TO_PAPER (PROJECT_FK, SOURCE_FK) VALUES (?1, ?2)",
@@ -372,7 +364,7 @@ pub fn add_papers(conn: &Connection, project_fk: i64, source_fks: &[i64]) -> Res
     Ok(())
 }
 
-/// Incremental remove — DELETE per (project, paper). Python `Project.remove_papers`.
+/// Incremental remove — DELETE per (project, paper).
 pub fn remove_papers(conn: &Connection, project_fk: i64, source_fks: &[i64]) -> Result<()> {
     let mut stmt =
         conn.prepare("DELETE FROM PROJECT_TO_PAPER WHERE PROJECT_FK = ?1 AND SOURCE_FK = ?2")?;
@@ -394,8 +386,8 @@ pub fn replace_papers(conn: &mut Connection, project_fk: i64, source_fks: &[i64]
     transaction(conn, |tx| save_source_fks(tx, project_fk, &deduped))
 }
 
-/// PROJECT_FKs of every project containing this paper — any status. Python
-/// `get_paper_project_fks`. Callers filter to active themselves.
+/// PROJECT_FKs of every project containing this paper — any status.
+/// Callers filter to active themselves.
 pub fn get_paper_project_fks(conn: &Connection, source_fk: i64) -> Result<Vec<i64>> {
     Ok(project_fks_by_source_fk(conn, &[source_fk])?
         .remove(&source_fk)
@@ -430,8 +422,8 @@ pub fn project_fks_by_source_fk(
     Ok(by_paper)
 }
 
-/// Remove a paper from every project; returns the FKs it was removed from.
-/// Python `remove_paper_from_all_projects` (select-then-delete, transactional).
+/// Remove a paper from every project (select-then-delete, transactional);
+/// returns the FKs it was removed from.
 pub fn remove_paper_from_all_projects(conn: &mut Connection, source_fk: i64) -> Result<Vec<i64>> {
     transaction(conn, |tx| {
         let fks = get_paper_project_fks(tx, source_fk)?;
@@ -445,9 +437,9 @@ pub fn remove_paper_from_all_projects(conn: &mut Connection, source_fk: i64) -> 
     })
 }
 
-/// Permanently remove a project + associations in ONE transaction (Python
-/// `hard_delete_project`). NULLs NOTE.PROJECT_FK rather than deleting notes, and
-/// leaves orphan TAG rows, per ADR-0009. No-ops cleanly if the project is absent.
+/// Permanently remove a project + associations in ONE transaction. NULLs
+/// NOTE.PROJECT_FK rather than deleting notes, and leaves orphan TAG rows,
+/// per ADR-0009. No-ops cleanly if the project is absent.
 pub fn hard_delete_project(conn: &mut Connection, project_fk: i64) -> Result<()> {
     transaction(conn, |tx| {
         tx.execute(

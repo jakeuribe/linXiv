@@ -1,14 +1,5 @@
 //! `linxiv-migrate` — forward-only schema migrator for the managed `papers.db`.
-//!
-//! Opens the database and runs `linxiv-core`'s idempotent migrations (tables +
-//! numbered guards + views, via `storage::init_db`). This is a SCAFFOLD for FUTURE
-//! schema changes: add them to `crates/core/src/storage/migrations.rs` and this
-//! binary applies whatever is pending on the next run. It deliberately knows
-//! nothing about the pre-Rust-port (legacy blue→green) schema
-//!
-//! The app/CLI/MCP also run `init_db` on every open, so migrations are normally
-//! applied automatically; this binary exists for an explicit, scriptable
-//! "apply pending migrations" step (e.g. before a release, or in CI).
+//! App/CLI/MCP already run `init_db` on open; this is the explicit scriptable step.
 
 use linxiv_core::{config, storage};
 

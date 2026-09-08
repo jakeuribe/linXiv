@@ -1,6 +1,4 @@
-//! `/api/papers` routes — `api/app.py` 204–261, 365–379, 433–461, 1135–1139.
-//! Mirrors the `papers` MCP cluster (`mcp/src/papers.rs`) over the same core
-//! service (`service::paper`). Shape copied from `route/authors.rs`.
+//! `/api/papers` routes over `service::paper`.
 //!
 //! The generic `{source_id}` arms match EXACTLY 3 segments; the `/pdf` and
 //! `/pdf-path` subtrees belong to the `pdfs` group (tried first in `mod.rs`).
@@ -42,11 +40,9 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
     }
 }
 
-/// `GET /api/papers?limit=&offset=&sort=&dir=&project=` — `api_list_papers`.
-/// `sort` is one of `published` (default) / `added` / `title`; `dir` is
-/// `asc`/`desc`, defaulting per metric (newest first, titles A–Z). `project`
-/// narrows to papers linked to that project (filtered in SQL, so a >200-paper
-/// library never needs a client-side window); an unknown id yields [].
+/// `GET /api/papers?limit=&offset=&sort=&dir=&project=`. `sort`: `published`
+/// (default) / `added` / `title`; `dir` defaults per metric (newest first,
+/// titles A–Z). `project` narrows in SQL; an unknown id yields [].
 fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let limit = ctx.q_i64("limit").unwrap_or(200).clamp(1, 5000);
     let offset = ctx.q_i64("offset").unwrap_or(0).max(0);
@@ -71,7 +67,7 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     to_value(&svc_paper::PapersListing { papers })
 }
 
-/// `GET /api/papers/sfk/{fk}/versions` — `api_get_paper_versions`.
+/// `GET /api/papers/sfk/{fk}/versions`.
 fn versions(state: &AppState, fk: &str) -> Result<Value, ApiError> {
     let source_fk = path_i64(fk)?;
     let listing = state.with_conn(|conn| svc_paper::version_listing(conn, &sfk_key(source_fk)))?;
@@ -91,11 +87,11 @@ fn doi_candidates(state: &AppState, fk: &str) -> Result<Value, ApiError> {
     to_value(&svc_paper::DoiCandidates { candidates })
 }
 
-/// `GET /api/papers/sfk/{fk}?version=` — `api_get_paper_by_sfk`. Bare `to_dict()`.
+/// `GET /api/papers/sfk/{fk}?version=` — the bare paper object, no envelope.
 fn by_sfk(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let source_fk = path_i64(fk)?;
-    // FastAPI Query(default=None, ge=1): a present-but-non-integer or <1 version is
-    // a 422, not a silent fall-through to the latest version.
+    // A present-but-non-integer or <1 version is a 422, not a silent
+    // fall-through to the latest version.
     let version = crate::route::q_version(ctx)?;
     state.with_conn(|conn| -> Result<Value, ApiError> {
         let paper = if let Some(version) = version {
@@ -116,7 +112,7 @@ fn by_sfk(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     })
 }
 
-/// `GET /api/papers/search?q=&limit=` — `api_search_papers`.
+/// `GET /api/papers/search?q=&limit=`.
 fn search(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let q = ctx.q("q").unwrap_or("").trim().to_string();
     if q.chars().count() < 3 {
@@ -130,15 +126,10 @@ fn search(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     to_value(&svc_paper::PapersListing { papers })
 }
 
-/// `POST /api/papers/{source_id}/full-text?force=` — the write half of `search`
-/// above. Downloads the paper's arXiv TeX tarball, extracts it, and stores the
-/// text so `papers_fts` actually has something to match; without this the index
-/// only ever held rows carried over by the Python-era migration.
-///
-/// Not automatic on save: arXiv paces requests ~7s apart and a tarball runs to
-/// megabytes, which is too much to spend on every paper the user stores without
-/// being asked. The opt-in automatic path is `full_text_worker`, which chews
-/// through the same backlog in the background while its setting is on.
+/// `POST /api/papers/{source_id}/full-text?force=` — download the paper's arXiv
+/// TeX tarball, extract, and store the text so `papers_fts` has something to match.
+/// Not automatic on save (arXiv pacing + tarball size); the opt-in background
+/// path is `full_text_worker`, which chews through the same backlog.
 async fn fetch_full_text(
     state: &AppState,
     source_id: &str,
@@ -189,14 +180,14 @@ fn saved(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     })
 }
 
-/// `GET /api/papers/{source_id}` — `api_get_paper`. Bare `to_dict()`.
+/// `GET /api/papers/{source_id}` — the bare paper object, no envelope.
 fn get_one(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
     let paper = state.with_conn(|conn| svc_paper::get(conn, &sid_key(source_id)))?;
     let paper = paper.ok_or_else(|| CoreError::PaperNotFound(source_id.to_string()))?;
     to_value(&paper)
 }
 
-/// `DELETE /api/papers/{source_id}` — `api_delete_paper`.
+/// `DELETE /api/papers/{source_id}` — soft-delete into the trash.
 fn delete(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
     state.with_conn(|conn| -> Result<(), ApiError> {
         if svc_paper::get(conn, &sid_key(source_id))?.is_none() {
@@ -210,19 +201,18 @@ fn delete(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
     })
 }
 
-/// `PUT /api/papers/sfk/{fk}` — `api_repair_paper`. Rebuilds metadata from the
-/// existing paper's identity (source_id/version/source) + the PUT body.
+/// `PUT /api/papers/sfk/{fk}` — rebuilds metadata from the existing paper's
+/// identity (source_id/version/source) + the PUT body.
 fn repair(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let source_fk = path_i64(fk)?;
     let b: svc_paper::RepairFields = ctx.parse_body()?;
     state.with_conn(|conn| -> Result<Value, ApiError> {
         let paper = svc_paper::get(conn, &sfk_key(source_fk))?
             .ok_or_else(|| CoreError::PaperNotFound(source_fk.to_string()))?;
-        // Date validated after the existence check, matching MCP and Python.
+        // Date validated after the existence check (the 404 wins over the 422).
         let meta = b.into_metadata(paper.source_id, paper.version, paper.source)?;
-        // Python maps sqlite3.IntegrityError -> 409, but this endpoint
-        // never renames source_id so no UNIQUE conflict can arise; a stray rusqlite
-        // error surfaces as CoreError::Internal (500). Reachable paths stay faithful.
+        // This endpoint never renames source_id, so no UNIQUE conflict can
+        // arise; a stray rusqlite error surfaces as CoreError::Internal (500).
         svc_paper::repair_paper(conn, source_fk, &meta)?;
         let updated = svc_paper::get(conn, &sfk_key(source_fk))?
             .ok_or_else(|| ApiError::new(500, "Repair failed"))?;
@@ -257,7 +247,7 @@ fn merge(state: &AppState, fk: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError
     to_value(&receipt)
 }
 
-/// `DELETE /api/papers/sfk/{fk}/projects` — `api_remove_paper_from_all_projects`.
+/// `DELETE /api/papers/sfk/{fk}/projects` — remove the paper from every project.
 fn remove_from_projects(state: &AppState, fk: &str) -> Result<Value, ApiError> {
     let source_fk = path_i64(fk)?;
     let removed =
@@ -699,7 +689,7 @@ mod tests {
 
     #[tokio::test]
     async fn search_whitespace_only_query_is_422() {
-        // q is trimmed before the length check (matches app.py `q.strip()`).
+        // q is trimmed before the length check.
         let err = req(&state(), "GET", "/api/papers/search?q=%20%20a%20%20", None)
             .await
             .unwrap_err();

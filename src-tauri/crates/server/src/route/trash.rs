@@ -1,14 +1,5 @@
-//! `/api/trash` routes — `api/app.py` 1099–1161. Soft-delete (trash) management.
-//!
-//! Upstream Python had a latent route-ordering bug: `/api/trash/{source_id:path}`
-//! (1142) and `.../{source_id:path}/restore` (1129) were declared BEFORE the
-//! `/api/trash/projects/{id}` routes (1148, 1156). Starlette matches in declaration
-//! order and the `:path` converter swallows slashes, so the project routes were
-//! SHADOWED and never executed: `DELETE /api/trash/projects/5` landed on the paper
-//! hard-delete handler as source_id="projects/5" (a 200 no-op), leaving the project
-//! stuck in Trash. We fix that here: the specific `projects/{id}` arms are matched
-//! BEFORE the greedy paper `rest @ ..` arms (Rust matches top-to-bottom), so
-//! project hard-delete and restore now route to `svc_project` correctly.
+//! `/api/trash` routes — soft-delete (trash) management for papers and projects.
+//! The specific `projects/{id}` arms must match before the greedy paper `rest @ ..` arms.
 
 use serde_json::Value;
 
@@ -38,14 +29,14 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
     }
 }
 
-/// `GET /api/trash` — `api_trash_list`. The canonical `TrashListing` envelope
-/// (core `service::trash`), shared with `linxiv trash list` and MCP `list_trash`.
+/// `GET /api/trash` — the canonical `TrashListing` envelope, shared with
+/// `linxiv trash list` and MCP `list_trash`.
 fn list(state: &AppState) -> Result<Value, ApiError> {
     state.with_conn(|conn| crate::route::to_value(&linxiv_core::service::trash::list_trash(conn)?))
 }
 
-/// `POST /api/trash/{source_id:path}/restore` — `api_trash_restore`. 404 unless the
-/// paper is actually in the trash (`svc_paper::require_trashed`).
+/// `POST /api/trash/{source_id:path}/restore` — 404 unless the paper is
+/// actually in the trash.
 fn restore(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
     let (pdf_path, project_fks) =
         state.with_conn(|conn| -> Result<(Option<String>, Vec<i64>), ApiError> {
@@ -63,8 +54,8 @@ fn restore(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
     })
 }
 
-/// `DELETE /api/trash/{source_id:path}` — `api_trash_hard_delete`. Permanent, so it
-/// 404s unless the paper is in the trash; use `DELETE /api/papers/{id}` to trash one.
+/// `DELETE /api/trash/{source_id:path}` — permanent, so it 404s unless the paper
+/// is in the trash; use `DELETE /api/papers/{id}` to trash one.
 fn hard_delete(state: &AppState, source_id: &str) -> Result<Value, ApiError> {
     state.with_conn(|conn| -> Result<(), ApiError> {
         svc_paper::require_trashed(conn, source_id)?;

@@ -4,16 +4,8 @@ import type { GraphView } from "../types/generated";
 export type { GraphView };
 
 /**
- * `GET /api/graph` — the whole Knowledge Graph payload.
- *
- * One request, over the app's ordinary transport. The graph used to be an
- * iframe that fetched for itself over the `linxiv://` custom scheme, which meant
- * it needed FOUR requests (graph, project options, categories, tags), a
- * partial-failure protocol so a dead dropdown endpoint could not fail a load the
- * graph request had succeeded at, and a `?api=` parameter naming which backend
- * to talk to — because `tauri dev` and browser dev both serve the guest from
- * http://localhost:5180 and only the host could tell them apart. Going through
- * `libraryFetch` makes all three questions somebody else's, already-answered ones.
+ * `GET /api/graph` — the whole Knowledge Graph payload (nodes, edges, project
+ * options, categories, tags) in one request over `libraryFetch`.
  *
  * @param excludeSingleAuthors drop authors linked to only one paper. Applied by
  * the backend, so those authors leave the payload entirely — the page's Author

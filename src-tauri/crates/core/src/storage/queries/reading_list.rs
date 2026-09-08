@@ -75,15 +75,9 @@ pub fn get_reading_status(
 }
 
 /// Whether the project is a reading list, or `None` if the project row doesn't
-/// exist.
-///
-/// Source of truth: the reserved `reading-list` project tag — the same signal
-/// the frontend's `isReadingListProject` reads and the only one any code path
-/// ever sets (project create/edit with `READING_LIST_TAG` in `project_tags`).
-/// `PROJECT.IS_READING_LIST` is superseded: no write path ever set it, so
-/// deriving from it would have rejected every real reading list; the column
-/// remains in the schema (dropping it is a table rebuild for no gain) but has
-/// no readers.
+/// exist. Source of truth: the reserved `reading-list` project tag (the signal
+/// the frontend reads and the only one ever set). `PROJECT.IS_READING_LIST` is
+/// superseded — no write path ever set it; the column remains but has no readers.
 pub fn is_reading_list_project(conn: &Connection, project_fk: i64) -> Result<Option<bool>> {
     let flag: Option<bool> = conn
         .query_row(
@@ -118,12 +112,9 @@ pub fn reading_list_fks_for_paper(conn: &Connection, source_fk: i64) -> Result<V
 }
 
 /// One aggregated status per paper across all non-trashed reading lists, keyed
-/// by SOURCE_ID — the read side of the frontend's global-per-paper keying (see
-/// `service::reading_list`). Rows normally agree because writes fan out to
-/// every list; where they don't (a paper added to a second list after being
-/// marked), the most recently updated row wins. The bare STATUS column is
-/// SQLite's documented MIN/MAX bare-column behavior: it comes from the
-/// MAX(UPDATED_AT) row.
+/// by SOURCE_ID. Where rows disagree, the most recently updated wins — the bare
+/// STATUS column comes from the MAX(UPDATED_AT) row (SQLite's documented
+/// MIN/MAX bare-column behavior).
 pub fn statuses_by_source_id(conn: &Connection) -> Result<Vec<(String, ReadingStatus)>> {
     let mut stmt = conn.prepare(
         "SELECT r.SOURCE_ID, ptr.STATUS, MAX(ptr.UPDATED_AT)

@@ -1,8 +1,7 @@
 //! paper_merge service — the paper/PDF dedupe workflow's front door.
 //!
 //! Orchestrates [`storage::queries::paper::merge_plan`] /
-//! [`merge_paper_roots`] around the filesystem work, in the same shape as
-//! `paper_import`'s rollback philosophy:
+//! [`merge_paper_roots`] around the filesystem work:
 //!
 //! 1. Plan (read-only DB classification of the loser's versions).
 //! 2. FS phase: rename loser PDFs to the winner's on-disk names — reversible.
@@ -92,10 +91,9 @@ struct DoneRename {
     to: PathBuf,
 }
 
-/// Merge the `loser` paper root into the `winner`: winner's metadata is
-/// canonical; the loser's notes, annotations, project memberships, reading
-/// statuses, tags, missing versions, and PDFs move over; the loser root is
-/// deleted. See the storage module for the exact row-level contract.
+/// Merge the `loser` paper root into the `winner`: winner's metadata is canonical;
+/// the loser's notes, annotations, memberships, reading statuses, tags, missing
+/// versions, and PDFs move over; the loser root is deleted (row-level contract in storage).
 pub fn merge_papers(
     conn: &mut Connection,
     pdf_dir: &Path,
@@ -369,9 +367,8 @@ mod tests {
         assert_eq!(row(3), (expect("arxiv_Wv3.pdf"), true));
     }
 
-    /// The rename must move the storage-cache entry with the file: a phantom
-    /// entry under the loser's name has the same size as the renamed file, so
-    /// the total only skews once the renamed PDF is deleted — assert there.
+    /// The rename must move the storage-cache entry with the file: a phantom entry
+    /// only skews the total once the renamed PDF is deleted — assert there.
     #[test]
     fn merge_renames_keep_the_pdf_storage_cache_in_sync() {
         use crate::service::files::{delete_pdf, pdf_storage_bytes};
@@ -524,9 +521,8 @@ mod tests {
         assert_eq!(fs::read_to_string(&expected).unwrap(), "the-only-real-copy");
     }
 
-    /// An unrelated file already at the destination name (orphan of a crashed
-    /// import) must never be overwritten: the loser file stays put and the DB
-    /// points at it in place.
+    /// An unrelated file already at the destination name (orphan of a crashed import)
+    /// must never be overwritten: the loser file stays put and the DB points at it in place.
     #[test]
     fn merge_never_overwrites_an_orphan_at_the_destination_name() {
         let dir = tempdir().unwrap();

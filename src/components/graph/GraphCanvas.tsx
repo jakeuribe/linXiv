@@ -33,17 +33,9 @@ import { tooltipFor } from "../../lib/graph/tooltip";
 import type { TooltipContent } from "../../lib/graph/tooltip";
 import { MathText } from "../../lib/tex";
 
-/**
- * The graph engine: one cytoscape instance for drawing and one d3-force
- * simulation for placing, wired together by a per-tick position sync.
- *
- * This is the half of the old `public/graph/graph.js` that genuinely has to be
- * imperative — two libraries that own mutable state and expect to be driven, not
- * re-rendered. Everything around it (the panels, the filter state, the loading
- * and empty screens, the selection) is ordinary React now, and everything the
- * DATABASE knows is resolved in Rust before the payload is sent. What is left
- * here is the canvas.
- */
+/** The graph engine: one cytoscape instance (drawing) and one d3-force
+ *  simulation (placing), wired by a per-tick position sync — the one genuinely
+ *  imperative piece; everything around it is ordinary React. */
 
 /** A node as d3 holds it, plus the bookkeeping this component layers on. */
 interface SimNode extends SimulationNodeDatum {

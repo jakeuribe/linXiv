@@ -1,55 +1,51 @@
-//! Core error model — Rust port of the typed exceptions raised across
-//! `service/` and `sources/`, plus the HTTP status codes `api/app.py` maps
-//! them to. Variants preserve the boundary contract so Tauri commands can
-//! return the same `{"error": "<msg>"}` body + status the FastAPI layer did.
-//! Plan §5 + D21.
+//! Core error model. Each variant carries its HTTP-equivalent status so every
+//! surface returns the same `{"error": "<msg>"}` body + status. Plan §5 + D21.
 
 #[derive(thiserror::Error, Debug)]
 pub enum CoreError {
     // ── Typed failure modes (named so callers can branch + word them) ──────
-    /// service.project.ProjectNotFoundError — membership guard. 404. Carries
-    /// the project id so every surface words the message identically.
+    /// Membership guard miss. 404. Carries the project id so every surface
+    /// words the message identically.
     #[error("Project {0} not found")]
     ProjectNotFound(i64),
-    /// service.project.ProjectDeletedError — project is soft-deleted. 400.
+    /// Project is soft-deleted. 400.
     #[error("{0}")]
     ProjectDeleted(String),
-    /// Paper lookup miss — carries the key the caller addressed it by
-    /// (source_id, or a stringified SOURCE_FK), so every surface words the
-    /// message identically. 404.
+    /// Carries the key the caller addressed the paper by (source_id, or a
+    /// stringified SOURCE_FK) so every surface words the message identically. 404.
     #[error("Paper {0} not found")]
     PaperNotFound(String),
-    /// service.paper.PdfImportError — metadata extraction failed. 422.
+    /// PDF metadata extraction failed. 422.
     #[error("Could not extract PDF metadata: {0}")]
     PdfImport(String),
-    /// service.paper.PaperLinkError — paper imported but project link failed. 400.
+    /// Paper imported but project link failed. 400.
     #[error("{0}")]
     PaperLink(String),
     /// Upload over the size limit. 413.
     #[error("{0}")]
     PdfTooLarge(String),
-    /// sources.arxiv_source.ArxivNotFoundError. 404.
+    /// 404.
     #[error("{0}")]
     ArxivNotFound(String),
-    /// sources.openalex_source.OpenAlexNotFoundError. 404.
+    /// 404.
     #[error("{0}")]
     OpenAlexNotFound(String),
-    /// sources.openalex_source.OpenAlexHTTPError — upstream HTTP failure. 502.
+    /// Upstream HTTP failure. 502.
     #[error("{0}")]
     OpenAlexHttp(String),
-    /// sources.openalex_source.OpenAlexInputError — bad query/input. 400.
+    /// Bad query/input. 400.
     #[error("{0}")]
     OpenAlexInput(String),
-    /// service.export_import.ProjectImportError — import bundle invalid. 422.
+    /// Import bundle invalid. 422.
     #[error("{0}")]
     ProjectImport(String),
 
-    // ── Generic catch-alls (one per HTTP class used by app.py) ─────────────
+    // ── Generic catch-alls (one per HTTP class) ────────────────────────────
     #[error("{0}")]
     NotFound(String),
     #[error("{0}")]
     BadRequest(String),
-    /// sqlite IntegrityError / managed-storage / author-has-papers. 409.
+    /// Uniqueness violation / managed-storage / author-has-papers. 409.
     #[error("{0}")]
     Conflict(String),
     #[error("{0}")]
@@ -62,7 +58,7 @@ pub enum CoreError {
 }
 
 impl CoreError {
-    /// HTTP-equivalent status, so commands preserve the FastAPI contract.
+    /// HTTP-equivalent status — the boundary contract every surface preserves.
     pub fn http_status(&self) -> u16 {
         use CoreError::*;
         match self {
@@ -78,17 +74,15 @@ impl CoreError {
     }
 }
 
-/// rusqlite failures surface as Internal (500) — same as Python's bare sqlite3
-/// errors bubbling to the FastAPI 500 handler. The few cases the API maps to 409
-/// (IntegrityError) are raised explicitly as CoreError::Conflict at the call site.
+/// rusqlite failures surface as Internal (500); the few 409 cases (uniqueness
+/// violations) are raised explicitly as CoreError::Conflict at the call site.
 impl From<rusqlite::Error> for CoreError {
     fn from(e: rusqlite::Error) -> Self {
         CoreError::Internal(e.to_string())
     }
 }
 
-/// IO/JSON failures likewise surface as Internal (500), matching the Python
-/// layer's unhandled OSError/JSONDecodeError bubbling to the 500 handler.
+/// IO/JSON failures likewise surface as Internal (500).
 impl From<std::io::Error> for CoreError {
     fn from(e: std::io::Error) -> Self {
         CoreError::Internal(e.to_string())

@@ -197,7 +197,7 @@ pub(crate) fn parse_year(date_str: &str) -> Option<i32> {
     while i + 4 <= b.len() {
         if b[i..i + 4].iter().all(u8::is_ascii_digit) {
             let y: i32 = std::str::from_utf8(&b[i..i + 4]).ok()?.parse().ok()?;
-            // Python does a single re.search then validates; out-of-range -> None.
+            // Only the first 4-digit run is considered; out-of-range -> None.
             return (1900..=Utc::now().year() + 1).contains(&y).then_some(y);
         }
         i += 1;

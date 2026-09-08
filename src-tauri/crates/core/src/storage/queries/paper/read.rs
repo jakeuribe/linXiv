@@ -54,17 +54,14 @@ pub(in crate::storage::queries) fn row_to_paper(row: &Row) -> Result<PaperDetail
     })
 }
 
-/// `storage/db.py::get_paper` — a specific version, or the latest if `None`.
-/// `conn` is an opened storage::db connection (FK PRAGMA already ON).
-/// Reads the list column set (FULL_TEXT blanked) like every other paper read:
-/// nothing consumes the body through `PaperDetails`, and the fts module's
-/// `has_full_text` answers the one stored-body question without hauling it.
+/// A specific version, or the latest if `None`. Reads the list column set
+/// (FULL_TEXT blanked); `has_full_text` answers the one stored-body question.
 pub fn get_paper(
     conn: &Connection,
     source_id: &str,
     version: Option<i64>,
 ) -> Result<Option<PaperDetails>> {
-    // Python `if version:` treats 0 as falsy too -> fall through to latest.
+    // A version of 0 is treated as unset -> fall through to latest.
     let (sql, params): (String, Vec<Value>) = match version.filter(|v| *v != 0) {
         Some(v) => (
             format!(
@@ -85,10 +82,8 @@ pub fn get_paper(
     }
 }
 
-/// `storage/db.py::get_paper_by_id` — one exact PAPER version by PK. Reads the
-/// list column set (FULL_TEXT blanked): paper_id callers never saw the body
-/// when this was composed from `list_papers`, and keeping it out means the
-/// lookup never hauls a full TeX corpus row into memory.
+/// One exact PAPER version by PK. Reads the list column set (FULL_TEXT
+/// blanked) so the lookup never hauls a full TeX corpus row into memory.
 pub fn get_paper_by_id(conn: &Connection, paper_id: i64) -> Result<Option<PaperDetails>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {PAPER_COLUMNS_NO_TEXT} FROM papers WHERE paper_id = ?"
@@ -101,16 +96,9 @@ pub fn get_paper_by_id(conn: &Connection, paper_id: i64) -> Result<Option<PaperD
 }
 
 /// The `papers`/`latest_papers` column list with FULL_TEXT blanked out — every
-/// column `row_to_paper` reads, in the view's order. `PaperDetails` callers see
-/// no difference; the CLI's raw-row `linxiv library list`, which dumps whatever
-/// columns come back, now reports `full_text` as null instead of the body.
-///
-/// Every `PaperDetails` read uses this instead of `SELECT *`. Nothing consumes
-/// the body through the struct (`full_text` is not serialized; the empty-refetch
-/// clobber guard reads one column via `has_full_text`), and with the background
-/// indexer filling the column for a whole library, `SELECT *` would make every
-/// read haul a multi-MB TeX body into memory under the connection lock and drop
-/// it again.
+/// column `row_to_paper` reads, in the view's order. Every `PaperDetails` read
+/// uses this instead of `SELECT *`: nothing consumes the body through the
+/// struct, and `SELECT *` would haul a multi-MB TeX body per read.
 pub const PAPER_COLUMNS_NO_TEXT: &str = "paper_id, source_id, source_fk, version, title, url, \
      published, updated, category, categories, doi, journal_ref, comment, summary, authors, tags, \
      has_pdf, source, pdf_path, NULL AS full_text, downloaded_source, created_at, updated_at";
@@ -123,11 +111,9 @@ pub enum PaperSort {
     /// Publication date — the historical default.
     #[default]
     Published,
-    /// When the paper entered the library. Keyed on `source_fk`, the root row's
-    /// AUTOINCREMENT id — ids are handed out in insertion order, so fk order is
-    /// add order without `created_at`'s one-second ties. NOT the per-version
-    /// `created_at`, which jumps forward on every new version. Re-adding a
-    /// trashed paper reactivates its root, so it returns to its old position.
+    /// When the paper entered the library — keyed on `source_fk` (AUTOINCREMENT
+    /// = insertion order, no one-second ties), NOT the per-version `created_at`,
+    /// which jumps on every new version. A re-added paper keeps its old position.
     Added,
     /// Title, case-insensitively.
     Title,
@@ -150,13 +136,9 @@ impl PaperSort {
         self != Self::Title
     }
 
-    /// `paper_id` breaks ties so paging is stable — shared publish dates and
-    /// same-title papers are both common.
-    ///
-    /// Oldest-first leads with an extra term so undated papers sink instead of
-    /// heading the list. `idx_paper_meta_published_dated` indexes that exact
-    /// expression, in this column order and direction — change one and the other
-    /// must follow, or the ordering falls back to sorting the whole library.
+    /// `paper_id` breaks ties so paging is stable. Oldest-first leads with an
+    /// extra term so undated papers sink; `idx_paper_meta_published_dated`
+    /// indexes that exact expression — change one and the other must follow.
     fn order_by(self, desc: bool) -> String {
         let dir = if desc { "DESC" } else { "ASC" };
         let col = match self {
@@ -219,7 +201,7 @@ fn list_papers_sql(
     (sql, params)
 }
 
-/// `storage/db.py::list_papers` — latest version per paper by default.
+/// Latest version per paper by default.
 /// Optional exact-category filter; limit/offset apply to the filtered result.
 pub fn list_papers(
     conn: &Connection,
@@ -277,11 +259,10 @@ pub fn list_pdf_papers(conn: &Connection) -> Result<Vec<PaperDetails>> {
     Ok(out)
 }
 
-/// Latest-version rows for the given paper roots, filtered in SQL so project
-/// export/share never materializes the whole library. Empty input → empty
-/// output. Chunked to stay under SQLite's bound-variable limit, then sorted in
-/// Rust to the `list_papers` default order (published DESC undated-last,
-/// paper_id DESC) since chunking would scramble a SQL ORDER BY across chunks.
+/// Latest-version rows for the given roots, filtered in SQL so export/share
+/// never materializes the whole library. Chunked under SQLite's bound-variable
+/// limit, then sorted in Rust to the `list_papers` default order (chunking
+/// would scramble a SQL ORDER BY).
 pub fn get_papers_by_source_fks(
     conn: &Connection,
     source_fks: &[i64],
@@ -308,9 +289,8 @@ pub fn get_papers_by_source_fks(
     Ok(out)
 }
 
-/// `storage/db.py::get_categories` — distinct primary categories across latest
-/// active papers, NULLs excluded, ascending. BINARY collation (the default) is
-/// byte order — the same ordering the service's old BTreeSet<String> produced.
+/// Distinct primary categories across latest active papers, NULLs excluded,
+/// ascending in BINARY (byte-order) collation.
 pub fn get_categories(conn: &Connection) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT DISTINCT category FROM latest_papers \
@@ -320,15 +300,10 @@ pub fn get_categories(conn: &Connection) -> Result<Vec<String>> {
     Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
-/// `storage/db.py::get_papers_by_json_tag` — latest papers whose JSON TAGS list
-/// holds `label`, matched whole and case-insensitively (NOCASE folds ASCII
-/// only, same rule as the service's old `eq_ignore_ascii_case` filter).
-///
-/// Matches the JSON column, not PAPER_TO_TAG: the relational half is
-/// code-synced (no triggers), skips empty labels, and folds label case into a
-/// shared TAG row — the JSON list is what the old in-Rust filter read.
-/// `published DESC` puts NULL dates last, exactly where `Option<NaiveDate>`
-/// descending put them; `paper_id DESC` breaks same-date ties.
+/// Latest papers whose JSON TAGS list holds `label`, matched whole and
+/// case-insensitively (NOCASE folds ASCII only). Matches the JSON column, not
+/// PAPER_TO_TAG — the relational half skips empty labels and case-folds into a
+/// shared TAG row. `published DESC` (NULL dates last), `paper_id DESC` ties.
 pub fn get_papers_by_json_tag(conn: &Connection, label: &str) -> Result<Vec<PaperDetails>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {PAPER_COLUMNS_NO_TEXT} FROM latest_papers WHERE tags IS NOT NULL \

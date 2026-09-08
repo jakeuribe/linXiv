@@ -5,48 +5,11 @@ use tauri::{AppHandle, Manager};
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Resolve the on-disk path to a bundled sidecar binary for installation.
-///
-/// This is an *install-time* resolver (only called by `install_cli` /
-/// `install_mcp`): on the AppImage branch it performs filesystem mutation
-/// (creates a dir, copies the binary, sets the exec bit) — see below. The name
-/// reflects that side effect; do not use it as a pure path lookup.
-///
-/// Returns a `PathBuf` (not a `tauri_plugin_shell` `Command`) on purpose:
-/// callers symlink the path (`install_cli`) or serialize it into a client's
-/// JSON config (`install_mcp`), neither of which the shell plugin's `Command`
-/// API can provide.
-///
-/// In dev mode the binary lives under `<src-tauri>/binaries/` with the
-/// target-triple-suffixed name (e.g. `linxiv-x86_64-unknown-linux-gnu`), as
-/// produced by `scripts/stage_sidecar.py`. The directory is resolved relative
-/// to `CARGO_MANIFEST_DIR` (the `src-tauri` crate dir) rather than the current
-/// working directory, so resolution does not depend on where the app is run
-/// from.
-///
-/// In release mode Tauri bundles `externalBin` sidecars *next to the main
-/// application executable* and strips the target-triple suffix at bundle time,
-/// so the binary is `<current_exe dir>/<name>` (matching how
-/// `tauri_plugin_shell`'s `relative_command_path` / `app.shell().sidecar()`
-/// resolves sidecars). It is NOT under `<resource_dir>/binaries/`.
-///
-/// AppImage caveat: under an AppImage, `current_exe()` points inside the
-/// ephemeral FUSE mount (`/tmp/.mount_xxxx/...`) which is gone once the app
-/// quits. A symlink or config entry pointing there would dangle. So when the
-/// `$APPIMAGE` env var is set (the AppImage runtime exports the host
-/// `.AppImage` path there), we copy the in-mount sidecar to a stable,
-/// user-writable directory under `app_data_dir()/bin` and return that copy.
-/// The copy survives app quit, but it becomes stale after an AppImage update —
-/// the copied binary is not refreshed automatically, so the symlink / MCP
-/// config keeps pointing at the older copied version until the user re-runs
-/// install, which re-copies the current binary.
-///
-/// On Windows the `.exe` extension is appended automatically.
-///
-/// The existence check lives here (rather than at each call site) so it is a
-/// single source of truth covering both `install_cli` and `install_mcp`: a
-/// missing sidecar surfaces an actionable error instead of silently creating a
-/// dangling symlink or a broken MCP config entry.
+/// Resolve a bundled sidecar binary for installation. Install-time only: the
+/// AppImage branch mutates the filesystem — not a pure path lookup.
+/// Dev: `<src-tauri>/binaries/<name>-<triple>`; release: next to the main
+/// executable with the triple stripped; AppImage: a durable copy under
+/// `app_data_dir()/bin` (goes stale after an update until install is re-run).
 fn resolve_install_sidecar(app: &AppHandle, name: &str) -> Result<PathBuf, String> {
     // `app` is only used in release mode (AppImage data dir); silence the
     // unused-variable warning in dev where resolution is purely path-based.
@@ -110,16 +73,8 @@ fn resolve_install_sidecar(app: &AppHandle, name: &str) -> Result<PathBuf, Strin
     Ok(path)
 }
 
-/// Copy an ephemeral AppImage-mount sidecar to a stable, user-writable location
-/// and return the path to the copy.
-///
-/// The destination is `app_data_dir()/bin/<name>` (e.g.
-/// `~/.local/share/com.linxiv.app/bin/linxiv` on Linux). The copy is made
-/// executable and overwrites any prior copy, so re-installing always picks up
-/// the freshly mounted binary.
-///
-/// AppImage is a Linux-only packaging format, so this path never executes on
-/// macOS or Windows (it still compiles there as part of the release build).
+/// Copy an ephemeral AppImage-mount sidecar to `app_data_dir()/bin/<name>`,
+/// executable, overwriting any prior copy. Never executes off Linux.
 #[cfg(not(debug_assertions))]
 fn appimage_stable_copy(app: &AppHandle, name: &str, in_mount: &Path) -> Result<PathBuf, String> {
     if !in_mount.exists() {
@@ -181,14 +136,8 @@ fn appimage_stable_copy(app: &AppHandle, name: &str, in_mount: &Path) -> Result<
 // CLI commands
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Path of the CLI shim that `install_cli` manages.
-///
-/// This is the single source of truth for where the CLI integration lives:
-/// `is_cli_installed`, `install_cli`, and `uninstall_cli` all resolve through
-/// here so the check can never drift from what install/uninstall touch.
-///
-/// - Linux/macOS: symlink `~/.local/bin/linxiv`
-/// - Windows: shim `%LOCALAPPDATA%\Programs\linxiv\linxiv.bat`
+/// CLI shim path — single source of truth for is/install/uninstall_cli:
+/// symlink `~/.local/bin/linxiv`, or `%LOCALAPPDATA%\Programs\linxiv\linxiv.bat` on Windows.
 fn cli_shim_path() -> Result<PathBuf, String> {
     #[cfg(not(target_os = "windows"))]
     {
@@ -207,11 +156,8 @@ fn cli_shim_path() -> Result<PathBuf, String> {
     }
 }
 
-/// Check whether the CLI shim installed by `install_cli` is present.
-///
-/// Deliberately does NOT consult PATH: a deb/rpm install ships
-/// `/usr/bin/linxiv` regardless, which made a PATH lookup report "installed"
-/// even when the shim was never created.
+/// Check whether the shim from `install_cli` is present. Deliberately not a
+/// PATH lookup: deb/rpm ship `/usr/bin/linxiv`, which made PATH report "installed".
 #[tauri::command]
 pub fn is_cli_installed() -> bool {
     let shim = match cli_shim_path() {
@@ -244,14 +190,8 @@ pub fn is_cli_installed() -> bool {
     true
 }
 
-/// Install the bundled `linxiv` CLI sidecar so it is accessible as `linxiv`
-/// on the user's PATH.
-///
-/// - Linux/macOS: creates a symlink `~/.local/bin/linxiv` → binary path.
-/// - Windows: creates a `.bat` shim in `%LOCALAPPDATA%\Programs\linxiv\` and
-///   adds that directory to the user's PATH registry key.
-///
-/// Dev builds refuse unless LINXIV_DEV_INSTALL=1 is set.
+/// Install the bundled `linxiv` CLI onto PATH: symlink on Linux/macOS, `.bat`
+/// shim + user PATH registry entry on Windows. Dev builds refuse unless LINXIV_DEV_INSTALL=1.
 #[tauri::command]
 pub fn install_cli(app: AppHandle) -> Result<(), String> {
     dev_install_guard(std::env::var("LINXIV_DEV_INSTALL").ok().as_deref())?;
@@ -347,14 +287,8 @@ pub fn uninstall_cli() -> Result<(), String> {
 // would see running `dpkg -i`/`rpm -U` by hand.
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// "deb", "rpm", "pacman", or `None` (AppImage, dev build, or a non-Linux
-/// platform).
-///
-/// Resolved by asking the system package database whether it owns the
-/// running executable — `is_cli_installed`'s approach of trusting a fixed
-/// path doesn't apply here, since native packages put the binary at
-/// `/usr/bin/linxiv` and only the package manager can say which one (if
-/// either) actually installed it.
+/// "deb", "rpm", "pacman", or `None` (AppImage, dev build, or non-Linux) —
+/// asks the system package database whether it owns the running executable.
 fn linux_package_kind() -> Option<&'static str> {
     if !cfg!(target_os = "linux") {
         return None;
@@ -380,9 +314,7 @@ fn linux_package_kind() -> Option<&'static str> {
 }
 
 /// JS-facing: which package manager (if any) owns this install, so the UI can
-/// pick the update path (native package here vs. the Tauri updater plugin for
-/// everything else). `dpkg -S`/`rpm -qf` read the whole package database, so
-/// this runs off the main thread like any other blocking probe.
+/// pick native-package update vs. the Tauri updater. Blocking probe, run off the main thread.
 #[tauri::command]
 pub async fn get_linux_package_kind() -> Option<String> {
     tokio::task::spawn_blocking(|| linux_package_kind().map(str::to_string))
@@ -615,8 +547,8 @@ pub struct MpcClientStatus {
     pub installed: bool,
     /// `true` when the client application appears to be present on this machine.
     pub available: bool,
-    /// `true` when the registered command no longer exists on disk (e.g. the
-    /// deleted Python-era sidecar) and the entry needs a reinstall.
+    /// `true` when the registered command no longer exists on disk (e.g. a
+    /// since-deleted sidecar) and the entry needs a reinstall.
     pub stale: bool,
     /// `true` when the client's config file exists but could not be parsed as
     /// JSON, so `installed`/`stale` could not be determined and default to
@@ -677,9 +609,8 @@ impl Roots {
     }
 }
 
-/// Key under which a client lists MCP servers in its config file. VS Code's
-/// `mcp.json` uses `servers` (with a `type` per entry); the rest use the
-/// reference `mcpServers` shape.
+/// Key under which a client lists MCP servers: VS Code's `mcp.json` uses
+/// `servers` (with a `type` per entry); the rest use the reference `mcpServers` shape.
 fn servers_key(client_id: &str) -> &'static str {
     match client_id {
         "vscode" => "servers",
@@ -687,10 +618,8 @@ fn servers_key(client_id: &str) -> &'static str {
     }
 }
 
-/// Path of the client's user-level MCP config file.
-///
-/// Cursor and Windsurf document home-based paths on every OS; Antigravity 2.0
-/// shares Gemini's `~/.gemini/config/mcp_config.json`.
+/// Path of the client's user-level MCP config file; Antigravity 2.0 shares
+/// Gemini's `~/.gemini/config/mcp_config.json`.
 fn mcp_config_path_in(client_id: &str, roots: &Roots) -> Result<PathBuf, String> {
     let home = &roots.home;
     let appdata = || -> Result<&PathBuf, String> {
@@ -734,9 +663,8 @@ fn mcp_config_path_in(client_id: &str, roots: &Roots) -> Result<PathBuf, String>
     Ok(path)
 }
 
-/// Runtime wrapper over `mcp_config_path_in` for the current machine, used by
-/// install/uninstall/is_mcp_installed. Antigravity has two candidate paths
-/// (see `antigravity_target_path`); every other client has one canonical path.
+/// `mcp_config_path_in` for the current machine; Antigravity has two candidate
+/// paths (see `antigravity_target_path`), every other client one canonical path.
 fn mcp_config_path(client_id: &str) -> Result<PathBuf, String> {
     let roots = Roots::current()?;
     if client_id == "antigravity" {
@@ -770,11 +698,8 @@ fn antigravity_config_paths(roots: &Roots) -> Vec<PathBuf> {
     paths
 }
 
-/// Which Antigravity config path install/uninstall should target: whichever
-/// already has linxiv registered (idempotent reinstall/uninstall), else
-/// whichever config dir already exists on disk (that's the app version
-/// actually present — e.g. a legacy Codeium-era install that never created
-/// the new Gemini path), else the modern default.
+/// Which Antigravity config path install/uninstall targets: whichever already
+/// has linxiv registered, else whichever config dir exists on disk, else the modern default.
 // ponytail: the dir-exists fallback can't tell "Antigravity 2.0 created this"
 // from "the Gemini CLI created this" — no signal distinguishes them. Fine
 // until a bug report shows that combination in the wild.
@@ -924,19 +849,12 @@ fn is_client_available(client_id: &str, roots: &Roots) -> bool {
         .any(|p| p.exists())
 }
 
-/// `(installed, stale, config_error)`: installed when the `linxiv` entry
-/// exists in the client's current config file (read live, never cached);
-/// stale when its recorded command is an absolute path that no longer exists
-/// on disk — e.g. the deleted Python-era PyInstaller sidecar
-/// (`<resources>/binaries/linxiv-mcp-<triple>`), a dead AppImage mount, or a
-/// moved dev checkout. A non-absolute command (resolved via the client's PATH,
-/// or a bare name) is assumed live.
-///
-/// `config_error` is set when the config file exists but could not be read as
-/// JSON (e.g. hand-edited into a broken state). That case is NOT collapsed
-/// into `(false, false)` — a corrupted config for a client that genuinely has
-/// linxiv registered would otherwise be misreported identically to "never
-/// installed", hiding a real problem the user needs to go fix by hand.
+/// `(installed, stale, config_error)`: installed when the `linxiv` entry is in
+/// the config (read live, never cached); stale when its command is an absolute
+/// path missing on disk (since-deleted sidecar, dead AppImage mount, moved dev
+/// checkout) — non-absolute commands are assumed live. `config_error` flags an
+/// unparseable config, kept distinct from "never installed" so a broken file
+/// surfaces as something to repair by hand.
 fn registration_state(path: &Path, key: &str) -> (bool, bool, bool) {
     if !path.exists() {
         return (false, false, false);
@@ -1023,12 +941,8 @@ pub fn list_mcp_clients() -> Vec<MpcClientStatus> {
         .collect()
 }
 
-/// Register linxiv's MCP server in a client's config file.
-///
-/// Existing `mcpServers` entries are preserved; only the `"linxiv"` key is
-/// added or overwritten.
-///
-/// Dev builds refuse unless LINXIV_DEV_INSTALL=1 is set.
+/// Register linxiv's MCP server in a client's config; only the `"linxiv"` key
+/// is added or overwritten. Dev builds refuse unless LINXIV_DEV_INSTALL=1.
 #[tauri::command]
 pub fn install_mcp(app: AppHandle, client_id: String) -> Result<(), String> {
     dev_install_guard(std::env::var("LINXIV_DEV_INSTALL").ok().as_deref())?;
@@ -1066,9 +980,8 @@ pub fn install_mcp(app: AppHandle, client_id: String) -> Result<(), String> {
     write_mcp_config(&config_path, &config)
 }
 
-/// In dev builds installing would persist the repo-local staged sidecar path
-/// into user configs/shims — a path that dies with the checkout. Refuse unless
-/// explicitly opted in to the value "1"; release builds pass through.
+/// Dev builds would persist the repo-local staged sidecar path — dead once the
+/// checkout moves — so refuse unless the override is exactly "1"; release builds pass through.
 fn dev_install_guard(override_value: Option<&str>) -> Result<(), String> {
     #[cfg(debug_assertions)]
     if override_value != Some("1") {
@@ -1341,7 +1254,7 @@ mod tests {
         }));
         assert_eq!(registration_state(&cfg, "mcpServers"), (true, false, false));
 
-        // Registered against a deleted binary (Python-era sidecar shape).
+        // Registered against a since-deleted binary (old sidecar path shape).
         let gone = dir
             .path()
             .join("binaries")

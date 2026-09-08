@@ -1,5 +1,4 @@
 //! Group `misc` — the flat top-level commands `stats`, `categories`, `settings`.
-//! cmd_stats / cmd_categories / cmd_settings_* in `linxiv_cli.py`.
 
 use std::path::PathBuf;
 

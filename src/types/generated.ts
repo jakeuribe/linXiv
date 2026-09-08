@@ -266,9 +266,8 @@ export type FilterRule = {
 
 export type GraphPaper = {
   /**
-   * Node id — `PAPER_ROOTS.SOURCE_FK` as a string, so every id in this
-   * payload (papers, authors, tags) is one comparable type. The numeric
-   * value is [`Self::source_fk`], which is the `/library/:sfk` route param.
+   * Node id — `PAPER_ROOTS.SOURCE_FK` as a string, so every id in the payload is
+   * one comparable type; [`Self::source_fk`] is the `/library/:sfk` route param.
    */
   id: string,
   source_fk: number,
@@ -277,30 +276,25 @@ export type GraphPaper = {
    */
   source_id: string,
   /**
-   * `PAPER.TITLE`. The column is NOT NULL; an empty string is the honest
-   * answer for a row that somehow holds one, and the title filter can
-   * compare it unguarded.
+   * `PAPER.TITLE` (NOT NULL); an empty string stays empty so the title
+   * filter can compare it unguarded.
    */
   label: string,
   category: string | null,
   /**
-   * Display spellings of this paper's tags, deduped on [`norm_tag`] and
-   * resolved to the TAG table's casing — i.e. exactly the tag CHIPS the
-   * canvas draws for it, in the same order as [`Self::tag_keys`].
+   * Display spellings of this paper's tags, deduped on [`norm_tag`] and resolved
+   * to the TAG table's casing — the canvas chips, in [`Self::tag_keys`] order.
    */
   tags: Array<string>,
   /**
-   * [`norm_tag`] of each entry in [`Self::tags`]. What a tag filter row is
-   * compared against, so the comparison needs no normalization pass on the
-   * client and cannot disagree with the chips.
+   * [`norm_tag`] of each entry in [`Self::tags`] — what a tag filter row is
+   * compared against, so the client needs no normalization pass.
    */
   tag_keys: Array<string>,
   has_pdf: boolean,
   /**
    * `PAPER_META.PUBLISHED`, with the [`NO_PUBLISHED_DATE`] sentinel folded to
-   * `None`. Forwarding it raw made an undated paper read as a real date in
-   * year 1, so a Date-range `From` filter silently dropped every undated
-   * paper off the canvas as "too old".
+   * `None` so a Date-range filter cannot drop undated papers as year-1 "too old".
    */
   published: string | null,
   url: string | null,
@@ -312,9 +306,7 @@ export type GraphPaper = {
   project_ids: Array<number>,
   /**
    * Lowercased names of this paper's authors — what the Author highlight
-   * filter substring-matches. Author names only reach the canvas as separate
-   * author NODES, so the client used to rebuild this index by walking the
-   * edge list on every load.
+   * filter substring-matches.
    */
   author_keys: Array<string>,
 };
@@ -350,11 +342,8 @@ export type GraphTag = {
    */
   key: string,
   /**
-   * `TAG.TAG`, the spelling the Tags index and TagPage show, falling back to
-   * the paper's own casing for a tag the TAG table cannot answer for (the
-   * reserved reading-list marker, which `list_all_tags` filters out).
-   * Resolving it here is what stops one tag being drawn "ML" on the canvas
-   * and offered as "ml" in the dropdown two panels away.
+   * `TAG.TAG`, the spelling the Tags index and TagPage show, falling back to the
+   * paper's own casing for the reserved reading-list marker (`list_all_tags` filters it out).
    */
   label: string,
   paper_count: number,
@@ -374,17 +363,13 @@ export type GraphProject = {
    */
   color: string,
   /**
-   * `PROJECT_TO_TAG` labels, ordered by label, with the reserved
-   * reading-list marker removed — it is bookkeeping nobody typed, and every
-   * other surface that draws a project's tags filters it out too.
+   * `PROJECT_TO_TAG` labels, ordered by label, with the reserved reading-list
+   * marker removed — bookkeeping nobody typed, filtered out on every surface.
    */
   tags: Array<string>,
   /**
-   * Whether any paper on THIS canvas belongs to the project. Both filter
-   * boxes match a paper through [`GraphPaper::project_ids`], so a project
-   * that is active but holds no drawn paper can only empty the canvas —
-   * the frontend narrows what it OFFERS to the ones flagged here, and marks
-   * a hand-typed row that names only the others.
+   * Whether any paper on THIS canvas belongs to the project — an active project
+   * with no drawn paper can only empty the canvas, so the frontend narrows what it OFFERS.
    */
   on_graph: boolean,
 };

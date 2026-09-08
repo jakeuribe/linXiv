@@ -1,10 +1,6 @@
-//! Share transport: a thin wrapper over the vendored `linxiv-p2p` sync node.
-//!
-//! A [`ShareNode`] owns one iroh endpoint with a persisted device key and serves
-//! every locally-published doc (`share_dir/<id>.automerge`, top level only) over
-//! the p2p sync ALPN. Received mirrors live under `share_dir/received/`; the
-//! access check only allows ids whose doc file exists at the top level of
-//! `share_dir`.
+//! Share transport over the vendored `linxiv-p2p` node: a [`ShareNode`] serves only
+//! top-level `share_dir/<id>.automerge` docs (the access check requires the file to
+//! exist there); received mirrors are quarantined under `share_dir/received/`.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -53,9 +49,8 @@ pub fn e2ee_received_dir(share_dir: &Path) -> PathBuf {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcceptedInvite {
     pub share_id: String,
-    /// The host could not be reached, so the join is only half done: the invite
-    /// is parked and the mirror on disk is an empty placeholder. The interval
-    /// sync finishes it. General p2p limitations apply; membership not tracked.
+    /// The host was unreachable, so the join is half done: the invite is parked,
+    /// the mirror on disk is an empty placeholder, and the interval sync finishes it.
     pub pending: bool,
 }
 
@@ -140,12 +135,9 @@ impl ShareNode {
         Self::bind_inner(share_dir.into(), p2p_dir, false, None, None).await
     }
 
-    /// Like [`Self::bind`], but with `Some(dek)` the at-rest key files
-    /// (`device.key`, `auth.key`, keyhive `state.bin`) are AEAD-wrapped under
-    /// the 32-byte DEK; legacy plaintext files migrate encrypted once. The
-    /// DEK comes from the app (OS keychain / passphrase); `None` keeps
-    /// today's plaintext store. `relay` swaps in a self-hosted relay instead
-    /// of n0's public ones (Settings → Sharing); `None` keeps n0 defaults.
+    /// Like [`Self::bind`]; `Some(dek)` AEAD-wraps the at-rest key files under the
+    /// 32-byte DEK (legacy plaintext migrates once), `None` keeps plaintext.
+    /// `relay` swaps in a self-hosted relay; `None` keeps n0 defaults.
     #[cfg(feature = "sync-beelay")]
     pub async fn bind_with_dek(
         share_dir: impl Into<PathBuf>,
@@ -215,9 +207,8 @@ impl ShareNode {
         .map_err(net)
     }
 
-    /// Plain sync + beelay + blobs on ONE endpoint. On a corrupt keyhive
-    /// state (or an auth key that won't decrypt), falls back to a plain bind
-    /// with no beelay node.
+    /// Plain sync + beelay + blobs on ONE endpoint. Corrupt keyhive state (or an
+    /// auth key that won't decrypt) falls back to a plain bind with no beelay node.
     #[cfg(feature = "sync-beelay")]
     async fn bind_stack(
         identity: &DeviceIdentity,
@@ -295,9 +286,8 @@ impl ShareNode {
         Ok(())
     }
 
-    /// (Re-)register `share_id` from its doc file, so the p2p registry serves the
-    /// latest published bytes. Missing file → `NotFound`. Reads and decodes the
-    /// doc off the async runtime via `spawn_blocking`.
+    /// (Re-)register `share_id` from its doc file so the registry serves the latest
+    /// bytes; missing file → `NotFound`. Reads/decodes off the runtime via `spawn_blocking`.
     pub async fn refresh(&self, share_id: &str) -> Result<()> {
         if !valid_share_id(share_id) {
             return Err(ShareError::NotFound(share_id.to_string()));
@@ -320,9 +310,8 @@ impl ShareNode {
         Ok(())
     }
 
-    /// Register `share_id` from the just-reconciled doc `save()` returned,
-    /// skipping [`Self::refresh`]'s re-read and re-parse of the file that was
-    /// written moments ago. Callers must have `save()`d the doc first, or the
+    /// Register `share_id` from the just-reconciled doc `save()` returned, skipping
+    /// [`Self::refresh`]'s re-read. Callers must have `save()`d the doc first, or the
     /// access check will refuse to serve it.
     pub fn register_doc(&self, share_id: &str, mut doc: automerge::AutoCommit) -> Result<()> {
         if !valid_share_id(share_id) {
@@ -400,9 +389,8 @@ impl ShareNode {
         self.inner.endpoint()
     }
 
-    /// Remote Query Mode: installs the `linxiv-api/1` handler on this node's
-    /// endpoint. Never called by the desktop app — until (unless) installed,
-    /// every api-ALPN connection is refused at the transport.
+    /// Remote Query Mode: installs the `linxiv-api/1` handler on this endpoint.
+    /// Never called by the desktop app — until installed, api-ALPN connections are refused.
     pub fn set_api_protocol(&self, handler: Box<dyn linxiv_p2p::DynProtocolHandler>) {
         self.inner.set_api_protocol(handler);
     }
@@ -433,9 +421,8 @@ impl ShareNode {
         })
     }
 
-    /// Publish (or republish) a project as an e2ee share: evolve the doc file
-    /// under `share_dir/e2ee`, then register it with (or merge it into) the
-    /// beelay engine. Content is encrypted lazily at invite/sync time.
+    /// Publish (or republish) a project as an e2ee share: evolve the doc under
+    /// `share_dir/e2ee`, then register/merge it in beelay. Content encrypts at invite/sync time.
     pub async fn publish_secure(&self, sp: &SharedProject) -> Result<()> {
         let beelay = self.beelay()?;
         if !valid_share_id(&sp.share_id) {
@@ -478,10 +465,8 @@ impl ShareNode {
         Ok(card.iter().map(|b| format!("{b:02x}")).collect())
     }
 
-    /// Grant the device behind `member_code` `role` on an e2ee share, then
-    /// mint its pasteable invite. Returns the member id (keep it: it is the
-    /// handle for [`ShareNode::revoke`] / [`ShareNode::query_role`]) and the
-    /// invite string.
+    /// Grant the device behind `member_code` `role` on an e2ee share and mint its
+    /// pasteable invite. Returns the member id (the revoke/query_role handle) + invite string.
     pub async fn invite_member(
         &self,
         share_id: &str,
@@ -551,11 +536,9 @@ impl ShareNode {
             .map_err(net)
     }
 
-    /// Change a member's role on an e2ee share (viewer ↔ editor). The
-    /// capability layer revokes + regrants under the hood; a downgrade also
-    /// rotates the project key (PCS), so the caller should re-key stored
-    /// blobs afterwards. Refusing to drop the doc's last reader surfaces as
-    /// [`ShareError::LastReader`].
+    /// Change a member's role (viewer ↔ editor). A downgrade rotates the project key
+    /// (PCS) — re-key stored blobs afterwards. Dropping the doc's last reader
+    /// surfaces as [`ShareError::LastReader`].
     pub async fn set_role(&self, share_id: &str, member: MemberId, role: Role) -> Result<()> {
         if !valid_share_id(share_id) {
             return Err(ShareError::NotFound(share_id.to_string()));
@@ -582,10 +565,8 @@ impl ShareNode {
             .map_err(net)
     }
 
-    /// Encrypt `bytes` under the share key and serve them as a blob; returns
-    /// a pasteable ticket. Storage caps are the caller's job — the blobs API
-    /// exposes no size before fetch, so enforce limits before persisting a
-    /// [`ShareNode::read_pdf_blob`] result.
+    /// Encrypt `bytes` under the share key and serve them as a blob; returns a
+    /// pasteable ticket. Size caps are the caller's job — the blobs API exposes no size before fetch.
     pub async fn store_pdf_blob(&self, share_id: &str, bytes: &[u8]) -> Result<String> {
         self.beelay()?
             .store_blob(share_id, bytes)
@@ -677,10 +658,9 @@ impl ShareNode {
         })
     }
 
-    /// Sync a received e2ee mirror and persist the refreshed doc under
-    /// `e2ee/received/`. A hosted share_id errors — hosted docs are updated
-    /// via [`ShareNode::publish_secure`] only. A host refusal (this device
-    /// was revoked or removed) surfaces as `NotFound`.
+    /// Sync a received e2ee mirror and persist it under `e2ee/received/`. A hosted
+    /// share_id errors (hosted docs update via [`ShareNode::publish_secure`] only);
+    /// a host refusal (revoked/removed) surfaces as `NotFound`.
     pub async fn sync_e2ee(&self, share_id: &str) -> Result<E2eeSyncOutcome> {
         let beelay = self.beelay()?;
         if !valid_share_id(share_id) {
@@ -725,9 +705,8 @@ impl ShareNode {
         Ok(outcome)
     }
 
-    /// Re-encrypt a hosted e2ee share's whole history under the current epoch.
-    /// Invites do this on their own; this repairs shares invited before that,
-    /// whose members fetch every commit and can decrypt none.
+    /// Re-encrypt a hosted e2ee share's whole history under the current epoch —
+    /// repairs shares invited before invites did this themselves.
     /// TODO: Revisit if this should be exposed via the GUI
     pub async fn rekey_e2ee(&self, share_id: &str) -> Result<()> {
         if !valid_share_id(share_id) {
@@ -739,10 +718,9 @@ impl ShareNode {
         self.beelay()?.reseal_project(share_id).await.map_err(net)
     }
 
-    /// Undo a join: drop the beelay registration, its cached doc and any parked
-    /// invite, so a later re-accept of the same invite adopts from scratch
-    /// instead of reusing a doc whose commits never decrypted. Returns whether
-    /// beelay had it registered. The caller deletes the on-disk mirror.
+    /// Undo a join: drop the beelay registration, cached doc, and any parked invite
+    /// so a re-accept adopts from scratch. Returns whether beelay had it registered;
+    /// the caller deletes the on-disk mirror.
     pub async fn forget_e2ee(&self, share_id: &str) -> Result<bool> {
         if !valid_share_id(share_id) {
             return Err(ShareError::NotFound(share_id.to_string()));

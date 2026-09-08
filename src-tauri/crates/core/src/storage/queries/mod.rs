@@ -1,6 +1,6 @@
-//! Per-entity named queries (plan §5.3). Each `todo!` cites its Python source.
+//! Per-entity named queries (plan §5.3).
 //!
-//! NON-NEGOTIABLE notes for whoever fills these:
+//! NON-NEGOTIABLE notes:
 //!   * Every connection these run on already has `PRAGMA foreign_keys = ON`
 //!     (storage::db::open) — never open a raw rusqlite::Connection here.
 //!   * papers_fts.paper_id holds the SOURCE_ID *string* (e.g. "arxiv:2204.12985"),

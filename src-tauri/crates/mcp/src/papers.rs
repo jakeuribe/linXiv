@@ -1,13 +1,5 @@
-//! Paper tools cluster. Owned by the `papers` Fill agent — do not edit other
-//! cluster files.
-//!
-//! Every body reaches the DB via `self.with_conn(|conn| ...)` and calls into
-//! `linxiv_core::service::paper` (and `::tag` for full-text/categories as the
-//! Python port does). Return `Ok(Json(value))` on success; on the error paths
-//! the Python code raises `ValueError`, so map those to
-//! `Err(ErrorData::invalid_params(msg, None))` with the EXACT message string
-//! Misses word themselves via `CoreError::PaperNotFound`'s Display — no
-//! per-surface message building.
+//! Paper tools cluster. User-facing refusals map to `invalid_params` with the exact
+//! message; misses word themselves via `CoreError::PaperNotFound`'s Display.
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_router, ErrorData};
@@ -26,7 +18,6 @@ use crate::Server;
 
 use crate::util::{core_err, invalid, json_ok};
 
-/// `Paper(source_id=paper_id)` lookup key, as the Python tools build it.
 fn paper_key(paper_id: &str) -> svc_paper::PaperRef {
     svc_paper::PaperRef::source(paper_id.to_string())
 }
@@ -181,7 +172,7 @@ impl Server {
             max_results,
         }): Parameters<SearchPapersParams>,
     ) -> Result<String, ErrorData> {
-        // Python `source.search(query, max_results)` defaults sort="relevance".
+        // Remote search always uses sort="relevance".
         let results = svc_source::search(&source, &query, max_results as u32, "relevance")
             .await
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
@@ -285,8 +276,8 @@ impl Server {
         &self,
         Parameters(SearchFullTextParams { query, limit }): Parameters<SearchFullTextParams>,
     ) -> Result<String, ErrorData> {
-        // Python swallows FTS errors and returns []. It logs the error to STDOUT —
-        // a bug that corrupts JSON-RPC here; route the diagnostic to STDERR instead.
+        // FTS errors return [] rather than failing; the diagnostic goes to STDERR —
+        // STDOUT is the JSON-RPC channel.
         match self.with_conn(|conn| svc_paper::search_library(conn, &query, limit)) {
             Ok(results) => json_ok(&results),
             Err(exc) => {
@@ -424,7 +415,7 @@ impl Server {
                     Ok(fk) => fk,
                     Err(e) => return Ok(Err(crate::util::guard_err(e))),
                 };
-                // Python `existing.version if existing else 1`.
+                // Keep the existing paper's version; default to 1 when absent.
                 let version = svc_paper::get(conn, &paper_key(&paper_id))?
                     .map(|p| p.version)
                     .unwrap_or(1);
@@ -438,7 +429,7 @@ impl Server {
                     url,
                     tags,
                 };
-                // Date validated after the existence check, matching Python ordering.
+                // Date validated after the existence check.
                 let meta = match fields.into_metadata(paper_id.clone(), version, None) {
                     Ok(m) => m,
                     Err(e) => return Ok(Err(invalid(e.to_string()))),
@@ -524,9 +515,7 @@ mod tests {
 
     use super::*;
 
-    /// Mirrors `route/papers.rs`'s `state()`: an in-memory DB, no router merge
-    /// since these tests call tool methods directly rather than dispatching
-    /// through `tool_router`.
+    /// In-memory DB; tool methods called directly, not dispatched through `tool_router`.
     fn server() -> Server {
         let conn = storage::open_in_memory().unwrap();
         storage::init_db(&conn).unwrap();

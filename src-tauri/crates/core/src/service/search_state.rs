@@ -2,8 +2,7 @@
 //!
 //! The history side-effect is the whole reason this seam exists: saving state also
 //! records each non-empty clause term, gated on `search_history_enabled` and capped
-//! by `search_history_max`. That rule used to live in the route handler, which made
-//! it unavailable to any other surface (ADR 0010).
+//! by `search_history_max` (ADR 0010: shared by every surface, not the route).
 
 use rusqlite::Connection;
 use serde_json::{json, Map, Value};

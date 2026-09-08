@@ -14,8 +14,8 @@ pub fn set_has_pdf(conn: &Connection, source_id: &str, version: i64, has: bool) 
     Ok(())
 }
 
-/// `set_pdf_path` — set PDF_PATH for one version, or every version when
-/// `version` is None/0 (Python `if version:` treats 0 as falsy).
+/// Set PDF_PATH for one version, or every version when `version` is None/0
+/// (0 is treated as unset).
 pub fn set_pdf_path(
     conn: &Connection,
     source_id: &str,
@@ -57,9 +57,8 @@ pub fn pdf_path_for_version(
 }
 
 /// Resolved (version, stored PDF_PATH) for one active (source_id, version) row,
-/// or None when the row is absent — the two-column sibling of `get_paper` (same
-/// view, same version-0-means-latest fallthrough), for callers that need the
-/// concrete version and custom path without materializing the row.
+/// or None — the two-column sibling of `get_paper` (same version-0-means-latest
+/// fallthrough), without materializing the row.
 pub fn pdf_path_for_source(
     conn: &Connection,
     source_id: &str,
@@ -80,9 +79,8 @@ pub fn pdf_path_for_source(
     Ok(row.optional()?)
 }
 
-/// `mark_pdf_saved` — write PDF_PATH and HAS_PDF=1 for one version in a single
-/// transaction so a crash cannot leave the two disagreeing. Errors if no matching
-/// PAPER_META or PAPER row (0 rows updated).
+/// Write PDF_PATH and HAS_PDF=1 for one version in a single transaction so a
+/// crash cannot leave the two disagreeing. Errors if no row matched.
 pub fn mark_pdf_saved(
     conn: &mut Connection,
     source_id: &str,

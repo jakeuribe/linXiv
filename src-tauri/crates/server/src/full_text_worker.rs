@@ -1,12 +1,8 @@
-//! Background full-text indexer. While `full_text_worker_enabled` is on, it
-//! walks the same backfill work list as `paper index-sources` (papers with no
-//! TeX source yet, oldest first) one paper at a time, forever.
+//! Background full-text indexer. While `full_text_worker_enabled` is on, it walks
+//! the same backfill list as `paper index-sources` (no TeX yet, oldest first).
 //!
-//! Off by default: arXiv paces requests 7 s apart and tarballs run to megabytes,
-//! so indexing a whole library is something the user opts into. Every arXiv GET
-//! made here goes through `sources::http`, which serialises requests behind the
-//! shared 7 s spacing and the 429 cool-down; `GAP` is an additional wait this
-//! module imposes between papers.
+//! Off by default: the user opts in. Every arXiv GET goes through `sources::http`
+//! (shared 7 s spacing + 429 cool-down); `GAP` is an extra wait between papers.
 //!
 //! `ponytail: no cap on how much TeX this stores. A body averages ~150 KB and is
 //! capped at MAX_TEX_BYTES (16 MiB) per paper. papers_fts is a plain fts5 table,

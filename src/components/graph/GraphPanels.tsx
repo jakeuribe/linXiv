@@ -15,14 +15,8 @@ import {
 import type { ForceSettings } from "../../lib/graph/layout";
 import { DEFAULT_FORCES } from "../../lib/graph/layout";
 
-/**
- * The right-hand panel column: Layout, Filters, Tag Filter and Selection.
- *
- * Every control here was a hand-wired DOM node in the old standalone script,
- * kept in step with the canvas by a dozen `_render*` functions that each had to
- * remember which of the others to call. It is ordinary React state now, so the
- * panels are a function of the filter and nothing can fall a payload behind.
- */
+/** The right-hand panel column: Layout, Filters, Tag Filter and Selection —
+ *  plain React state, so the panels are a function of the filter. */
 
 /** How many colour dots one filter row shows before it collapses the rest into
  *  a "+n". Three keeps the label readable in the panel column's width. */

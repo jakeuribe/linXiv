@@ -5,20 +5,15 @@ use rusqlite::Connection;
 use crate::error::Result;
 use crate::models::PaperDetails;
 
-/// `storage/db.py::search_full_text` — FTS5 over TeX source AND note content.
-/// Returns the latest version of each matching paper, ranked by bm25 (lower =
-/// better); a paper matched by both its full text and a note takes its best score.
+/// FTS5 over TeX source AND note content: the latest version of each matching
+/// paper, ranked by bm25 (lower = better); a paper matched both ways takes its
+/// best score.
 ///
-/// FTS misnomer: `papers_fts.paper_id` holds the SOURCE_ID *string*, so that half
-/// joins on `latest_papers.source_id = papers_fts.paper_id` (NOT the int PAPER_ID).
-/// notes_fts carries SOURCE_FK, joined back through PAPER_ROOTS to the same SOURCE_ID.
-/// init_db always creates both FTS tables, so Python's "table missing" guard is moot.
-///
-/// `query` is the raw search box input; `match_expr` turns it into FTS5 syntax.
-/// Each branch runs as its own prepared statement, and a prepare/query error
-/// from either is treated as "no matches from that branch" rather than aborting
-/// the whole search. `match_expr` emits nothing schema-specific; the fallback
-/// stays as a backstop for an index that is missing or corrupt.
+/// FTS misnomer: `papers_fts.paper_id` holds the SOURCE_ID *string*, joined on
+/// `latest_papers.source_id` (NOT the int PAPER_ID); notes_fts carries
+/// SOURCE_FK, joined back through PAPER_ROOTS. `match_expr` turns raw input into
+/// FTS5 syntax; a prepare/query error from a branch is "no matches from that
+/// branch" — a backstop for a missing or corrupt index.
 pub fn search_full_text(conn: &Connection, query: &str, limit: i64) -> Result<Vec<PaperDetails>> {
     let limit = limit.clamp(0, 1000);
     let Some(expr) = match_expr(query) else {
@@ -89,21 +84,12 @@ pub fn search_full_text(conn: &Connection, query: &str, limit: i64) -> Result<Ve
         .collect())
 }
 
-/// Rewrite raw search box input into an FTS5 MATCH expression.
-///
-/// FTS5's query language reads `-` and `:` as column-filter syntax and rejects
-/// stray punctuation outright, so `encoder-decoder` parses as a filter on a
-/// column named `decoder` and `c++` is a syntax error near `+`. Both raise, and
-/// `fts_matches` reports a raise as "no rows" — so before this, a hyphenated
-/// query looked like a search that legitimately found nothing.
-///
-/// Each bare word becomes a quoted phrase, which FTS5 splits with the same
-/// tokenizer that split the document, so `encoder-decoder` matches the
-/// document's `encoder-decoder`. The syntax that already worked is preserved:
-/// double-quoted phrases, the AND/OR/NOT operators, and a trailing `*`.
-///
-/// `None` when nothing searchable is left — an empty MATCH is itself an error.
-///
+/// Rewrite raw search box input into an FTS5 MATCH expression. FTS5 reads
+/// `-`/`:` as column-filter syntax and rejects stray punctuation, so each bare
+/// word becomes a quoted phrase (tokenized like the document, so
+/// `encoder-decoder` still matches). Double-quoted phrases, AND/OR/NOT, and a
+/// trailing `*` are preserved. `None` when nothing searchable is left — an
+/// empty MATCH is itself an error.
 /// `ponytail: NEAR()/^ are not preserved (they'd need a real parser); they
 /// fall through to a literal term search.`
 fn match_expr(raw: &str) -> Option<String> {

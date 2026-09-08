@@ -1,9 +1,7 @@
-//! RSS feed pipeline — the one seam for the home feed (ADR-0010): async
-//! network fetch (`fetch`), sync cache apply (`apply_fetch`), the filtered
-//! read model (`read_page`), and the dismissal/rule mutations. Callers
-//! (route today, CLI/MCP later) sequence fetch → apply → read without ever
-//! touching `storage::queries::rss` or `sources::feed` directly; the
-//! fetch/apply split exists so no DB lock is held across the await.
+//! RSS feed pipeline — the one seam for the home feed (ADR-0010): async network
+//! fetch (`fetch`), sync cache apply (`apply_fetch`), the filtered read model
+//! (`read_page`), and the dismissal/rule mutations. Callers sequence
+//! fetch → apply → read; the split exists so no DB lock is held across the await.
 
 use std::path::Path;
 
@@ -24,11 +22,9 @@ pub struct FetchedFeed {
     pub entries: Vec<rss::CacheEntry>,
 }
 
-/// The filtered feed page: survivors of block/dismissal/rule filtering
-/// (recorded as seen), plus which of them are already in the library.
-/// `window_was_empty` reports the pre-filter DB window state, so a caller
-/// holding a fetch error can distinguish "nothing cached at all" (surface the
-/// error) from "everything filtered out" (serve the empty page).
+/// The filtered feed page: survivors of block/dismissal/rule filtering (recorded
+/// as seen), plus which are already in the library. `window_was_empty` reports the
+/// pre-filter DB window, distinguishing "nothing cached" from "everything filtered out".
 pub struct FeedPage {
     pub entries: Vec<Value>,
     pub saved_arxiv_ids: Vec<String>,
@@ -231,7 +227,6 @@ pub fn dismiss(conn: &Connection, arxiv_id: &str, version: i64, permanent: bool)
     rss::dismiss(conn, &format!("arxiv:{arxiv_id}"), version, permanent)
 }
 
-/// List auto-filter rules.
 pub fn list_rules(conn: &Connection) -> Result<Vec<FilterRule>> {
     rss::list_rules(conn)
 }

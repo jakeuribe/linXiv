@@ -1,7 +1,5 @@
-//! `/api/projects` routes — `api/app.py` 512–688. Mirrors `authors.rs`: a `handle`
-//! owning the `/api/projects` subtree, path-param extraction, body deserialization,
-//! and the exact JSON envelopes / status codes `app.py` returned. Core binding
-//! follows `mcp/src/projects_tags.rs`.
+//! `/api/projects` routes: a `handle` owning the subtree — path-param extraction,
+//! body deserialization, and the exact JSON envelopes / status codes.
 
 use std::path::Path;
 
@@ -53,9 +51,8 @@ pub struct ProjectExportBody {
     pub include_pdfs: bool,
 }
 
-/// `POST /api/projects/{id}/export` — `api_project_export` (dest_path branch only).
-/// Writes the `.lxproj` archive to `dest_path` and returns `{ok}`. The streaming
-/// (no-dest_path) branch is browser-only; the Tauri frontend always sends a path.
+/// `POST /api/projects/{id}/export` — writes the `.lxproj` archive to `dest_path`,
+/// returns `{ok}`. No streaming branch: the Tauri frontend always sends a path.
 fn export(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let project_fk = path_i64(id)?;
     let b: ProjectExportBody = ctx.parse_body()?;
@@ -109,13 +106,13 @@ pub(crate) fn project_out(conn: &Connection, p: ProjectDetails) -> Result<Value,
     serde_json::to_value(project::to_out(conn, p)?).map_err(|e| ApiError::new(500, e.to_string()))
 }
 
-/// `GET /api/projects?status=` — `api_projects`. Default "active"; "all" => no filter.
+/// `GET /api/projects?status=` — default "active"; "all" => no filter.
 fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let status = ctx.q("status").unwrap_or("active").to_string();
     let projects = state.with_conn(|conn| -> Result<Vec<ProjectOut>, ApiError> {
         let filter = match status.as_str() {
             "all" => Projects::default(),
-            // app.py parity: an unparseable filter matches nothing, it is not a 400.
+            // An unparseable status filter matches nothing; it is not a 400.
             s => match s.parse::<Status>() {
                 Ok(st) => Projects {
                     status: Some(st),
@@ -125,7 +122,7 @@ fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
             },
         };
         let mut projects = project::get_many(conn, &filter)?;
-        // app.py drops null-id rows (data-integrity guard)
+        // Drop null-id rows (data-integrity guard).
         projects.retain(|p| p.id.is_some());
         Ok(project::to_out_many(conn, projects)?)
     })?;
@@ -145,7 +142,7 @@ pub struct ProjectCreateBody {
     pub project_tags: Vec<String>,
 }
 
-/// `POST /api/projects` — `api_project_create`.
+/// `POST /api/projects`.
 fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let b: ProjectCreateBody = ctx.parse_body()?;
     let name = b.name.trim().to_string();
@@ -166,7 +163,7 @@ fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     })
 }
 
-/// `color_from_hex(hex) if hex else None`, 400 "Invalid color_hex" on a bad value.
+/// Empty/absent hex → None; a bad value is a 400 "Invalid color_hex".
 fn parse_color(hex: Option<&str>) -> Result<Option<i32>, ApiError> {
     match hex.filter(|s| !s.is_empty()) {
         Some(h) => project::color_from_hex(h)
@@ -176,7 +173,7 @@ fn parse_color(hex: Option<&str>) -> Result<Option<i32>, ApiError> {
     }
 }
 
-/// `GET /api/projects/{id}` — `api_project_get`. Not-found wording comes from
+/// `GET /api/projects/{id}` — not-found wording comes from
 /// `CoreError::ProjectNotFound` (the shared contract), mapped to 404 here.
 fn get_one(state: &AppState, id: &str) -> Result<Value, ApiError> {
     let pid = path_i64(id)?;
@@ -196,8 +193,8 @@ pub struct ProjectUpdateBody {
     pub project_tags: Option<Vec<String>>,
 }
 
-/// `PATCH /api/projects/{id}` — `api_project_patch`. Partial update; color cleared
-/// only when the `color_hex` key is present in the body.
+/// `PATCH /api/projects/{id}` — partial update; color cleared only when the
+/// `color_hex` key is present in the body.
 fn patch(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let pid = path_i64(id)?;
     let b: ProjectUpdateBody = ctx.parse_body()?;
@@ -211,7 +208,7 @@ fn patch(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError
         ),
         None => None,
     };
-    // color: only touched when the key was explicitly sent (app.py model_fields_set).
+    // color: only touched when the key was explicitly sent.
     // Sent + non-empty => set; sent + null/"" => clear (Some(None)); absent => unchanged.
     let color_sent = ctx
         .body
@@ -237,14 +234,13 @@ fn patch(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError
     state
         .with_conn(|conn| project::update(conn, &upd))
         .map_err(|e| match e {
-            // app.py: LookupError -> 404 "Project not found"; ValueError -> 400 str(e).
             CoreError::ProjectDeleted(m) | CoreError::Validation(m) => ApiError::new(400, m),
             other => other.into(),
         })?;
     crate::route::to_value(&OkReceipt { ok: true })
 }
 
-/// `DELETE /api/projects/{id}` — `api_project_delete`. 404 if absent, then soft-delete.
+/// `DELETE /api/projects/{id}` — 404 if absent, then soft-delete.
 fn delete(state: &AppState, id: &str) -> Result<Value, ApiError> {
     let pid = path_i64(id)?;
     let proj = Project {
@@ -263,9 +259,8 @@ pub struct ProjectAddPaperBody {
     pub source_id: String,
 }
 
-/// `POST /api/projects/{id}/papers` — `api_project_add_paper`. Core's shared
-/// receipt; `?` keeps app.py's statuses (PaperNotFound → 404 with the paper id,
-/// ProjectNotFound → 404, ProjectDeleted → 400).
+/// `POST /api/projects/{id}/papers` — core's shared receipt; `?` maps
+/// PaperNotFound/ProjectNotFound → 404, ProjectDeleted → 400.
 fn add_paper(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let pid = path_i64(id)?;
     let b: ProjectAddPaperBody = ctx.parse_body()?;
@@ -278,7 +273,7 @@ pub struct ProjectAddPapersBulkBody {
     pub source_ids: Vec<String>,
 }
 
-/// `POST /api/projects/{id}/papers/bulk` — `api_project_add_papers`. Partial success.
+/// `POST /api/projects/{id}/papers/bulk` — partial success.
 fn add_papers_bulk(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let pid = path_i64(id)?;
     let b: ProjectAddPapersBulkBody = ctx.parse_body()?;
@@ -289,8 +284,8 @@ fn add_papers_bulk(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value
     })
 }
 
-/// `DELETE /api/projects/{id}/papers/{sid}` — `api_project_remove_paper`. `sid`
-/// arrives already percent-decoded in `ctx.segs`.
+/// `DELETE /api/projects/{id}/papers/{sid}` — `sid` arrives already
+/// percent-decoded in `ctx.segs`.
 fn remove_paper(state: &AppState, id: &str, sid: &str) -> Result<Value, ApiError> {
     let pid = path_i64(id)?;
     let receipt = state.with_conn(|conn| project::remove_paper(conn, pid, sid))?;

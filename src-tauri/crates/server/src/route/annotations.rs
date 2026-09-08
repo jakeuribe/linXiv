@@ -1,7 +1,5 @@
-//! `/api/annotations` routes — PDF highlight CRUD, mirroring `notes.rs`.
-//! An annotation is keyed to a paper's SOURCE_FK (resolved from `source_id`),
-//! optionally scoped to a project. The ANCHOR is opaque JSON validated by the
-//! frontend; the backend stores and returns it verbatim.
+//! `/api/annotations` routes — PDF highlight CRUD. Keyed to a paper's SOURCE_FK,
+//! optionally project-scoped; the ANCHOR is opaque JSON stored and returned verbatim.
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -63,8 +61,8 @@ pub struct AnnotationCreateBody {
 /// `POST /api/annotations`. 404 if the paper is not in the library.
 fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let b: AnnotationCreateBody = ctx.parse_body()?;
-    // Pre-trim, like pydantic's min_length=1; notes.rs and sources.rs run the
-    // same check. A whitespace-only id falls through to resolve_source_fk.
+    // Empty source_id is a 422; notes.rs and sources.rs run the same check.
+    // A whitespace-only id falls through to resolve_source_fk.
     if b.source_id.is_empty() {
         return Err(ApiError::new(422, "source_id must not be empty"));
     }

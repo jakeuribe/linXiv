@@ -1,14 +1,8 @@
-//! files service — Rust port of `service/files.py` (pure-FS parts). Plan §5.2.
+//! files service — pure-FS helpers over the managed PDF dir.
 //!
-//! DI: every fn takes the resolved managed `pdf_dir: &Path` as a parameter; this
-//! module NEVER reads `config::pdf_dir()` itself — the binary layer resolves it and
-//! passes it in (mirrors Python's `storage.paths.pdf_dir()`, but injected for testing).
-//!
-//! `managed_pdf_dir()` from Python is dropped: under DI the caller already holds the
-//! resolved path, so the wrapper is a redundant identity (D17 — no forwarding wrappers).
-//!
-//! `download_pdf` (the SSRF-safe HTTP downloader) resolves the managed dest under the DI'd
-//! `pdf_dir` and delegates the network/SSRF work to `sources::download`. See below.
+//! DI: every fn takes the resolved managed `pdf_dir: &Path`; this module NEVER
+//! reads `config::pdf_dir()` itself. `download_pdf` (the SSRF-safe HTTP downloader)
+//! resolves the managed dest here and delegates the network/SSRF work to `sources::download`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -30,9 +24,8 @@ pub struct PdfLocation {
     pub path: Option<PathBuf>,
 }
 
-/// Local path to a paper's PDF if it exists, else `None`. Checks `custom_path` first
-/// (the value stored on the paper row), then the standard managed location.
-/// Port of `files.pdf_path` — returns the path only when the file is actually present.
+/// Local path to a paper's PDF if the file is actually present, else `None`. Checks
+/// `custom_path` first (the value stored on the paper row), then the standard managed location.
 pub fn pdf_path(
     pdf_dir: &Path,
     paper_id: &str,
@@ -49,19 +42,15 @@ pub fn pdf_path(
     std.is_file().then_some(std)
 }
 
-/// Cached size of every managed `*.pdf` per `pdf_dir`, keyed by the dir path exactly
-/// as the caller passes it (DI resolves one spelling per process). Lazily seeded by a
-/// full walk on first read, then kept current by [`note_pdf_written`]/
-/// [`note_pdf_removed`] on every write/delete seam that core (and the server's two
-/// direct-write routes) own. Per-file, not a running delta: a re-write of the same
-/// dest replaces its entry, so overlapping writes can't double-count the total.
+/// Cached size of every managed `*.pdf` per `pdf_dir`, keyed by the dir path as the
+/// caller spells it. Lazily seeded by a full walk, then kept current by the write/
+/// delete seams. Per-file, not a running delta, so overlapping writes can't double-count.
 static PDF_STORAGE: std::sync::LazyLock<
     std::sync::Mutex<HashMap<PathBuf, HashMap<std::ffi::OsString, u64>>>,
 > = std::sync::LazyLock::new(Default::default);
 
 /// The full scan behind the cache: name → size of all `*.pdf` files directly in
-/// `pdf_dir`, empty if the dir is absent. Files that vanish mid-scan are skipped
-/// (Python ignores `FileNotFoundError`).
+/// `pdf_dir`, empty if the dir is absent. Files that vanish mid-scan are skipped.
 pub(crate) fn walk_pdf_files(pdf_dir: &Path) -> HashMap<std::ffi::OsString, u64> {
     std::fs::read_dir(pdf_dir).map_or_else(
         |_| HashMap::new(),
@@ -80,10 +69,9 @@ fn walk_pdf_storage_bytes(pdf_dir: &Path) -> u64 {
     walk_pdf_files(pdf_dir).values().sum()
 }
 
-/// Total size of all managed `*.pdf` files in `pdf_dir`, in bytes — the basis of the
-/// `pdf_save_limit_mb` total-storage cap (see `paper_import::check_pdf_storage_quota`
-/// and `download_pdf` below). Walks the dir ONCE per process (lazy init), then serves
-/// the running total maintained by the write/delete seams.
+/// Total bytes of all managed `*.pdf` files in `pdf_dir` — the basis of the
+/// `pdf_save_limit_mb` cap. Walks the dir ONCE per process (lazy init), then
+/// serves the running total maintained by the write/delete seams.
 ///
 /// ponytail: files changed outside this process's seams (manual deletes in the
 /// folder, crash orphans, an init walk racing a concurrent write, and writes by a
@@ -99,11 +87,8 @@ pub fn pdf_storage_bytes(pdf_dir: &Path) -> u64 {
         .sum()
 }
 
-/// Record a managed PDF write: `dest` (built as `pdf_dir.join(name)`, so its parent
-/// keeps the readers' `pdf_dir` spelling) now holds `size` bytes. Sets the file's
-/// cache entry — last writer wins, never accumulates. A no-op until the dir's cache
-/// has been lazily seeded (the eventual first walk sees the file anyway) and for
-/// non-`.pdf` names (the walk wouldn't count them).
+/// Record a managed PDF write: `dest` now holds `size` bytes; last writer wins,
+/// never accumulates. A no-op until the dir's cache is seeded and for non-`.pdf` names.
 pub fn note_pdf_written(dest: &Path, size: u64) {
     let (Some(dir), Some(name)) = (dest.parent(), dest.file_name()) else {
         return;
@@ -142,16 +127,11 @@ pub fn remove_pdf_counted(path: &Path) {
     }
 }
 
-/// Rename a managed PDF, moving its cache entry with it: the old name is
-/// forgotten and the new one recorded, under ONE lock acquisition so a
-/// concurrent `pdf_storage_bytes` (quota check) never observes the
-/// forgotten-but-not-yet-recorded gap. Size is re-stat'd post-rename, falling
-/// back to the old cached size (a rename preserves length) if the stat fails.
-/// Cache keys use the caller's `pdf_dir` spelling — not the raw parents of
-/// `from`/`to`, which may spell the same dir differently (DB-stored paths,
-/// symlinks) and would strand a phantom entry (same convention as
-/// `delete_pdf`). Both files must live in `pdf_dir`; callers gate on that.
-/// For seams that re-home a managed file (paper merge and its undo).
+/// Rename a managed PDF, moving its cache entry under ONE lock acquisition so a
+/// concurrent quota check never observes the forgotten-but-not-yet-recorded gap.
+/// Size is re-stat'd post-rename, falling back to the old cached size. Cache keys
+/// use the caller's `pdf_dir` spelling, not the raw parents of `from`/`to`;
+/// both files must live in `pdf_dir` — callers gate on that.
 pub fn rename_pdf_counted(pdf_dir: &Path, from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::rename(from, to)?;
     let stat_size = std::fs::metadata(to).ok().map(|m| m.len());
@@ -181,7 +161,7 @@ pub fn rename_pdf_counted(pdf_dir: &Path, from: &Path, to: &Path) -> std::io::Re
     Ok(())
 }
 
-/// `pdf_storage_bytes` in MB. Port of `files.pdf_storage_mb`.
+/// `pdf_storage_bytes` in MB.
 pub fn pdf_storage_mb(pdf_dir: &Path) -> f64 {
     pdf_storage_bytes(pdf_dir) as f64 / (1024.0 * 1024.0)
 }
@@ -210,11 +190,9 @@ pub struct SavedPdf {
 }
 
 /// Saved-PDF listing rows from `paper::list_pdf_papers` output: stat each paper's
-/// on-disk PDF (dropping rows whose file is missing), sorted size desc then
-/// source_id asc — matches app.py (`_LIST_PDFS_SQL` orders by source_id, then a
-/// stable sort by size_bytes desc keeps that as the tiebreak). Uncapped; the
-/// route and MCP cap at 200 for the UI, the CLI lists everything. Backs
-/// `GET /api/pdfs`, CLI `pdf list`, and MCP `list_pdfs`.
+/// on-disk PDF (dropping rows whose file is missing), sorted size desc then source_id
+/// asc. Uncapped; the route and MCP cap at 200, the CLI lists everything.
+/// Backs `GET /api/pdfs`, CLI `pdf list`, and MCP `list_pdfs`.
 pub fn saved_pdf_sizes(pdf_dir: &Path, papers: Vec<crate::models::PaperDetails>) -> Vec<SavedPdf> {
     let mut out: Vec<SavedPdf> = Vec::new();
     for p in papers {
@@ -242,9 +220,8 @@ pub fn saved_pdf_sizes(pdf_dir: &Path, papers: Vec<crate::models::PaperDetails>)
 
 /// Delete a PDF only if it resolves to a location inside the managed `pdf_dir`. Returns
 /// `true` if the path is inside the managed dir (deleting it if present; a missing file
-/// is a no-op success, matching Python's `unlink(missing_ok=True)`), `false` if the path
-/// escapes the managed dir. SECURITY BOUNDARY — port of `files.delete_pdf`: never let a
-/// caller-supplied path delete a file outside `pdf_dir`.
+/// is a no-op success), `false` if the path escapes the managed dir. SECURITY BOUNDARY:
+/// never let a caller-supplied path delete a file outside `pdf_dir`.
 pub fn delete_pdf(pdf_dir: &Path, path: &str) -> bool {
     // Canonicalize the managed root (resolves symlinks + `..`). If it can't be resolved
     // (dir absent), nothing is managed → refuse. Conservative for a trust boundary.
@@ -252,9 +229,8 @@ pub fn delete_pdf(pdf_dir: &Path, path: &str) -> bool {
         Ok(m) => m,
         Err(_) => return false,
     };
-    // Resolve the target the same way. std::fs::canonicalize requires existence, so for a
-    // not-yet-existing file we resolve its parent and re-attach the name (Python's
-    // Path.resolve() resolves lexically without requiring the file to exist).
+    // Resolve the target the same way. std::fs::canonicalize requires existence, so
+    // for a not-yet-existing file we resolve its parent and re-attach the name.
     let target = match std::fs::canonicalize(path) {
         Ok(t) => t,
         Err(_) => {
@@ -284,17 +260,11 @@ pub fn delete_pdf(pdf_dir: &Path, path: &str) -> bool {
 }
 
 /// SSRF-safe HTTP downloader: resolve the managed dest under the DI'd `pdf_dir`, then hand off
-/// to `sources::download::download_pdf` (scheme allowlist, host-resolves-to-public check, per-hop
-/// redirect re-check, content-type + size caps, atomic tmp→dest rename). Port of
-/// `files.download_pdf`.
-///
-/// `max_total_bytes` is the caller-resolved `pdf_save_limit_mb` cap (`config::UserSettings::
-/// pdf_save_limit_bytes`, DI'd — this module never reads config itself): a TOTAL-storage cap
-/// across every managed PDF, not a per-file one. The allowance handed to the downloader is
-/// whatever the PDFs already in `pdf_dir` leave of it; the fixed `sources::download`
-/// SSRF/memory ceiling still applies on top (the smaller of the two wins).
-/// An already-downloaded dest is returned as-is — re-fetching writes nothing new, so the
-/// quota never blocks it.
+/// to `sources::download::download_pdf` (scheme allowlist, host-resolves-to-public check,
+/// per-hop redirect re-check, content-type + size caps, atomic tmp→dest rename).
+/// `max_total_bytes` is the `pdf_save_limit_mb` TOTAL-storage cap: the downloader gets
+/// whatever the PDFs already in `pdf_dir` leave of it (the fixed `sources::download` ceiling
+/// still applies on top). An already-downloaded dest is returned as-is, never quota-blocked.
 pub async fn download_pdf(
     pdf_dir: &Path,
     paper_id: &str,

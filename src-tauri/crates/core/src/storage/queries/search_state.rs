@@ -1,7 +1,6 @@
-//! `storage/search_state.py` — the single-row (ID = 1) saved search-page state.
-//! The JSON columns are stored verbatim from the request body and parsed back on
-//! load; a malformed stored column degrades the whole row to `None` (Python's
-//! `except (JSONDecodeError, ValueError): return None`).
+//! The single-row (ID = 1) saved search-page state. JSON columns are stored
+//! verbatim from the request body and parsed back on load; a malformed stored
+//! column degrades the whole row to `None`.
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
@@ -41,8 +40,8 @@ pub fn save_state(
     Ok(())
 }
 
-/// `load_state` — the ID = 1 row as a JSON object (key order matches app.py), or
-/// `None` if unsaved or any stored JSON column fails to parse.
+/// The ID = 1 row as a JSON object with a pinned key order, or `None` if
+/// unsaved or any stored JSON column fails to parse.
 pub fn load_state(conn: &Connection) -> Result<Option<Value>> {
     let row = conn
         .query_row(
@@ -76,7 +75,7 @@ pub fn load_state(conn: &Connection) -> Result<Option<Value>> {
             "updated_at":  updated_at,
         }))
     })();
-    Ok(built.ok()) // malformed stored JSON → None, like Python
+    Ok(built.ok()) // malformed stored JSON → None
 }
 
 #[cfg(test)]

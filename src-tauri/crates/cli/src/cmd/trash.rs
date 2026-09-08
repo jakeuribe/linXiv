@@ -1,5 +1,3 @@
-//! Group `trash` — cmd_trash_* in `linxiv_cli.py`.
-
 use clap::Subcommand;
 
 use linxiv_core::service::paper::{self as svc_paper, PaperRef};

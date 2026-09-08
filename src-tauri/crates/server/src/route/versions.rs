@@ -1,8 +1,5 @@
-//! `/api/versions` routes — arXiv new-version monitoring (no Python ancestor).
-//! `check` runs one on-demand poll pass: pick the stalest N saved arXiv papers,
-//! ask arXiv for their latest versions in ONE rate-limited request, and capture
-//! anything newer through the existing save path. `new`/`ack` surface and clear
-//! the "new version found" flags.
+//! `/api/versions` routes — arXiv new-version monitoring. `check` polls the
+//! stalest N saved papers in ONE arXiv request; `new`/`ack` surface and clear the flags.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 

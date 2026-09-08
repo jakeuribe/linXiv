@@ -1,15 +1,5 @@
 //! Export/import + DOI + authors + bibtex import + system tools cluster.
-//! Owned by the `io_authors_misc` Fill agent.
-//!
-//! Bodies use `self.with_conn(|conn| ...)`; export tools also use
-//! `self.pdf_dir`. Call `linxiv_core::service::{export_import, author, paper,
-//! tag}`, `::sources` for DOI resolution, and `linxiv_core::config::UserSettings`
-//! for the settings tools. `import_bibtex` and `get_stats` emit core's shared
-//! receipts (`service::paper_import::BibtexImportReceipt`, `service::stats::Stats`).
-//! Replicate the Python dict shapes EXACTLY elsewhere, e.g. export returns
-//! `{"path", "project_id"}`; save_doi returns the route's `{"metadata", "saved"}`
-//! envelope. Map `ValueError` to `Err(ErrorData::invalid_params(msg, None))`
-//! with the exact message.
+//! User-facing refusals map to `invalid_params` with the exact message; DB/FS faults stay internal.
 
 use std::path::{Path, PathBuf};
 
@@ -31,8 +21,7 @@ use linxiv_core::service::source as svc_source;
 
 use crate::Server;
 
-/// Map a core error to the MCP error code Python's `ValueError` would surface:
-/// user-facing validation (`BadRequest`/`Validation`) → `invalid_params`,
+/// User-facing validation (`BadRequest`/`Validation`) → `invalid_params`;
 /// everything else (DB/FS) → `internal_error`.
 fn map_core(e: CoreError) -> ErrorData {
     match e {
@@ -43,8 +32,8 @@ fn map_core(e: CoreError) -> ErrorData {
 
 use crate::util::{blocking, guard_err, json_ok};
 
-/// Resolve a project to its papers, erroring with the Python message when the
-/// project is missing. Empty `source_fks` yields no papers without a query.
+/// Resolve a project to its papers, erroring when the project is missing.
+/// Empty `source_fks` yields no papers without a query.
 fn project_papers(
     conn: &rusqlite::Connection,
     project_id: i64,
@@ -455,7 +444,7 @@ impl Server {
         let ImportBibtexParams { file, project_id } = params.0;
         let text = std::fs::read_to_string(&file)
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
-        // guard_err: the guard/parse/link refusals are ValueErrors, DB faults internal.
+        // guard_err: guard/parse/link refusals → invalid-params, DB faults internal.
         let receipt = self
             .with_conn(|conn| svc_paper_import::import_bibtex(conn, &text, project_id))
             .map_err(guard_err)?;
@@ -510,8 +499,7 @@ mod tests {
 
     use super::*;
 
-    /// Mirrors `papers.rs`'s test `server()`: an in-memory DB, tool methods
-    /// called directly rather than dispatched through `tool_router`.
+    /// In-memory DB; tool methods called directly, not dispatched through `tool_router`.
     fn server() -> Server {
         let conn = storage::open_in_memory().unwrap();
         storage::init_db(&conn).unwrap();
@@ -530,9 +518,8 @@ mod tests {
         std::env::temp_dir().join(format!("linxiv_mcp_backup_{n}.db"))
     }
 
-    /// A relative destination is refused before core is reached; an absolute one
-    /// writes a snapshot. Restore is not exercised: it would overwrite the real
-    /// `config::db_path()`.
+    /// Relative destinations are refused before core; absolute ones write a snapshot.
+    /// Restore is not exercised: it would overwrite the real `config::db_path()`.
     #[tokio::test]
     async fn backup_rejects_relative_paths_and_writes_a_snapshot() {
         let srv = server();

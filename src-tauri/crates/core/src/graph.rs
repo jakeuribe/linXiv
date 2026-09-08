@@ -1,25 +1,9 @@
-//! The Knowledge Graph payload — one typed answer for `GET /api/graph`.
-//!
-//! The graph used to be drawn by a standalone browser script (`public/graph/
-//! graph.js`) loaded into an iframe, which meant every derivation the canvas
-//! needed had to be redone in JavaScript against an untyped `serde_json::Value`
-//! wire shape: the tag spellings, the "no publication date" sentinel, the paper→
-//! author name index the Author filter matches on, the degree each author/tag
-//! node stands for, and the narrowing that keeps a filter dropdown from offering
-//! values that can only empty the canvas. The graph is a React page now, so all
-//! of that moved HERE — to the side that has the database, one canonical struct
-//! per wire shape, and `#[derive(TS)]` bindings the frontend consumes directly.
-//!
-//! What the frontend is still left to do is the part only the DOM knows: which
-//! nodes a filter MATCHES (the non-matching ones stay drawn as ghosts, so this
-//! cannot be a WHERE clause), the force layout, and painting.
-//!
-//! Author nodes come from PAPER_TO_AUTHOR and are keyed by AUTHOR_FK
-//! (`author::<fk>`) — the relational half of the dual author storage every other
-//! author read in the app already goes through. `PAPER_META.AUTHORS` is only a
-//! free-text cache: it spells one person several ways and goes stale when an
-//! author is renamed or merged, so keying on it split one person across nodes and
-//! left them without the `author_id` their click handler navigates to.
+//! The Knowledge Graph payload — one typed answer for `GET /api/graph`. Every
+//! derivation the canvas needs is computed here; the frontend keeps only what
+//! the DOM owns: filter matching (non-matches stay drawn as ghosts, so it
+//! cannot be a WHERE clause), the force layout, and painting. Author nodes are
+//! keyed by AUTHOR_FK — the free-text `PAPER_META.AUTHORS` cache goes stale on
+//! rename/merge and would split one person across nodes.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -37,20 +21,10 @@ use crate::storage::queries::tag::READING_LIST_TAG;
 
 const DEFAULT_PROJECT_COLOR: &str = "#5b8dee";
 
-/// The one normalization every tag comparison in the graph goes through: TRIM,
-/// then fold to lower case. Both halves are the storage layer's own rule.
-///
-///   - lower case, because TAG.TAG is UNIQUE COLLATE NOCASE, so a paper carries
-///     the raw casing from its own metadata while the TAG table holds the
-///     canonical one: "ML" must match "ml".
-///   - trim, because the tag node id is built from a trimmed label while
-///     `PAPER_META.TAGS` is stored verbatim on some paths (`export_import`
-///     hands the archive's own strings straight to `add_paper_tags`), and
-///     nothing upstream guarantees the two agree. Folding only the case left
-///     "ml " and "ml" as two different tags in one library.
-///
-/// Public because the frontend's tag rows are free text typed by the user and
-/// must fold the same way; [`GraphPaper::tag_keys`] is the set they compare to.
+/// The one normalization every tag comparison in the graph goes through: TRIM +
+/// lowercase (TAG.TAG is UNIQUE COLLATE NOCASE; `PAPER_META.TAGS` is stored verbatim).
+/// Public: the frontend must fold typed filter text the same way before comparing
+/// against [`GraphPaper::tag_keys`].
 pub fn norm_tag(raw: &str) -> String {
     raw.trim().to_lowercase()
 }
@@ -63,31 +37,25 @@ fn tag_node_id(key: &str) -> String {
 /// One paper on the canvas: the latest version of an active root.
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct GraphPaper {
-    /// Node id — `PAPER_ROOTS.SOURCE_FK` as a string, so every id in this
-    /// payload (papers, authors, tags) is one comparable type. The numeric
-    /// value is [`Self::source_fk`], which is the `/library/:sfk` route param.
+    /// Node id — `PAPER_ROOTS.SOURCE_FK` as a string, so every id in the payload is
+    /// one comparable type; [`Self::source_fk`] is the `/library/:sfk` route param.
     pub id: String,
     pub source_fk: i64,
     /// `PAPER_ROOTS.SOURCE_ID` — the vocabulary the project picker speaks.
     pub source_id: String,
-    /// `PAPER.TITLE`. The column is NOT NULL; an empty string is the honest
-    /// answer for a row that somehow holds one, and the title filter can
-    /// compare it unguarded.
+    /// `PAPER.TITLE` (NOT NULL); an empty string stays empty so the title
+    /// filter can compare it unguarded.
     pub label: String,
     pub category: Option<String>,
-    /// Display spellings of this paper's tags, deduped on [`norm_tag`] and
-    /// resolved to the TAG table's casing — i.e. exactly the tag CHIPS the
-    /// canvas draws for it, in the same order as [`Self::tag_keys`].
+    /// Display spellings of this paper's tags, deduped on [`norm_tag`] and resolved
+    /// to the TAG table's casing — the canvas chips, in [`Self::tag_keys`] order.
     pub tags: Vec<String>,
-    /// [`norm_tag`] of each entry in [`Self::tags`]. What a tag filter row is
-    /// compared against, so the comparison needs no normalization pass on the
-    /// client and cannot disagree with the chips.
+    /// [`norm_tag`] of each entry in [`Self::tags`] — what a tag filter row is
+    /// compared against, so the client needs no normalization pass.
     pub tag_keys: Vec<String>,
     pub has_pdf: bool,
     /// `PAPER_META.PUBLISHED`, with the [`NO_PUBLISHED_DATE`] sentinel folded to
-    /// `None`. Forwarding it raw made an undated paper read as a real date in
-    /// year 1, so a Date-range `From` filter silently dropped every undated
-    /// paper off the canvas as "too old".
+    /// `None` so a Date-range filter cannot drop undated papers as year-1 "too old".
     pub published: Option<String>,
     pub url: Option<String>,
     pub doi: Option<String>,
@@ -95,9 +63,7 @@ pub struct GraphPaper {
     /// Ids of the ACTIVE projects holding this paper, ascending.
     pub project_ids: Vec<i64>,
     /// Lowercased names of this paper's authors — what the Author highlight
-    /// filter substring-matches. Author names only reach the canvas as separate
-    /// author NODES, so the client used to rebuild this index by walking the
-    /// edge list on every load.
+    /// filter substring-matches.
     pub author_keys: Vec<String>,
 }
 
@@ -123,11 +89,8 @@ pub struct GraphTag {
     pub id: String,
     /// [`norm_tag`] of the label — the key a tag filter row matches on.
     pub key: String,
-    /// `TAG.TAG`, the spelling the Tags index and TagPage show, falling back to
-    /// the paper's own casing for a tag the TAG table cannot answer for (the
-    /// reserved reading-list marker, which `list_all_tags` filters out).
-    /// Resolving it here is what stops one tag being drawn "ML" on the canvas
-    /// and offered as "ml" in the dropdown two panels away.
+    /// `TAG.TAG`, the spelling the Tags index and TagPage show, falling back to the
+    /// paper's own casing for the reserved reading-list marker (`list_all_tags` filters it out).
     pub label: String,
     pub paper_count: usize,
 }
@@ -147,26 +110,16 @@ pub struct GraphProject {
     /// Always set: falls back to the app's default accent for a project with
     /// no colour of its own.
     pub color: String,
-    /// `PROJECT_TO_TAG` labels, ordered by label, with the reserved
-    /// reading-list marker removed — it is bookkeeping nobody typed, and every
-    /// other surface that draws a project's tags filters it out too.
+    /// `PROJECT_TO_TAG` labels, ordered by label, with the reserved reading-list
+    /// marker removed — bookkeeping nobody typed, filtered out on every surface.
     pub tags: Vec<String>,
-    /// Whether any paper on THIS canvas belongs to the project. Both filter
-    /// boxes match a paper through [`GraphPaper::project_ids`], so a project
-    /// that is active but holds no drawn paper can only empty the canvas —
-    /// the frontend narrows what it OFFERS to the ones flagged here, and marks
-    /// a hand-typed row that names only the others.
+    /// Whether any paper on THIS canvas belongs to the project — an active project
+    /// with no drawn paper can only empty the canvas, so the frontend narrows what it OFFERS.
     pub on_graph: bool,
 }
 
-/// Everything the Knowledge Graph page needs, in one answer.
-///
-/// It used to be four requests (`/api/graph`, `/api/graph/project-options`,
-/// `/api/categories`, `/api/tags`) fired in parallel from inside the iframe,
-/// three of them optional so a dropdown endpoint being down could not fail a
-/// load the graph request had already succeeded at. One query against one
-/// connection cannot half-fail, so that whole partial-failure protocol goes
-/// away with it.
+/// Everything the Knowledge Graph page needs, in one answer — one request on
+/// one connection cannot half-fail.
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct GraphView {
     pub papers: Vec<GraphPaper>,
@@ -213,10 +166,8 @@ const PAPER_NODES_SQL: &str = "\
       AND r.STATUS = 'active' \
     ORDER BY r.SOURCE_FK";
 
-/// One row per (latest active paper, author linked to it), in the paper's own
-/// author order. Reads the PAPER_TO_AUTHOR links, so it follows the renames and
-/// merges that `PAPER_META.AUTHORS` does not see. `exclude_single_authors` joins
-/// `author_paper_counts`, the same view the Authors page filters on.
+/// One row per (latest active paper, linked author), in the paper's own author order,
+/// via PAPER_TO_AUTHOR. `exclude_single_authors` joins `author_paper_counts`, the Authors-page view.
 fn author_rows_sql(exclude_single_authors: bool) -> String {
     let count_join = if exclude_single_authors {
         "JOIN author_paper_counts apc \
@@ -422,8 +373,7 @@ fn paper_rows(conn: &Connection) -> Result<Vec<PaperRow>> {
 }
 
 /// `(paper SOURCE_FK -> its authors in author order, every distinct author)`.
-/// A paper can list the same person twice (a repeat or a case variant); they
-/// appear once per paper, so exactly one edge is emitted for the pair.
+/// A person listed twice on one paper appears once, so one edge per pair.
 type AuthorsByPaper = HashMap<i64, Vec<GraphAuthor>>;
 fn author_rows(
     conn: &Connection,
@@ -483,9 +433,8 @@ mod tests {
         format!("author::{}", find_author_fk(conn, name).unwrap())
     }
 
-    /// Seed one active paper, writing its authors both ways the paper writer does:
-    /// the `PAPER_META.AUTHORS` free-text cache AND the PAPER_TO_AUTHOR links the
-    /// graph reads (reusing an AUTHOR row COLLATE NOCASE, as `sync_paper_authors`).
+    /// Seed one active paper, writing authors both ways the paper writer does: the
+    /// `PAPER_META.AUTHORS` cache AND the PAPER_TO_AUTHOR links (COLLATE NOCASE reuse).
     fn seed_paper(conn: &Connection, source_id: &str, authors_json: &str, tags_json: &str) -> i64 {
         seed_paper_dated(conn, source_id, authors_json, tags_json, "2024-01-01")
     }

@@ -1,5 +1,3 @@
-//! Group `author` — cmd_author_* in `linxiv_cli.py`.
-
 use clap::Subcommand;
 use serde_json::json;
 

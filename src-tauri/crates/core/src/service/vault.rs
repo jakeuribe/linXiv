@@ -1,5 +1,4 @@
 //! On-disk LaTeX vault backing the embedded TeXbrain editor's filesystem.
-//! Rust port of `service/vault.py`.
 //!
 //! Each embedded-editor project owns one directory tree (its `vault_root`, keyed
 //! by note id under `vault_dir()/note_<NOTE_SK>/`). The TeXbrain editor, in an
@@ -7,11 +6,9 @@
 //! forwards each [`FsOp`] to [`run_fs_op`] here, which returns the matching
 //! [`FsResult`]. The wire shapes mirror src/lib/editorBridgeTypes.ts.
 //!
-//! DI: `vault_root` is a PARAMETER, not read from config — the binary layer maps
-//! `note_id` -> `vault_dir()/note_<id>` and passes the resolved path in (the
-//! tests use a tempdir, never config). No DB here; this module is pure FS.
+//! DI: `vault_root` is a PARAMETER, not read from config. No DB here; pure FS.
 //!
-//! Security (trust boundary — ported exactly, do not simplify): every op resolves
+//! Security (trust boundary — do not simplify): every op resolves
 //! its path through [`safe_path`], which rejects absolute paths and any `..`
 //! traversal BEFORE the join, then asserts the result stays under `vault_root`.
 //! text-vs-binary is classified by EXTENSION (matching the TeXbrain guest's
@@ -24,9 +21,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{CoreError, Result};
 
-/// Map a filesystem error to `Internal` (HTTP 500) — Python lets `OSError`
-/// bubble to the FastAPI 500 handler. (core's `CoreError` has no blanket
-/// `From<io::Error>`, so each FS call routes through this.)
+/// Map a filesystem error to `Internal` (HTTP 500); core's `CoreError` has no
+/// blanket `From<io::Error>`, so each FS call routes through this.
 fn io(e: std::io::Error) -> CoreError {
     CoreError::Internal(e.to_string())
 }
@@ -95,7 +91,7 @@ pub enum FsResult {
 ///
 /// Rejects absolute paths and any `..` traversal, then asserts the resolved path
 /// stays within `vault_root`. `relpath == ""` resolves to the vault root itself.
-/// Python's `ValueError` maps to [`CoreError::BadRequest`] (HTTP 400).
+/// Violations are [`CoreError::BadRequest`] (HTTP 400).
 pub fn safe_path(vault_root: &Path, relpath: &str) -> Result<PathBuf> {
     let raw = relpath.replace('\\', "/");
     if raw.starts_with('/') {
@@ -114,8 +110,7 @@ pub fn safe_path(vault_root: &Path, relpath: &str) -> Result<PathBuf> {
     }
     let target = vault_root.join(parts.join("/"));
     // Containment belt: parts are already `..`/absolute-free, so the lexical
-    // prefix check always holds — but it stays as the explicit trust-boundary
-    // assert (Python's is_relative_to).
+    // prefix check always holds — but it stays as the explicit trust-boundary assert.
     if !parts.is_empty() && !target.starts_with(vault_root) {
         return Err(CoreError::BadRequest("path escapes the vault root".into()));
     }
@@ -136,9 +131,8 @@ const BINARY_EXTS: &[&str] = &[
 /// `Some(true)`/`Some(false)` per the editor's extension sets; `None` for an
 /// unknown extension (the caller then falls back to utf-8 decodability).
 fn ext_is_text(relpath: &str) -> Option<bool> {
-    // Mirror Python's `Path(relpath).suffix.lower().lstrip(".")`: the substring
-    // after the last '.' in the basename (Path::extension drops a leading-dot
-    // "dotfile" the same way `.suffix` returns "" for it).
+    // The substring after the last '.' in the basename; Path::extension
+    // treats a leading-dot "dotfile" as extensionless.
     let ext = Path::new(relpath)
         .extension()
         .and_then(|e| e.to_str())
@@ -305,8 +299,7 @@ fn walk_files(root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<()> {
     Ok(())
 }
 
-/// Remove an editor project's entire vault tree (best-effort, like Python's
-/// `shutil.rmtree(..., ignore_errors=True)`).
+/// Remove an editor project's entire vault tree (best-effort, errors ignored).
 pub fn delete_vault(vault_root: &Path) {
     if vault_root.is_dir() {
         let _ = std::fs::remove_dir_all(vault_root);
@@ -343,7 +336,7 @@ mod tests {
             safe_path(root, "a/b.tex").unwrap(),
             root.join("a").join("b.tex")
         );
-        // "." and "" components are dropped, like Python.
+        // "." and "" components are dropped.
         assert_eq!(
             safe_path(root, "./a//b.tex").unwrap(),
             root.join("a").join("b.tex")

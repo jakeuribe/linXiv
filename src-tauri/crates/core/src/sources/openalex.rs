@@ -1,11 +1,5 @@
-//! openalex — OpenAlex REST source (port of `sources/openalex_source.py`).
-//!
-//! Pure parsers (sync, on `serde_json::Value`) hold the load-bearing logic and
-//! are fixture-tested below: inverted-index abstract reconstruction,
-//! search-operator sanitization, polite-pool User-Agent, and Work→PaperMetadata
-//! mapping. The async `search`/`fetch_by_id` wrappers reuse `sources::http`'s
-//! guarded GET (host allowlist `api.openalex.org`) and are integration-tested
-//! once the http unit fills its stubs. Plan §5.4.
+//! openalex — OpenAlex REST source. Plan §5.4. `api.openalex.org` only, via
+//! `sources::http`'s guarded GET with the polite-pool UA.
 
 use chrono::NaiveDate;
 use serde_json::Value;
@@ -162,7 +156,7 @@ fn work_to_metadata(work: &Value) -> Result<PaperMetadata> {
     })
 }
 
-/// Parse a `/works` search body, skipping malformed records (Python logs+skips).
+/// Parse a `/works` search body, skipping malformed records.
 fn parse_search_results(body: &Value) -> Vec<PaperMetadata> {
     body.get("results")
         .and_then(Value::as_array)
@@ -201,8 +195,8 @@ async fn search_at(
     if sanitized.is_empty() {
         return Ok(Vec::new());
     }
-    // Polite-pool UA carried as a per-request header (Python sends it on every
-    // request); CR/LF already stripped in `http::polite_user_agent`.
+    // Polite-pool UA carried as a per-request header; CR/LF already stripped
+    // in `http::polite_user_agent`.
     let ua = http::polite_user_agent(mailto);
     let url = reqwest::Url::parse_with_params(
         &format!("{base_url}/works"),
@@ -328,7 +322,7 @@ async fn fetch_by_doi_at(
 }
 
 // ---------------------------------------------------------------------------
-// Tests — fixtures lifted from tests/test_sources.py (the recorded Work shapes).
+// Tests — recorded Work shapes, committed as fixtures.
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod tests {
@@ -338,7 +332,6 @@ mod tests {
     // fixtures live in testdata/openalex/, whitespace inside is load-bearing —
     // never run a formatter over them.
     // A representative /works search response (wire shape: {"results":[...]}).
-    // Mirrors the OpenAlex Work objects recorded in tests/test_sources.py.
     const SEARCH_RESPONSE: &str = include_str!("testdata/openalex/search_response.json");
 
     // ── reconstruct_abstract ──────────────────────────────────────────────

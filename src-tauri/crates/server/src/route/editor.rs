@@ -1,8 +1,5 @@
-//! `/api/editor` routes — `api/app.py` 944–981. The embedded TeXbrain editor:
-//! editor-project notes (frontmatter-flagged, owning an on-disk LaTeX vault) plus
-//! the per-vault FS bridge. Core: `service::editor_project` (DB side) and
-//! `service::vault` (FS side). The vault root is `state.vault_root/note_<id>` —
-//! the same `vault_dir()/note_<id>` mapping the binary layer owns.
+//! `/api/editor` routes — the embedded TeXbrain editor: editor-project notes plus
+//! the per-vault FS bridge. The vault root is `state.vault_root/note_<id>`.
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -24,7 +21,7 @@ pub(crate) async fn handle(state: &AppState, ctx: &ReqCtx<'_>) -> Option<Result<
     }
 }
 
-/// `GET /api/editor/projects?project_id=` — `api_editor_projects`.
+/// `GET /api/editor/projects?project_id=`.
 fn list(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let project_id = ctx.q_i64("project_id");
     let projects = state.with_conn(|conn| editor_project::list_projects(conn, project_id))?;
@@ -42,12 +39,10 @@ pub struct CreateEditorProjectBody {
     pub project_id: Option<i64>,
 }
 
-/// `POST /api/editor/projects` — `api_editor_project_create`. ValueError → 400 is
-/// `BadRequest`'s native status; returns the 3-key created dict core gives.
+/// `POST /api/editor/projects` — `BadRequest` → 400; returns core's created payload.
 fn create(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let b: CreateEditorProjectBody = ctx.parse_body()?;
-    // pydantic Field(min_length=1): an empty name is a 422 before the handler runs
-    // (whitespace passes here, then core sanitizes it to "Untitled").
+    // An empty name is a 422; whitespace passes and core sanitizes it to "Untitled".
     if b.project_name.is_empty() {
         return Err(ApiError::new(422, "project_name must not be empty"));
     }
@@ -68,7 +63,7 @@ fn default_main_file() -> String {
     "main.tex".to_string()
 }
 
-/// `GET /api/editor/projects/{note_id}/doc` — `api_editor_project_doc`.
+/// `GET /api/editor/projects/{note_id}/doc`.
 fn doc(state: &AppState, id: &str) -> Result<Value, ApiError> {
     let note_id = path_i64(id)?;
     let doc = state
@@ -77,9 +72,8 @@ fn doc(state: &AppState, id: &str) -> Result<Value, ApiError> {
     serde_json::to_value(&doc).map_err(|e| ApiError::new(500, e.to_string()))
 }
 
-/// `POST /api/editor/vault/{note_id}/fs` — `api_editor_vault_fs`. 404 if the note is
-/// not an editor project; then forward one FsOp. FileNotFound→404, everything else
-/// from the FS op (ValueError/OSError)→400, matching app.py's except ladder.
+/// `POST /api/editor/vault/{note_id}/fs` — 404 if the note is not an editor
+/// project; then forward one FsOp. NotFound → 404, other FS-op errors → 400.
 fn vault_fs(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let note_id = path_i64(id)?;
     let op: FsOp = ctx.parse_body()?;
@@ -87,8 +81,7 @@ fn vault_fs(state: &AppState, id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiEr
         return Err(ApiError::new(404, "Editor project not found"));
     }
     let vault_root = state.vault_root.join(format!("note_{note_id}"));
-    // except FileNotFoundError → 404 "Not found: {exc}"; except (ValueError, OSError) → 400
-    // (run_fs_op only yields NotFound / BadRequest / Internal here, so the catch-all is 400.)
+    // run_fs_op only yields NotFound / BadRequest / Internal here, so the catch-all is 400.
     let result = vault::run_fs_op(&vault_root, &op).map_err(|e| match e {
         CoreError::NotFound(s) => ApiError::new(404, format!("Not found: {s}")),
         other => ApiError::new(400, other.to_string()),

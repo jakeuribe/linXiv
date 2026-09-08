@@ -1,11 +1,9 @@
 // Run: node --experimental-transform-types --test src/lib/graph/filter.test.ts
 //
-// The filter is the one piece of the Knowledge Graph that stayed on the client
-// when the rest of its derivations moved to Rust, because an excluded paper is
-// still DRAWN — as an 8% ghost — so "matched" is a rendering state rather than a
-// WHERE clause. It used to be reachable only by driving a 2,400-line browser
-// script inside a `vm` behind hand-written DOM, cytoscape and d3 stubs. It is a
-// pure function now, so these run against it directly.
+// The filter is the one piece of the Knowledge Graph that stays on the client
+// (the rest of its derivations live in Rust): an excluded paper is still DRAWN
+// — as an 8% ghost — so "matched" is a rendering state, not a WHERE clause.
+// It is a pure function, so these run against it directly.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 

@@ -1,9 +1,5 @@
-//! DB backup / restore — a library survives corruption or a bad migration.
-//!
-//! `backup` uses SQLite `VACUUM INTO`: it writes a consistent, self-contained
-//! snapshot of the live DB (all committed pages, no WAL leftovers) in a single
-//! atomic statement.
-//! `restore` validates the snapshot is a real SQLite DB, then replaces the file.
+//! DB backup / restore. `backup` snapshots via SQLite `VACUUM INTO` (atomic,
+//! consistent, no WAL leftovers); `restore` validates then replaces the file.
 
 use std::path::{Path, PathBuf};
 
@@ -121,9 +117,8 @@ pub fn validate_backup_source(src: &Path) -> Result<()> {
     Ok(())
 }
 
-/// First unused `<db>.pre-restore`, then `.pre-restore.1`, `.2`, … Restores are
-/// rare, and clobbering the snapshot would make a second restore erase the only
-/// copy of the library the first one replaced.
+/// First unused `<db>.pre-restore`, then `.pre-restore.1`, … — clobbering the
+/// snapshot would let a second restore erase the only copy the first replaced.
 fn free_pre_restore_path(db_path: &Path) -> PathBuf {
     let base = db_path.with_extension("pre-restore");
     if !base.exists() {
@@ -138,13 +133,10 @@ fn free_pre_restore_path(db_path: &Path) -> PathBuf {
     unreachable!("u32 range is exhausted only if every snapshot slot is taken")
 }
 
-/// Replace the DB at `db_path` with the snapshot at `src`, after checking `src`
-/// is a readable SQLite DB. Refuses (`Conflict`) while another SQLite handle
-/// holds the DB — see `ensure_no_live_connections` for what the probe can and
-/// cannot see. The probe also checkpoints a WAL-mode `db_path` into its main
-/// file, so the pre-restore snapshot below is complete on its own, except when
-/// `ensure_no_live_connections` cannot open `db_path` at all (its unopenable-file
-/// fallback): in that case, the pre-restore snapshot is a plain byte copy.
+/// Replace the DB at `db_path` with the snapshot at `src` after validating it.
+/// Refuses (`Conflict`) while another SQLite handle holds the DB; the probe also
+/// checkpoints a WAL `db_path`, so the pre-restore snapshot is complete on its
+/// own (plain byte copy when the file is unopenable).
 pub fn restore(src: &Path, db_path: &Path) -> Result<()> {
     validate_backup_source(src)?;
 

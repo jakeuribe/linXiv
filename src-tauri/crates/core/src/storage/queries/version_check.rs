@@ -28,12 +28,9 @@ pub struct NewVersion {
 }
 
 /// The stalest `limit` active arXiv roots: never-checked first, then oldest
-/// LAST_CHECKED_AT. Roots with no stored version (nothing to compare) and
-/// non-arXiv/deleted roots are excluded.
-///
-/// The arXiv pattern is built from `models::ARXIV_ID_PREFIX`, the same constant
-/// `service::paper::source_fetch_url` tests. GLOB, not LIKE: LIKE is
-/// ASCII-case-insensitive in SQLite.
+/// LAST_CHECKED_AT; version-less, non-arXiv and deleted roots excluded. The
+/// pattern is built from `models::ARXIV_ID_PREFIX`; GLOB, not LIKE (LIKE is
+/// ASCII-case-insensitive).
 pub fn stale_candidates(conn: &Connection, limit: i64) -> Result<Vec<Candidate>> {
     let limit = limit.clamp(1, MAX_VERSION_CHECK_BATCH);
     let mut stmt = conn.prepare(&format!(
@@ -135,15 +132,10 @@ mod tests {
             .collect()
     }
 
-    /// The `GLOB 'arxiv:*'` filter is an ANCHORED, CASE-SENSITIVE prefix match.
-    ///
-    /// This is the test that fails if anyone "simplifies" GLOB back to
-    /// `LIKE 'arxiv:%'`: SQLite's LIKE is ASCII-case-insensitive, so the
-    /// `ARXIV:` / `arXiv:` roots below would start being polled as arXiv papers.
-    /// The `doi:` row carries `arxiv:` mid-string to pin that the match is
-    /// anchored (a bare `%arxiv:%` / `*arxiv:*` would sweep it in), and the
-    /// `arxiv-sanity:` / `arxivlike:` rows pin that the colon is part of the
-    /// prefix rather than the start of a wildcard run.
+    /// The `GLOB 'arxiv:*'` filter is an ANCHORED, CASE-SENSITIVE prefix match —
+    /// this fails if GLOB is "simplified" back to the case-insensitive LIKE.
+    /// The seeded rows pin anchoring (mid-string `arxiv:`) and the full prefix
+    /// (`arxiv-sanity:` / `arxivlike:`).
     #[test]
     fn stale_candidates_matches_arxiv_prefix_anchored_and_case_sensitively() {
         let conn = db::open_in_memory().unwrap();

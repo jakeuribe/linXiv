@@ -1,13 +1,12 @@
-//! `storage/search_history.py` — recent-search-term autocomplete. The enabled
-//! flag and the max-size cap live in user_settings, so the caller gates `add_term`
-//! on the flag and passes `max_history`; these functions are pure DB. Term/prefix
-//! trimming is done here, matching the Python `.strip()` above each query.
+//! Recent-search-term autocomplete. The enabled flag and max-size cap live in
+//! user_settings, so the caller gates `add_term` on the flag and passes
+//! `max_history`; these functions are pure DB. Term/prefix trimming is done here.
 
 use rusqlite::{params, Connection};
 
 use crate::error::Result;
 
-/// `add_term` — upsert TERM (exact, case-sensitive `UNIQUE`), bump USE_COUNT, then
+/// Upsert TERM (exact, case-sensitive `UNIQUE`), bump USE_COUNT, then
 /// prune to the `max_history` most-recently-used rows. A blank term is a no-op.
 pub fn add_term(conn: &Connection, term: &str, max_history: i64) -> Result<()> {
     let stripped = term.trim();
@@ -31,7 +30,7 @@ pub fn add_term(conn: &Connection, term: &str, max_history: i64) -> Result<()> {
     Ok(())
 }
 
-/// `get_suggestions` — up to `limit` terms `LIKE <prefix>%` (case-insensitive),
+/// Up to `limit` terms `LIKE <prefix>%` (case-insensitive),
 /// ranked by USE_COUNT desc then recency desc. A blank prefix → `[]`.
 pub fn get_suggestions(conn: &Connection, prefix: &str, limit: i64) -> Result<Vec<String>> {
     let stripped = prefix.trim();

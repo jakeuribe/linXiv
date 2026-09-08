@@ -1,5 +1,4 @@
 //! Group `library` — the flat top-level commands `search`, `fetch`, `list`.
-//! cmd_search / cmd_fetch / cmd_list in `linxiv_cli.py`.
 
 use clap::{Args, ValueEnum};
 
@@ -10,7 +9,7 @@ use linxiv_core::service::source as svc_source;
 use crate::ctx::Ctx;
 use crate::output::{fail, output, render_paper, validate_arxiv_id};
 
-/// Paper source backends (argparse `choices=list(_SOURCES)`).
+/// Paper source backends.
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum Source {
     Arxiv,
@@ -74,8 +73,8 @@ pub enum Dir {
 }
 
 // cmd_search: search the source, dump the results as `SearchResultOut` — the
-// canonical remote-search wire shape all three surfaces emit (ADR-0011). The
-// `[search] {e}` prefix line + error JSON mirror Python's two-line stderr on failure.
+// canonical remote-search wire shape all three surfaces emit (ADR-0011).
+// Two-line stderr on failure: `[search] {e}` prefix line, then the error JSON.
 // `--local` instead dumps the library rows (`PaperDetails`) that
 // `GET /api/papers/search` returns — library hits, not remote-search results.
 pub async fn search(args: SearchArgs, ctx: &mut Ctx) -> anyhow::Result<()> {
@@ -89,7 +88,7 @@ pub async fn search(args: SearchArgs, ctx: &mut Ctx) -> anyhow::Result<()> {
         )?);
         return Ok(());
     }
-    // Python `source.search` defaults sort="relevance"; the CLI never overrides it.
+    // Remote search always uses sort="relevance"; the CLI never overrides it.
     let results = match svc_source::search(
         args.source.to_possible_value().unwrap().get_name(),
         &args.query,

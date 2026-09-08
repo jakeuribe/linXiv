@@ -1,9 +1,5 @@
-// The cytoscape stylesheet, resolved from the app's live theme.
-//
-// The graph used to be a separate document with its own copy of the palette,
-// which went stale silently every time src/lib/theme.ts gained a preset. It is
-// part of the bundle now, so it reads `ThemeColors` directly — the same value
-// every other surface in the app is painted from.
+// The cytoscape stylesheet, resolved from the app's live theme: it reads
+// `ThemeColors` directly, the same value every other surface is painted from.
 
 import type { StylesheetJson } from "cytoscape";
 import type { ThemeColors } from "../theme.ts";

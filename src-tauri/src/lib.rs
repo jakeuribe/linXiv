@@ -1,8 +1,5 @@
 //! Tauri shell of the linXiv desktop app: the invoke-command layer over
-//! `linxiv-server` (which owns the router, state, and background tasks), the
-//! `linxiv://` protocol handler, and the CLI/MCP-integration commands.
-//! Consumed by `src/main.rs`; the headless/dev-server bins live in
-//! `crates/server` and never touch this crate.
+//! `linxiv-server`, the `linxiv://` protocol handler, and the CLI/MCP-integration commands.
 
 pub mod commands;
 pub mod integrations;

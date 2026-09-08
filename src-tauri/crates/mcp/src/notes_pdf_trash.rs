@@ -1,14 +1,5 @@
-//! Notes + PDF + trash + import_pdf tools cluster. Owned by the
-//! `notes_pdf_trash` Fill agent.
-//!
-//! Bodies use `self.with_conn(|conn| ...)`; PDF tools also read `self.pdf_dir`.
-//! Call `linxiv_core::service::{note, files, paper, project}`. Wire shapes are
-//! the canonical core serializers shared with the route/CLI surfaces:
-//! `NoteDetails` (create/get/update), `DeletedNote`, `PdfLocation`
-//! (get_pdf_path/download_pdf), `TrashListing` (list_trash); get_pdf_storage
-//! returns `{"storage_mb", "pdf_dir"}`.
-//! Map Python `ValueError` to `Err(ErrorData::invalid_params(msg, None))` with
-//! the exact message (mind `{paper_id!r}` -> `{paper_id:?}` quoting).
+//! Notes + PDF + trash + import_pdf tools cluster. Wire shapes are the canonical
+//! core serializers shared with route/CLI; refusals map to `invalid_params` with the exact message.
 
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::{tool, tool_router, ErrorData};
@@ -485,8 +476,8 @@ mod tests {
 
     use super::*;
 
-    /// Mirrors `papers.rs`'s test `server()`, with a scratch PDF dir: these
-    /// tests call tool methods directly instead of dispatching through the router.
+    /// In-memory DB with a scratch PDF dir; tool methods called directly,
+    /// not dispatched through the router.
     fn server(pdf_dir: std::path::PathBuf) -> Server {
         let conn = storage::open_in_memory().unwrap();
         storage::init_db(&conn).unwrap();

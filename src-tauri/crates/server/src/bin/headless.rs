@@ -1,8 +1,6 @@
-//! Headless linXiv node (containerized / self-hosted, TODO.md
-//! "containerization"): the full `/api/*` router over HTTP — share routes
-//! included — plus the iroh share node and the 5-minute background sync, no
-//! Tauri window. Same dispatch surface as the app; the dev_server bin stays
-//! the dev-loop shim.
+//! Headless linXiv node (containerized / self-hosted): the full `/api/*` router
+//! over HTTP — share routes included — plus the iroh share node and the
+//! background sync, no Tauri window. Same dispatch surface as the app.
 //!
 //! Auth: `LINXIV_API_TOKEN` gates every request behind `Authorization:
 //! Bearer <token>`. Fail-closed: binding a non-loopback `LINXIV_HTTP_ADDR`
@@ -129,11 +127,9 @@ async fn main() {
     }
 }
 
-/// Take a systemd-logind sleep+idle inhibitor for the process lifetime, so
-/// the machine running the node stays reachable by default. Opt out with
-/// `LINXIV_ALLOW_SLEEP=1`. The lock is a pipe fd — logind releases it when
-/// this process exits, however it exits. Where login1 is absent (containers,
-/// non-systemd hosts) this degrades to one stderr line.
+/// Take a systemd-logind sleep+idle inhibitor for the process lifetime (opt out:
+/// `LINXIV_ALLOW_SLEEP=1`). The lock is a pipe fd — logind releases it when this
+/// process exits, however it exits; where login1 is absent, one stderr line.
 #[cfg(target_os = "linux")]
 async fn inhibit_sleep() -> Option<zbus::zvariant::OwnedFd> {
     if std::env::var("LINXIV_ALLOW_SLEEP").as_deref() == Ok("1") {
@@ -256,11 +252,9 @@ fn spawn_interval_sync(ctx: &Ctx) {
     });
 }
 
-/// The desktop app refreshes the home feed when the user opens the screen; an
-/// always-on node polls instead. No-op while `home_feed_url` is unset — the
-/// settings read each tick is a small JSON file. Cadence comes from the
-/// `headless_feed_poll_minutes` setting (default 30), re-read every tick so a
-/// `PATCH /api/settings` takes effect on the next tick without a restart.
+/// Feed poll default. Cadence comes from `headless_feed_poll_minutes` (default
+/// 30), re-read every tick so a settings PATCH takes effect without a restart;
+/// no-op while `home_feed_url` is unset.
 const FEED_POLL_DEFAULT: Duration = Duration::from_secs(30 * 60);
 
 /// `headless_feed_poll_minutes` → sleep duration. Missing / non-positive /

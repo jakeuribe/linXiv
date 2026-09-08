@@ -1,27 +1,8 @@
-//! linxiv-share — Phase-0 quarantined CRDT store for "shared projects".
-//!
-//! A plain shared project is a read-only snapshot of one canonical project's subgraph
-//! (project row + its papers/authors/tags + project notes + project tags), held
-//! as an automerge document so a later phase can sync it peer-to-peer.
-//! Publishing goes through core service APIs; its one canonical write is
-//! `project::ensure_share_id` (persist the share uuid on first publish).
-//! The documents are the whole store — one `<share_id>.automerge` file per
-//! shared project under a share directory.
-//!
-//! The share directory is injected (`ShareStore::new(path)`); production resolves
-//! it as `config::data_dir()/share`. Phase 1 adds a one-way iroh transport (see
-//! `transport`) that serves every locally-published top-level doc to any peer
-//! that knows its id, quarantining `received/` mirrors via an existence-based
-//! access check. Plain shares carry no per-share secret or capability.
-//! With the `sync-beelay` feature, e2ee shares live under `share/e2ee/` and
-//! sync over beelay with capability-based membership via keyhive.
-//!
-//! ## Import (reader leg)
-//! `import_shared_project` is a second, additive-only write path that merges a
-//! received `SharedProject` into the canonical DB: notes and annotations match
-//! by uuid, papers by source_id, the project by SHARE_ID (created when absent).
-//! NOTE: Remote deletions are not propagated — the import surface is
-//! append+update only.
+//! linxiv-share — quarantined CRDT store for shared projects: one automerge doc
+//! per share (`<share_id>.automerge`) under an injected share dir. Publishing's one
+//! canonical write is `project::ensure_share_id`. Plain shares carry no per-share
+//! secret; e2ee shares (`sync-beelay`) live under `share/e2ee/` with keyhive membership.
+//! Import is additive+update only — remote deletions are never propagated.
 
 mod model;
 mod transport;
@@ -110,9 +91,8 @@ pub type Result<T> = std::result::Result<T, ShareError>;
 
 // ── canonical → CRDT projection ─────────────────────────────────────────────
 
-/// Gather a canonical project's subgraph and project it onto the CRDT model.
-/// Missing project → `ShareError::NotFound`. The one canonical write is
-/// `project::ensure_share_id`, which persists the share uuid on first publish.
+/// Gather a canonical project's subgraph onto the CRDT model; missing project →
+/// `ShareError::NotFound`. The one canonical write is `project::ensure_share_id`.
 pub fn build_shared_project(conn: &Connection, project_id: i64) -> Result<SharedProject> {
     let project = project_svc::get(
         conn,
@@ -241,9 +221,8 @@ fn paper_meta(p: &SharedPaper) -> PaperMetadata {
     }
 }
 
-/// Merge a shared project into the canonical DB — additive + update only:
-/// notes/annotations match by uuid, papers by source_id, the project by
-/// SHARE_ID (created and linked when absent). Returns the linked project_fk.
+/// Merge a shared project into the canonical DB, additive + update only: notes and
+/// annotations match by uuid, papers by source_id, the project by SHARE_ID (created when absent).
 // ponytail: no origin tracking, so remote deletions never propagate; upgrade
 // when W4 editors exist.
 pub fn import_shared_project(conn: &mut Connection, sp: &SharedProject) -> Result<i64> {
@@ -520,11 +499,8 @@ fn crdt<E: std::fmt::Display>(e: E) -> ShareError {
     ShareError::Crdt(e.to_string())
 }
 
-/// Reconcile `sp` into `<share_id>.automerge`, EVOLVING the existing doc when one
-/// is on disk (so republish extends CRDT history instead of rebuilding it); a
-/// missing or unloadable doc falls back to a fresh one (corrupt-skip spirit).
-/// Returns the reconciled doc so callers can register it in the p2p registry
-/// without re-reading and re-parsing the file just written.
+/// Reconcile `sp` into `<share_id>.automerge`, evolving the on-disk doc (republish
+/// extends history; missing/unloadable → fresh). Returns the doc for registry reuse.
 pub fn save(share_dir: &Path, sp: &SharedProject) -> Result<AutoCommit> {
     std::fs::create_dir_all(share_dir)?;
     let final_path = doc_path(share_dir, &sp.share_id);
@@ -610,10 +586,8 @@ pub fn list_shared(share_dir: &Path) -> Result<Vec<SharedSummary>> {
     Ok(out)
 }
 
-/// A doc's listing summary read straight off the automerge document: only
-/// `share_id`/`name` are hydrated and the subgraphs are counted by list length,
-/// so listing never materializes paper summaries, note bodies, or annotation
-/// anchors the way a full `load` does.
+/// A doc's listing summary: only `share_id`/`name` are hydrated and subgraphs are
+/// counted by list length — never materializes bodies/anchors like a full `load`.
 fn summarize(path: &Path, share_id: &str) -> Result<SharedSummary> {
     let mut doc = AutoCommit::load(&std::fs::read(path)?).map_err(crdt)?;
     // Empty pre-first-sync e2ee placeholder: nothing here yet (mirrors `load`).

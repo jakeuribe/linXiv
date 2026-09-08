@@ -1,11 +1,6 @@
-//! The quarantined CRDT document model. Each struct derives autosurgeon's
-//! `Reconcile`/`Hydrate` so it maps to/from an automerge document; `PartialEq`
-//! backs the round-trip and merge-convergence assertions.
-//!
-//! Fields are projected from the canonical `linxiv_core::models` read views
-//! (PaperDetails / NoteDetails / ProjectDetails). `color` widens i32→i64 and the
-//! note timestamps are stored as ISO strings — automerge has no native i32/date
-//! scalar that autosurgeon maps a `NaiveDateTime` onto without a custom impl.
+//! Quarantined CRDT document model: autosurgeon `Reconcile`/`Hydrate` over automerge,
+//! projected from core's read views. `color` widens i32→i64 and note timestamps are
+//! ISO strings — automerge has no native i32/date scalar.
 
 use autosurgeon::{Hydrate, Reconcile};
 
@@ -43,9 +38,8 @@ pub struct SharedPaper {
 }
 
 impl SharedPaper {
-    /// The wire summary `GET /api/share/received/{id}` sends per paper: the
-    /// display fields plus `has_pdf` in place of the blob ticket. Named per the
-    /// serializer convention — the one home for this projection.
+    /// The per-paper wire summary `GET /api/share/received/{id}` sends: display
+    /// fields plus `has_pdf` in place of the blob ticket.
     pub fn to_summary_value(&self) -> serde_json::Value {
         serde_json::json!({
             "source_id": self.source_id,

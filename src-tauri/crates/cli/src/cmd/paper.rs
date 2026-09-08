@@ -1,5 +1,3 @@
-//! Group `paper` — cmd_paper_* in `linxiv_cli.py`.
-
 use clap::Subcommand;
 use serde_json::json;
 
@@ -85,7 +83,7 @@ async fn ingest_source(
     fetched.commit(&mut ctx.conn)
 }
 
-/// `_resolve_paper_or_exit`: load a paper or fail with core's not-found wording.
+/// Load a paper or fail with core's not-found wording.
 pub(super) fn resolve_paper_or_exit(
     ctx: &Ctx,
     source_id: &str,
@@ -140,7 +138,7 @@ pub async fn run(cmd: PaperCmd, ctx: &mut Ctx) -> anyhow::Result<()> {
             let source_id = as_source_id(&ctx.conn, &source_id);
             let source_fk =
                 svc_paper::resolve_source_fk(&ctx.conn, &source_id).unwrap_or_else(|e| fail(e));
-            // `existing.version if existing is not None else 1`.
+            // Keep the existing paper's version; default to 1 when absent.
             let version = svc_paper::get(&ctx.conn, &paper(&source_id))?
                 .map(|e| e.version)
                 .unwrap_or(1);
@@ -280,11 +278,8 @@ async fn fetch_source_result(
     serde_json::to_value(&receipt).unwrap_or_else(|e| fail(e))
 }
 
-/// Body of `PaperCmd::IndexSources`: walk the unfetched work list and ingest
-/// each, stopping after `limit` papers have actually been attempted.
-///
-/// The work list is source_ids only and each paper is loaded as its turn comes,
-/// so the scan never holds more than one paper's TeX body in memory.
+/// Walk the unfetched work list, ingesting until `limit` papers have been
+/// attempted; papers load one at a time, so only one TeX body is ever in memory.
 async fn index_sources_result(ctx: &mut Ctx, limit: usize) -> serde_json::Value {
     let work_list = svc_paper::full_text_backfill_candidates(&ctx.conn).unwrap_or_else(|e| fail(e));
     let pending = work_list.len();

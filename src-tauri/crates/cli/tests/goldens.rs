@@ -1,13 +1,5 @@
-//! Runs the frozen CLI goldens in `goldens/cli/` against the built binary.
-//!
-//! `.json` goldens are a byte-for-byte contract: each is one command's stdout on an
-//! EMPTY database, keys in Python-parity insertion order (serde_json `preserve_order`).
-//! Parsing them before comparing would silently accept a key-order regression, so we
-//! compare bytes. Every capture gets its own fresh `LINXIV_DATA_DIR`.
-//!
-//! `.txt` goldens are still frozen *argparse* text while the CLI is clap, so byte
-//! comparison is impossible. We assert structure instead: the command set matches
-//! both ways, and every long flag the golden names still exists.
+//! Frozen CLI goldens (`goldens/cli/`): `.json` are a byte-for-byte stdout contract
+//! on an empty DB (key order matters); `.txt` are pre-clap help text, checked structurally.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

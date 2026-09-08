@@ -1,6 +1,4 @@
-//! http — shared async client, host-allowlist + redirect guard, arxiv rate limit.
-//! Port of the host/pacing logic in `sources/arxiv_source.py`,
-//! `sources/arxiv_downloads.py` and `sources/fetch_paper_metadata.py`. Plan §5.4.
+//! http — shared async client, host-allowlist + redirect guard, arXiv rate limit. Plan §5.4.
 
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
@@ -12,19 +10,18 @@ use reqwest::Url;
 
 use crate::error::{CoreError, Result};
 
-/// arXiv host allowlist (exact-or-`.suffix`). Mirrors Python's pinned hosts.
+/// arXiv host allowlist (exact-or-`.suffix`).
 pub const ARXIV_HOSTS: &[&str] = &["arxiv.org", "ar5iv.labs.arxiv.org", "export.arxiv.org"];
 /// Host of the free public arXiv mirror on Google Cloud Storage (`gs://arxiv-dataset`).
 pub const GCS_HOSTS: &[&str] = &["storage.googleapis.com"];
-/// Polite mirror substituted into arXiv URLs, like `_substitute_domain(..., DOWNLOAD_DOMAIN)`.
+/// Polite mirror substituted into arXiv URLs.
 const DOWNLOAD_DOMAIN: &str = "export.arxiv.org";
-/// Cool-down after a 429 (`_RATELIMIT_WAIT` in fetch_paper_metadata.py).
+/// Cool-down after a 429.
 const RATELIMIT_WAIT: Duration = Duration::from_secs(60);
-/// Minimum spacing between successive arXiv requests. Mirrors the CONFIGURED
-/// `arxiv.Client(delay_seconds=7.0)` (arxiv_source.py:68, fetch_paper_metadata.py:9),
-/// NOT the library default — Plan §5.4 pins 7s to avoid an arXiv ban-risk regression.
+/// Minimum spacing between successive arXiv requests. Plan §5.4 pins 7 s to
+/// avoid an arXiv ban-risk regression.
 const MIN_SPACING: Duration = Duration::from_secs(7);
-/// Retries on a failed arXiv GET (arxiv.Client num_retries=1).
+/// Retries on a failed arXiv GET.
 const NUM_RETRIES: usize = 1;
 /// Redirect-follow ceiling for the guarded GET.
 const MAX_REDIRECTS: usize = 10;
@@ -36,13 +33,9 @@ pub(crate) const USER_AGENT: &str =
 const POLITE_USER_AGENT: &str = "linXiv/1.0";
 
 /// Polite-pool UA: `linXiv/1.0 (mailto:<addr>)`, or the bare UA when no address.
-///
-/// The mailto comes from a user-editable settings field, so it is reduced to
-/// visible ASCII: CR/LF would inject extra headers, and anything outside
-/// 0x20..=0x7E (a pasted NBSP, an accented address) is rejected by
-/// `HeaderValue`, which would poison the RequestBuilder and fail *every*
-/// request to that pool — silently, where a caller maps the error to an empty
-/// result.
+/// The mailto is user-editable, so it is reduced to visible ASCII: CR/LF would
+/// inject headers, and non-ASCII fails `HeaderValue`, silently poisoning every
+/// request to that pool.
 pub(crate) fn polite_user_agent(mailto: &str) -> String {
     let addr: String = mailto
         .chars()
@@ -56,10 +49,8 @@ pub(crate) fn polite_user_agent(mailto: &str) -> String {
     }
 }
 
-/// Shared, sensibly-configured async client (UA + timeouts). Cheap to clone.
-///
-/// Redirects are disabled at the client level: `get_guarded` follows them by
-/// hand so the host allowlist is re-checked on every hop.
+/// Shared async client (UA + timeouts), cheap to clone. Redirects are disabled at the
+/// client level: `get_guarded` follows them by hand, re-checking the allowlist per hop.
 pub fn client() -> reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     CLIENT
@@ -95,11 +86,9 @@ pub fn assert_host_allowed(url: &str, allow: &[&str]) -> Result<()> {
     }
 }
 
-/// GET with the allowlist enforced on the initial URL and every redirect hop.
-///
-/// A 3xx to a disallowed host is rejected *before* the next request is sent, so
-/// a hostile redirect never reaches the network. Non-3xx responses (including
-/// 429) are returned to the caller as-is.
+/// GET with the allowlist enforced on the initial URL and every redirect hop —
+/// a hostile redirect is rejected BEFORE the next request is sent. Non-3xx
+/// responses (including 429) are returned as-is.
 pub async fn get_guarded(url: &str, allow: &[&str]) -> Result<reqwest::Response> {
     get_guarded_with(url, allow, &[]).await
 }
@@ -109,16 +98,12 @@ pub(crate) fn is_arxiv_url(url: &str) -> bool {
     assert_host_allowed(url, &["arxiv.org"]).is_ok()
 }
 
-/// Cap the GCS mirror attempt so a stalled mirror degrades to arXiv well inside
-/// the caller's overall proxy budget instead of consuming it (a host that connects
-/// but hangs before the headers is not bounded by the client's connect timeout).
+/// Cap the GCS mirror attempt so a mirror that connects but hangs pre-headers
+/// (unbounded by the connect timeout) degrades to arXiv inside the proxy budget.
 const GCS_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(8);
 
-/// Fetch an arXiv PDF for viewing, preferring the free GCS mirror so the request
-/// doesn't count against arXiv's rate limit. The bucket keys objects by versioned
-/// id and lags for brand-new papers, so on any miss (unmappable URL, a slow/stalled
-/// mirror, or a non-success GCS response) fall back to the arXiv host. Both hops are
-/// host-guarded.
+/// Fetch an arXiv PDF, preferring the free GCS mirror (doesn't count against arXiv's
+/// rate limit); on any miss fall back to the arXiv host. Both hops are host-guarded.
 pub async fn get_arxiv_pdf(pdf_url: &str) -> Result<reqwest::Response> {
     if let Some(gcs) = crate::sources::arxiv_downloads::gcs_pdf_url(pdf_url) {
         if let Ok(Ok(resp)) =
@@ -132,9 +117,8 @@ pub async fn get_arxiv_pdf(pdf_url: &str) -> Result<reqwest::Response> {
     get_guarded(pdf_url, ARXIV_HOSTS).await
 }
 
-/// `get_guarded` plus per-request headers (e.g. OpenAlex's polite-pool
-/// `User-Agent`). Headers are re-sent on every redirect hop; the host allowlist
-/// is still enforced on each hop, so the extra headers never weaken the guard.
+/// `get_guarded` plus per-request headers, re-sent on every redirect hop; the
+/// allowlist is still enforced per hop, so extra headers never weaken the guard.
 pub async fn get_guarded_with(
     url: &str,
     allow: &[&str],
@@ -150,10 +134,8 @@ pub async fn get_guarded_with(
 }
 
 /// Shared redirect-follow GET: `check` guards the initial URL and every hop
-/// before the request is sent (async so a check may resolve DNS without
-/// blocking the runtime). `arxiv_pace = Some(data_dir)` makes arXiv-host
-/// hops honour the shared cool-down + `MIN_SPACING` and record a 429 cool-down
-/// (callers whose pacing is done upstream, e.g. `arxiv_get`, pass `None`).
+/// before the request is sent. `arxiv_pace = Some(data_dir)` makes arXiv-host
+/// hops honour the cool-down + `MIN_SPACING` and record 429s.
 pub(crate) async fn get_checked<F, Fut>(
     url: &str,
     headers: &[(&str, &str)],
@@ -210,7 +192,7 @@ where
     )))
 }
 
-/// Replace a URL's host, preserving scheme/path/query (`_substitute_domain`).
+/// Replace a URL's host, preserving scheme/path/query.
 fn substitute_domain(url: &str, domain: &str) -> Result<String> {
     let mut parsed =
         Url::parse(url).map_err(|e| CoreError::BadRequest(format!("invalid url {url:?}: {e}")))?;
@@ -221,8 +203,7 @@ fn substitute_domain(url: &str, domain: &str) -> Result<String> {
 }
 
 /// Remaining cool-down if `.arxiv_ratelimit` under `data_dir` was written within
-/// `RATELIMIT_WAIT` of `now`; `None` if no file, unparseable, or already elapsed.
-/// Pure (clock injected) so the timing is unit-testable without sleeping.
+/// `RATELIMIT_WAIT` of `now`; `None` otherwise. Pure (clock injected) for tests.
 fn cooldown_remaining(data_dir: &Path, now: DateTime<Utc>) -> Option<Duration> {
     let contents = std::fs::read_to_string(data_dir.join(".arxiv_ratelimit")).ok()?;
     let last = DateTime::parse_from_rfc3339(contents.trim())
@@ -240,10 +221,8 @@ fn record_ratelimit(data_dir: &Path) -> Result<()> {
 }
 
 /// Block until at least `MIN_SPACING` has elapsed since the previous arXiv GET.
-///
-/// Callers claim their slot (advancing `NEXT`) while still holding the lock, so
-/// concurrent callers queue at 7 s intervals instead of all reading the same
-/// previous timestamp, sleeping the same amount, and firing together.
+/// Callers claim their slot while still holding the lock, so concurrent callers
+/// queue at 7 s intervals instead of firing together.
 async fn enforce_spacing() {
     static NEXT: Mutex<Option<Instant>> = Mutex::new(None);
     let now = Instant::now();
@@ -261,9 +240,8 @@ fn claim_slot(next: &mut Option<Instant>, now: Instant) -> Instant {
     slot
 }
 
-/// arXiv GET: honour the `.arxiv_ratelimit` cool-down file + inter-request
-/// spacing under `data_dir`, substitute the polite `export.arxiv.org` mirror,
-/// then `get_guarded` against the arXiv allowlist. Records the cool-down on 429.
+/// arXiv GET: honour the cool-down + spacing under `data_dir`, substitute the
+/// polite `export.arxiv.org` mirror, then `get_guarded`; records the cool-down on 429.
 pub async fn arxiv_get(url: &str, data_dir: &Path) -> Result<reqwest::Response> {
     if let Some(remaining) = cooldown_remaining(data_dir, Utc::now()) {
         tokio::time::sleep(remaining).await;
@@ -305,8 +283,7 @@ mod tests {
     }
 
     /// Every UA this builds must survive `HeaderValue`, or the RequestBuilder is
-    /// poisoned and *all* requests to that pool fail — silently, where the caller
-    /// maps the error to an empty result.
+    /// poisoned and all requests to that pool fail silently.
     #[test]
     fn polite_ua_is_always_a_valid_header_value() {
         for raw in [

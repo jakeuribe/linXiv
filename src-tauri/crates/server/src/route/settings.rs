@@ -1,7 +1,5 @@
-//! `/api/settings` routes — `api/app.py` 1052–1070. GET returns the flat user
-//! settings object with the env keys CROSSREF_MAILTO/OPENALEX_MAILTO overlaid on
-//! top (no wrapper key); PATCH applies a batch of `set(k, v)` updates. Core
-//! binding mirrors `mcp/src/io_authors_misc.rs::{get_settings, update_setting}`.
+//! `/api/settings` routes. GET: the flat settings object with CROSSREF_MAILTO/
+//! OPENALEX_MAILTO env keys overlaid (no wrapper key); PATCH: batch `set(k, v)`.
 
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -12,10 +10,10 @@ use linxiv_core::models::OkReceipt;
 use crate::route::{to_value, ApiError, ReqCtx};
 use crate::state::AppState;
 
-/// `_SETTINGS_ENV_KEYS` (app.py 1048-1049): env values merged into the GET body.
+/// Env values merged into the GET body.
 const SETTINGS_ENV_KEYS: [&str; 2] = ["CROSSREF_MAILTO", "OPENALEX_MAILTO"];
 
-/// `_ALLOWED_ENV_KEYS` (app.py): the only keys `PATCH /api/env` may set.
+/// The only keys `PATCH /api/env` may set.
 const ALLOWED_ENV_KEYS: [&str; 4] = [
     "CROSSREF_MAILTO",
     "OPENALEX_MAILTO",
@@ -41,15 +39,11 @@ pub struct EnvPatchBody {
     pub value: String,
 }
 
-/// `PATCH /api/env` — `api_env_patch`. Allowlist-gated (400 otherwise). Python
-/// `set_key`s `.env` then mutates `os.environ`. The in-process app has no `.env`
-/// load path, so this sets the live process env var (the source clients + the GET
-/// overlay read those keys via `std::env::var`) and writes the value to user
-/// settings. `set_var` mutates global process env: a concurrent `GET /api/settings`
-/// reading the same key can race it (the values are short ASCII so the read sees
-/// old-or-new, never a torn string). The user_settings copy is NOT reloaded into
-/// the env at startup — cross-restart env persistence is part of the wider
-/// "Rust app never loads a persisted .env" gap, out of this route's scope.
+/// `PATCH /api/env` — allowlist-gated (400 otherwise). Sets the live process env
+/// var (source clients + the GET overlay read via `std::env::var`) and persists
+/// to user settings. `set_var` mutates global process env: a concurrent GET can
+/// race it (values are short ASCII — old-or-new, never torn). The persisted copy
+/// is NOT reloaded into the env at startup.
 fn env_patch(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let b: EnvPatchBody = ctx.parse_body()?;
     if !ALLOWED_ENV_KEYS.contains(&b.key.as_str()) {
@@ -63,8 +57,8 @@ fn env_patch(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     to_value(&OkReceipt { ok: true })
 }
 
-/// `GET /api/settings` — `api_settings_get`. Settings first, then each env key
-/// overlaid (present env keys win; missing ones are skipped, as in app.py).
+/// `GET /api/settings` — settings first, then each present env key overlaid;
+/// missing env keys are skipped.
 fn get() -> Result<Value, ApiError> {
     let settings = redact_secrets(UserSettings::load()?.all());
     let env: Vec<(&str, Option<String>)> = SETTINGS_ENV_KEYS
@@ -74,7 +68,7 @@ fn get() -> Result<Value, ApiError> {
     Ok(Value::Object(overlay_env(settings, &env)))
 }
 
-/// `PATCH /api/settings` — `api_settings_patch`. Loops `set(k, v)` over the body.
+/// `PATCH /api/settings` — loops `set(k, v)` over the body.
 fn patch(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     #[derive(Deserialize)]
     struct Body {
@@ -96,9 +90,8 @@ fn redact_secrets(mut settings: Map<String, Value>) -> Map<String, Value> {
     settings
 }
 
-/// Overlay env values onto the settings map: Python `settings[key] = value` for
-/// each present env var. Insert keeps an existing key's position and appends a
-/// new one (preserve_order Map == Python dict), so the merge order matches app.py.
+/// Overlay present env values onto the settings map. Insert keeps an existing
+/// key's position and appends a new one, so merge order is stable.
 fn overlay_env(
     mut settings: Map<String, Value>,
     env: &[(&str, Option<String>)],

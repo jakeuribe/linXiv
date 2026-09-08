@@ -1,13 +1,6 @@
-//! Author service — Rust port of `service/author.py`. Plan §5.2.
-//!
-//! Thin orchestration over `storage::queries::author`. Every DB-touching fn
-//! takes `conn: &Connection` first (DI seam — no config-opened connections),
-//! except transactional writers like `merge`, which take `conn: &mut Connection`.
-//!
-//! D17 dual-lookup seam: `get(Author)` / `get_many(Authors)` are the ONE lookup
-//! seam. The Python `get_author_details` / `get_full_author_details` /
-//! `get_authors` wrappers that just re-shaped the same query are dropped — they
-//! forwarded to the same storage reads with a narrower signature.
+//! Author service — thin orchestration over `storage::queries::author`.
+//! DB-touching fns take `conn` first. D17: `get(Author)` / `get_many(Authors)`
+//! are the ONE lookup seam; no narrower forwarding wrappers.
 
 use crate::error::{CoreError, Result};
 use crate::models::{
@@ -16,7 +9,7 @@ use crate::models::{
 use crate::storage::queries::author as store;
 use rusqlite::Connection;
 
-// ── query objects (defined in service/author.py, not models.py) ─────────────
+// ── query objects ───────────────────────────────────────────────────────────
 
 /// Single-author lookup key. Resolution order: `author_id` → `orcid`.
 #[derive(Debug, Default, Clone)]
@@ -43,8 +36,8 @@ pub struct MergeCandidates {
     pub name_candidates: Vec<BasicAuthorDetails>,
 }
 
-// `list_authors(paper_id, name)` priority: paper_id wins (name ignored), else
-// name exact-match (NOCASE in storage), else every author. Ported faithfully.
+// Priority: paper_id wins (name ignored), else name exact-match (NOCASE in
+// storage), else every author.
 fn list_authors(
     conn: &Connection,
     paper_id: Option<i64>,
@@ -69,11 +62,9 @@ pub fn get(conn: &Connection, author: &Author) -> Result<Option<BasicAuthorDetai
     Ok(None)
 }
 
-/// Fetch authors matching any combination of `Authors` filter fields.
-///
-/// The filter seam behind the same-name half of `GET /merge-candidates`
-/// (route/authors.rs): a single `name` pushes down to the storage exact-match
-/// (NOCASE), which is what makes a shared full name a merge candidate.
+/// Fetch authors matching any combination of `Authors` filter fields — the seam
+/// behind the same-name half of `GET /merge-candidates`: a single `name` pushes
+/// down to the storage exact-match (NOCASE).
 pub fn get_many(conn: &Connection, authors: &Authors) -> Result<Vec<BasicAuthorDetails>> {
     // A single name pushes down to the SQL exact-match; multiple names are
     // post-filtered (storage takes one name only).
@@ -89,8 +80,8 @@ pub fn get_many(conn: &Connection, authors: &Authors) -> Result<Vec<BasicAuthorD
             rows.retain(|r| r.full_name.as_deref().is_some_and(|f| set.contains(f)));
         }
     }
-    // Empty id list is a no-op filter (Python's truthy `if authors.author_ids:`),
-    // mirroring the names>1 guard above — an empty Some(vec![]) must not drop all.
+    // Empty id list is a no-op filter, mirroring the names>1 guard above —
+    // an empty Some(vec![]) must not drop all rows.
     if let Some(ids) = authors.author_ids.as_deref() {
         if !ids.is_empty() {
             let set: std::collections::HashSet<i64> = ids.iter().copied().collect();
@@ -102,8 +93,7 @@ pub fn get_many(conn: &Connection, authors: &Authors) -> Result<Vec<BasicAuthorD
 
 // ── writes ──────────────────────────────────────────────────────────────────
 
-/// Create an author row, returning the new AUTHOR_FK. (Python `upsert` /
-/// `create_author` were byte-identical INSERTs — one fn here.)
+/// Create an author row, returning the new AUTHOR_FK.
 pub fn create(conn: &Connection, author: &AuthorIn) -> Result<i64> {
     store::create_author(
         conn,
@@ -114,10 +104,9 @@ pub fn create(conn: &Connection, author: &AuthorIn) -> Result<i64> {
     )
 }
 
-/// `service/author.py::update_fields` — the load-bearing partial-update primitive
-/// (the CLI/MCP/API callers use it): `None` leaves a field unchanged. Storage also
-/// skips empty strings. Errors if the author is absent or every field is `None`,
-/// so all consumers get the same answer.
+/// The partial-update primitive shared by CLI/MCP/API: `None` leaves a field
+/// unchanged (storage also skips empty strings). Errors if the author is absent
+/// or every field is `None`, so all consumers get the same answer.
 pub fn update_fields(
     conn: &Connection,
     author_id: i64,
@@ -137,8 +126,8 @@ pub fn update_fields(
     store::update_author(conn, author_id, full_name, first_name, last_name, orcid)
 }
 
-/// `service/author.py::update_author` — full-record wrapper over `update_fields`
-/// (always sets full_name, which is required on the DTO).
+/// Full-record wrapper over `update_fields` (always sets full_name, which is
+/// required on the DTO).
 pub fn update(conn: &Connection, author_id: i64, author: &AuthorIn) -> Result<()> {
     update_fields(
         conn,

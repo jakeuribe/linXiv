@@ -17,8 +17,7 @@ pub struct Ctx {
 }
 
 impl Ctx {
-    /// Resolve + create the data dir, open the DB, run schema init, and load
-    /// settings. Mirrors `linxiv_cli.py::main` startup (init_data_dir → init_db).
+    /// Resolve + create the data dir, open the DB, run schema init, load settings.
     pub fn open() -> Result<Self> {
         config::init_data_dir()?;
         let conn = db_admin::open_app_db()?;

@@ -1,11 +1,6 @@
-//! Binary upload routes — `api/app.py` `api_attach_pdf` (292–318),
-//! `api_import_pdf` (1376–1406), `api_import_bibtex` (1336–1367),
-//! `api_import_preview` (1243–1261), `api_import_commit` (1264–1282).
-//!
-//! WIRE: the webview cannot send a multipart body through Tauri `invoke`, so every
-//! upload's file bytes arrive as a base64 string `file_b64` in the JSON request
-//! body. A malformed `file_b64` is a 400 (the upload never reaches core). All other
-//! status codes + `detail` strings byte-match the Python handlers above.
+//! Binary upload routes (attach/import PDF, bibtex, project preview/commit).
+//! WIRE: Tauri `invoke` cannot carry multipart, so file bytes ride as base64 in
+//! `file_b64`; a malformed `file_b64` is a 400 before core runs.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -25,7 +20,6 @@ use linxiv_core::service::paper_import;
 use crate::route::{ApiError, ReqCtx};
 use crate::state::AppState;
 
-/// `_MAX_PDF_BYTES` (app.py 1372) = 100 MB.
 const MAX_PDF_BYTES: usize = 100 * 1024 * 1024;
 
 /// Returns `Some(result)` if this group owns `(method, path)`, else `None`.
@@ -63,8 +57,8 @@ pub struct UploadPdfBody {
     pub file_b64: String,
 }
 
-/// `PUT /api/papers/{id}/pdf` — `api_attach_pdf`. Store PDF bytes the client already
-/// fetched for a saved paper. Order matches app.py: 404 paper → 413 size → 400 magic.
+/// `PUT /api/papers/{id}/pdf` — store PDF bytes the client already fetched for a
+/// saved paper. Check order: 404 paper → 413 size → 400 magic.
 fn attach_pdf(state: &AppState, source_id: &str, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let b: UploadPdfBody = ctx.parse_body()?;
     reject_oversized_b64(&b.file_b64, "PDF exceeds size limit")?;
@@ -78,9 +72,9 @@ fn attach_pdf(state: &AppState, source_id: &str, ctx: &ReqCtx<'_>) -> Result<Val
         }
         let ver = paper.version;
         let dest = pdf_dir.join(pdf_on_disk_name(source_id, ver));
-        // app.py's `dest.resolve().relative_to(PDF_DIR)` containment guard. The
-        // on-disk name is sanitized so the join stays a direct child of pdf_dir;
-        // a separator slipping through would change the parent → 400.
+        // Containment guard: the on-disk name is sanitized so the join stays a
+        // direct child of pdf_dir; a separator slipping through would change
+        // the parent → 400.
         if dest.parent() != Some(pdf_dir.as_path()) {
             return Err(ApiError::new(400, "Invalid source_id"));
         }
@@ -105,13 +99,12 @@ pub struct ImportPdfBody {
     pub filename: Option<String>,
 }
 
-/// `POST /api/papers/import/pdf` — `api_import_pdf`. Resolve metadata (network)
-/// OUTSIDE the DB lock, then run the sync DB+FS import under it (mirrors
-/// `import_pdf_default` without holding the mutex across the await).
+/// `POST /api/papers/import/pdf` — resolve metadata (network) OUTSIDE the DB
+/// lock, then run the sync DB+FS import under it.
 async fn import_pdf(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let b: ImportPdfBody = ctx.parse_body()?;
-    // app.py: `project_id: int | None = Query(...)` — links the imported paper to
-    // a project (core's import_pdf runs the membership guard + link).
+    // project_id query param links the imported paper to a project (core runs
+    // the membership guard + link).
     let project_id = ctx.q_i64("project_id");
     let filename = b.filename.unwrap_or_default();
     if !filename.to_lowercase().ends_with(".pdf") {
@@ -131,11 +124,10 @@ async fn import_pdf(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiErro
     let max_pdf_bytes = config::UserSettings::load()?.pdf_save_limit_bytes();
     // ProjectNotFound → 404, ProjectDeleted/PaperLink → 400 flow through `?`. NOTE:
     // resolve_pdf_metadata degrades a pdfium extraction failure to empty metadata
-    // (it never errors), so app.py's PdfImportError → 422 path is unreachable here —
-    // a %PDF-but-corrupt file saves a minimal paper + 200 where app.py returns 422.
-    // Matching that needs core to surface PdfImport from the resolver (deferred).
+    // (it never errors), so a %PDF-but-corrupt file saves a minimal paper + 200
+    // rather than a 422; surfacing PdfImport from the resolver is deferred.
     // Fail-fast: a bad project_id is rejected before the network resolve; the
-    // commit lock re-checks (project can vanish in between). Same error bytes.
+    // commit lock re-checks (project can vanish in between).
     state.with_conn(|conn| paper_import::precheck_import_pdf(conn, project_id))?;
     let resolved =
         paper_import::resolve_import_pdf(&pdf_dir, &content, max_pdf_bytes, &config::data_dir())
@@ -160,9 +152,8 @@ pub struct ImportBibtexBody {
     pub project_id: Option<i64>,
 }
 
-/// `POST /api/papers/import/bibtex` — `api_import_bibtex`. `service::paper_import`
-/// owns guard order, parse and link; `?` maps ProjectNotFound → 404, the
-/// ProjectDeleted/BadRequest/PaperLink refusals → 400.
+/// `POST /api/papers/import/bibtex` — `service::paper_import` owns guard order,
+/// parse and link; `?` maps ProjectNotFound → 404, the other refusals → 400.
 fn import_bibtex(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let b: ImportBibtexBody = ctx.parse_body()?;
     let content = decode_b64(&b.file_b64)?;
@@ -176,9 +167,8 @@ pub struct ImportPreviewBody {
     pub file_b64: String,
 }
 
-/// `POST /api/projects/import/preview` — `api_import_preview`. `preview_import`
-/// takes a zip PATH, so spill the decoded bytes to a temp `.lxproj` first; any
-/// error (write, open, parse) is a 400. The temp file is removed on every path.
+/// `POST /api/projects/import/preview` — spill the decoded bytes to a temp
+/// `.lxproj` (preview takes a path); any error is a 400. Temp removed on every path.
 fn import_preview(ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let b: ImportPreviewBody = ctx.parse_body()?;
     let content = decode_b64(&b.file_b64)?;
@@ -196,14 +186,13 @@ pub struct ImportCommitBody {
     pub on_conflict: Option<String>,
 }
 
-/// `POST /api/projects/import/commit` — `api_import_commit`. `on_conflict` defaults
-/// to "merge"; a `ProjectImportError` is a 422, any other failure a 400.
+/// `POST /api/projects/import/commit` — `on_conflict` defaults to "merge";
+/// a `ProjectImportError` is a 422, any other failure a 400.
 fn import_commit(state: &AppState, ctx: &ReqCtx<'_>) -> Result<Value, ApiError> {
     let b: ImportCommitBody = ctx.parse_body()?;
     let on_conflict = match b.on_conflict.as_deref() {
         None | Some("merge") => OnConflict::Merge,
         Some("overwrite") => OnConflict::Overwrite,
-        // app.py's `pattern="^(merge|overwrite)$"` query validator → 422.
         Some(_) => {
             return Err(ApiError::new(
                 422,
@@ -310,7 +299,7 @@ mod tests {
     #[tokio::test]
     async fn attach_non_pdf_is_400() {
         let st = state();
-        // A paper must exist (404 precedes the magic-byte check in app.py order).
+        // A paper must exist (the 404 check precedes the magic-byte check).
         let sid = st
             .with_conn(|conn| svc_paper::save_paper_metadata(conn, &meta("arxiv:2204.99999"), None))
             .unwrap()

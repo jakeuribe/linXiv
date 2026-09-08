@@ -28,7 +28,7 @@ fn opt_date_val(d: &Option<NaiveDate>) -> Value {
     }
 }
 
-/// `_author_fk_for_name` — find (case-insensitive) or create an AUTHOR row.
+/// Find (case-insensitive) or create an AUTHOR row.
 fn author_fk_for_name(tx: &Transaction, full_name: &str) -> Result<i64> {
     if let Some(fk) = tx
         .prepare_cached(
@@ -44,14 +44,11 @@ fn author_fk_for_name(tx: &Transaction, full_name: &str) -> Result<i64> {
     Ok(tx.last_insert_rowid())
 }
 
-/// `_sync_paper_authors` — relational half of dual author storage. Replaces the
-/// PAPER_TO_AUTHOR rows for this paper, then garbage-collects AUTHOR rows that no
-/// paper references any more (ADR-0009: hard-delete leaves orphans, this does not).
-/// `author_orcids`, index-aligned with `authors` when present, fills a NULL
-/// ORCID only (never overwrites); inherits `author_fk_for_name`'s name-collision ceiling.
-/// GC only deletes bare rows: no ORCID, no split first/last names. The schema keeps
-/// no provenance, so an ORCID-bearing row — filled from source metadata above or set
-/// manually — is kept even paperless; manual edits never die to a respelled name.
+/// Relational half of dual author storage: replaces the PAPER_TO_AUTHOR rows,
+/// then garbage-collects AUTHOR rows no paper references (ADR-0009).
+/// `author_orcids` (index-aligned with `authors`) fills a NULL ORCID only.
+/// GC only deletes bare rows — an ORCID-bearing or split-name row is kept even
+/// paperless, so manual edits never die to a respelled name.
 fn sync_paper_authors(
     tx: &Transaction,
     paper_id: i64,
@@ -101,8 +98,8 @@ fn sync_paper_authors(
     Ok(())
 }
 
-/// `_sync_paper_tags` — relational half of dual tag storage. Replaces the
-/// PAPER_TO_TAG rows (PAPER_ID + composite (SOURCE_ID, VERSION)) for this paper.
+/// Relational half of dual tag storage: replaces the PAPER_TO_TAG rows
+/// (PAPER_ID + composite (SOURCE_ID, VERSION)) for this paper.
 pub(super) fn sync_paper_tags(
     tx: &Transaction,
     paper_id: i64,
@@ -147,9 +144,9 @@ pub(super) fn sync_paper_tags_for_versions(
     Ok(())
 }
 
-/// `_insert_metadata`'s tag merge: union of the paper's own tags and the extra
-/// tags, deduped. `None`/empty extra leaves the paper's tags (incl. `None`)
-/// untouched — preserving the NULL-vs-`[]` distinction in PAPER_META.TAGS.
+/// Union of the paper's own tags and the extra tags, deduped. `None`/empty
+/// extra leaves the paper's tags (incl. `None`) untouched — preserving the
+/// NULL-vs-`[]` distinction in PAPER_META.TAGS.
 fn merge_tags(base: &Option<Vec<String>>, extra: Option<&[String]>) -> Option<Vec<String>> {
     match extra {
         Some(e) if !e.is_empty() => {
@@ -165,15 +162,11 @@ fn merge_tags(base: &Option<Vec<String>>, extra: Option<&[String]>) -> Option<Ve
     }
 }
 
-/// `_write_paper_version` — INSERT OR IGNORE one PAPER version + its PAPER_META,
-/// then sync the relational tag/author rows. A duplicate (SOURCE_ID, VERSION) is
-/// a no-op (matches Python's early return). `pdf_path`/`full_text`/
-/// `downloaded_source` are always NULL on this path; FTS is not touched here
-/// (full_text is None) — set_full_text/repair/restore own the FTS index.
-/// `extra_tags` are merged into the paper's own tags. tx-level, for callers that
-/// need the write to share a transaction with other statements of their own
-/// (e.g. version_monitor saving a new version and flagging it as checked as one
-/// atomic unit instead of two ordered-but-separate writes).
+/// INSERT OR IGNORE one PAPER version + its PAPER_META, then sync the relational
+/// tag/author rows; a duplicate (SOURCE_ID, VERSION) is a no-op.
+/// `pdf_path`/`full_text`/`downloaded_source` are always NULL here and FTS is
+/// untouched — set_full_text/repair/restore own the FTS index. tx-level so
+/// callers (e.g. version_monitor) can share one atomic transaction.
 pub(crate) fn write_paper_version_in_tx(
     tx: &Transaction,
     meta: &PaperMetadata,
@@ -181,8 +174,8 @@ pub(crate) fn write_paper_version_in_tx(
 ) -> Result<()> {
     let merged_tags = merge_tags(&meta.tags, extra_tags);
     let source_fk = ensure_paper_root_row(tx, &meta.source_id)?;
-    // UPDATED_AT is date('now'), not the column's datetime('now') default: the
-    // Python-era post-INSERT UPDATE stored date-only strings, kept for parity.
+    // UPDATED_AT is date('now'), not the column's datetime('now') default:
+    // legacy rows store date-only strings, kept for parity.
     let changed = tx.prepare_cached(
         "INSERT OR IGNORE INTO PAPER (SOURCE_ID, VERSION, TITLE, CATEGORY, HAS_PDF, SOURCE_FK, UPDATED_AT) \
          VALUES (?, ?, ?, ?, 0, ?, date('now'))",
@@ -231,9 +224,8 @@ pub(crate) fn write_paper_version_in_tx(
     Ok(())
 }
 
-/// `save_paper_metadata` — persist one paper version atomically (PAPER +
-/// PAPER_META + PAPER_ROOTS + dual tag/author sync). `extra_tags` are merged into
-/// the paper's own tags. Returns (source_id, version).
+/// Persist one paper version atomically (PAPER + PAPER_META + PAPER_ROOTS +
+/// dual tag/author sync); `extra_tags` merged in. Returns (source_id, version).
 pub fn save_paper_metadata(
     conn: &mut Connection,
     meta: &PaperMetadata,
@@ -243,10 +235,8 @@ pub fn save_paper_metadata(
     Ok((meta.source_id.clone(), meta.version))
 }
 
-/// `save_papers_metadata` — persist many paper versions in ONE transaction
-/// (bulk import/search-save paths pay one IMMEDIATE tx per batch instead of one
-/// per paper). All-or-nothing: an error rolls back the whole batch. Returns the
-/// source_ids in input order (duplicates included; a dup version is a no-op).
+/// Persist many paper versions in ONE transaction (one IMMEDIATE tx per batch).
+/// All-or-nothing. Returns the source_ids in input order (a dup version is a no-op).
 pub fn save_papers_metadata(conn: &mut Connection, metas: &[PaperMetadata]) -> Result<Vec<String>> {
     if metas.is_empty() {
         return Ok(Vec::new());
@@ -259,11 +249,10 @@ pub fn save_papers_metadata(conn: &mut Connection, metas: &[PaperMetadata]) -> R
     })
 }
 
-/// `db.add_paper_tags` — UNION `tags` onto a paper's existing tags across BOTH
-/// halves of dual tag storage: the JSON `PAPER_META.TAGS` list (all versions) and
-/// the relational `PAPER_TO_TAG` rows (re-synced per version). Dedup preserves
-/// first-seen order (Python `dict.fromkeys`). Returns the merged tag list. Errors
-/// if the paper has no latest version.
+/// UNION `tags` onto a paper's existing tags across BOTH halves of dual tag
+/// storage: the JSON `PAPER_META.TAGS` list (all versions) and the relational
+/// `PAPER_TO_TAG` rows (re-synced per version). Dedup preserves first-seen
+/// order. Returns the merged tag list; errors if the paper has no latest version.
 pub fn add_paper_tags(
     conn: &mut Connection,
     source_id: &str,
@@ -306,10 +295,9 @@ pub fn add_paper_tags(
     })
 }
 
-/// `db.remove_paper_tags` — remove `tags` from a paper across BOTH halves of dual
-/// tag storage: the JSON `PAPER_META.TAGS` list (all versions) and the relational
-/// `PAPER_TO_TAG` rows (re-synced per version). Returns the remaining tag list.
-/// Errors if the paper has no latest version. Symmetric with `add_paper_tags`.
+/// Remove `tags` from a paper across BOTH halves of dual tag storage (JSON list
+/// on all versions + relational rows re-synced per version). Returns the
+/// remaining tag list; errors if no latest version. Symmetric with `add_paper_tags`.
 pub fn remove_paper_tags(
     conn: &mut Connection,
     source_id: &str,
@@ -351,13 +339,10 @@ pub fn remove_paper_tags(
     })
 }
 
-/// `repair_paper` — in-place metadata repair keyed by the stable SOURCE_FK,
-/// migrating SOURCE_ID if the full id changed.
-///
-/// Composite-FK ORDER is load-bearing: PAPER.SOURCE_ID is renamed BEFORE
-/// PAPER_TO_TAG.SOURCE_ID (whose (SOURCE_ID, VERSION) FK references PAPER), then
-/// the FTS row is moved (DELETE old id + INSERT new id). Wrong order = FK
-/// violation or orphaned/duplicated FTS rows.
+/// In-place metadata repair keyed by the stable SOURCE_FK, migrating SOURCE_ID
+/// if the full id changed. Composite-FK ORDER is load-bearing: PAPER.SOURCE_ID
+/// renames BEFORE PAPER_TO_TAG.SOURCE_ID, then the FTS row moves — wrong order
+/// = FK violation or orphaned/duplicated FTS rows.
 pub fn repair_paper(conn: &mut Connection, source_fk: i64, meta: &PaperMetadata) -> Result<()> {
     transaction(conn, |tx| {
         // Defer FK checks to commit: immediate FK rejects a parent-key rename
@@ -501,7 +486,7 @@ mod tests {
         let p = get_paper(&conn, "arxiv:B", None).unwrap().unwrap();
         assert_eq!(p.authors, vec!["Alice".to_string(), "Bob".to_string()]);
 
-        // UPDATED_AT keeps its Python-era date-only precision (now set in the
+        // UPDATED_AT keeps its legacy date-only precision (now set in the
         // INSERT rather than a follow-up UPDATE).
         let updated_at: String = conn
             .query_row("SELECT UPDATED_AT FROM PAPER LIMIT 1", [], |r| r.get(0))

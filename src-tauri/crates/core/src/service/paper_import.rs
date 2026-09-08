@@ -1,24 +1,13 @@
-//! paper_import service — Rust port of `service/paper.py::import_pdf` (589-763).
-//! Plan §5.2. The hardest fn in the paper service: a multi-branch rollback
-//! matrix over interleaved DB + filesystem writes, serialized by a
-//! process-global import-root lock.
+//! paper_import service — `import_pdf`: a multi-branch rollback matrix over
+//! interleaved DB + filesystem writes, serialized by a process-global import-root lock.
 //!
-//! DI: `conn: &mut Connection` first, `pdf_dir: &Path` resolved by the caller —
-//! never read from config here. Calls the existing storage layer
-//! (`storage::queries::{paper, project}`); no raw SQL, no duplicated storage.
+//! INJECTED SEAM (`resolve`): PDF metadata extraction (reqwest/pdf crates) must
+//! NOT enter `core`, so `import_pdf` takes a resolver. `external` is the optional
+//! upstream `(source_id, version)` identity: `Some` ⇒ key on that arxiv/DOI
+//! identity, `None` ⇒ mint a fresh `local:<sha>` root — do not drop the Option.
 //!
-//! INJECTED SEAM (`resolve`): PDF metadata extraction is Phase-3 work
-//! (`sources/pdf_metadata.resolve_pdf_metadata` — reqwest/pdf crates, which must
-//! NOT enter `core`). So `import_pdf` takes a resolver `Fn(&[u8]) -> Result<(meta,
-//! external)>`. The full orchestration + rollback is ported and TESTED now with
-//! a fake resolver; the real one plugs in at Phase 3. `external` is the optional
-//! upstream identity `(source_id, version)`: `Some` ⇒ key on that arxiv/DOI
-//! identity (creating or adopting its root), `None` ⇒ mint a fresh `local:<sha>`
-//! root (so the "create new root" path is kept — do not drop the Option).
-//!
-//! Two PDF filename formats stay DISTINCT: on-disk `{safe}v{version}.pdf`
-//! (`paper::pdf_on_disk_name`, used here) vs `.lxproj` archive
-//! `{source_id}_v{version}.pdf`. Never unify.
+//! Two PDF filename formats stay DISTINCT: on-disk `{safe}v{version}.pdf` vs
+//! `.lxproj` archive `{source_id}_v{version}.pdf`. Never unify.
 
 use crate::error::{CoreError, Result};
 use crate::models::PaperMetadata;
@@ -31,8 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 /// Serializes the pre-existence check + insert in `import_pdf` so two concurrent
-/// imports of the same upstream paper can't race on check-then-upsert. Mirrors
-/// Python's `threading.Lock`.
+/// imports of the same upstream paper can't race on check-then-upsert.
 pub(crate) static IMPORT_ROOT_LOCK: Mutex<()> = Mutex::new(());
 
 /// `POST /api/papers/import/pdf` envelope — a successful `import_pdf` result, emitted verbatim by MCP too.
@@ -114,9 +102,9 @@ where
         CoreError::Internal(format!("import_pdf: write temp PDF failed: {e}"))
     })?;
 
-    // Metadata extraction (Python: caught + re-raised as PdfImportError). This is
-    // BEFORE any DB write, so its only cleanup is the temp file — distinct from
-    // the rollback matrix below.
+    // Metadata extraction failures become PdfImportError. This is BEFORE any DB
+    // write, so its only cleanup is the temp file — distinct from the rollback
+    // matrix below.
     let (meta, external) = match resolve(content) {
         Ok(v) => v,
         Err(e) => {
@@ -169,16 +157,11 @@ pub fn precheck_import_pdf(conn: &Connection, project_id: Option<i64>) -> Result
     }
 }
 
-/// Phase 1 of the two-phase import — everything that must NOT hold the DB lock:
-/// the `pdf_save_limit_mb` quota precheck (fail before the expensive pdfium
-/// parse; `import_pdf` re-checks it under the lock) and the network metadata
-/// resolve. Hand the result to [`commit_import_pdf`] under the caller's lock.
-///
-/// The CrossRef polite-pool address and the `pdf_import_verify_identity_enabled`
-/// setting are read here, at the service seam, for the same reason
-/// `service::source` reads its config: `sources::` stays pure DI. A settings-load
-/// failure defaults to `true` (verify) — matching the setting's own missing/invalid
-/// default — rather than silently going network-free.
+/// Phase 1 of the two-phase import — must NOT hold the DB lock: the quota
+/// precheck and the network metadata resolve; hand the result to
+/// [`commit_import_pdf`] under the caller's lock. CrossRef mailto and
+/// `pdf_import_verify_identity_enabled` are read here so `sources::` stays pure
+/// DI; a settings-load failure defaults to `true` (verify).
 pub async fn resolve_import_pdf(
     pdf_dir: &Path,
     content: &[u8],
@@ -198,9 +181,8 @@ pub async fn resolve_import_pdf(
     .await
 }
 
-/// PDF bytes → the metadata JSON record the out-of-process `pdf-meta` worker
-/// prints. Pure and offline (pdfium only); here so the CLI worker has a service
-/// front door instead of reaching into `sources::` (ADR-0010).
+/// PDF bytes → the metadata JSON record the out-of-process `pdf-meta` worker prints.
+/// Pure and offline (pdfium only); a service front door so the CLI avoids `sources::` (ADR-0010).
 pub fn extract_pdf_metadata_json(bytes: &[u8]) -> String {
     crate::sources::pdf_metadata::extract_pdf_metadata_json(bytes)
 }
@@ -209,10 +191,8 @@ pub fn extract_pdf_metadata_json(bytes: &[u8]) -> String {
 /// `crates/cli` wires its clap command to the exact string core invokes.
 pub use crate::sources::pdf_metadata::PDF_META_SUBCOMMAND;
 
-/// Phase 2, under the caller's DB lock: the sync import (quota re-check,
-/// membership guard when a project is targeted, rollback matrix) with the
-/// already-resolved metadata. Thin over `import_pdf`, so its seam — and the
-/// rollback-matrix tests over it — stay exactly as they are.
+/// Phase 2, under the caller's DB lock: the sync import (quota re-check, membership
+/// guard, rollback matrix) with already-resolved metadata; thin over `import_pdf`.
 pub fn commit_import_pdf(
     conn: &mut Connection,
     pdf_dir: &Path,
@@ -261,11 +241,9 @@ pub struct BibtexImportReceipt {
     pub source_ids: Vec<String>,
 }
 
-/// Import papers from BibTeX text, optionally linking them to a project.
-/// Guard order matches the import contract: membership guard (missing →
-/// `ProjectNotFound`, deleted → `ProjectDeleted`) before parsing, parse errors →
-/// `BadRequest`, and a project vanishing between guard and link → `PaperLink`
-/// with the papers kept.
+/// Import papers from BibTeX text, optionally linking them to a project. Guard
+/// order: membership guard before parsing, parse errors → `BadRequest`, and a
+/// project vanishing between guard and link → `PaperLink` with the papers kept.
 pub fn import_bibtex(
     conn: &mut Connection,
     text: &str,
@@ -292,12 +270,9 @@ pub fn import_bibtex(
     })
 }
 
-/// The `pdf_save_limit_mb` TOTAL-storage check: reject `incoming_len` if writing it would
-/// push the combined size of the PDFs already in `pdf_dir` over `max_total_bytes`. Public so
-/// callers that resolve metadata themselves (route/MCP) can run it BEFORE that expensive
-/// parse; `import_pdf` always re-runs it, so the early call is an optimization, not a duty.
-/// A re-import whose PDF already sits on disk (nothing new written) is still checked —
-/// acceptable false reject at a full quota, the user's storage is full either way.
+/// The `pdf_save_limit_mb` TOTAL-storage check: reject `incoming_len` if it would push
+/// the PDFs already in `pdf_dir` over `max_total_bytes`. Route/MCP may run it early;
+/// `import_pdf` always re-runs it. A re-import already on disk is still checked (acceptable false reject).
 pub fn check_pdf_storage_quota(
     pdf_dir: &Path,
     incoming_len: usize,
@@ -314,9 +289,8 @@ pub fn check_pdf_storage_quota(
     Ok(())
 }
 
-/// The DB + FS write section. Any error here triggers the rollback matrix in
-/// `import_pdf`, so `st` is filled incrementally to record exactly what happened.
-/// Returns the resolved source_id on success.
+/// The DB + FS write section: any error triggers the rollback matrix in
+/// `import_pdf`; `st` records exactly what was written. Returns the resolved source_id.
 fn import_body(
     conn: &mut Connection,
     pdf_dir: &Path,
@@ -383,8 +357,7 @@ fn import_body(
 }
 
 /// Roll back the right rows/files after a failed import (the matrix). Best-effort:
-/// each step ignores its own error (Python logs and continues — a failed rollback
-/// must not mask the original failure).
+/// each step ignores its own error — a failed rollback must not mask the original failure.
 fn rollback(conn: &mut Connection, tmp_path: &Path, st: &ImportState) {
     let _ = fs::remove_file(tmp_path);
 
@@ -422,21 +395,16 @@ fn rollback(conn: &mut Connection, tmp_path: &Path, st: &ImportState) {
             crate::service::files::remove_pdf_counted(fp);
         }
     }
-    // Python also logs an orphan-row warning when inserted_new_version &&
-    // !inserted_new_root (a stranded new PAPER row left to protect sibling
-    // versions). No logger is wired into core yet, so it's elided — the row IS
-    // deliberately left in place either way.
+    // A stranded new PAPER row (new version of a pre-existing root) is
+    // deliberately left in place to protect sibling versions.
 }
 
 // ── project-membership guards ────────────────────────────────────────────────
-// Ports of service/project.py::link_imported. The membership guard itself now
-// lives in `service::project::ensure_membership_writable` (see `import_bibtex`
-// above); import-only.
+// The guard itself lives in `service::project::ensure_membership_writable`.
 
 /// Link a just-imported paper to a project (same write path as add_papers).
 /// Re-applies the guard (the project may have been deleted since the pre-import
-/// check). An id that doesn't resolve to a root is a no-op (Python logs a warning;
-/// no logger here, and the caller has no user to report it to).
+/// check); an id that doesn't resolve to a root is a no-op.
 fn link_imported(conn: &mut Connection, project_fk: i64, source_id: &str) -> Result<()> {
     crate::service::project::ensure_membership_writable(conn, project_fk)?;
     if let Some(root) = store::get_paper_root(conn, source_id)? {
@@ -469,9 +437,8 @@ mod tests {
     /// every fixture PDF here is a few bytes.
     const NO_LIMIT: u64 = 1_000_000;
 
-    /// The storage cap, at the three points that matter. Only `.pdf` files count
-    /// toward it (`files::pdf_storage_bytes`), and the comparison is `>`, so landing
-    /// exactly on the limit is allowed.
+    /// The storage cap at the three points that matter: only `.pdf` files count,
+    /// and the comparison is `>`, so landing exactly on the limit is allowed.
     #[test]
     fn check_pdf_storage_quota_at_under_and_over_the_limit() {
         let dir = tempdir().unwrap();

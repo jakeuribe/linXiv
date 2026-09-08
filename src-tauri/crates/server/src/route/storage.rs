@@ -1,6 +1,5 @@
-//! `/api/storage/*` — DB backup/restore for Settings → Storage. New to the Rust
-//! app (the Python API never exposed these; only the CLI did). The frontend picks
-//! paths with the OS save/open dialogs and sends them here as JSON.
+//! `/api/storage/*` — DB backup/restore for Settings → Storage. The frontend
+//! picks paths with the OS save/open dialogs and sends them here as JSON.
 
 use std::path::PathBuf;
 

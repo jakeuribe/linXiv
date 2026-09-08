@@ -1,16 +1,8 @@
-//! BibTeX + Obsidian-markdown export formatters — leaf string transforms over
-//! `PaperDetails`, no DB access. Port of `formats/bibtex.py::BibTeXFormat.export_papers`
-//! (pybtex) and `formats/markdown.py::ObsidianFormat.export_papers`. Hoisted here so
-//! the three thin binaries (Tauri app router, CLI, MCP) share one implementation
-//! instead of each carrying its own copy.
-//!
-//! Deferred pybtex/pybtex-import strictness gaps (carried over from the original
-//! CLI/MCP ports; not byte-exact vs Python, add if a golden needs it): export does
-//! not LaTeX-encode field values (`%`→`\%`, `&`→`\&`, …) the way pybtex's
-//! ulatex codec does, nor dedup case-insensitive citation keys; import
-//! (`format_person`) emits "Given Last" rather than pybtex's "Last, Given"
-//! normalization, drops literal braces, and accepts out-of-range years that
-//! Python's `date()` would reject.
+//! BibTeX + Obsidian-markdown export/import — leaf string transforms over
+//! `PaperDetails`, no DB access; shared by the Tauri router, CLI, and MCP.
+//! Known laxities: export neither LaTeX-encodes field values nor dedups
+//! case-insensitive citation keys; import emits "Given Last" names, drops
+//! literal braces, and accepts out-of-range years.
 
 use std::collections::BTreeSet;
 
@@ -19,9 +11,8 @@ use chrono::NaiveDate;
 
 use crate::models::{PaperDetails, PaperMetadata};
 
-/// Python `repr()` of a string, for `!r` error-message parity. Python defaults to single
-/// quotes, switching to double only when the string holds a `'` but no `"`. Rust's `{:?}`
-/// always uses double quotes, so it diverges byte-for-byte on every id in an error message.
+/// `repr()`-style quoting for `!r` error-message parity: single quotes,
+/// switching to double only when the string holds a `'` but no `"`.
 pub fn pyrepr(s: &str) -> String {
     let quote = if s.contains('\'') && !s.contains('"') {
         '"'
@@ -47,8 +38,7 @@ pub fn pyrepr(s: &str) -> String {
     out
 }
 
-/// `Path(dest)` + `with_suffix` only when the path has no extension
-/// (Python `out.with_suffix(...) if not out.suffix`). Shared by the CLI and
+/// Append `ext` only when the path has no extension. Shared by the CLI and
 /// MCP export commands.
 pub fn with_default_ext(dest: &str, ext: &str) -> std::path::PathBuf {
     let mut p = std::path::PathBuf::from(dest);
@@ -58,9 +48,8 @@ pub fn with_default_ext(dest: &str, ext: &str) -> std::path::PathBuf {
     p
 }
 
-/// One `@article` entry per paper, byte-matching pybtex `bib.to_string("bibtex")`:
-/// 4-space indent, `field = "value"`, no trailing comma on the last field, one
-/// blank line between entries, single trailing newline.
+/// One `@article` entry per paper: 4-space indent, `field = "value"`, no trailing
+/// comma on the last field, one blank line between entries, single trailing newline.
 pub fn bibtex_export(papers: &[PaperDetails]) -> String {
     let mut out = String::new();
     for (i, p) in papers.iter().enumerate() {
@@ -95,7 +84,7 @@ pub fn bibtex_export(papers: &[PaperDetails]) -> String {
     out
 }
 
-/// pybtex `Writer.quote`: `"value"` unless the value contains a `"`, then `{value}`.
+/// `"value"` unless the value contains a `"`, then `{value}`.
 fn bib_quote(value: &str) -> String {
     if value.contains('"') {
         format!("{{{value}}}")
@@ -104,7 +93,7 @@ fn bib_quote(value: &str) -> String {
     }
 }
 
-/// `(source_id or "unknown").replace("/","_").replace(".","_")`.
+/// `source_id` (or "unknown" when empty) with `/` and `.` replaced by `_`.
 fn bib_key(source_id: &str) -> String {
     if source_id.is_empty() {
         "unknown"
@@ -114,7 +103,7 @@ fn bib_key(source_id: &str) -> String {
     .replace(['/', '.'], "_")
 }
 
-/// `ObsidianFormat.export_papers` — YAML frontmatter + one `##` section per paper.
+/// YAML frontmatter + one `##` section per paper.
 pub fn obsidian_export(papers: &[PaperDetails]) -> String {
     let all_tags: BTreeSet<&String> = papers.iter().flat_map(|p| &p.tags).collect();
 
@@ -134,7 +123,7 @@ pub fn obsidian_export(papers: &[PaperDetails]) -> String {
 
     for p in papers {
         let sid = p.source_id.as_str();
-        // Python `p.get("title", sid)`: title key always present, so an empty title stays empty.
+        // Title is always present; an empty title stays empty (no source_id fallback).
         let title = p.title.as_str();
         let authors = p.authors.join(", ");
         let url = paper_url(sid, p.url.as_deref());
@@ -168,9 +157,8 @@ fn paper_url(sid: &str, stored_url: Option<&str>) -> String {
     String::new()
 }
 
-/// Port of `_ARXIV_ID_RE`: `^\d{4}\.\d{4,5}(v\d+)?$ | ^[a-z\-]+(\.[A-Z]{2})?/\d{7}(v\d+)?$`.
-/// Also the single source of truth for `linxiv-cli`'s `validate_arxiv_id` — pub
-/// so the CLI doesn't need its own copy (was a duplicate `regex` crate + static).
+/// arXiv id: `^\d{4}\.\d{4,5}(v\d+)?$ | ^[a-z\-]+(\.[A-Z]{2})?/\d{7}(v\d+)?$`.
+/// Single source of truth for `linxiv-cli`'s `validate_arxiv_id` (pub so the CLI has no copy).
 pub fn is_arxiv_id(sid: &str) -> bool {
     new_style_arxiv(sid) || old_style_arxiv(sid)
 }
@@ -191,8 +179,7 @@ fn new_style_arxiv(sid: &str) -> bool {
 }
 
 /// Strips an optional `.XX` archive-class suffix (e.g. "math.NT") from a
-/// category part, matching the regex's `(\.[A-Z]{2})?` group: stripped only
-/// when it's exactly 2 uppercase letters.
+/// category part: stripped only when it's exactly 2 uppercase letters.
 fn compute_cat(cat_part: &str) -> &str {
     match cat_part.rfind('.') {
         Some(i)
@@ -222,11 +209,10 @@ fn old_style_arxiv(sid: &str) -> bool {
     num.len() == 7 && num.chars().all(|c| c.is_ascii_digit())
 }
 
-// ── BibTeX import (`BibTeXFormat.import_string` / `_bib_to_metadata`) ────────
+// ── BibTeX import ────────────────────────────────────────────────────────────
 
-/// Parse a BibTeX document into `PaperMetadata`. Mirrors `_bib_to_metadata`:
-/// source_id = doi or entry key, version 1, source "bibtex", year→Jan-1 date
-/// (falling back to 1900-01-01).
+/// Parse a BibTeX document into `PaperMetadata`: source_id = doi or entry key,
+/// version 1, source "bibtex", year→Jan-1 date (falling back to 1900-01-01).
 pub fn bibtex_import(text: &str) -> Result<Vec<PaperMetadata>, String> {
     let bib = Bibliography::parse(text).map_err(|e| format!("BibTeX parse error: {e}"))?;
     let mut out = Vec::new();
@@ -311,7 +297,7 @@ mod tests {
 
     #[test]
     fn pyrepr_matches_python_repr() {
-        // Python: repr("arxiv:1234.5678") == "'arxiv:1234.5678'"
+        // repr("arxiv:1234.5678") == "'arxiv:1234.5678'"
         assert_eq!(pyrepr("arxiv:1234.5678"), "'arxiv:1234.5678'");
         // repr of a string with a single quote and no double → switches to double quotes.
         assert_eq!(pyrepr("O'Brien"), "\"O'Brien\"");

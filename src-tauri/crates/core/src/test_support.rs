@@ -1,12 +1,7 @@
-//! Fixtures shared by the crate's in-module unit tests.
-//!
-//! `#[cfg(test)]`-only, so it can see private items — which is why the
-//! integration-test helper in `tests/common/` cannot be reused here (`tests/`
-//! is a separate compilation unit limited to the public API) and keeps its own
-//! four-line copy of [`db`].
-//!
-//! Only genuinely identical fixtures live here. Test modules that seed
-//! something of their own keep that seeding at the call site.
+//! Fixtures shared by the crate's in-module unit tests. `#[cfg(test)]`-only, so
+//! `tests/common/` (a separate compilation unit limited to the public API)
+//! keeps its own four-line copy of [`db`]. Only genuinely identical fixtures
+//! live here.
 
 use crate::models::PaperMetadata;
 use crate::storage::{db::open_in_memory, init_db};

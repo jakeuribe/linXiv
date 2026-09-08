@@ -77,13 +77,9 @@ export async function pickFolder(): Promise<string | null> {
   return await invoke('plugin:texbrain|pick_folder')
 }
 
-/**
- * Bridge protocol version constant (phase 0 of EDITOR_PLUGIN_PLAN.md).
- * Single source of truth for which protocol(s) this host supports.
- * Must stay in sync with src/install.rs::SUPPORTED_BRIDGE_PROTOCOLS.
- * (The Rust side is the compat-gating authority; this TS constant drives
- * the optional runtime warning in EditorPage.tsx.)
- */
+/** Bridge protocol version(s) this host supports; drives EditorPage's non-fatal
+ *  warning. Must match src/install.rs::SUPPORTED_BRIDGE_PROTOCOLS — the Rust
+ *  side is the compat-gating authority. */
 export const SUPPORTED_BRIDGE_PROTOCOLS: readonly number[] = [1]
 
 export function isSupportedBridgeProtocol(protocol: number): boolean {

@@ -1,6 +1,5 @@
-//! Generator and drift check (test-only) for the checked-in artifact
-//! `src/types/generated.ts` — regenerate with `npm run types:gen`.
-//! Lives in linxiv-server because this crate tops the dep graph.
+//! Test-only generator and drift check for the checked-in `src/types/generated.ts`
+//! (regen: `npm run types:gen`). Lives here because this crate tops the dep graph.
 
 use ts_rs::{Config, TS};
 
@@ -274,7 +273,7 @@ pub(crate) fn render() -> String {
 mod tests {
     use super::render;
 
-    /// Repo-root-relative: this crate is `<repo>/src-tauri/crates/core`.
+    /// Repo-root-relative: this crate is `<repo>/src-tauri/crates/server`.
     const BINDINGS: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../../src/types/generated.ts"
