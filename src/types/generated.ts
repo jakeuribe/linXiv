@@ -1060,6 +1060,10 @@ export type ShareSettings = {
   direction: SyncDirection,
 };
 
+export type DeviceActor = {
+  actor: string | null,
+};
+
 export type ChangeRow = {
   hash: string,
   actor: string,
@@ -1072,6 +1076,10 @@ export type ChangeRow = {
    * Written by this device (its pinned actor id).
    */
   mine: boolean,
+  /**
+   * Host-assigned name from the node's Member List; None when unnamed.
+   */
+  display_name: string | null,
 };
 
 export type Timeline = {
@@ -1082,6 +1090,10 @@ export type Timeline = {
 export type PaperChange = {
   source_id: string,
   title: string,
+  /**
+   * Local `/library/{sfk}` target; None when unresolvable or trashed.
+   */
+  source_fk: number | null,
 };
 
 export type EntryChange = {
@@ -1089,6 +1101,14 @@ export type EntryChange = {
   title: string,
   from: string | null,
   to: string | null,
+  /**
+   * Notes only: local `/notes/{id}` target; None when unresolvable.
+   */
+  note_id: number | null,
+  /**
+   * Annotations only: their paper's `/library/{sfk}`; None when unresolvable.
+   */
+  paper_sfk: number | null,
 };
 
 export type FieldChange = {

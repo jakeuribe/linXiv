@@ -575,6 +575,7 @@ mod proto_tests {
             vec![Member {
                 id: ep.id().to_string(),
                 role: Role::ReadWrite,
+                ..Default::default()
             }],
         )
         .await;
@@ -619,6 +620,7 @@ mod proto_tests {
             vec![Member {
                 id: ep.id().to_string(),
                 role: Role::Read,
+                ..Default::default()
             }],
         )
         .await;

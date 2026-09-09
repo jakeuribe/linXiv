@@ -25,6 +25,7 @@ import { PaperCard } from "../components/papers/PaperCard";
 import { SelectionBar } from "../components/papers/SelectionBar";
 import { ImportDialog } from "../components/import/ImportDialog";
 import { HistoryDialog } from "../components/history/HistoryDialog";
+import { useUrlDialog } from "../hooks/useUrlDialog";
 import { EmptyState } from "../components/ui/empty-state";
 import { errText } from "../lib/errText";
 import { copyItem, showContextMenu } from "../lib/contextMenu";
@@ -78,7 +79,8 @@ export default function LibraryPage() {
   const [projectPickerError, setProjectPickerError] = useState<string | null>(null);
   const [newProjectName, setNewProjectName] = useState("");
   const [importOpen, setImportOpen] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(false);
+  const { open: historyOpen, show: openHistory, close: closeHistory } =
+    useUrlDialog("history");
   const [pendingDeleteIds, setPendingDeleteIds] = useState<string[]>([]);
   // Context-menu "Add to Project…" targets: kept separate from selectedIds so
   // right-clicking an unselected paper never disturbs an unrelated selection
@@ -384,7 +386,7 @@ export default function LibraryPage() {
             onChange={(e) => setSearch(e.target.value)}
             className="max-w-xs"
           />
-          <Button variant="muted" size="sm" onClick={() => setHistoryOpen(true)}>
+          <Button variant="muted" size="sm" onClick={openHistory}>
             <History size={13} className="mr-1" />History
           </Button>
           <Button variant="primary" size="sm" onClick={() => setImportOpen(true)}>
@@ -550,7 +552,7 @@ export default function LibraryPage() {
       />
       <HistoryDialog
         open={historyOpen}
-        onClose={() => setHistoryOpen(false)}
+        onClose={closeHistory}
         scope={{ kind: "library" }}
         title="Library history"
       />

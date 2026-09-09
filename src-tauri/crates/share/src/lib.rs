@@ -709,6 +709,21 @@ fn crdt<E: std::fmt::Display>(e: E) -> ShareError {
 /// Reconcile `sp` into `<share_id>.automerge`, evolving the on-disk doc (republish
 /// extends history; missing/unloadable → fresh). Returns the doc for registry reuse.
 pub fn save(share_dir: &Path, sp: &SharedProject) -> Result<AutoCommit> {
+    save_with(share_dir, sp, DEVICE_ACTOR.get().cloned())
+}
+
+/// [`save`] stamped as `actor_hex` instead of this device's actor — e.g. an
+/// authenticated remote member's endpoint id, for writes made on their behalf.
+pub fn save_as(share_dir: &Path, sp: &SharedProject, actor_hex: &str) -> Result<AutoCommit> {
+    let actor = automerge::ActorId::try_from(actor_hex).map_err(crdt)?;
+    save_with(share_dir, sp, Some(actor))
+}
+
+fn save_with(
+    share_dir: &Path,
+    sp: &SharedProject,
+    actor: Option<automerge::ActorId>,
+) -> Result<AutoCommit> {
     std::fs::create_dir_all(share_dir)?;
     let final_path = doc_path(share_dir, &sp.share_id);
     let mut doc = std::fs::read(&final_path)
@@ -716,8 +731,8 @@ pub fn save(share_dir: &Path, sp: &SharedProject) -> Result<AutoCommit> {
         .and_then(|bytes| AutoCommit::load(&bytes).ok())
         .unwrap_or_default();
     let before = doc.get_heads();
-    if let Some(actor) = DEVICE_ACTOR.get() {
-        doc.set_actor(actor.clone());
+    if let Some(actor) = actor {
+        doc.set_actor(actor);
     }
     autosurgeon::reconcile(&mut doc, sp).map_err(crdt)?;
     // Stamp the change with wall-clock time (automerge's default is 0) so

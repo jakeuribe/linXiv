@@ -16,6 +16,7 @@ import { receivedShareRole } from "../lib/shareRole";
 import { listProjectPapers } from "../api/papers";
 import { ImportDialog } from "../components/import/ImportDialog";
 import { HistoryDialog } from "../components/history/HistoryDialog";
+import { useUrlDialog } from "../hooks/useUrlDialog";
 import type { Paper } from "../types/api";
 import { useSelectionStore } from "../stores/selection";
 import { ColorSwatch } from "../components/projects/ColorSwatch";
@@ -59,7 +60,8 @@ export default function ProjectDetailPage() {
   const [editOpen, setEditOpen] = useState(false);
   const [addPapersOpen, setAddPapersOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(false);
+  const { open: historyOpen, show: openHistory, close: closeHistory } =
+    useUrlDialog("history");
   const [moreOpen, setMoreOpen] = useState(false);
   const moreRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -389,7 +391,7 @@ export default function ProjectDetailPage() {
             <Button variant="muted" size="sm" onClick={() => setExportOpen(true)}>
               <Download size={13} className="mr-1" />Export
             </Button>
-            <Button variant="muted" size="sm" onClick={() => setHistoryOpen(true)}>
+            <Button variant="muted" size="sm" onClick={openHistory}>
               <History size={13} className="mr-1" />History
             </Button>
             {!readOnly && (
@@ -609,7 +611,7 @@ export default function ProjectDetailPage() {
           />
           <HistoryDialog
             open={historyOpen}
-            onClose={() => setHistoryOpen(false)}
+            onClose={closeHistory}
             scope={{ kind: "project", id: projectId }}
             title={`History — ${project.name}`}
           />

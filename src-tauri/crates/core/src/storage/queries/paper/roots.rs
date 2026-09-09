@@ -119,6 +119,30 @@ pub(super) fn opt_ts(s: Option<String>) -> Result<Option<NaiveDateTime>> {
     s.as_deref().map(timestamp_from_sql).transpose()
 }
 
+/// `active_source_fks` — SOURCE_ID -> SOURCE_FK for many ids in one batched
+/// pass, omitting soft-deleted roots. Chunked under SQLite's parameter cap.
+pub fn active_source_fks(
+    conn: &Connection,
+    source_ids: &[String],
+) -> Result<std::collections::HashMap<String, i64>> {
+    let mut out = std::collections::HashMap::new();
+    for chunk in source_ids.chunks(900) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let mut stmt = conn.prepare(&format!(
+            "SELECT SOURCE_ID, SOURCE_FK FROM PAPER_ROOTS \
+             WHERE DELETED_AT IS NULL AND SOURCE_ID IN ({placeholders})"
+        ))?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (sid, fk) = row?;
+            out.insert(sid, fk);
+        }
+    }
+    Ok(out)
+}
+
 /// `get_paper_root` — the PAPER_ROOTS row for a source_id, or None.
 pub fn get_paper_root(conn: &Connection, source_id: &str) -> Result<Option<PaperRoot>> {
     conn.query_row(

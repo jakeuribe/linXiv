@@ -95,6 +95,7 @@
 <ul id="members"></ul>
 <form id="add-form" class="row">
   <input id="add-id" size="66" placeholder="endpoint id (64 hex chars)" class="mono" required pattern="[0-9a-fA-F]{64}">
+  <input id="add-name" size="14" placeholder="name (optional)">
   <select id="add-role">
     <option value="none" selected>none</option>
     <option value="read">read</option>
@@ -102,6 +103,13 @@
   </select>
   <button type="submit">Add</button>
 </form>
+
+<h2>Attribution</h2>
+<p class="muted">Change authors seen across this node's docs. To name a change author: copy its actor id onto a member above.</p>
+<table>
+  <thead><tr><th>actor id</th><th>changes</th><th>last seen (UTC)</th><th>member</th></tr></thead>
+  <tbody id="actors"><tr><td colspan="4" class="muted">loading…</td></tr></tbody>
+</table>
 
 <h2>Access log <button id="refresh" class="plain">refresh</button></h2>
 <p class="muted">To join: connect the device once, find its denied entry below, add its id above.</p>
@@ -168,16 +176,20 @@ async function loadStatus() {
   }
 }
 
-function setMember(id, role) {
+function postMember(body) {
   return api("/api/admin/relay/members", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ endpoint_id: id, role }),
+    body: JSON.stringify(body),
   });
 }
 
+// Last members payload, so the attribution table can label known actors.
+let memberList = [];
+
 async function loadMembers() {
   const { members } = await api("/api/admin/relay/members");
+  memberList = members;
   const ul = $("members");
   ul.replaceChildren();
   if (!members.length) {
@@ -193,6 +205,37 @@ async function loadMembers() {
     const span = document.createElement("span");
     span.className = "mono";
     text(span, m.id);
+    // Attribution fields save on change; role is omitted so it's preserved.
+    // Success writes back ONLY the saved field from the response (rebuilding
+    // the list, or touching the sibling input, would destroy an in-progress
+    // edit there); a reject reloads to revert.
+    const saveField = (body, apply) =>
+      postMember(body)
+        .then(({ members }) => {
+          memberList = members;
+          const mine = members.find(x => x.id.toLowerCase() === m.id.toLowerCase());
+          if (mine) apply(mine);
+          return loadActors();
+        })
+        .catch(e => {
+          msg(e.message);
+          loadMembers().then(loadActors).catch(e2 => msg(e2.message));
+        });
+    const nameIn = document.createElement("input");
+    nameIn.size = 14;
+    nameIn.placeholder = "name (optional)";
+    nameIn.value = m.name || "";
+    nameIn.onchange = () =>
+      saveField({ endpoint_id: m.id, name: nameIn.value },
+        mine => { nameIn.value = mine.name || ""; });
+    const actorsIn = document.createElement("input");
+    actorsIn.size = 34;
+    actorsIn.className = "mono";
+    actorsIn.placeholder = "actor ids, space-separated";
+    actorsIn.value = (m.actors || []).join(" ");
+    actorsIn.onchange = () =>
+      saveField({ endpoint_id: m.id, actors: actorsIn.value.split(/\s+/).filter(Boolean) },
+        mine => { actorsIn.value = (mine.actors || []).join(" "); });
     const sel = document.createElement("select");
     for (const role of ["none", "read", "read-write"]) {
       const opt = document.createElement("option");
@@ -202,15 +245,50 @@ async function loadMembers() {
       sel.append(opt);
     }
     sel.onchange = () =>
-      setMember(m.id, sel.value).catch(e => { msg(e.message); loadMembers(); });
+      postMember({ endpoint_id: m.id, role: sel.value })
+        .catch(e => { msg(e.message); loadMembers(); });
     const btn = document.createElement("button");
     btn.className = "plain";
     text(btn, "remove");
     btn.onclick = () =>
       api("/api/admin/relay/members/" + m.id, { method: "DELETE" })
-        .then(loadMembers).catch(e => msg(e.message));
-    li.append(span, sel, btn);
+        .then(() => loadMembers().then(loadActors)).catch(e => msg(e.message));
+    li.append(span, nameIn, actorsIn, sel, btn);
     ul.append(li);
+  }
+}
+
+async function loadActors() {
+  const { actors } = await api("/api/admin/actors");
+  const tb = $("actors");
+  tb.replaceChildren();
+  if (!actors.length) {
+    const tr = tb.insertRow();
+    const td = tr.insertCell();
+    td.colSpan = 4;
+    td.className = "muted";
+    text(td, "no changes journaled yet");
+    return;
+  }
+  for (const a of actors) {
+    const tr = tb.insertRow();
+    const idCell = tr.insertCell();
+    idCell.className = "mono";
+    text(idCell, a.actor);
+    text(tr.insertCell(), String(a.changes));
+    const t = a.last_time > 0
+      ? new Date(a.last_time * 1000).toISOString().replace("T", " ").slice(0, 19)
+      : "—";
+    text(tr.insertCell(), t);
+    // A member's endpoint id counts as one of its actors (remote-query
+    // writes journal under it); compare case-insensitively like the server.
+    const hex = a.actor.toLowerCase();
+    const owner = memberList.find(m =>
+      m.id.toLowerCase() === hex ||
+      (m.actors || []).some(x => x.toLowerCase() === hex));
+    const who = tr.insertCell();
+    who.className = owner ? "" : "muted";
+    text(who, owner ? (owner.name || owner.id.slice(0, 8) + "…") : "—");
   }
 }
 
@@ -283,7 +361,8 @@ async function loadLog() {
 
 function refreshAll() {
   msg("");
-  Promise.all([loadStatus(), loadNodeAddress(), loadMembers(), loadLog(), loadTransfers()])
+  // Actors load after members so the table can label known actor ids.
+  Promise.all([loadStatus(), loadNodeAddress(), loadMembers().then(loadActors), loadLog(), loadTransfers()])
     .catch(e => msg(e.message));
 }
 
@@ -297,8 +376,15 @@ $("token-form").onsubmit = e => {
 
 $("add-form").onsubmit = e => {
   e.preventDefault();
-  setMember($("add-id").value.trim(), $("add-role").value)
-    .then(() => { $("add-id").value = ""; return loadMembers(); })
+  const body = { endpoint_id: $("add-id").value.trim(), role: $("add-role").value };
+  const name = $("add-name").value.trim();
+  if (name) body.name = name;
+  postMember(body)
+    .then(() => {
+      $("add-id").value = "";
+      $("add-name").value = "";
+      return loadMembers().then(loadActors);
+    })
     .catch(e => msg(e.message));
 };
 

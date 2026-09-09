@@ -14,8 +14,8 @@ use linxiv_core::service::{
     author as author_svc, note as note_svc, paper as paper_svc, project as project_svc,
 };
 use linxiv_share::{
-    apply_content, apply_removals, build_project_snapshot, save, snapshot_at, RemovalOutcome,
-    ShareError, SharedAnnotation, SharedNote, SharedPaper, SharedProject,
+    apply_content, apply_removals, build_project_snapshot, save, save_as, snapshot_at,
+    RemovalOutcome, ShareError, SharedAnnotation, SharedNote, SharedPaper, SharedProject,
 };
 
 use crate::route::ApiError;
@@ -58,10 +58,52 @@ pub async fn next_due() {
 pub fn spawn_journal_loop(state: std::sync::Arc<AppState>) {
     tokio::spawn(async move {
         loop {
+            let _g = PASS_LOCK.lock().await;
             write_all(&state, &journal_dir());
+            drop(_g);
             next_due().await;
         }
     });
+}
+
+/// Serializes journal passes: the background loop and every remote-write
+/// bracket take this, so a bracket's flush→request→attribute sequence can't
+/// interleave with another pass.
+static PASS_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Attribute an authenticated remote member's write: flush pending changes
+/// under this node's actor, run the request, then journal its delta under
+/// `actor_hex` (the member's endpoint id — 64 hex, a valid actor).
+/// ponytail: serializes all mutating remote requests through one lock;
+/// revisit if a node ever has enough concurrent writers for this to queue.
+/// ponytail: PASS_LOCK covers journal passes only — a share-sync import or
+/// feed poll committing mid-request is attributed to the member; lock those
+/// writers too if that precision ever matters.
+pub async fn attribute_remote_write<F, Fut, T>(
+    state: &AppState,
+    dir: &Path,
+    actor_hex: &str,
+    f: F,
+) -> T
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = T>,
+{
+    let _g = PASS_LOCK.lock().await;
+    write_all(state, dir);
+    // Drop guard, not a tail call: if the request future is cancelled at an
+    // await after committing to SQLite, the attribution pass must still run
+    // or the background loop later claims the delta under the node's actor.
+    struct Attribute<'a>(&'a AppState, &'a Path, &'a str);
+    impl Drop for Attribute<'_> {
+        fn drop(&mut self) {
+            write_all_as(self.0, self.1, Some(self.2));
+        }
+    }
+    let guard = Attribute(state, dir, actor_hex);
+    let out = f().await;
+    drop(guard);
+    out
 }
 
 /// 404 unless `to` names a change actually in this doc's history — a stale or
@@ -82,6 +124,16 @@ fn require_change(dir: &Path, doc_id: &str, to: &str) -> Result<(), ApiError> {
 // (no compaction); upgrade to dirty-tracking + a compaction policy if large
 // libraries make the debounced pass noticeable.
 pub fn write_all(state: &AppState, dir: &Path) {
+    write_all_as(state, dir, None);
+}
+
+/// `write_all` with an optional actor override for every commit this pass
+/// produces (None = this device's actor).
+fn write_all_as(state: &AppState, dir: &Path, actor_hex: Option<&str>) {
+    let persist = |sp: &SharedProject| match actor_hex {
+        Some(a) => save_as(dir, sp, a),
+        None => save(dir, sp),
+    };
     let projects =
         match state.with_conn(|c| project_svc::get_many(c, &project_svc::Projects::default())) {
             Ok(p) => p,
@@ -93,7 +145,7 @@ pub fn write_all(state: &AppState, dir: &Path) {
     for p in projects.iter().filter(|p| p.status != Status::Deleted) {
         let Some(fk) = p.id else { continue };
         let res = state.with_conn(|c| {
-            build_project_snapshot(c, fk, project_doc_id(fk)).and_then(|sp| save(dir, &sp))
+            build_project_snapshot(c, fk, project_doc_id(fk)).and_then(|sp| persist(&sp))
         });
         if let Err(e) = res {
             eprintln!("journal: project {fk}: {e}");
@@ -117,7 +169,7 @@ pub fn write_all(state: &AppState, dir: &Path) {
             }
         }
     }
-    let res = state.with_conn(|c| build_library_snapshot(c).and_then(|sp| save(dir, &sp)));
+    let res = state.with_conn(|c| build_library_snapshot(c).and_then(|sp| persist(&sp)));
     if let Err(e) = res {
         eprintln!("journal: library: {e}");
     }
@@ -402,6 +454,52 @@ mod tests {
         write_all(&state, dir.path());
         assert!(!stale.exists());
         assert!(live_doc.is_file());
+    }
+
+    /// A bracketed remote write journals exactly its delta under the given
+    /// actor; pending local changes flush under the node's actor first, and a
+    /// later background pass finds nothing left to claim.
+    #[tokio::test]
+    async fn remote_write_bracket_attributes_the_delta() {
+        let (state, _pid) = seeded();
+        let dir = TempDir::new().unwrap();
+        write_all(&state, dir.path());
+        let baseline = doc_history(dir.path(), LIBRARY_DOC).unwrap().len();
+
+        let member = "ab".repeat(32);
+        attribute_remote_write(&state, dir.path(), &member, || async {
+            state.with_conn(|c| {
+                paper_svc::upsert(
+                    c,
+                    &PaperIn {
+                        title: "Remote".into(),
+                        published: NaiveDate::from_ymd_opt(2024, 3, 1).unwrap(),
+                        source_id: Some("arxiv:9".into()),
+                        version: None,
+                        authors: None,
+                        summary: None,
+                        category: None,
+                        doi: None,
+                        url: None,
+                        tags: None,
+                        source: Some("arxiv".into()),
+                    },
+                    None,
+                )
+                .unwrap();
+            });
+        })
+        .await;
+
+        let log = doc_history(dir.path(), LIBRARY_DOC).unwrap();
+        assert_eq!(log.len(), baseline + 1);
+        assert_eq!(log.last().unwrap().actor, member);
+        write_all(&state, dir.path());
+        assert_eq!(
+            doc_history(dir.path(), LIBRARY_DOC).unwrap().len(),
+            baseline + 1,
+            "the delta was already journaled; the background pass adds nothing"
+        );
     }
 
     #[test]

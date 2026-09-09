@@ -266,6 +266,7 @@ pub(crate) fn render() -> String {
     out.push_str(&decl::<crate::route::share::SharedPdfSaved>());
     out.push_str(&decl::<crate::share_sync::SyncDirection>());
     out.push_str(&decl::<crate::share_sync::ShareSettings>());
+    out.push_str(&decl::<crate::route::history::DeviceActor>());
     out.push_str(&decl::<crate::route::history::ChangeRow>());
     out.push_str(&decl::<crate::route::history::Timeline>());
     out.push_str(&decl::<crate::route::history::PaperChange>());
