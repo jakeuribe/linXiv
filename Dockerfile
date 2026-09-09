@@ -5,7 +5,7 @@
 #
 # The image binds 0.0.0.0 inside the container, so the bin fails closed:
 # LINXIV_API_TOKEN must be set and every request needs
-# `Authorization: Bearer <token>` (see live-linxiv/docker-compose.yml).
+# `Authorization: Bearer <token>` (see docs/headless/docker-compose.yml).
 FROM rust:1-bookworm AS build
 WORKDIR /src
 COPY scripts/ scripts/

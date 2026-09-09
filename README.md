@@ -90,6 +90,7 @@ git submodule update --init --recursive
 - [Building the desktop app](#building-the-desktop-app)
 - [CLI](#cli)
 - [MCP server](#mcp-server)
+- [Headless server](#headless-server)
 - [Graph visualization](#graph-visualization)
 - [Data location](#data-location)
 - [Acknowledgements](#acknowledgements)
@@ -227,6 +228,17 @@ Or add it to a client's MCP config (e.g. `claude_desktop_config.json`):
 In a checkout you can run it straight from source with `cargo run -p linxiv-mcp` (from `src-tauri/`).
 
 <img src="assets/claude_demo.gif" width="800" />
+
+## Headless server
+
+`linxiv-headless` runs the full backend — the complete `/api/*` surface,
+the iroh share peer, and background sync — with no window, for a
+self-hosted or containerized always-on node. Run it from source
+(`cargo run -p linxiv-server --bin linxiv-headless` from `src-tauri/`) or
+build the repo's `Dockerfile`; a bearer token gates every request when it
+binds beyond loopback, and `GET /admin` serves a small management page.
+Setup steps, a ready-made compose file, the environment reference, and
+relay configuration: [docs/headless](docs/headless/README.md).
 
 ## Graph visualization
 
