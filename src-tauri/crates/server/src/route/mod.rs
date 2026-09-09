@@ -50,17 +50,18 @@ pub(crate) mod versions; // request-body structs rendered by ts_bindings
 /// One webview→backend call. `body` is the parsed JSON request body (None for
 /// GET/DELETE without a body), including base64 file uploads (`uploads.rs`).
 /// `Serialize` so `remote_backend` can forward the same shape over the wire.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, ts_rs::TS)]
 pub struct ApiRequest {
     pub method: String,
     pub path: String,
     #[serde(default)]
+    #[ts(type = "unknown", optional)]
     pub body: Option<Value>,
 }
 
 /// Error surfaced to the webview. `invoke` rejects with this; `client.ts` turns it
 /// back into an `ApiError(status, detail)`, the same shape the `fetch` path threw.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
 pub struct ApiError {
     pub status: u16,
     pub detail: String,
@@ -132,13 +133,11 @@ fn nudges_share_sync(req: &ApiRequest) -> bool {
     match segs.as_slice() {
         // arxiv search is the only search that can save (its body's `save`
         // flag bulk-saves results); openalex saves via its separate /save arm.
-        ["api", "arxiv", "search"] => {
-            req.body
-                .as_ref()
-                .and_then(|b| b.get("save"))
-                .and_then(Value::as_bool)
-                == Some(true)
-        }
+        ["api", "arxiv", "search"] => req
+            .body
+            .as_ref()
+            .and_then(|b| sources::ArxivSearchBody::deserialize(b).ok())
+            .is_some_and(|b| b.save),
         ["api", "openalex" | "crossref", "search"]
         | ["api", "doi", "resolve"]
         | ["api", "papers", "saved"] => false,

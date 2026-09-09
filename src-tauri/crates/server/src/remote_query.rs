@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use linxiv_p2p::{
     api, ApiHandlerFn, ApiProtocol, ApiResponse, KnockLogFn, MemberCheckFn, TransferLogFn,
@@ -42,6 +42,58 @@ pub fn pdf_rate_bps() -> u64 {
         .and_then(|v| v.parse().ok())
         .filter(|&r| r > 0)
         .unwrap_or(DEFAULT_PDF_RATE_BPS)
+}
+
+// --- wire types (shared with the client half, src/remote_backend.rs) --------
+
+/// linxiv-api/1 response envelope: `{status, body}` on success, `{status,
+/// detail}` on error.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApiEnvelope {
+    pub status: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// Remote Query failure the webview can distinguish: `{kind: "unreachable" |
+/// "remote" | "transport" | "invalid", ...}`. Built by the client half.
+#[derive(Debug, Serialize, ts_rs::TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RemoteError {
+    /// Dial failed or the node closed without answering — offline and
+    /// not-admitted are one state on purpose.
+    Unreachable { detail: String },
+    /// The node answered with an error envelope.
+    Remote { status: u16, detail: String },
+    /// Transport-level failure that is not a refusal (or a local I/O fault).
+    Transport { detail: String },
+    /// Bad input: unknown backend id, unparseable address.
+    Invalid { detail: String },
+}
+
+/// The ONE honest state for refused-or-offline (CONTEXT.md: a non-admitted
+/// device is refused indistinguishably from an offline node, by design).
+const UNREACHABLE: &str =
+    "can't reach this node — it may be offline, or this device isn't admitted yet";
+
+impl RemoteError {
+    pub fn invalid(detail: impl Into<String>) -> Self {
+        Self::Invalid {
+            detail: detail.into(),
+        }
+    }
+    pub fn transport(detail: impl Into<String>) -> Self {
+        Self::Transport {
+            detail: detail.into(),
+        }
+    }
+    pub fn unreachable() -> Self {
+        Self::Unreachable {
+            detail: UNREACHABLE.into(),
+        }
+    }
 }
 
 // --- member list ------------------------------------------------------------
@@ -228,13 +280,30 @@ pub fn deny_reason(role: Role, method: &str, path: &str) -> Option<&'static str>
 
 const TRANSFER_LOG_CAP: usize = 200;
 
+/// `GET /api/admin/transfers` entry `outcome`.
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TransferOutcomeKind {
+    Delivered,
+    Aborted,
+}
+
+/// `GET /api/admin/transfers` entry — the sender's view of one transfer.
+#[derive(Debug, Serialize)]
+pub struct TransferEntry {
+    pub seq: u64,
+    pub endpoint_id: String,
+    pub outcome: TransferOutcomeKind,
+    pub bytes: u64,
+}
+
 /// Recent byte-lane outcomes — the sender's own view of each transfer (there
 /// is no application-level receipt by design).
 /// ponytail: in-memory only, resets on restart; persist if audit matters.
 #[derive(Default)]
 pub struct TransferLog {
     seq: u64,
-    entries: VecDeque<Value>,
+    entries: VecDeque<TransferEntry>,
 }
 
 impl TransferLog {
@@ -243,19 +312,19 @@ impl TransferLog {
         if self.entries.len() >= TRANSFER_LOG_CAP {
             self.entries.pop_front();
         }
-        let (outcome_s, bytes) = match outcome {
-            TransferOutcome::Delivered { bytes } => ("delivered", bytes),
-            TransferOutcome::Aborted { sent } => ("aborted", sent),
+        let (outcome, bytes) = match outcome {
+            TransferOutcome::Delivered { bytes } => (TransferOutcomeKind::Delivered, bytes),
+            TransferOutcome::Aborted { sent } => (TransferOutcomeKind::Aborted, sent),
         };
-        self.entries.push_back(json!({
-            "seq": self.seq,
-            "endpoint_id": endpoint_id,
-            "outcome": outcome_s,
-            "bytes": bytes,
-        }));
+        self.entries.push_back(TransferEntry {
+            seq: self.seq,
+            endpoint_id: endpoint_id.to_string(),
+            outcome,
+            bytes,
+        });
     }
 
-    pub fn entries(&self) -> &VecDeque<Value> {
+    pub fn entries(&self) -> &VecDeque<TransferEntry> {
         &self.entries
     }
 }
@@ -311,8 +380,16 @@ pub fn build_api_proto(
     )
 }
 
+fn to_env(env: ApiEnvelope) -> Value {
+    serde_json::to_value(env).expect("envelope is plain JSON")
+}
+
 fn err_env(status: u16, detail: &str) -> Value {
-    json!({ "status": status, "detail": detail })
+    to_env(ApiEnvelope {
+        status,
+        body: None,
+        detail: Some(detail.into()),
+    })
 }
 
 async fn handle(
@@ -360,7 +437,11 @@ async fn handle(
         .await
     };
     ApiResponse::Json(match result {
-        Ok(body) => json!({ "status": 200, "body": body }),
+        Ok(body) => to_env(ApiEnvelope {
+            status: 200,
+            body: Some(body),
+            detail: None,
+        }),
         Err(e) => err_env(e.status, &e.detail),
     })
 }
@@ -786,6 +867,7 @@ mod proto_tests {
         {
             let transfers = node.transfers.lock().unwrap();
             let entry = transfers.entries().back().expect("a logged transfer");
+            let entry = serde_json::to_value(entry).unwrap();
             assert_eq!(entry["endpoint_id"], ep.id().to_string());
             assert_eq!(entry["outcome"], "delivered");
             assert_eq!(entry["bytes"], bytes.len() as u64);

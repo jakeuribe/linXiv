@@ -20,9 +20,18 @@ import type {
   SharedPdfSaved,
   MemberCode,
   InviteMinted,
+  SyncReceipt,
+  SyncReason,
 } from "../types/api";
 
-export type { SharedSummary, ShareMember, ShareSettings, ShareDirection };
+export type {
+  SharedSummary,
+  ShareMember,
+  ShareSettings,
+  ShareDirection,
+  SyncReceipt,
+  SyncReason,
+};
 
 /** Deliberately narrower than lib/errText: only ApiError messages surface in
  * the sharing UI — any other exception falls back to the generic string
@@ -54,24 +63,11 @@ async function shareApi<T>(
 export const sharingAvailable = isTauri;
 
 // Most envelope types are generated from the Rust structs in
-// crates/server/src/route/share.rs (aliased above); only shapes with no exact
-// Rust twin (JoinResult, syncShare's json! envelope, ReceivedPaper) stay
+// crates/server/src/route/share.rs and share_sync.rs (aliased above); only
+// shapes with no exact Rust twin (JoinResult, ReceivedPaper) stay
 // hand-written below.
 
 export type MemberRole = "hoster" | "editor" | "viewer";
-
-export type SyncReason =
-  | "paused"
-  | "direction"
-  | "project gone"
-  | "no ticket"
-  | "bad ticket"
-  | "p2p offline"
-  | "revoked or awaiting key"
-  | "awaiting first sync"
-  | "no key for any content";
-
-export type ShareRole = "hoster" | "reader";
 
 /** Summaries of every project published (shared out) from this library. */
 export async function listShared(): Promise<SharedSummary[]> {
@@ -135,28 +131,7 @@ export async function unlinkShare(shareId: string): Promise<UnlinkedReceipt> {
 }
 
 /** One-shot sync of a single share, honoring its paused/direction settings. */
-export async function syncShare(
-  shareId: string
-): Promise<{
-  synced: boolean;
-  reason?: SyncReason;
-  role?: ShareRole;
-  /** Notes/annotations skipped because their key is revoked or not yet received. */
-  undecryptable?: number;
-  e2ee?: boolean;
-  /** The sync ran but the mirror is still empty — the host has not answered. */
-  pending?: boolean;
-  /** Reader leg: commits decrypted and applied this pass. */
-  applied?: number;
-  /** Reader leg: commits fetched with no key for their epoch. `no_key > 0` with
-   *  nothing applied means content sealed to an epoch this device never joined
-   *  — typically published before the invite; retrying cannot re-key it. */
-  no_key?: number;
-  /** Reader leg: commits that failed to decrypt for any other reason. */
-  failed?: number;
-  /** Hoster leg: devices this share is currently granted to. */
-  members?: number;
-}> {
+export async function syncShare(shareId: string): Promise<SyncReceipt> {
   return shareApi("POST", `/api/share/${shareId}/sync`);
 }
 

@@ -5,7 +5,7 @@
 #
 # The image binds 0.0.0.0 inside the container, so the bin fails closed:
 # LINXIV_API_TOKEN must be set and every request needs
-# `Authorization: Bearer <token>` (see live-linxiv/docker-compose.yml).
+# `Authorization: Bearer <token>` (see docs/headless/docker-compose.yml).
 #
 # Optional: LINXIV_P2P_RELAY_URL (+ LINXIV_P2P_RELAY_TOKEN) seeds the relay
 # setting on first boot so `/api/admin/node-address` can mint a Node Address

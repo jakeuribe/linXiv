@@ -10,23 +10,19 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use linxiv_core::config::{self, UserSettings};
 use linxiv_core::service::paper::pdf_on_disk_name;
 use linxiv_p2p::{api, ApiClientError, ByteLane, Connection, Endpoint, EndpointAddr, NodeAddress};
 
+use crate::remote_query::{ApiEnvelope, RemoteError};
 use crate::route::share::ShareState;
 use crate::route::ApiRequest;
 
 /// UserSettings key holding the backend registry (reuses the existing
 /// settings persistence; no new storage system).
 const SETTINGS_KEY: &str = "remote_backends";
-
-/// The ONE honest state for refused-or-offline (CONTEXT.md: a non-admitted
-/// device is refused indistinguishably from an offline node, by design).
-const UNREACHABLE: &str =
-    "can't reach this node — it may be offline, or this device isn't admitted yet";
 
 /// One registered remote Library Backend. `node_address` is a locator, not a
 /// capability (the node's Member List decides access); `id` is app-generated
@@ -36,40 +32,6 @@ pub struct Backend {
     pub id: String,
     pub label: String,
     pub node_address: String,
-}
-
-/// Typed failure the webview can distinguish: `{kind: "unreachable" |
-/// "remote" | "transport" | "invalid", ...}`.
-#[derive(Debug, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum RemoteError {
-    /// Dial failed or the node closed without answering — offline and
-    /// not-admitted are one state on purpose.
-    Unreachable { detail: String },
-    /// The node answered with an error envelope.
-    Remote { status: u16, detail: String },
-    /// Transport-level failure that is not a refusal (or a local I/O fault).
-    Transport { detail: String },
-    /// Bad input: unknown backend id, unparseable address.
-    Invalid { detail: String },
-}
-
-impl RemoteError {
-    fn invalid(detail: impl Into<String>) -> Self {
-        Self::Invalid {
-            detail: detail.into(),
-        }
-    }
-    fn transport(detail: impl Into<String>) -> Self {
-        Self::Transport {
-            detail: detail.into(),
-        }
-    }
-    fn unreachable() -> Self {
-        Self::Unreachable {
-            detail: UNREACHABLE.into(),
-        }
-    }
 }
 
 fn client_err(e: ApiClientError) -> RemoteError {
@@ -185,7 +147,7 @@ pub struct RemoteState {
 }
 
 /// Cached connection for `backend_id`, dialing `addr` when there is none
-/// (or when `fresh` forces a redial). A dial failure is [`UNREACHABLE`].
+/// (or when `fresh` forces a redial). A dial failure is `RemoteError::unreachable`.
 // ponytail: two concurrent first requests may both dial; the second insert
 // wins and both connections work — dedupe only if dials ever get expensive.
 async fn conn_for(
@@ -257,19 +219,16 @@ async fn request_bytes_remote(
 }
 
 /// Split the node's envelope: 2xx yields `body`, anything else the typed
-/// remote error.
-fn unwrap_envelope(mut env: Value) -> Result<Value, RemoteError> {
-    let status = env.get("status").and_then(Value::as_u64).unwrap_or(0) as u16;
-    if (200..300).contains(&status) {
-        Ok(env.get_mut("body").map(Value::take).unwrap_or(Value::Null))
+/// remote error. A malformed envelope is a transport error, never Ok(null).
+fn unwrap_envelope(env: Value) -> Result<Value, RemoteError> {
+    let env: ApiEnvelope = serde_json::from_value(env)
+        .map_err(|e| RemoteError::transport(format!("malformed envelope: {e}")))?;
+    if (200..300).contains(&env.status) {
+        Ok(env.body.unwrap_or(Value::Null))
     } else {
         Err(RemoteError::Remote {
-            status,
-            detail: env
-                .get("detail")
-                .and_then(Value::as_str)
-                .unwrap_or("remote error")
-                .to_string(),
+            status: env.status,
+            detail: env.detail.unwrap_or_else(|| "remote error".into()),
         })
     }
 }
@@ -363,11 +322,12 @@ pub async fn fetch_remote_pdf(
         return Ok(path);
     }
     let q = version.map(|v| format!("?version={v}")).unwrap_or_default();
-    let req = json!({
-        "method": "GET",
-        "path": format!("/api/papers/{}/pdf{q}", pct_encode(source_id)),
-        "body": Value::Null,
-    });
+    let req = serde_json::to_value(ApiRequest {
+        method: "GET".into(),
+        path: format!("/api/papers/{}/pdf{q}", pct_encode(source_id)),
+        body: None,
+    })
+    .map_err(|e| RemoteError::transport(e.to_string()))?;
     let (header, lane) = request_bytes_remote(ep, remote, backend_id, addr, &req).await?;
     let deadline = read_deadline(&header);
     // An answered error ships a bare envelope and an empty lane.
@@ -429,6 +389,7 @@ pub async fn remote_member_code(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     /// Registry round trip is pure serde (the settings file itself is
     /// UserSettings' tested territory; tests never redirect the data dir).
@@ -530,6 +491,7 @@ mod proto_tests {
     use iroh::{endpoint::presets, protocol::Router};
     use linxiv_core::models::PaperMetadata;
     use linxiv_core::service::paper as svc_paper;
+    use serde_json::json;
 
     fn state(pdf_dir: &Path) -> Arc<AppState> {
         let conn = linxiv_core::storage::open_in_memory().unwrap();
