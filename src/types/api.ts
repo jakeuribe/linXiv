@@ -157,6 +157,19 @@ export type {
 // always called it PaperRepairBody.
 export type { RepairFields as PaperRepairBody } from "./generated";
 
+// History (`/api/history`): change log, per-change diff, restore.
+export type {
+  DeviceActor,
+  ChangeRow,
+  Timeline,
+  PaperChange,
+  EntryChange,
+  FieldChange,
+  HistoryDiff,
+  RestoredToChange,
+  RestoreBody,
+} from "./generated";
+
 // Frontend names for the generated serializers. The Rust name is the model,
 // the alias is what the UI has always called it.
 export type Paper = PaperDetails;
@@ -198,6 +211,9 @@ export interface Settings {
   p2p_relay_auth_token?: string;
   /** If true, refuse to bind the p2p node at all rather than falling back to n0's public relay. */
   p2p_relay_only?: boolean;
+  /** Local history attribution: journal actor hex (lowercase) → display name.
+   *  Overrides a remote node's host-assigned display_name in the UI. */
+  actor_names?: Record<string, string>;
   [key: string]: unknown;
 }
 

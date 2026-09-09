@@ -30,7 +30,7 @@ use linxiv_server::remote_query::{
 use linxiv_server::route::share::ShareState;
 use linxiv_server::route::{feed, route, share, ApiRequest};
 use linxiv_server::state::AppState;
-use linxiv_server::{full_text_worker, p2p_config, share_sync};
+use linxiv_server::{full_text_worker, journal, p2p_config, share_sync};
 
 /// Base64 file uploads ride the JSON body, so allow a large request body.
 const MAX_BODY: usize = 200 * 1024 * 1024;
@@ -54,11 +54,45 @@ struct Ctx {
     transfers: Arc<Mutex<TransferLog>>,
 }
 
+/// Seed `p2p_relay_url` / `p2p_relay_auth_token` from `LINXIV_P2P_RELAY_URL` /
+/// `LINXIV_P2P_RELAY_TOKEN` when the settings are blank — a fresh (or `--rm`)
+/// container has no settings file, and without a relay URL the node can't mint
+/// a Node Address. Env seeds first boot; `PATCH /api/settings` wins afterward.
+fn seed_relay_from_env() {
+    let url = std::env::var("LINXIV_P2P_RELAY_URL").unwrap_or_default();
+    if url.is_empty() {
+        return;
+    }
+    let Ok(mut settings) = linxiv_core::config::UserSettings::load() else {
+        eprintln!("warning: settings unreadable; LINXIV_P2P_RELAY_URL not applied");
+        return;
+    };
+    let blank = |s: &linxiv_core::config::UserSettings, k: &str| {
+        s.get(k).and_then(|v| v.as_str()).is_none_or(str::is_empty)
+    };
+    if !blank(&settings, "p2p_relay_url") {
+        return;
+    }
+    let mut apply = || -> linxiv_core::error::Result<()> {
+        settings.set("p2p_relay_url", url.clone().into())?;
+        let token = std::env::var("LINXIV_P2P_RELAY_TOKEN").unwrap_or_default();
+        if !token.is_empty() && blank(&settings, "p2p_relay_auth_token") {
+            settings.set("p2p_relay_auth_token", token.into())?;
+        }
+        Ok(())
+    };
+    match apply() {
+        Ok(()) => eprintln!("linxiv headless: relay seeded from env: {url}"),
+        Err(e) => eprintln!("warning: seeding relay from env failed: {e}"),
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let started = Instant::now();
     let data_dir = linxiv_core::config::init_data_dir().expect("init data dir");
     eprintln!("linxiv headless: data dir {}", data_dir.display());
+    seed_relay_from_env();
     let state = Arc::new(AppState::new().expect("init app state"));
     // Keychain access is sync (and absent in containers, where the
     // LINXIV_P2P_PASSPHRASE fallback applies) — keep it off the async runtime.
@@ -99,6 +133,8 @@ async fn main() {
     if node_bound && ctx.share.mark_sync_started() {
         spawn_interval_sync(&ctx);
     }
+    // Unconditional: history/undo must journal even with the p2p node unbound.
+    linxiv_server::journal::spawn_journal_loop(ctx.state.clone());
     install_remote_query(&ctx).await;
     // Idles until `full_text_worker_enabled` is switched on, same as the app.
     full_text_worker::spawn_headless(ctx.state.clone());
@@ -475,13 +511,16 @@ struct EntriesResponse<'a, T: Serialize> {
     entries: &'a VecDeque<T>,
 }
 
-/// `POST /api/admin/relay/members` request body. `role` stays raw JSON so its
-/// bespoke 400 fires separately from the endpoint-id check.
+/// `POST /api/admin/relay/members` request body. `role`/`name`/`actors` stay
+/// raw JSON so each bespoke 400 fires separately from the endpoint-id check;
+/// absent fields preserve the member's existing values.
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct MemberUpsertBody {
     endpoint_id: String,
     role: Option<serde_json::Value>,
+    name: Option<serde_json::Value>,
+    actors: Option<serde_json::Value>,
 }
 
 /// `GET /api/admin/node-address` — the copyable Node Address locator.
@@ -521,6 +560,25 @@ async fn relay_admin(ctx: &Ctx, req: &ApiRequest) -> Option<Response> {
             ))
         }
         ("GET", "/api/admin/node-address") => Some(node_address(ctx).await),
+        // Attribution discovery: every journal actor seen in this node's docs,
+        // for pairing with members. ponytail: full doc scan per request; cache
+        // per-dir mtimes if doc counts ever make this route noticeable.
+        ("GET", "/api/admin/actors") => {
+            let share_dir = ctx.share.share_dir().to_path_buf();
+            let dirs = [
+                journal::journal_dir(),
+                share_dir.clone(),
+                linxiv_share::received_dir(&share_dir),
+                linxiv_share::e2ee_dir(&share_dir),
+                linxiv_share::e2ee_received_dir(&share_dir),
+            ];
+            Some(json(
+                StatusCode::OK,
+                &ActorsList {
+                    actors: scan_actors(&dirs),
+                },
+            ))
+        }
         // Upsert: add with a role (default none), or change an existing
         // member's role by POSTing the same id again.
         ("POST", MEMBERS) => {
@@ -549,12 +607,53 @@ async fn relay_admin(ctx: &Ctx, req: &ApiRequest) -> Option<Response> {
                     }
                 },
             };
+            // Absent/null preserves; a string sets (empty after cleanup clears).
+            let name = match &b.name {
+                None | Some(serde_json::Value::Null) => None,
+                Some(serde_json::Value::String(s)) => Some(clean_member_name(s)),
+                Some(_) => return Some(detail(StatusCode::BAD_REQUEST, "name must be a string")),
+            };
+            // Absent/null preserves; an array replaces wholesale (empty clears).
+            let actors = match &b.actors {
+                None | Some(serde_json::Value::Null) => None,
+                Some(serde_json::Value::Array(a)) => {
+                    let mut out: Vec<String> = Vec::new();
+                    for v in a {
+                        let Some(s) = v.as_str() else {
+                            return Some(detail(
+                                StatusCode::BAD_REQUEST,
+                                "actors must be an array of strings",
+                            ));
+                        };
+                        let s = s.trim().to_ascii_lowercase();
+                        if !remote_query::valid_actor_hex(&s) {
+                            return Some(detail(
+                                StatusCode::BAD_REQUEST,
+                                format!(
+                                    "invalid actor id {:?}: must be non-empty even-length hex (max 128 chars)",
+                                    clean_log_id(&s)
+                                ),
+                            ));
+                        }
+                        if !out.contains(&s) {
+                            out.push(s);
+                        }
+                    }
+                    Some(out)
+                }
+                Some(_) => {
+                    return Some(detail(
+                        StatusCode::BAD_REQUEST,
+                        "actors must be an array of strings",
+                    ))
+                }
+            };
             let _guard = ctx.relay.lock().unwrap(); // serialize read-modify-write
             let mut members = match loaded(load_members()) {
                 Ok(l) => l,
                 Err(resp) => return Some(resp),
             };
-            upsert_member(&mut members, id, role);
+            upsert_member(&mut members, id, role, name, actors);
             Some(persist(members))
         }
         ("DELETE", p) if p.starts_with("/api/admin/relay/members/") => {
@@ -571,21 +670,87 @@ async fn relay_admin(ctx: &Ctx, req: &ApiRequest) -> Option<Response> {
     }
 }
 
-/// Member-list upsert. An absent `role` preserves an existing member's role
-/// — old idempotent add scripts must not silently strip query rights — and
-/// defaults a new member to `none`.
-fn upsert_member(members: &mut Vec<Member>, id: String, role: Option<Role>) {
+/// Display names are operator input that history UIs render later: strip
+/// control characters, trim, cap at 64 chars. Empty result = clear the name.
+fn clean_member_name(s: &str) -> Option<String> {
+    let cleaned: String = s.chars().filter(|c| !c.is_control()).collect();
+    let cleaned: String = cleaned.trim().chars().take(64).collect();
+    (!cleaned.is_empty()).then_some(cleaned)
+}
+
+/// Member-list upsert. Absent fields preserve an existing member's values —
+/// old idempotent add scripts must not silently strip query rights or
+/// attribution. New members default to role `none`. `name`: outer `None`
+/// preserves, `Some(None)` clears. `actors`: `None` preserves, `Some`
+/// replaces wholesale (empty clears).
+fn upsert_member(
+    members: &mut Vec<Member>,
+    id: String,
+    role: Option<Role>,
+    name: Option<Option<String>>,
+    actors: Option<Vec<String>>,
+) {
     match members.iter_mut().find(|m| m.id.eq_ignore_ascii_case(&id)) {
         Some(m) => {
             if let Some(role) = role {
                 m.role = role;
             }
+            if let Some(name) = name {
+                m.name = name;
+            }
+            if let Some(actors) = actors {
+                m.actors = actors;
+            }
         }
         None => members.push(Member {
             id,
             role: role.unwrap_or_default(),
+            name: name.flatten(),
+            actors: actors.unwrap_or_default(),
         }),
     }
+}
+
+/// `GET /api/admin/actors` row: one journal actor seen in this node's docs.
+#[derive(serde::Serialize)]
+struct ActorRow {
+    actor: String,
+    changes: u64,
+    last_time: i64,
+}
+
+/// `GET /api/admin/actors` envelope.
+#[derive(serde::Serialize)]
+struct ActorsList {
+    actors: Vec<ActorRow>,
+}
+
+/// Per-actor change count and newest change time across every doc in `dirs`,
+/// newest first. Unreadable docs are skipped — one corrupt doc must not blank
+/// the whole discovery table.
+fn scan_actors(dirs: &[std::path::PathBuf]) -> Vec<ActorRow> {
+    let mut acc: std::collections::HashMap<String, (u64, i64)> = std::collections::HashMap::new();
+    for dir in dirs {
+        for id in share_sync::doc_ids(dir) {
+            let Ok(history) = linxiv_share::doc_history(dir, &id) else {
+                continue;
+            };
+            for c in history {
+                let e = acc.entry(c.actor).or_insert((0, i64::MIN));
+                e.0 += 1;
+                e.1 = e.1.max(c.time);
+            }
+        }
+    }
+    let mut rows: Vec<_> = acc.into_iter().collect();
+    rows.sort_by(|a, b| b.1 .1.cmp(&a.1 .1).then(a.0.cmp(&b.0)));
+    rows.into_iter()
+        .map(|(actor, (changes, last_time))| ActorRow {
+            actor,
+            changes,
+            last_time,
+        })
+        .collect()
 }
 
 fn persist(members: Vec<Member>) -> Response {
@@ -779,6 +944,7 @@ mod tests {
             "/api/admin/relay/log",
             "/api/admin/transfers",
             "/api/admin/node-address",
+            "/api/admin/actors",
             "sessionStorage",
         ] {
             assert!(super::ADMIN_HTML.contains(needle), "missing {needle}");
@@ -811,21 +977,102 @@ mod tests {
         let id = "ab".repeat(32);
         let mut members = Vec::new();
         // New member, no role: defaults to none.
-        upsert_member(&mut members, id.clone(), None);
+        upsert_member(&mut members, id.clone(), None, None, None);
         assert_eq!(
             members,
             vec![Member {
                 id: id.clone(),
-                role: Role::None
+                role: Role::None,
+                ..Default::default()
             }]
         );
         // Role grant sticks (case-insensitive id match, no duplicate).
-        upsert_member(&mut members, id.to_uppercase(), Some(Role::Read));
+        upsert_member(
+            &mut members,
+            id.to_uppercase(),
+            Some(Role::Read),
+            None,
+            None,
+        );
         assert_eq!(members.len(), 1);
         assert_eq!(members[0].role, Role::Read);
         // Idempotent re-add without a role: rights are preserved, not reset.
-        upsert_member(&mut members, id, None);
+        upsert_member(&mut members, id, None, None, None);
         assert_eq!(members[0].role, Role::Read);
+    }
+
+    /// Attribution fields mirror the role contract: absent preserves,
+    /// `Some(None)` name / empty actors clears, present actors replaces.
+    #[test]
+    fn upsert_name_and_actors_preserve_clear_and_replace() {
+        use super::{upsert_member, Role};
+        let id = "cd".repeat(32);
+        let mut members = Vec::new();
+        upsert_member(
+            &mut members,
+            id.clone(),
+            None,
+            Some(Some("Ada".into())),
+            Some(vec!["aa11".into()]),
+        );
+        assert_eq!(members[0].name.as_deref(), Some("Ada"));
+        assert_eq!(members[0].actors, vec!["aa11"]);
+        // Absent name + actors (a bare role change) preserves both.
+        upsert_member(&mut members, id.clone(), Some(Role::Read), None, None);
+        assert_eq!(members[0].name.as_deref(), Some("Ada"));
+        assert_eq!(members[0].actors, vec!["aa11"]);
+        assert_eq!(members[0].role, Role::Read);
+        // Present actors replaces wholesale; empty clears. Name clear is
+        // Some(None) — what an empty-after-trim input parses to.
+        upsert_member(
+            &mut members,
+            id.clone(),
+            None,
+            None,
+            Some(vec!["bb22".into(), "cc33".into()]),
+        );
+        assert_eq!(members[0].actors, vec!["bb22", "cc33"]);
+        upsert_member(&mut members, id.clone(), None, Some(None), Some(Vec::new()));
+        assert_eq!(members[0].name, None);
+        assert!(members[0].actors.is_empty());
+        assert_eq!(members[0].role, Role::Read); // untouched throughout
+        assert_eq!(members.len(), 1);
+    }
+
+    #[test]
+    fn clean_member_name_trims_strips_and_caps() {
+        use super::clean_member_name;
+        assert_eq!(
+            clean_member_name("  Ada \x1b[31m Lovelace\n "),
+            Some("Ada [31m Lovelace".into())
+        );
+        assert_eq!(clean_member_name("   "), None);
+        assert_eq!(clean_member_name("\x07\x00"), None);
+        assert_eq!(clean_member_name(&"x".repeat(200)).unwrap().len(), 64);
+    }
+
+    /// One readable doc yields its actors; a corrupt doc and a missing dir
+    /// are skipped rather than failing the scan.
+    #[test]
+    fn scan_actors_aggregates_and_skips_unreadable_docs() {
+        let dir = tempfile::tempdir().unwrap();
+        let sp = linxiv_share::SharedProject {
+            share_id: "s1".into(),
+            name: "P".into(),
+            description: String::new(),
+            color: None,
+            tags: Vec::new(),
+            papers: Vec::new(),
+            notes: Vec::new(),
+            annotations: Vec::new(),
+        };
+        linxiv_share::save(dir.path(), &sp).unwrap();
+        std::fs::write(dir.path().join("bad.automerge"), b"not automerge").unwrap();
+        let rows = super::scan_actors(&[dir.path().to_path_buf(), dir.path().join("missing")]);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].changes, 1);
+        assert!(super::remote_query::valid_actor_hex(&rows[0].actor));
+        assert!(rows[0].last_time > 0, "save() stamps wall-clock time");
     }
 
     /// Restart survival: a reopened log continues the sequence and still

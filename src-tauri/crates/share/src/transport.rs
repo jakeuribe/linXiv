@@ -85,7 +85,6 @@ impl From<linxiv_p2p::SyncOutcome> for E2eeSyncOutcome {
 
 /// Raw doc bytes to `dir/<share_id>.automerge` via tmp+rename (mirror writes
 /// preserve remote CRDT history byte-for-byte, unlike `save`'s reconcile).
-#[cfg(feature = "sync-beelay")]
 fn write_doc_bytes(dir: &Path, share_id: &str, bytes: Vec<u8>) -> Result<()> {
     std::fs::create_dir_all(dir)?;
     let tmp = dir.join(format!("{share_id}.automerge.tmp"));
@@ -360,11 +359,12 @@ impl ShareNode {
                 sp.share_id
             )));
         }
-        // Namespaced mirror dir.
-        save(&received_dir(dest_share_dir), &sp)?;
+        // Namespaced mirror dir — raw bytes, so the host's actors/timestamps
+        // survive into the mirror's history instead of being re-authored as
+        // this device by save()'s reconcile.
+        write_doc_bytes(&received_dir(dest_share_dir), share_id, doc.save())?;
         Ok(sp)
     }
-    ///TODO: Extra functionality needed here if heavyweight summary/CRDTs are posted
     /// Hydrate a received mirror by id from `dest_share_dir/received`.
     pub fn received(dest_share_dir: &Path, share_id: &str) -> Result<SharedProject> {
         if !valid_share_id(share_id) {

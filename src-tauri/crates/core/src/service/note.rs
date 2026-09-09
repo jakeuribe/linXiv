@@ -145,6 +145,14 @@ pub fn create(conn: &Connection, note: &NoteIn) -> Result<NoteDetails> {
     )
 }
 
+/// NOTE_UUID -> NOTE_SK for many uuids in one batched pass.
+pub fn ids_by_uuid(
+    conn: &Connection,
+    uuids: &[String],
+) -> Result<std::collections::HashMap<String, i64>> {
+    q::ids_by_uuid(conn, uuids)
+}
+
 pub fn uuid_taken(conn: &Connection, uuid: &str) -> Result<bool> {
     q::uuid_taken(conn, uuid)
 }

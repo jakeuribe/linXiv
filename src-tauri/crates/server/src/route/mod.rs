@@ -30,6 +30,7 @@ pub(crate) mod authors; // request-body structs rendered by ts_bindings
 pub(crate) mod editor; // request-body structs rendered by ts_bindings
 pub mod feed; // refresh reused by the headless bin's feed poll loop
 mod graph;
+pub(crate) mod history; // request-body structs rendered by ts_bindings
 pub(crate) mod notes; // request-body structs rendered by ts_bindings
 pub(crate) mod orcid; // request-body structs rendered by ts_bindings
 pub(crate) mod papers; // ingest_full_text reused by the background full-text worker
@@ -219,7 +220,8 @@ async fn route_inner(state: &AppState, req: &ApiRequest) -> Result<Value, ApiErr
         feed,
         graph,
         versions,
-        orcid
+        orcid,
+        history
     );
 
     Err(ApiError::not_routed())

@@ -24,7 +24,8 @@ pub use read::{
     PaperVersionMeta, PAPER_COLUMNS_NO_TEXT,
 };
 pub use roots::{
-    ensure_paper_root, get_paper_root, get_source_id, source_fks_by_id, source_ids_by_fk, PaperRoot,
+    active_source_fks, ensure_paper_root, get_paper_root, get_source_id, source_fks_by_id,
+    source_ids_by_fk, PaperRoot,
 };
 pub use trash::{
     deleted_source_ids, hard_delete_paper, is_paper_deleted, list_deleted_papers, restore_paper,

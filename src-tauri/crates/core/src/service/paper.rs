@@ -601,6 +601,15 @@ pub fn get_paper_root(conn: &Connection, source_id: &str) -> Result<Option<store
     store::get_paper_root(conn, source_id)
 }
 
+/// SOURCE_ID -> SOURCE_FK for many ids in one batched pass; soft-deleted
+/// roots are absent from the map.
+pub fn active_source_fks(
+    conn: &Connection,
+    source_ids: &[String],
+) -> Result<std::collections::HashMap<String, i64>> {
+    store::active_source_fks(conn, source_ids)
+}
+
 /// Resolved (canonical source_id, concrete version, stored custom PDF_PATH) for
 /// one (source_id, version) — same key resolution and None semantics as `get`'s `Source` arm.
 pub fn pdf_ref(

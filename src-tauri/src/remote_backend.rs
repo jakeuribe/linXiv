@@ -147,7 +147,7 @@ pub struct RemoteState {
 }
 
 /// Cached connection for `backend_id`, dialing `addr` when there is none
-/// (or when `fresh` forces a redial). A dial failure is [`UNREACHABLE`].
+/// (or when `fresh` forces a redial). A dial failure is `RemoteError::unreachable`.
 // ponytail: two concurrent first requests may both dial; the second insert
 // wins and both connections work — dedupe only if dials ever get expensive.
 async fn conn_for(
@@ -537,6 +537,7 @@ mod proto_tests {
             vec![Member {
                 id: ep.id().to_string(),
                 role: Role::ReadWrite,
+                ..Default::default()
             }],
         )
         .await;
@@ -581,6 +582,7 @@ mod proto_tests {
             vec![Member {
                 id: ep.id().to_string(),
                 role: Role::Read,
+                ..Default::default()
             }],
         )
         .await;

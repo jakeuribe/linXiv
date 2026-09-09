@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useNavigate, useNavigationType, useLocation, Link } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Download, FolderOpen, GitFork, Upload } from "lucide-react";
+import { ArrowLeft, Download, FolderOpen, GitFork, History, Upload } from "lucide-react";
 import {
   getProject,
   createProject,
@@ -15,6 +15,8 @@ import { listReceived, sharingAvailable } from "../api/share";
 import { receivedShareRole } from "../lib/shareRole";
 import { listProjectPapers } from "../api/papers";
 import { ImportDialog } from "../components/import/ImportDialog";
+import { HistoryDialog } from "../components/history/HistoryDialog";
+import { useUrlDialog } from "../hooks/useUrlDialog";
 import type { Paper } from "../types/api";
 import { useSelectionStore } from "../stores/selection";
 import { ColorSwatch } from "../components/projects/ColorSwatch";
@@ -58,6 +60,8 @@ export default function ProjectDetailPage() {
   const [editOpen, setEditOpen] = useState(false);
   const [addPapersOpen, setAddPapersOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
+  const { open: historyOpen, show: openHistory, close: closeHistory } =
+    useUrlDialog("history");
   const [moreOpen, setMoreOpen] = useState(false);
   const moreRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -387,6 +391,9 @@ export default function ProjectDetailPage() {
             <Button variant="muted" size="sm" onClick={() => setExportOpen(true)}>
               <Download size={13} className="mr-1" />Export
             </Button>
+            <Button variant="muted" size="sm" onClick={openHistory}>
+              <History size={13} className="mr-1" />History
+            </Button>
             {!readOnly && (
               <Button variant="muted" size="sm" onClick={() => setEditOpen(true)}>
                 Edit
@@ -576,7 +583,7 @@ export default function ProjectDetailPage() {
         <>
           {!readOnly && (
             <EditProjectDialog
-              key={projectId}
+              key={`edit-${projectId}`}
               open={editOpen}
               onClose={() => setEditOpen(false)}
               projectId={projectId}
@@ -588,7 +595,7 @@ export default function ProjectDetailPage() {
           )}
           {!readOnly && (
             <AddPapersDialog
-              key={projectId}
+              key={`add-${projectId}`}
               open={addPapersOpen}
               onClose={() => setAddPapersOpen(false)}
               projectId={projectId}
@@ -596,11 +603,17 @@ export default function ProjectDetailPage() {
             />
           )}
           <ExportDialog
-            key={projectId}
+            key={`export-${projectId}`}
             open={exportOpen}
             onClose={() => setExportOpen(false)}
             projectId={projectId}
             projectName={project.name}
+          />
+          <HistoryDialog
+            open={historyOpen}
+            onClose={closeHistory}
+            scope={{ kind: "project", id: projectId }}
+            title={`History — ${project.name}`}
           />
           {!readOnly && (
             <ImportDialog

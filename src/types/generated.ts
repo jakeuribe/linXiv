@@ -1060,6 +1060,92 @@ export type ShareSettings = {
   direction: SyncDirection,
 };
 
+export type DeviceActor = {
+  actor: string | null,
+};
+
+export type ChangeRow = {
+  hash: string,
+  actor: string,
+  /**
+   * Unix seconds; 0 on changes written before timestamps landed.
+   */
+  time: number,
+  message: string | null,
+  /**
+   * Written by this device (its pinned actor id).
+   */
+  mine: boolean,
+  /**
+   * Host-assigned name from the node's Member List; None when unnamed.
+   */
+  display_name: string | null,
+};
+
+export type Timeline = {
+  changes: Array<ChangeRow>,
+  device_actor: string | null,
+};
+
+export type PaperChange = {
+  source_id: string,
+  title: string,
+  /**
+   * Local `/library/{sfk}` target; None when unresolvable or trashed.
+   */
+  source_fk: number | null,
+};
+
+export type EntryChange = {
+  uuid: string,
+  title: string,
+  from: string | null,
+  to: string | null,
+  /**
+   * Notes only: local `/notes/{id}` target; None when unresolvable.
+   */
+  note_id: number | null,
+  /**
+   * Annotations only: their paper's `/library/{sfk}`; None when unresolvable.
+   */
+  paper_sfk: number | null,
+};
+
+export type FieldChange = {
+  field: string,
+  from: string,
+  to: string,
+};
+
+export type HistoryDiff = {
+  papers_added: Array<PaperChange>,
+  papers_removed: Array<PaperChange>,
+  tags_added: Array<string>,
+  tags_removed: Array<string>,
+  notes_added: Array<EntryChange>,
+  notes_removed: Array<EntryChange>,
+  notes_changed: Array<EntryChange>,
+  annotations_added: Array<EntryChange>,
+  annotations_removed: Array<EntryChange>,
+  annotations_changed: Array<EntryChange>,
+  meta: Array<FieldChange>,
+};
+
+export type RestoredToChange = {
+  ok: boolean,
+  removed_papers: number,
+  removed_notes: number,
+  removed_annotations: number,
+  removed_tags: number,
+};
+
+export type RestoreBody = {
+  /**
+   * Change hash to restore to (state as of that change, inclusive).
+   */
+  to: string,
+};
+
 export type SyncRole = "hoster" | "reader";
 
 export type SyncReason = "paused" | "direction" | "project gone" | "no ticket" | "bad ticket" | "p2p offline" | "awaiting first sync" | "no key for any content" | "revoked or awaiting key";

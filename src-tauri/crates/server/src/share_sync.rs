@@ -10,8 +10,9 @@ use serde_json::Value;
 use linxiv_core::service::paper as paper_svc;
 use linxiv_core::service::project as project_svc;
 use linxiv_share::{
-    build_shared_project, doc_path, e2ee_dir, e2ee_received_dir, import_shared_project, load,
-    received_dir, save, valid_share_id, ShareNode, ShareTicket, SharedProject,
+    apply_removals, build_shared_project, doc_path, e2ee_dir, e2ee_received_dir,
+    import_shared_project, load, received_dir, save, valid_share_id, ShareNode, ShareTicket,
+    SharedProject,
 };
 
 use crate::route::share::ShareState;
@@ -207,6 +208,42 @@ pub(crate) async fn populate_pdf_blobs(
     Ok(())
 }
 
+/// The applied-baseline sidecar dir for a mirror dir (`<mirror>/applied/`).
+pub(crate) fn applied_dir(mirror_dir: &Path) -> PathBuf {
+    mirror_dir.join("applied")
+}
+
+/// Advance the deletion-propagation baseline to the just-applied mirror state.
+/// Only called after a successful import (+ removal) pass; best-effort — a
+/// failed copy just re-propagates from the older baseline next pass.
+fn advance_applied(mirror_dir: &Path, share_id: &str) {
+    let dst_dir = applied_dir(mirror_dir);
+    if let Err(e) = std::fs::create_dir_all(&dst_dir).and_then(|()| {
+        std::fs::copy(doc_path(mirror_dir, share_id), doc_path(&dst_dir, share_id)).map(|_| ())
+    }) {
+        eprintln!("share sync {share_id}: applied-baseline copy failed: {e}");
+    }
+}
+
+/// Apply remote deletions (prior mirror − fresh mirror) to the linked project,
+/// after the additive import. Log-and-report; a logged line per non-empty pass.
+fn propagate_removals(
+    state: &AppState,
+    share_id: &str,
+    prior: &SharedProject,
+    fresh: &SharedProject,
+    project_fk: i64,
+) -> Result<(), ApiError> {
+    let removed = state.with_conn(|c| apply_removals(c, prior, fresh, Some(project_fk)))?;
+    if !removed.is_empty() {
+        println!(
+            "share sync {share_id}: propagated remote deletions papers={} notes={} annotations={} tags={}",
+            removed.papers, removed.notes, removed.annotations, removed.tags,
+        );
+    }
+    Ok(())
+}
+
 /// Bump mtime — the UI reads the doc file's mtime as synced_at.
 fn touch(p: &Path) {
     if let Ok(f) = std::fs::File::options().append(true).open(p) {
@@ -385,17 +422,28 @@ pub async fn sync_share(
             eprintln!("share sync {share_id}: p2p offline");
             return skipped(SyncReason::P2pOffline, None);
         };
+        // Deletion-propagation baseline: the last mirror state actually APPLIED
+        // to the DB (sidecar under applied/), falling back to the pre-fetch
+        // mirror before any sidecar exists. The mirror file itself is refreshed
+        // by the fetch, so it can't be the baseline — a pass that dies between
+        // fetch and apply would silently swallow the host's removals.
+        let applied_dir = applied_dir(&received_dir(&dir));
+        let prior = load(&applied_dir, share_id)
+            .ok()
+            .or_else(|| ShareNode::received(&dir, share_id).ok());
         tokio::time::timeout(
             crate::route::share::SHARE_NET_TIMEOUT,
             node.fetch(&ticket, &dir),
         )
         .await
         .map_err(|_| ApiError::new(504, "share sync fetch timed out"))??;
-        if state
-            .with_conn(|c| project_svc::find_by_share_id(c, share_id))?
-            .is_some()
-        {
+        if let Some(fk) = state.with_conn(|c| project_svc::find_by_share_id(c, share_id))? {
             import_received(state, &dir, share_id)?;
+            if let Some(prior) = prior {
+                let fresh = ShareNode::received(&dir, share_id)?;
+                propagate_removals(state, share_id, &prior, &fresh, fk)?;
+            }
+            advance_applied(&received_dir(&dir), share_id);
         }
         touch(&reader_doc);
         return to_value(&synced(SyncRole::Reader));
@@ -454,6 +502,11 @@ pub async fn sync_share(
             eprintln!("share sync {share_id}: p2p offline");
             return skipped(SyncReason::P2pOffline, None);
         };
+        // Deletion-propagation baseline: last-applied sidecar, falling back to
+        // the pre-sync mirror (same rationale as the plain reader leg).
+        let prior = load(&applied_dir(&e2ee_received_dir(&dir)), share_id)
+            .ok()
+            .or_else(|| ShareNode::e2ee_received(&dir, share_id).ok());
         // Keyhive/BeeKEM ops run slower than plain sync; double the net budget.
         let outcome = tokio::time::timeout(
             crate::route::share::SHARE_NET_TIMEOUT * 2,
@@ -461,21 +514,32 @@ pub async fn sync_share(
         )
         .await
         .map_err(|_| ApiError::new(504, "share sync timed out"))??;
-        let linked = state
-            .with_conn(|c| project_svc::find_by_share_id(c, share_id))?
-            .is_some();
+        let linked = state.with_conn(|c| project_svc::find_by_share_id(c, share_id))?;
         // A mirror still empty after the sync (host asleep, or no key yet) has
         // nothing to import — and a manual retry needs told that, or it reads
         // as a silent success that changed nothing.
         let mut pending = false;
         match ShareNode::e2ee_received(&dir, share_id) {
-            Ok(sp) if linked => state
-                .with_conn(|c| import_shared_project(c, &sp))
-                .map(|_| ())?,
-            Ok(_) => {}
+            Ok(sp) => {
+                if let Some(fk) = linked {
+                    state
+                        .with_conn(|c| import_shared_project(c, &sp))
+                        .map(|_| ())?;
+                    // Deletions propagate only from a CLEAN sync: undecryptable
+                    // commits (no_key/failed) can hydrate the mirror incomplete,
+                    // and prior − partial would delete content the host kept.
+                    if outcome.no_key + outcome.failed == 0 {
+                        if let Some(prior) = prior {
+                            propagate_removals(state, share_id, &prior, &sp, fk)?;
+                        }
+                        advance_applied(&e2ee_received_dir(&dir), share_id);
+                    }
+                }
+            }
             Err(linxiv_share::ShareError::NotFound(_)) => pending = true,
             Err(e) => return Err(e.into()),
         }
+        let linked = linked.is_some();
         touch(&e2ee_reader_doc);
         // One line per reader sync, on stdout, so a terminal-launched app shows
         // what a stuck share is actually doing.
@@ -568,6 +632,9 @@ static NUDGE: tokio::sync::Notify = tokio::sync::Notify::const_new();
 /// content. Cheap and non-blocking; `route()` calls this on successful non-GETs.
 pub fn nudge() {
     NUDGE.notify_one();
+    // The journal loop waits on its own Notify (notify_one wakes ONE waiter,
+    // so two loops can't share this one).
+    crate::journal::nudge();
 }
 
 /// Sleep until the next sync pass is due: the fixed interval, or sooner when a
@@ -576,7 +643,11 @@ pub async fn next_sync_due() {
     next_sync_due_on(&NUDGE, INTERVAL_SYNC_PERIOD, NUDGE_DEBOUNCE).await
 }
 
-async fn next_sync_due_on(nudge: &tokio::sync::Notify, interval: Duration, debounce: Duration) {
+pub(crate) async fn next_sync_due_on(
+    nudge: &tokio::sync::Notify,
+    interval: Duration,
+    debounce: Duration,
+) {
     tokio::select! {
         _ = tokio::time::sleep(interval) => {}
         _ = nudge.notified() => {
@@ -866,6 +937,29 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(p.project_tags.contains(&"post-invite".to_string()));
+
+        // A removes the tag again; B's next sync must propagate the deletion
+        // (prior mirror − fresh mirror) instead of keeping it forever.
+        slow(node_a.publish_secure(&sp)).await.unwrap();
+        let v = slow(sync_share(&state_b, &share_b, E2EE_SID))
+            .await
+            .unwrap();
+        assert_eq!(v["synced"], json!(true));
+        let p = state_b
+            .with_conn(|c| {
+                project_svc::get(
+                    c,
+                    &project_svc::Project {
+                        project_fk: Some(fk),
+                    },
+                )
+            })
+            .unwrap()
+            .unwrap();
+        assert!(
+            !p.project_tags.contains(&"post-invite".to_string()),
+            "remote tag removal must propagate to the linked project"
+        );
 
         // Unlink B's local project, then sync again: the reader leg must keep
         // refreshing the mirror WITHOUT re-creating the project link — that

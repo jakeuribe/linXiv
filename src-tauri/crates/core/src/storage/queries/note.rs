@@ -155,6 +155,29 @@ pub fn count_notes(conn: &Connection, source_fk: i64, project_id: Option<i64>) -
 }
 
 /// Check if a NOTE_UUID is already taken (exists in the database).
+/// NOTE_UUID -> NOTE_SK for many uuids in one batched pass, chunked under
+/// SQLite's parameter cap.
+pub fn ids_by_uuid(
+    conn: &Connection,
+    uuids: &[String],
+) -> Result<std::collections::HashMap<String, i64>> {
+    let mut out = std::collections::HashMap::new();
+    for chunk in uuids.chunks(900) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let mut stmt = conn.prepare(&format!(
+            "SELECT NOTE_UUID, NOTE_SK FROM NOTE WHERE NOTE_UUID IN ({placeholders})"
+        ))?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (uuid, id) = row?;
+            out.insert(uuid, id);
+        }
+    }
+    Ok(out)
+}
+
 pub fn uuid_taken(conn: &Connection, uuid: &str) -> Result<bool> {
     Ok(conn
         .query_row(

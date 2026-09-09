@@ -7,7 +7,7 @@ use tauri::Manager;
 use linxiv_server::route::share::{self, ShareState};
 use linxiv_server::route::{route, ApiError, ApiRequest};
 use linxiv_server::state::AppState;
-use linxiv_server::{full_text_worker, share_sync};
+use linxiv_server::{full_text_worker, journal, share_sync};
 
 /// The Tauri command the webview invokes. Thin wrapper over `route`.
 #[tauri::command]
@@ -37,6 +37,20 @@ pub fn spawn_interval_sync(app: tauri::AppHandle) {
             let share = app.state::<ShareState>();
             share_sync::sync_all(&state, &share).await;
             share_sync::next_sync_due().await;
+        }
+    });
+}
+
+/// Journal loop, spawned unconditionally — history/undo must work with the
+/// p2p node unbound, unlike the interval sync above.
+pub fn spawn_journal_loop(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            {
+                let state = app.state::<AppState>();
+                journal::write_all(&state, &journal::journal_dir());
+            }
+            journal::next_due().await;
         }
     });
 }

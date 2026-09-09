@@ -119,11 +119,17 @@ impl Role {
     }
 }
 
-/// One Member List entry: an admitted device (p2p endpoint id) + its role.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// One Member List entry: an admitted device (p2p endpoint id) + its role,
+/// plus attribution — an optional display name and the journal actor ids of
+/// this person's devices, paired by the operator in the admin panel.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
 pub struct Member {
     pub id: String,
     pub role: Role,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub actors: Vec<String>,
 }
 
 /// Wire forms: `{"id": .., "role": ..}`, or a legacy bare-string entry
@@ -137,6 +143,10 @@ enum MemberEntry {
         id: String,
         #[serde(default)]
         role: Role,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        actors: Vec<String>,
     },
 }
 
@@ -145,9 +155,19 @@ impl<'de> Deserialize<'de> for Member {
         Ok(match MemberEntry::deserialize(d)? {
             MemberEntry::Legacy(id) => Member {
                 id,
-                role: Role::None,
+                ..Default::default()
             },
-            MemberEntry::Full { id, role } => Member { id, role },
+            MemberEntry::Full {
+                id,
+                role,
+                name,
+                actors,
+            } => Member {
+                id,
+                role,
+                name,
+                actors,
+            },
         })
     }
 }
@@ -155,6 +175,12 @@ impl<'de> Deserialize<'de> for Member {
 /// 64 hex chars — an iroh endpoint id (ed25519 public key).
 pub fn valid_endpoint_id(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Journal actor id (automerge `ActorId`): non-empty even-length hex,
+/// bounded so hand-entered garbage can't bloat the list.
+pub fn valid_actor_hex(s: &str) -> bool {
+    !s.is_empty() && s.len() % 2 == 0 && s.len() <= 128 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 pub fn member_list_path() -> PathBuf {
@@ -395,7 +421,22 @@ async fn handle(
             return pdf_lane(state, sid, raw_query, &member.id, rate_bps, active).await;
         }
     }
-    ApiResponse::Json(match route::route(state, req).await {
+    // Mutating requests journal their delta under the member's endpoint id
+    // (a valid automerge actor), so remote writes are attributed to the
+    // authenticated member — no manual actor pairing needed for them.
+    let result = if req.method == "GET" {
+        route::route(state, req).await
+    } else {
+        let actor = member.id.to_ascii_lowercase();
+        crate::journal::attribute_remote_write(
+            state,
+            &crate::journal::journal_dir(),
+            &actor,
+            || route::route(state, req),
+        )
+        .await
+    };
+    ApiResponse::Json(match result {
         Ok(body) => to_env(ApiEnvelope {
             status: 200,
             body: Some(body),
@@ -458,6 +499,7 @@ mod tests {
         Member {
             id: id.into(),
             role,
+            ..Default::default()
         }
     }
 
@@ -481,13 +523,34 @@ mod tests {
                 m("cc", Role::None),
             ]
         );
-        // Round trip is always the object form.
+        // Round trip is always the object form; absent name/actors stay absent.
         let json = serde_json::to_value(&mixed).unwrap();
         assert_eq!(
             json[0],
             serde_json::json!({"id": id_a, "role": "read-write"})
         );
         assert_eq!(json[2], serde_json::json!({"id": "cc", "role": "none"}));
+        // Attribution fields parse and round trip.
+        let named: Vec<Member> = serde_json::from_str(&format!(
+            r#"[{{"id":"{id_a}","role":"read","name":"Ada","actors":["dd{}"]}}]"#,
+            "ee".repeat(15)
+        ))
+        .unwrap();
+        assert_eq!(named[0].name.as_deref(), Some("Ada"));
+        assert_eq!(named[0].actors.len(), 1);
+        let json = serde_json::to_value(&named).unwrap();
+        assert_eq!(json[0]["name"], "Ada");
+        assert!(json[0]["actors"].is_array());
+    }
+
+    #[test]
+    fn actor_hex_validation() {
+        assert!(valid_actor_hex(&"ab".repeat(16))); // random automerge actor
+        assert!(valid_actor_hex("00ff"));
+        assert!(!valid_actor_hex(""));
+        assert!(!valid_actor_hex("abc")); // odd length
+        assert!(!valid_actor_hex("zz"));
+        assert!(!valid_actor_hex(&"ab".repeat(65))); // too long
     }
 
     #[test]
@@ -643,6 +706,7 @@ mod proto_tests {
             vec![Member {
                 id: ep.id().to_string(),
                 role: Role::Read,
+                ..Default::default()
             }],
         )
         .await;
@@ -682,6 +746,7 @@ mod proto_tests {
             vec![Member {
                 id: ep.id().to_string(),
                 role: Role::ReadWrite,
+                ..Default::default()
             }],
         )
         .await;
@@ -718,6 +783,7 @@ mod proto_tests {
             vec![Member {
                 id: ep.id().to_string(),
                 role: Role::Read,
+                ..Default::default()
             }],
         )
         .await;
@@ -735,6 +801,7 @@ mod proto_tests {
             vec![Member {
                 id: ep.id().to_string(),
                 role: Role::ReadWrite,
+                ..Default::default()
             }],
         )
         .await;
@@ -772,6 +839,7 @@ mod proto_tests {
             vec![Member {
                 id: ep.id().to_string(),
                 role: Role::Read, // GET: the lane is open to readers
+                ..Default::default()
             }],
         )
         .await;
@@ -844,6 +912,7 @@ mod proto_tests {
             vec![Member {
                 id: ep.id().to_string().to_ascii_uppercase(),
                 role: Role::Read,
+                ..Default::default()
             }],
         )
         .await;
