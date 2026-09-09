@@ -1,0 +1,28 @@
+# Always-on headless linXiv node. From the repo root:
+#   LINXIV_API_TOKEN=$(openssl rand -hex 32) \
+#   LINXIV_P2P_PASSPHRASE=change-me \
+#   docker compose -f docs/headless/docker-compose.yml up -d --build
+services:
+  node:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      # At-rest key encryption for the p2p key store (no OS keychain here).
+      LINXIV_P2P_PASSPHRASE: ${LINXIV_P2P_PASSPHRASE:?set a passphrase for the p2p key store}
+      # Bearer token required on every API request (the bin refuses to start
+      # on 0.0.0.0 without one).
+      LINXIV_API_TOKEN: ${LINXIV_API_TOKEN:?set an API bearer token, e.g. from `openssl rand -hex 32`}
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - linxiv-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf -H \"Authorization: Bearer $$LINXIV_API_TOKEN\" http://localhost:8000/api/papers"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  linxiv-data:
