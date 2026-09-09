@@ -4,7 +4,7 @@
 # webkit stack, and so `tauri build` stops linking + bundling them.
 [package]
 name = "linxiv-server"
-version = "0.4.2"
+version = "0.5.0-beta"
 edition = "2021"
 license = "GPL-3.0-or-later"
 
