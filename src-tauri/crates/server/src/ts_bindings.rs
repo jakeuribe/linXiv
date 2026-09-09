@@ -243,9 +243,9 @@ pub(crate) fn render() -> String {
     out.push_str(&decl::<linxiv_core::service::vault::DirEntry>());
     out.push_str(&decl::<linxiv_core::service::vault::FsResult>());
     // Share dispatcher response envelopes (route/share.rs + share_sync.rs) —
-    // reachable since the generator moved to this crate. ReceivedDetail,
-    // JoinedSummary/JoinPending and the syncShare envelope stay hand-written
-    // (untyped `Vec<Value>` papers / literal-typed union / inline json!).
+    // reachable since the generator moved to this crate. ReceivedDetail and
+    // JoinedSummary/JoinPending stay hand-written (untyped `Vec<Value>`
+    // papers / literal-typed union).
     out.push_str(&decl::<crate::route::share::SummaryRow>());
     out.push_str(&decl::<crate::route::share::SharedProjectsListing>());
     out.push_str(&decl::<crate::route::share::ReceivedListing>());
@@ -266,6 +266,15 @@ pub(crate) fn render() -> String {
     out.push_str(&decl::<crate::route::share::SharedPdfSaved>());
     out.push_str(&decl::<crate::share_sync::SyncDirection>());
     out.push_str(&decl::<crate::share_sync::ShareSettings>());
+    out.push_str(&decl::<crate::share_sync::SyncRole>());
+    out.push_str(&decl::<crate::share_sync::SyncReason>());
+    out.push_str(&decl::<crate::share_sync::SyncSkipped>());
+    out.push_str(&decl::<crate::share_sync::SyncedReceipt>());
+    // Remote Query Mode: the api/api_remote request, the invoke rejection
+    // client.ts maps to its ApiError class, and the remote failure union.
+    out.push_str(&decl::<crate::route::ApiRequest>());
+    out.push_str(&decl::<crate::route::ApiError>());
+    out.push_str(&decl::<crate::remote_query::RemoteError>());
     out
 }
 

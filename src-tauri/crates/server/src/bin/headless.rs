@@ -22,6 +22,8 @@ use axum::{
     Router,
 };
 
+use serde::{Deserialize, Serialize};
+
 use linxiv_server::remote_query::{
     self, load_members, relay_allow, save_members, valid_endpoint_id, Member, Role, TransferLog,
 };
@@ -208,9 +210,9 @@ fn check_auth(ctx: &Ctx, req: &Request) -> Option<Response> {
         .and_then(|v| v.strip_prefix("Bearer "));
     match presented {
         Some(p) if ct_eq(p.as_bytes(), token.as_bytes()) => None,
-        _ => Some(json(
+        _ => Some(detail(
             StatusCode::UNAUTHORIZED,
-            &serde_json::json!({ "detail": "missing or invalid bearer token" }),
+            "missing or invalid bearer token",
         )),
     }
 }
@@ -313,12 +315,24 @@ const RELAY_LOG_CAP: usize = 200;
 /// so a hammered public node can't grow it without bound.
 const RELAY_LOG_FILE_CAP: u64 = 5 * 1024 * 1024;
 
+/// `GET /api/admin/relay/log` entry — one access decision, also the JSONL
+/// line persisted on disk. Loads tolerate partial legacy lines.
+#[derive(Default, Serialize, Deserialize)]
+#[serde(default)]
+struct RelayLogEntry {
+    seq: u64,
+    at: String,
+    endpoint_id: Option<String>,
+    allowed: bool,
+    source: String,
+}
+
 /// Recent relay access decisions plus refused api knocks (`source` tells
 /// them apart: "relay" vs "api"). Appended as JSONL under the data dir so the
 /// audit trail survives restarts; the in-memory tail serves the admin route.
 struct RelayLog {
     seq: u64,
-    entries: VecDeque<serde_json::Value>,
+    entries: VecDeque<RelayLogEntry>,
     /// Append handle; `None` when the file can't be opened (warned once at
     /// startup) — the in-memory log keeps working.
     file: Option<std::fs::File>,
@@ -342,17 +356,16 @@ impl RelayLog {
         // shows the recent tail, not just the few post-rotation entries.
         let rotated = std::fs::read_to_string(path.with_extension("jsonl.1")).unwrap_or_default();
         let current = std::fs::read_to_string(&path).unwrap_or_default();
-        for v in rotated
+        for e in rotated
             .lines()
             .chain(current.lines())
-            .filter_map(|l| serde_json::from_str(l).ok())
+            .filter_map(|l| serde_json::from_str::<RelayLogEntry>(l).ok())
         {
-            let v: serde_json::Value = v;
-            seq = seq.max(v["seq"].as_u64().unwrap_or(0));
+            seq = seq.max(e.seq);
             if entries.len() >= RELAY_LOG_CAP {
                 entries.pop_front();
             }
-            entries.push_back(v);
+            entries.push_back(e);
         }
         let mut file = std::fs::OpenOptions::new()
             .create(true)
@@ -378,13 +391,13 @@ impl RelayLog {
 
     fn push(&mut self, endpoint_id: Option<&str>, allowed: bool, source: &str) {
         self.seq += 1;
-        let entry = serde_json::json!({
-            "seq": self.seq,
-            "at": chrono::Utc::now().to_rfc3339(),
-            "endpoint_id": endpoint_id.map(clean_log_id),
-            "allowed": allowed,
-            "source": source,
-        });
+        let entry = RelayLogEntry {
+            seq: self.seq,
+            at: chrono::Utc::now().to_rfc3339(),
+            endpoint_id: endpoint_id.map(clean_log_id),
+            allowed,
+            source: source.to_string(),
+        };
         if self
             .file
             .as_ref()
@@ -410,7 +423,8 @@ impl RelayLog {
         }
         if let Some(f) = &mut self.file {
             use std::io::Write;
-            if let Err(e) = writeln!(f, "{entry}") {
+            let line = serde_json::to_string(&entry).expect("plain fields");
+            if let Err(e) = writeln!(f, "{line}") {
                 eprintln!(
                     "warning: access log {} write failed; disk logging off: {e}",
                     self.path.display()
@@ -447,58 +461,90 @@ fn relay_access(ctx: &Ctx, req: &Request) -> Response {
         .into_response()
 }
 
+/// `/api/admin/relay/members` (GET/POST/DELETE) — the full Member List after
+/// the op.
+#[derive(Serialize)]
+struct MembersResponse<'a> {
+    members: &'a [Member],
+}
+
+/// `GET /api/admin/relay/log` and `GET /api/admin/transfers` — newest-last
+/// tail of log entries.
+#[derive(Serialize)]
+struct EntriesResponse<'a, T: Serialize> {
+    entries: &'a VecDeque<T>,
+}
+
+/// `POST /api/admin/relay/members` request body. `role` stays raw JSON so its
+/// bespoke 400 fires separately from the endpoint-id check.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct MemberUpsertBody {
+    endpoint_id: String,
+    role: Option<serde_json::Value>,
+}
+
+/// `GET /api/admin/node-address` — the copyable Node Address locator.
+#[derive(Serialize)]
+struct NodeAddressResponse {
+    node_address: String,
+}
+
 /// `/api/admin/*` — Member List, access/transfer logs and the Node Address,
 /// JSON like the rest. `None` when the request is not an admin route.
 async fn relay_admin(ctx: &Ctx, req: &ApiRequest) -> Option<Response> {
     const MEMBERS: &str = "/api/admin/relay/members";
     let path = req.path.split('?').next().unwrap_or("");
-    let list = |l: &[Member]| serde_json::json!({ "members": l });
     // Corrupt member list: surface it and refuse writes rather than clobbering.
-    let loaded = |r: Result<Vec<Member>, String>| {
-        r.map_err(|e| json(StatusCode::CONFLICT, &serde_json::json!({ "detail": e })))
-    };
+    let loaded = |r: Result<Vec<Member>, String>| r.map_err(|e| detail(StatusCode::CONFLICT, e));
     match (req.method.as_str(), path) {
         ("GET", MEMBERS) => Some(match loaded(load_members()) {
-            Ok(l) => json(StatusCode::OK, &list(&l)),
+            Ok(l) => json(StatusCode::OK, &MembersResponse { members: &l }),
             Err(resp) => resp,
         }),
         ("GET", "/api/admin/relay/log") => {
             let log = ctx.relay.lock().unwrap();
             Some(json(
                 StatusCode::OK,
-                &serde_json::json!({ "entries": log.entries }),
+                &EntriesResponse {
+                    entries: &log.entries,
+                },
             ))
         }
         ("GET", "/api/admin/transfers") => {
             let log = ctx.transfers.lock().unwrap();
             Some(json(
                 StatusCode::OK,
-                &serde_json::json!({ "entries": log.entries() }),
+                &EntriesResponse {
+                    entries: log.entries(),
+                },
             ))
         }
         ("GET", "/api/admin/node-address") => Some(node_address(ctx).await),
         // Upsert: add with a role (default none), or change an existing
         // member's role by POSTing the same id again.
         ("POST", MEMBERS) => {
-            let body = req.body.as_ref();
-            let id = body
-                .and_then(|b| b["endpoint_id"].as_str())
-                .unwrap_or("")
-                .to_ascii_lowercase();
+            // Shape failures (missing body, non-object, non-string id) fall
+            // through as an empty id, keeping the id check's 400 first.
+            let b = MemberUpsertBody::deserialize(
+                req.body.as_ref().unwrap_or(&serde_json::Value::Null),
+            )
+            .unwrap_or_default();
+            let id = b.endpoint_id.to_ascii_lowercase();
             if !valid_endpoint_id(&id) {
-                return Some(json(
+                return Some(detail(
                     StatusCode::BAD_REQUEST,
-                    &serde_json::json!({ "detail": "endpoint_id must be 64 hex chars" }),
+                    "endpoint_id must be 64 hex chars",
                 ));
             }
-            let role = match body.map(|b| &b["role"]) {
-                None | Some(serde_json::Value::Null) => None,
-                Some(v) => match serde_json::from_value(v.clone()) {
+            let role = match b.role {
+                None => None,
+                Some(v) => match serde_json::from_value(v) {
                     Ok(r) => Some(r),
                     Err(_) => {
-                        return Some(json(
+                        return Some(detail(
                             StatusCode::BAD_REQUEST,
-                            &serde_json::json!({ "detail": "role must be none|read|read-write" }),
+                            "role must be none|read|read-write",
                         ))
                     }
                 },
@@ -509,7 +555,7 @@ async fn relay_admin(ctx: &Ctx, req: &ApiRequest) -> Option<Response> {
                 Err(resp) => return Some(resp),
             };
             upsert_member(&mut members, id, role);
-            Some(persist(members, &list))
+            Some(persist(members))
         }
         ("DELETE", p) if p.starts_with("/api/admin/relay/members/") => {
             let id = &p["/api/admin/relay/members/".len()..];
@@ -519,7 +565,7 @@ async fn relay_admin(ctx: &Ctx, req: &ApiRequest) -> Option<Response> {
                 Err(resp) => return Some(resp),
             };
             members.retain(|m| !m.id.eq_ignore_ascii_case(id));
-            Some(persist(members, &list))
+            Some(persist(members))
         }
         _ => None,
     }
@@ -542,12 +588,12 @@ fn upsert_member(members: &mut Vec<Member>, id: String, role: Option<Role>) {
     }
 }
 
-fn persist(members: Vec<Member>, list: &impl Fn(&[Member]) -> serde_json::Value) -> Response {
+fn persist(members: Vec<Member>) -> Response {
     match save_members(&members) {
-        Ok(()) => json(StatusCode::OK, &list(&members)),
-        Err(e) => json(
+        Ok(()) => json(StatusCode::OK, &MembersResponse { members: &members }),
+        Err(e) => detail(
             StatusCode::INTERNAL_SERVER_ERROR,
-            &serde_json::json!({ "detail": format!("persist member list: {e}") }),
+            format!("persist member list: {e}"),
         ),
     }
 }
@@ -558,30 +604,29 @@ fn persist(members: Vec<Member>, list: &impl Fn(&[Member]) -> serde_json::Value)
 /// no single URL to encode.
 async fn node_address(ctx: &Ctx) -> Response {
     let Some(id) = ctx.share.endpoint_id().await else {
-        return json(
-            StatusCode::CONFLICT,
-            &serde_json::json!({ "detail": "share node is not bound" }),
-        );
+        return detail(StatusCode::CONFLICT, "share node is not bound");
     };
     let p2p_config::RelaySetting::Custom(relay) = p2p_config::relay_setting() else {
-        return json(
+        return detail(
             StatusCode::CONFLICT,
-            &serde_json::json!({ "detail": "node-address needs a configured relay (p2p_relay_url)" }),
+            "node-address needs a configured relay (p2p_relay_url)",
         );
     };
     let id: linxiv_p2p::EndpointId = match id.parse() {
         Ok(id) => id,
         Err(e) => {
-            return json(
+            return detail(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                &serde_json::json!({ "detail": format!("endpoint id: {e}") }),
+                format!("endpoint id: {e}"),
             )
         }
     };
     let addr = linxiv_p2p::NodeAddress::new(id, relay.url().clone());
     json(
         StatusCode::OK,
-        &serde_json::json!({ "node_address": addr.to_string() }),
+        &NodeAddressResponse {
+            node_address: addr.to_string(),
+        },
     )
 }
 
@@ -640,7 +685,7 @@ async fn dispatch(State(ctx): State<Ctx>, req: Request) -> Response {
         Err(e) => {
             let status =
                 StatusCode::from_u16(e.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-            json(status, &serde_json::json!({ "detail": e.detail }))
+            detail(status, e.detail)
         }
     }
 }
@@ -657,6 +702,20 @@ fn latest_synced_at<'a>(
 }
 
 /// `GET /api/status` — one-call health/config aggregate for a headless node.
+#[derive(Serialize)]
+struct StatusResponse<'a> {
+    node_bound: bool,
+    endpoint_id: Option<String>,
+    relay: String,
+    hosted_shares: Option<usize>,
+    received_shares: Option<usize>,
+    last_synced_at: Option<&'a str>,
+    full_text_worker_enabled: bool,
+    home_feed_url_set: bool,
+    uptime_secs: u64,
+    version: &'static str,
+}
+
 async fn status(ctx: &Ctx) -> Response {
     let endpoint_id = ctx.share.endpoint_id().await;
     let settings = linxiv_core::config::UserSettings::load().ok();
@@ -680,18 +739,24 @@ async fn status(ctx: &Ctx) -> Response {
         .and_then(|v| v["received"].as_array().cloned());
     json(
         StatusCode::OK,
-        &serde_json::json!({
-            "node_bound": endpoint_id.is_some(),
-            "endpoint_id": endpoint_id,
-            "relay": relay,
-            "hosted_shares": hosted.as_ref().map(Vec::len),
-            "received_shares": received.as_ref().map(Vec::len),
-            "last_synced_at": latest_synced_at(hosted.iter().flatten().chain(received.iter().flatten())),
-            "full_text_worker_enabled": get("full_text_worker_enabled").and_then(|v| v.as_bool()).unwrap_or(false),
-            "home_feed_url_set": get("home_feed_url").and_then(|v| v.as_str()).is_some_and(|u| !u.trim().is_empty()),
-            "uptime_secs": ctx.started.elapsed().as_secs(),
-            "version": env!("CARGO_PKG_VERSION"),
-        }),
+        &StatusResponse {
+            node_bound: endpoint_id.is_some(),
+            endpoint_id,
+            relay,
+            hosted_shares: hosted.as_ref().map(Vec::len),
+            received_shares: received.as_ref().map(Vec::len),
+            last_synced_at: latest_synced_at(
+                hosted.iter().flatten().chain(received.iter().flatten()),
+            ),
+            full_text_worker_enabled: get("full_text_worker_enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+            home_feed_url_set: get("home_feed_url")
+                .and_then(|v| v.as_str())
+                .is_some_and(|u| !u.trim().is_empty()),
+            uptime_secs: ctx.started.elapsed().as_secs(),
+            version: env!("CARGO_PKG_VERSION"),
+        },
     )
 }
 
@@ -719,6 +784,25 @@ mod tests {
             assert!(super::ADMIN_HTML.contains(needle), "missing {needle}");
         }
         assert!(!super::ADMIN_HTML.contains("localStorage"));
+    }
+
+    /// Body-shape failures must degrade to an empty id (→ the hex 400), and
+    /// `role: null` must read as absent — the hand parser's contract.
+    #[test]
+    fn member_upsert_body_defaults_on_shape_failures() {
+        use super::MemberUpsertBody;
+        use serde::Deserialize;
+        let parse = |v: &serde_json::Value| MemberUpsertBody::deserialize(v).unwrap_or_default();
+        for bad in [json!(null), json!([1]), json!({ "endpoint_id": 5 })] {
+            assert_eq!(parse(&bad).endpoint_id, "", "{bad}");
+        }
+        let b = parse(&json!({ "endpoint_id": "AB", "role": null }));
+        assert_eq!(b.endpoint_id, "AB");
+        assert!(b.role.is_none());
+        assert_eq!(
+            parse(&json!({ "role": "bogus" })).role.as_ref().unwrap(),
+            "bogus"
+        );
     }
 
     #[test]
@@ -758,7 +842,7 @@ mod tests {
         assert_eq!(reopened.entries.len(), 2);
         assert_eq!(reopened.seq, 2);
         reopened.push(Some("bb"), true, "relay");
-        assert_eq!(reopened.entries.back().unwrap()["seq"], 3);
+        assert_eq!(reopened.entries.back().unwrap().seq, 3);
     }
 
     /// A restart right after rotation still seeds the tail (and seq) from the
@@ -825,11 +909,22 @@ mod tests {
     }
 }
 
-fn json(status: StatusCode, value: &serde_json::Value) -> Response {
+fn json(status: StatusCode, value: &impl Serialize) -> Response {
     (
         status,
         [(axum::http::header::CONTENT_TYPE, "application/json")],
         serde_json::to_vec(value).unwrap_or_default(),
     )
         .into_response()
+}
+
+/// Every non-2xx JSON body this bin emits: `{"detail": …}`, the shared
+/// router's error envelope.
+#[derive(Serialize)]
+struct Detail {
+    detail: String,
+}
+
+fn detail(status: StatusCode, msg: impl Into<String>) -> Response {
+    json(status, &Detail { detail: msg.into() })
 }
