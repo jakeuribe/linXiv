@@ -1059,3 +1059,67 @@ export type ShareSettings = {
   paused: boolean,
   direction: SyncDirection,
 };
+
+export type SyncRole = "hoster" | "reader";
+
+export type SyncReason = "paused" | "direction" | "project gone" | "no ticket" | "bad ticket" | "p2p offline" | "awaiting first sync" | "no key for any content" | "revoked or awaiting key";
+
+export type SyncSkipped = {
+  synced: false,
+  reason: SyncReason,
+  role?: SyncRole,
+};
+
+export type SyncedReceipt = {
+  synced: true,
+  role: SyncRole,
+  e2ee?: boolean,
+  /**
+   * Hoster leg: devices this share is currently granted to.
+   */
+  members?: number,
+  /**
+   * Reader leg: commits decrypted and applied this pass.
+   */
+  applied?: number,
+  /**
+   * Reader leg: commits fetched with no key for their epoch.
+   */
+  no_key?: number,
+  /**
+   * Reader leg: commits that failed to decrypt for any other reason.
+   */
+  failed?: number,
+  /**
+   * The sync ran but the mirror is still empty — the host has not answered.
+   */
+  pending?: boolean,
+  reason?: SyncReason,
+  /**
+   * Notes/annotations skipped: key revoked or not yet received.
+   */
+  undecryptable?: number,
+};
+
+export type ApiRequest = {
+  method: string,
+  path: string,
+  body?: unknown,
+};
+
+export type ApiError = {
+  status: number,
+  detail: string,
+};
+
+export type RemoteError = {
+  "kind": "unreachable",
+  detail: string,
+  } | { "kind": "remote",
+  status: number,
+  detail: string,
+  } | { "kind": "transport",
+  detail: string,
+  } | { "kind": "invalid",
+  detail: string,
+};

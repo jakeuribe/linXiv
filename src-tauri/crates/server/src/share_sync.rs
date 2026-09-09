@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use linxiv_core::service::paper as paper_svc;
 use linxiv_core::service::project as project_svc;
@@ -15,7 +15,7 @@ use linxiv_share::{
 };
 
 use crate::route::share::ShareState;
-use crate::route::ApiError;
+use crate::route::{to_value, ApiError};
 use crate::state::AppState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default, ts_rs::TS)]
@@ -214,6 +214,111 @@ fn touch(p: &Path) {
     }
 }
 
+/// `POST /api/share/{id}/sync` `role` — which sync leg ran.
+#[derive(Debug, Clone, Copy, Serialize, ts_rs::TS)]
+#[serde(rename_all = "lowercase")]
+pub enum SyncRole {
+    Hoster,
+    Reader,
+}
+
+/// `POST /api/share/{id}/sync` `reason` — why a pass skipped or came up short.
+#[derive(Debug, Clone, Copy, Serialize, ts_rs::TS)]
+pub enum SyncReason {
+    #[serde(rename = "paused")]
+    Paused,
+    #[serde(rename = "direction")]
+    Direction,
+    #[serde(rename = "project gone")]
+    ProjectGone,
+    #[serde(rename = "no ticket")]
+    NoTicket,
+    #[serde(rename = "bad ticket")]
+    BadTicket,
+    #[serde(rename = "p2p offline")]
+    P2pOffline,
+    #[serde(rename = "awaiting first sync")]
+    AwaitingFirstSync,
+    #[serde(rename = "no key for any content")]
+    NoKeyForAnyContent,
+    #[serde(rename = "revoked or awaiting key")]
+    RevokedOrAwaitingKey,
+}
+
+/// `POST /api/share/{id}/sync` response — pass skipped, `reason` says why.
+#[derive(Debug, Serialize, ts_rs::TS)]
+pub struct SyncSkipped {
+    #[ts(type = "false")]
+    synced: bool,
+    reason: SyncReason,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    role: Option<SyncRole>,
+}
+
+/// `POST /api/share/{id}/sync` response — pass completed; e2ee legs add counters.
+#[derive(Debug, Serialize, ts_rs::TS)]
+pub struct SyncedReceipt {
+    #[ts(type = "true")]
+    synced: bool,
+    role: SyncRole,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    e2ee: Option<bool>,
+    /// Hoster leg: devices this share is currently granted to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    members: Option<usize>,
+    /// Reader leg: commits decrypted and applied this pass.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    applied: Option<usize>,
+    /// Reader leg: commits fetched with no key for their epoch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    no_key: Option<usize>,
+    /// Reader leg: commits that failed to decrypt for any other reason.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    failed: Option<usize>,
+    /// The sync ran but the mirror is still empty — the host has not answered.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pending: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    reason: Option<SyncReason>,
+    /// Notes/annotations skipped: key revoked or not yet received.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    undecryptable: Option<usize>,
+}
+
+/// `{ synced: false, reason [, role] }` skip envelope.
+fn skipped(reason: SyncReason, role: Option<SyncRole>) -> Result<Value, ApiError> {
+    to_value(&SyncSkipped {
+        synced: false,
+        reason,
+        role,
+    })
+}
+
+/// Bare synced receipt; the e2ee legs fill their extras via struct update.
+fn synced(role: SyncRole) -> SyncedReceipt {
+    SyncedReceipt {
+        synced: true,
+        role,
+        e2ee: None,
+        members: None,
+        applied: None,
+        no_key: None,
+        failed: None,
+        pending: None,
+        reason: None,
+        undecryptable: None,
+    }
+}
+
 /// One sync pass for one share, honoring role (hoster/reader, by which doc file
 /// exists) and settings (paused + direction). Route arm + interval task both call this.
 pub async fn sync_share(
@@ -227,7 +332,7 @@ pub async fn sync_share(
     let dir = share.share_dir().to_path_buf();
     let settings = load_settings(&dir, share_id);
     if settings.paused {
-        return Ok(json!({ "synced": false, "reason": "paused" }));
+        return skipped(SyncReason::Paused, None);
     }
     let _guard = share.lock_writes(share_id).await;
 
@@ -247,11 +352,11 @@ pub async fn sync_share(
         // Hoster leg = local_to_shared: rebuild + save + re-register the doc.
         // Its shared_to_local leg is a no-op until W4 editors give readers edits.
         if settings.direction == SyncDirection::SharedToLocal {
-            return Ok(json!({ "synced": false, "reason": "direction", "role": "hoster" }));
+            return skipped(SyncReason::Direction, Some(SyncRole::Hoster));
         }
         let Some(fk) = state.with_conn(|c| project_svc::find_by_share_id(c, share_id))? else {
             // Doc + settings stay on disk; only explicit unpublish deletes them.
-            return Ok(json!({ "synced": false, "reason": "project gone" }));
+            return skipped(SyncReason::ProjectGone, None);
         };
         let sp = state.with_conn(|c| build_shared_project(c, fk))?;
         let doc = save(&dir, &sp)?;
@@ -259,26 +364,26 @@ pub async fn sync_share(
             node.register_doc(share_id, doc)?;
         }
         touch(&hoster_doc);
-        return Ok(json!({ "synced": true, "role": "hoster" }));
+        return to_value(&synced(SyncRole::Hoster));
     }
 
     if reader_doc.is_file() {
         // Reader leg = shared_to_local: refetch from the stored ticket, then
         // import into the linked project.
         if settings.direction == SyncDirection::LocalToShared {
-            return Ok(json!({ "synced": false, "reason": "direction", "role": "reader" }));
+            return skipped(SyncReason::Direction, Some(SyncRole::Reader));
         }
         let Ok(raw) = std::fs::read_to_string(ticket_path(&dir, share_id)) else {
             eprintln!("share sync {share_id}: no ticket file");
-            return Ok(json!({ "synced": false, "reason": "no ticket" }));
+            return skipped(SyncReason::NoTicket, None);
         };
         let Ok(ticket) = raw.trim().parse::<ShareTicket>() else {
             eprintln!("share sync {share_id}: bad ticket");
-            return Ok(json!({ "synced": false, "reason": "bad ticket" }));
+            return skipped(SyncReason::BadTicket, None);
         };
         let Some(node) = share.node().await else {
             eprintln!("share sync {share_id}: p2p offline");
-            return Ok(json!({ "synced": false, "reason": "p2p offline" }));
+            return skipped(SyncReason::P2pOffline, None);
         };
         tokio::time::timeout(
             crate::route::share::SHARE_NET_TIMEOUT,
@@ -293,7 +398,7 @@ pub async fn sync_share(
             import_received(state, &dir, share_id)?;
         }
         touch(&reader_doc);
-        return Ok(json!({ "synced": true, "role": "reader" }));
+        return to_value(&synced(SyncRole::Reader));
     }
 
     if e2ee_hoster_doc.is_file() {
@@ -302,16 +407,16 @@ pub async fn sync_share(
         // Editor merges in the beelay doc are not hydrated back into SQLite;
         // TwoWay behaves as local_to_shared.
         if settings.direction == SyncDirection::SharedToLocal {
-            return Ok(json!({ "synced": false, "reason": "direction", "role": "hoster" }));
+            return skipped(SyncReason::Direction, Some(SyncRole::Hoster));
         }
         let Some(fk) = state.with_conn(|c| project_svc::find_by_share_id(c, share_id))? else {
             // Doc + settings stay on disk; only explicit unpublish deletes them.
-            return Ok(json!({ "synced": false, "reason": "project gone" }));
+            return skipped(SyncReason::ProjectGone, None);
         };
         let mut sp = state.with_conn(|c| build_shared_project(c, fk))?;
         let Some(node) = share.node().await else {
             eprintln!("share sync {share_id}: p2p offline");
-            return Ok(json!({ "synced": false, "reason": "p2p offline" }));
+            return skipped(SyncReason::P2pOffline, None);
         };
         // ponytail: a failed publish below orphans just-stored blobs (random
         // nonce, no dedup) and nothing GCs them; upgrade: sweep unreferenced tickets.
@@ -332,23 +437,22 @@ pub async fn sync_share(
             sp.notes.len(),
             sp.annotations.len(),
         );
-        return Ok(json!({
-            "synced": true,
-            "role": "hoster",
-            "e2ee": true,
-            "members": members,
-        }));
+        return to_value(&SyncedReceipt {
+            e2ee: Some(true),
+            members: Some(members),
+            ..synced(SyncRole::Hoster)
+        });
     }
 
     if e2ee_reader_doc.is_file() {
         // E2ee reader leg: dial the host, refresh the mirror, then import into
         // the linked project. A revoked device surfaces as sync_e2ee's NotFound.
         if settings.direction == SyncDirection::LocalToShared {
-            return Ok(json!({ "synced": false, "reason": "direction", "role": "reader" }));
+            return skipped(SyncReason::Direction, Some(SyncRole::Reader));
         }
         let Some(node) = share.node().await else {
             eprintln!("share sync {share_id}: p2p offline");
-            return Ok(json!({ "synced": false, "reason": "p2p offline" }));
+            return skipped(SyncReason::P2pOffline, None);
         };
         // Keyhive/BeeKEM ops run slower than plain sync; double the net budget.
         let outcome = tokio::time::timeout(
@@ -382,34 +486,32 @@ pub async fn sync_share(
             outcome.failed,
             if pending { "empty" } else { "populated" },
         );
-        let mut v = json!({
-            "synced": true,
-            "role": "reader",
-            "e2ee": true,
-            "applied": outcome.applied,
-            "no_key": outcome.no_key,
-            "failed": outcome.failed,
-        });
-        if pending {
-            v["pending"] = json!(true);
-            v["reason"] = json!("awaiting first sync");
-        }
-        // The more specific key diagnosis wins over the generic pending line.
         let undecryptable = outcome.no_key + outcome.failed;
-        if undecryptable > 0 {
-            v["undecryptable"] = json!(undecryptable);
-            // A re-keyed share leaves its pre-grant commits behind forever, so
-            // undecryptable alone is not a fault — only report one when nothing
-            // came through. Nothing at all, and the usual cause is content
-            // sealed BEFORE this device's invite (keyhive #136): those commits
-            // belong to an epoch it never joined, and only a host re-key helps.
-            if pending && outcome.no_key > 0 {
-                v["reason"] = json!("no key for any content");
-            } else if pending {
-                v["reason"] = json!("revoked or awaiting key");
+        // The more specific key diagnosis wins over the generic pending line.
+        // A re-keyed share leaves its pre-grant commits behind forever, so
+        // undecryptable alone is not a fault — only diagnose one when nothing
+        // came through. Nothing at all, and the usual cause is content sealed
+        // BEFORE this device's invite (keyhive #136): those commits belong to
+        // an epoch it never joined, and only a host re-key helps.
+        let reason = pending.then(|| {
+            if outcome.no_key > 0 {
+                SyncReason::NoKeyForAnyContent
+            } else if undecryptable > 0 {
+                SyncReason::RevokedOrAwaitingKey
+            } else {
+                SyncReason::AwaitingFirstSync
             }
-        }
-        return Ok(v);
+        });
+        return to_value(&SyncedReceipt {
+            e2ee: Some(true),
+            applied: Some(outcome.applied),
+            no_key: Some(outcome.no_key),
+            failed: Some(outcome.failed),
+            pending: pending.then_some(true),
+            reason,
+            undecryptable: (undecryptable > 0).then_some(undecryptable),
+            ..synced(SyncRole::Reader)
+        });
     }
 
     Err(ApiError::new(404, format!("share {share_id:?} not found")))
@@ -491,6 +593,7 @@ async fn next_sync_due_on(nudge: &tokio::sync::Notify, interval: Duration, debou
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use std::fs;
 
     use linxiv_core::storage;
@@ -588,6 +691,35 @@ mod tests {
         let t1 = tokio::time::Instant::now();
         next_sync_due_on(&n, interval, debounce).await;
         assert_eq!(t1.elapsed(), interval, "mid-debounce nudge must be drained");
+    }
+
+    // Value equality above is order-insensitive; the wire promise is byte-
+    // identical key order to the old inline json! envelopes, so pin it here.
+    #[test]
+    fn envelope_key_order_matches_legacy_json() {
+        let full = SyncedReceipt {
+            e2ee: Some(true),
+            applied: Some(1),
+            no_key: Some(2),
+            failed: Some(0),
+            pending: Some(true),
+            reason: Some(SyncReason::NoKeyForAnyContent),
+            undecryptable: Some(2),
+            ..synced(SyncRole::Reader)
+        };
+        assert_eq!(
+            serde_json::to_string(&full).unwrap(),
+            r#"{"synced":true,"role":"reader","e2ee":true,"applied":1,"no_key":2,"failed":0,"pending":true,"reason":"no key for any content","undecryptable":2}"#
+        );
+        let skip = SyncSkipped {
+            synced: false,
+            reason: SyncReason::Direction,
+            role: Some(SyncRole::Hoster),
+        };
+        assert_eq!(
+            serde_json::to_string(&skip).unwrap(),
+            r#"{"synced":false,"reason":"direction","role":"hoster"}"#
+        );
     }
 
     #[test]

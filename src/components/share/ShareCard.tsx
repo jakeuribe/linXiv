@@ -7,6 +7,7 @@ import {
   listReceivedPapers,
   syncShare,
   type SharedSummary,
+  type SyncReceipt,
   shareErrText,
 } from "../../api/share";
 import { ApiError } from "../../api/client";
@@ -84,12 +85,8 @@ function humanizeReason(code: string | undefined): string {
 }
 
 /** The reader leg's raw counters, for pasting into a bug report. */
-function syncCounters(d: {
-  applied?: number;
-  no_key?: number;
-  failed?: number;
-}): string | null {
-  if (d.applied == null) return null;
+function syncCounters(d: SyncReceipt): string | null {
+  if (!d.synced || d.applied == null) return null;
   return `applied ${d.applied} · no key ${d.no_key ?? 0} · failed ${d.failed ?? 0}`;
 }
 
@@ -305,7 +302,7 @@ export function ShareCard({
           className="px-5 pb-3 text-xs"
           style={{
             // "still waiting on the host" is a state, not a failure.
-            color: sync.data?.pending
+            color: sync.data?.synced && sync.data.pending
               ? "var(--color-muted)"
               : "var(--color-danger)",
           }}

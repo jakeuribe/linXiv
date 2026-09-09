@@ -15,6 +15,8 @@ import type {
   AuthorWithCount,
   AuthorWithPapers,
   FilterRule,
+  SyncSkipped,
+  SyncedReceipt,
 } from "./generated";
 
 export type {
@@ -145,6 +147,10 @@ export type {
   SharedPdfSaved,
   SyncDirection,
   ShareSettings,
+  SyncRole,
+  SyncReason,
+  SyncSkipped,
+  SyncedReceipt,
 } from "./generated";
 
 // `PUT /api/papers/sfk/{fk}` body — core names it RepairFields; the UI has
@@ -161,6 +167,10 @@ export type SearchResult = SearchResultOut;
 export type Author = AuthorWithCount;
 export type AuthorDetail = AuthorWithPapers;
 export type FeedFilterRule = FilterRule;
+
+// `POST /api/share/{id}/sync` serializes one of two generated shapes
+// (share_sync.rs); the union itself has no single Rust struct.
+export type SyncReceipt = SyncSkipped | SyncedReceipt;
 
 // --- Not generated ---------------------------------------------------------
 

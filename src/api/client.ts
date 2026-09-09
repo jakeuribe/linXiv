@@ -4,6 +4,12 @@
  * there is no HTTP base. In browser dev, Vite proxies `/api` to a dev backend
  * (D32), so an empty base URL lets the proxy handle it.
  */
+import type {
+  ApiError as WireApiError,
+  ApiRequest,
+  RemoteError,
+} from "../types/generated";
+
 export const isTauri =
   typeof window !== "undefined" && window.__TAURI_INTERNALS__ !== undefined;
 
@@ -51,10 +57,11 @@ export const UNREACHABLE_MESSAGE =
   "Can't reach this node — it may be offline, or this device isn't admitted yet. " +
   "Check Settings → Remote backends and send your member code to the node operator.";
 
-/** Shared mapping of an `api_remote`/`remote_*` invoke rejection (Rust
- *  `RemoteError`, tagged by `kind`) to the app-wide `ApiError`. */
+/** Shared mapping of an `api_remote`/`remote_*` invoke rejection (the
+ *  generated `RemoteError` union, tagged by `kind`) to the app-wide
+ *  `ApiError`. Junk that isn't a `RemoteError` degrades to a 500. */
 export function mapRemoteError(e: unknown): ApiError {
-  const err = e as { kind?: string; status?: number; detail?: string } | null;
+  const err = e as RemoteError | { kind?: undefined; detail?: string } | null;
   switch (err?.kind) {
     case "unreachable":
       return new ApiError(503, UNREACHABLE_MESSAGE);
@@ -77,7 +84,7 @@ export function buildInvoke(
   const method = (init?.method ?? "GET").toUpperCase();
   const body =
     typeof init?.body === "string" ? (JSON.parse(init.body) as unknown) : null;
-  const req = { method, path, body };
+  const req: ApiRequest = { method, path, body };
   return backend
     ? { cmd: "api_remote", args: { backendId: backend.id, req } }
     : { cmd: "api", args: { req } };
@@ -98,7 +105,7 @@ async function invokeApi<T>(
     return await invoke<T>(cmd, args);
   } catch (e) {
     if (backend) throw mapRemoteError(e);
-    const err = e as { status?: number; detail?: string };
+    const err = e as Partial<WireApiError>;
     throw new ApiError(err.status ?? 500, err.detail ?? "Request failed");
   }
 }
